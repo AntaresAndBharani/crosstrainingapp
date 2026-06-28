@@ -13,18 +13,21 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.navigation.NavType
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.screens.CyclesScreen
 import com.fractanomics.crosstraining.ui.screens.HistoryScreen
 import com.fractanomics.crosstraining.ui.screens.LibraryScreen
 import com.fractanomics.crosstraining.ui.screens.LogSessionScreen
 import com.fractanomics.crosstraining.ui.screens.ProgressScreen
+import com.fractanomics.crosstraining.ui.screens.SessionEditorScreen
 
 enum class Destination(
     val route: String,
@@ -76,7 +79,28 @@ fun AppNavigation(viewModel: AppViewModel) {
                 LogSessionScreen(viewModel, innerPadding)
             }
             composable(Destination.HISTORY.route) {
-                HistoryScreen(viewModel, innerPadding)
+                HistoryScreen(
+                    viewModel = viewModel,
+                    outerPadding = innerPadding,
+                    onOpenEditor = { sessionId, copy ->
+                        navController.navigate("sessionEditor/$sessionId/$copy")
+                    }
+                )
+            }
+            composable(
+                route = "sessionEditor/{sessionId}/{copy}",
+                arguments = listOf(
+                    navArgument("sessionId") { type = NavType.LongType },
+                    navArgument("copy") { type = NavType.BoolType }
+                )
+            ) { entry ->
+                SessionEditorScreen(
+                    viewModel = viewModel,
+                    outerPadding = innerPadding,
+                    sessionId = entry.arguments?.getLong("sessionId") ?: 0L,
+                    copy = entry.arguments?.getBoolean("copy") ?: false,
+                    onBack = { navController.popBackStack() }
+                )
             }
             composable(Destination.PROGRESS.route) {
                 ProgressScreen(viewModel, innerPadding)

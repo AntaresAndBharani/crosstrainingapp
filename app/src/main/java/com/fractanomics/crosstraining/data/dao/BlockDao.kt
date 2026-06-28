@@ -27,6 +27,9 @@ interface BlockDao {
     @Query("DELETE FROM session_blocks")
     suspend fun deleteAllBlocks()
 
+    @Query("DELETE FROM session_blocks WHERE sessionId = :sessionId")
+    suspend fun deleteBlocksForSession(sessionId: Long)
+
     @Query("DELETE FROM block_sets")
     suspend fun deleteAllSets()
 }
