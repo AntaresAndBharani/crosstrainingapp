@@ -33,6 +33,10 @@ interface SessionDao {
     @Query("SELECT * FROM sessions ORDER BY date DESC, id DESC")
     fun observeAll(): Flow<List<SessionWithBlocks>>
 
+    @Transaction
+    @Query("SELECT * FROM sessions WHERE id = :id")
+    suspend fun getByIdOnce(id: Long): SessionWithBlocks?
+
     @Query("SELECT * FROM sessions")
     suspend fun getAllSessionsOnce(): List<Session>
 

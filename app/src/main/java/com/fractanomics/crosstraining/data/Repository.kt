@@ -110,6 +110,8 @@ class Repository(private val db: AppDatabase) {
 
     suspend fun deleteSession(session: Session) = sessionDao.deleteSession(session)
 
+    suspend fun sessionById(id: Long): SessionWithBlocks? = sessionDao.getByIdOnce(id)
+
     /**
      * Persist a session with its ordered [blocks], each block's sets, and any
      * per-block new rep-maxes — all in one transaction. Blocks and sets are
@@ -143,6 +145,41 @@ class Repository(private val db: AppDatabase) {
             }
             sessionId
         }
+
+    /**
+     * Update an existing [session] (its id must be set) and replace its blocks
+     * and sets with [blocks]. Existing blocks are deleted (cascading to their
+     * sets) and re-inserted in order. Historical rep-max records are kept; any
+     * new rep-maxes in [blocks] are added.
+     */
+    suspend fun updateSession(session: Session, blocks: List<BlockInsert>) {
+        db.withTransaction {
+            sessionDao.updateSession(session)
+            blockDao.deleteBlocksForSession(session.id)
+            blocks.forEachIndexed { blockIndex, item ->
+                val blockId = blockDao.insertBlock(
+                    item.block.copy(id = 0, sessionId = session.id, position = blockIndex)
+                )
+                if (item.sets.isNotEmpty()) {
+                    blockDao.insertSets(
+                        item.sets.mapIndexed { setIndex, set ->
+                            set.copy(id = 0, blockId = blockId, position = setIndex)
+                        }
+                    )
+                }
+                item.newRepMax?.let {
+                    repMaxDao.insert(
+                        it.copy(
+                            id = 0,
+                            sessionId = session.id,
+                            blockId = blockId,
+                            cycleId = session.cycleId
+                        )
+                    )
+                }
+            }
+        }
+    }
 
     // --- Rep maxes ------------------------------------------------------------
     val allRepMaxes: Flow<List<RepMax>> = repMaxDao.observeAll()

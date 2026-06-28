@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.model.BlockKind
+import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.BlockWithSets
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.ui.AppViewModel
@@ -32,7 +33,11 @@ import com.fractanomics.crosstraining.ui.trimmed
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HistoryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
+fun HistoryScreen(
+    viewModel: AppViewModel,
+    outerPadding: PaddingValues,
+    onOpenEditor: (sessionId: Long, copy: Boolean) -> Unit
+) {
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
     val cycles by viewModel.cycles.collectAsStateWithLifecycle()
@@ -53,6 +58,8 @@ fun HistoryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
                         item = item,
                         exerciseNames = exerciseNames,
                         cycleName = cycleNames[item.session.cycleId],
+                        onEdit = { onOpenEditor(item.session.id, false) },
+                        onCopy = { onOpenEditor(item.session.id, true) },
                         onDelete = { viewModel.deleteSession(item.session) }
                     )
                 }
@@ -61,20 +68,43 @@ fun HistoryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
     }
 }
 
-private fun setSummary(block: BlockWithSets): String =
-    block.sets.sortedBy { it.position }.joinToString("   ") { set ->
-        val v = set.weight ?: set.metricValue
-        val core = if (v != null) "${v.trimmed()}×${set.reps}" else "${set.reps}"
-        val prefix = if (set.isWarmup) "wu " else ""
-        val suffix = if (set.isFailed) " ✗" else ""
-        "$prefix$core$suffix"
+/** "60×3" with optional warm-up prefix and failed mark. */
+private fun setToken(set: BlockSet): String {
+    val v = set.weight ?: set.metricValue
+    val core = if (v != null) "${v.trimmed()}×${set.reps}" else "${set.reps}"
+    val prefix = if (set.isWarmup) "wu " else ""
+    val suffix = if (set.isFailed) " ✗" else ""
+    return "$prefix$core$suffix"
+}
+
+@Composable
+private fun BlockSets(block: BlockWithSets) {
+    val sets = block.sets.sortedBy { it.position }
+    if (sets.isEmpty()) return
+    val anyWave = sets.any { it.groupIndex != null }
+    if (anyWave) {
+        sets.groupBy { it.groupIndex }
+            .entries
+            .sortedBy { it.key ?: Int.MAX_VALUE }
+            .forEach { (group, list) ->
+                val label = group?.let { "W$it" } ?: "—"
+                Text(
+                    "$label:  " + list.sortedBy { it.position }.joinToString("   ") { setToken(it) },
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+    } else {
+        Text(sets.joinToString("   ") { setToken(it) }, style = MaterialTheme.typography.bodyMedium)
     }
+}
 
 @Composable
 private fun SessionCard(
     item: SessionWithBlocks,
     exerciseNames: Map<Long, String>,
     cycleName: String?,
+    onEdit: () -> Unit,
+    onCopy: () -> Unit,
     onDelete: () -> Unit
 ) {
     val s = item.session
@@ -96,16 +126,11 @@ private fun SessionCard(
             item.blocks.sortedBy { it.block.position }.forEach { bws ->
                 val b = bws.block
                 HorizontalDivider()
-                val header = listOfNotNull(
-                    b.name.ifBlank { null } ?: exerciseNames[b.mainExerciseId],
-                    b.kind.takeIf { it != BlockKind.STRENGTH }?.label
-                ).joinToString(" · ")
-                Text(
-                    header.ifBlank { "Block" },
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
+                val title = b.name.ifBlank { b.mainExerciseId?.let { exerciseNames[it] } ?: "Block" }
+                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+
                 val meta = listOfNotNull(
+                    b.kind.takeIf { it != BlockKind.STRENGTH }?.label,
                     b.format.ifBlank { null },
                     b.scheme.ifBlank { null },
                     b.mainExerciseId?.let { exerciseNames[it] }?.takeIf { it != b.name }
@@ -114,8 +139,7 @@ private fun SessionCard(
 
                 if (b.description.isNotBlank()) Text(b.description, style = MaterialTheme.typography.bodyMedium)
 
-                val sets = setSummary(bws)
-                if (sets.isNotBlank()) Text(sets, style = MaterialTheme.typography.bodyMedium)
+                BlockSets(bws)
 
                 val result = listOfNotNull(
                     b.resultText.ifBlank { null },
@@ -131,7 +155,11 @@ private fun SessionCard(
                 Text(s.notes, style = MaterialTheme.typography.bodySmall)
             }
 
-            TextButton(onClick = onDelete) { Text("Delete session") }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onEdit) { Text("Edit") }
+                TextButton(onClick = onCopy) { Text("Copy") }
+                TextButton(onClick = onDelete) { Text("Delete") }
+            }
         }
     }
 }

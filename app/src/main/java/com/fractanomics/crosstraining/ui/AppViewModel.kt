@@ -79,12 +79,24 @@ class AppViewModel(private val repo: Repository) : ViewModel() {
     fun deleteSession(session: Session) = viewModelScope.launch { repo.deleteSession(session) }
 
     /**
-     * Save a multi-block session. Each block's main exercise is resolved from an
-     * existing id or a free-text name (created if missing), and an optional
-     * per-block rep-max is recorded for it.
+     * Save a new multi-block session. Each block's main exercise is resolved
+     * from an existing id or a free-text name (created if missing).
      */
     fun saveSession(draft: SessionDraft) = viewModelScope.launch {
-        val blockInserts = draft.blocks.map { bd ->
+        repo.saveSession(draft.toSession(), buildBlockInserts(draft))
+    }
+
+    /** Update an existing session in place, replacing its blocks/sets. */
+    fun updateSession(sessionId: Long, draft: SessionDraft) = viewModelScope.launch {
+        repo.updateSession(draft.toSession(sessionId), buildBlockInserts(draft))
+    }
+
+    private fun SessionDraft.toSession(id: Long = 0): Session =
+        Session(id = id, cycleId = cycleId, date = date, title = title, notes = notes)
+
+    /** Resolve each block's exercise (creating new ones) and map drafts to entities. */
+    private suspend fun buildBlockInserts(draft: SessionDraft): List<BlockInsert> =
+        draft.blocks.map { bd ->
             val exerciseId: Long? = when {
                 !bd.newExerciseName.isNullOrBlank() -> repo.getOrCreateExercise(bd.newExerciseName).id
                 bd.existingExerciseId != null -> bd.existingExerciseId
@@ -128,16 +140,6 @@ class AppViewModel(private val repo: Repository) : ViewModel() {
                 newRepMax = repMax
             )
         }
-        repo.saveSession(
-            Session(
-                cycleId = draft.cycleId,
-                date = draft.date,
-                title = draft.title,
-                notes = draft.notes
-            ),
-            blockInserts
-        )
-    }
 
     // --- Backup / restore -----------------------------------------------------
     /** Export the whole database as a CSV backup to [uri]. */
