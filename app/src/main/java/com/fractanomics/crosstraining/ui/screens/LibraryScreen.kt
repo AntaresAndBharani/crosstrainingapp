@@ -1,5 +1,7 @@
 package com.fractanomics.crosstraining.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -9,14 +11,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -27,11 +35,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.net.Uri
+import kotlinx.coroutines.launch
+import java.time.LocalDate
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
@@ -53,9 +66,60 @@ fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
     var showRoutineEditor by remember { mutableStateOf(false) }
     var editingRoutine by remember { mutableStateOf<Routine?>(null) }
 
+    val context = LocalContext.current
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var showMenu by remember { mutableStateOf(false) }
+    var showImportConfirm by remember { mutableStateOf(false) }
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        uri?.let {
+            viewModel.exportBackup(context.contentResolver, it) { ok ->
+                scope.launch { snackbar.showSnackbar(if (ok) "Backup exported" else "Export failed") }
+            }
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            pendingImportUri = uri
+            showImportConfirm = true
+        }
+    }
+
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
-        topBar = { TopAppBar(title = { Text("Library") }) },
+        snackbarHost = { SnackbarHost(snackbar) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Library") },
+                actions = {
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                    }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Export backup (CSV)") },
+                            onClick = {
+                                showMenu = false
+                                exportLauncher.launch("crosstraining-backup-${LocalDate.now()}.csv")
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Import backup (CSV)") },
+                            onClick = {
+                                showMenu = false
+                                importLauncher.launch(arrayOf("text/*", "application/octet-stream"))
+                            }
+                        )
+                    }
+                }
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 if (tab == 0) {
@@ -117,6 +181,37 @@ fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
             exercises = exercises,
             onDismiss = { showRoutineEditor = false },
             onSave = { routine -> viewModel.saveRoutine(routine); showRoutineEditor = false }
+        )
+    }
+    if (showImportConfirm) {
+        AlertDialog(
+            onDismissRequest = { showImportConfirm = false; pendingImportUri = null },
+            title = { Text("Replace all data?") },
+            text = {
+                Text(
+                    "Importing this backup will replace all current cycles, exercises, " +
+                        "routines and sessions on this device. This cannot be undone."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val uri = pendingImportUri
+                    showImportConfirm = false
+                    pendingImportUri = null
+                    if (uri != null) {
+                        viewModel.importBackup(context.contentResolver, uri) { ok ->
+                            scope.launch {
+                                snackbar.showSnackbar(if (ok) "Backup imported" else "Import failed — check the file")
+                            }
+                        }
+                    }
+                }) { Text("Replace") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportConfirm = false; pendingImportUri = null }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }

@@ -14,6 +14,15 @@ interface RoutineDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(routine: Routine): Long
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(routines: List<Routine>)
+
+    @Query("SELECT * FROM routines")
+    suspend fun getAllOnce(): List<Routine>
+
+    @Query("DELETE FROM routines")
+    suspend fun deleteAll()
+
     @Update
     suspend fun update(routine: Routine)
 

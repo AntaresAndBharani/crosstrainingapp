@@ -14,6 +14,15 @@ interface CycleDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(cycle: Cycle): Long
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(cycles: List<Cycle>)
+
+    @Query("SELECT * FROM cycles")
+    suspend fun getAllOnce(): List<Cycle>
+
+    @Query("DELETE FROM cycles")
+    suspend fun deleteAll()
+
     @Update
     suspend fun update(cycle: Cycle)
 

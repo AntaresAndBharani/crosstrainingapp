@@ -23,7 +23,11 @@ no cost.
   an optional "new rep-max" capture.
 - **History** — every logged session with its sets.
 - **Progress** — per-exercise rep-max bests (1/2/3/5RM…) with history, plus
-  working-weight progression across sessions.
+  working-weight progression across sessions, shown as **line charts** (pick the
+  rep count to chart) and tables.
+- **Backup** — export the whole database to a CSV file and re-import it later
+  (Library tab → ⋮ menu). The CSV preserves IDs/relationships so a restore is
+  exact; it's also human-readable/spreadsheet-friendly.
 
 ## Tech
 

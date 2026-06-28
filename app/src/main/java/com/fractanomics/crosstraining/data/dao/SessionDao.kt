@@ -19,6 +19,21 @@ interface SessionDao {
     @Insert
     suspend fun insertSets(sets: List<SessionSet>)
 
+    @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
+    suspend fun insertSessions(sessions: List<Session>)
+
+    @Query("SELECT * FROM sessions")
+    suspend fun getAllSessionsOnce(): List<Session>
+
+    @Query("SELECT * FROM session_sets")
+    suspend fun getAllSetsOnce(): List<SessionSet>
+
+    @Query("DELETE FROM session_sets")
+    suspend fun deleteAllSets()
+
+    @Query("DELETE FROM sessions")
+    suspend fun deleteAllSessions()
+
     @Update
     suspend fun updateSession(session: Session)
 

@@ -1,5 +1,6 @@
 package com.fractanomics.crosstraining.data
 
+import androidx.room.withTransaction
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
@@ -150,4 +151,39 @@ class Repository(private val db: AppDatabase) {
             cycleId = cycleId
         )
     )
+
+    // --- Backup / restore -----------------------------------------------------
+    /** Read the whole database into an in-memory snapshot. */
+    suspend fun exportSnapshot(): BackupData = BackupData(
+        cycles = cycleDao.getAllOnce(),
+        exercises = exerciseDao.getAllOnce(),
+        routines = routineDao.getAllOnce(),
+        sessions = sessionDao.getAllSessionsOnce(),
+        sets = sessionDao.getAllSetsOnce(),
+        repMaxes = repMaxDao.getAllOnce()
+    )
+
+    /**
+     * Replace all data with [data]. Tables are cleared first, then rows are
+     * inserted in foreign-key order (exercises/cycles → routines → sessions →
+     * sets → rep-maxes) so relationships restore intact.
+     */
+    suspend fun importSnapshot(data: BackupData) {
+        db.withTransaction {
+            // Clear children before parents to respect foreign keys.
+            repMaxDao.deleteAll()
+            sessionDao.deleteAllSets()
+            sessionDao.deleteAllSessions()
+            routineDao.deleteAll()
+            cycleDao.deleteAll()
+            exerciseDao.deleteAll()
+            // Insert parents before children.
+            exerciseDao.insertAllReplace(data.exercises)
+            cycleDao.insertAll(data.cycles)
+            routineDao.insertAll(data.routines)
+            sessionDao.insertSessions(data.sessions)
+            sessionDao.insertSets(data.sets)
+            repMaxDao.insertAll(data.repMaxes)
+        }
+    }
 }

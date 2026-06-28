@@ -12,6 +12,15 @@ interface RepMaxDao {
     @Insert
     suspend fun insert(repMax: RepMax): Long
 
+    @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
+    suspend fun insertAll(repMaxes: List<RepMax>)
+
+    @Query("SELECT * FROM rep_maxes")
+    suspend fun getAllOnce(): List<RepMax>
+
+    @Query("DELETE FROM rep_maxes")
+    suspend fun deleteAll()
+
     @Delete
     suspend fun delete(repMax: RepMax)
 
