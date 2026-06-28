@@ -1,5 +1,7 @@
 package com.fractanomics.crosstraining.data
 
+import com.fractanomics.crosstraining.data.model.BlockKind
+import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
@@ -7,7 +9,7 @@ import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.Session
-import com.fractanomics.crosstraining.data.model.SessionSet
+import com.fractanomics.crosstraining.data.model.SessionBlock
 import java.time.LocalDate
 
 /** A full in-memory snapshot of the database used for export/import. */
@@ -16,7 +18,8 @@ data class BackupData(
     val exercises: List<Exercise> = emptyList(),
     val routines: List<Routine> = emptyList(),
     val sessions: List<Session> = emptyList(),
-    val sets: List<SessionSet> = emptyList(),
+    val blocks: List<SessionBlock> = emptyList(),
+    val sets: List<BlockSet> = emptyList(),
     val repMaxes: List<RepMax> = emptyList()
 )
 
@@ -38,19 +41,20 @@ object BackupCsv {
     private fun row(values: List<String>): String = values.joinToString(",", postfix = "\n") { enc(it) }
 
     private fun s(value: Long?): String = value?.toString() ?: ""
+    private fun s(value: Int?): String = value?.toString() ?: ""
     private fun s(value: Double?): String = value?.toString() ?: ""
     private fun s(date: LocalDate?): String = date?.toEpochDay()?.toString() ?: ""
+    private fun b(value: Boolean): String = if (value) "1" else "0"
 
     fun encode(data: BackupData): String {
         val sb = StringBuilder()
-        sb.append("#crosstraining-backup-v1\n")
+        sb.append("#crosstraining-backup-v2\n")
 
         sb.append("#cycles\n")
         sb.append(row(listOf("id", "name", "startDate", "endDate", "goal", "isActive")))
         data.cycles.forEach {
             sb.append(row(listOf(
-                it.id.toString(), it.name, s(it.startDate), s(it.endDate), it.goal,
-                if (it.isActive) "1" else "0"
+                it.id.toString(), it.name, s(it.startDate), s(it.endDate), it.goal, b(it.isActive)
             )))
         }
 
@@ -59,7 +63,7 @@ object BackupCsv {
         data.exercises.forEach {
             sb.append(row(listOf(
                 it.id.toString(), it.name, it.category.name, it.metricType.name, it.unit,
-                if (it.tracksRepMax) "1" else "0", it.notes
+                b(it.tracksRepMax), it.notes
             )))
         }
 
@@ -72,29 +76,45 @@ object BackupCsv {
         }
 
         sb.append("#sessions\n")
-        sb.append(row(listOf("id", "cycleId", "routineId", "mainExerciseId", "date", "format", "repScheme", "notes")))
+        sb.append(row(listOf("id", "cycleId", "date", "title", "notes")))
         data.sessions.forEach {
             sb.append(row(listOf(
-                it.id.toString(), it.cycleId.toString(), s(it.routineId), s(it.mainExerciseId),
-                s(it.date), it.format, it.repScheme, it.notes
+                it.id.toString(), it.cycleId.toString(), s(it.date), it.title, it.notes
+            )))
+        }
+
+        sb.append("#blocks\n")
+        sb.append(row(listOf(
+            "id", "sessionId", "position", "name", "kind", "format", "scheme",
+            "mainExerciseId", "routineId", "description", "resultText", "resultValue", "notes"
+        )))
+        data.blocks.forEach {
+            sb.append(row(listOf(
+                it.id.toString(), it.sessionId.toString(), it.position.toString(), it.name,
+                it.kind.name, it.format, it.scheme, s(it.mainExerciseId), s(it.routineId),
+                it.description, it.resultText, s(it.resultValue), it.notes
             )))
         }
 
         sb.append("#sets\n")
-        sb.append(row(listOf("id", "sessionId", "position", "reps", "weight", "metricValue", "notes")))
+        sb.append(row(listOf(
+            "id", "blockId", "position", "groupIndex", "reps", "weight", "metricValue",
+            "isWarmup", "isFailed", "notes"
+        )))
         data.sets.forEach {
             sb.append(row(listOf(
-                it.id.toString(), it.sessionId.toString(), it.position.toString(), it.reps.toString(),
-                s(it.weight), s(it.metricValue), it.notes
+                it.id.toString(), it.blockId.toString(), it.position.toString(), s(it.groupIndex),
+                it.reps.toString(), s(it.weight), s(it.metricValue), b(it.isWarmup), b(it.isFailed),
+                it.notes
             )))
         }
 
         sb.append("#repMaxes\n")
-        sb.append(row(listOf("id", "exerciseId", "reps", "weight", "date", "cycleId", "sessionId")))
+        sb.append(row(listOf("id", "exerciseId", "reps", "weight", "date", "cycleId", "sessionId", "blockId")))
         data.repMaxes.forEach {
             sb.append(row(listOf(
                 it.id.toString(), it.exerciseId.toString(), it.reps.toString(), it.weight.toString(),
-                s(it.date), s(it.cycleId), s(it.sessionId)
+                s(it.date), s(it.cycleId), s(it.sessionId), s(it.blockId)
             )))
         }
 
@@ -107,7 +127,8 @@ object BackupCsv {
         val exercises = mutableListOf<Exercise>()
         val routines = mutableListOf<Routine>()
         val sessions = mutableListOf<Session>()
-        val sets = mutableListOf<SessionSet>()
+        val blocks = mutableListOf<SessionBlock>()
+        val sets = mutableListOf<BlockSet>()
         val repMaxes = mutableListOf<RepMax>()
 
         var section = ""
@@ -118,7 +139,6 @@ object BackupCsv {
             if (first.startsWith("#")) {
                 val name = first.removePrefix("#")
                 if (name.startsWith("crosstraining-backup")) {
-                    // File version marker — not a table section.
                     section = ""
                     skipHeader = false
                 } else {
@@ -127,7 +147,7 @@ object BackupCsv {
                 }
                 continue
             }
-            if (skipHeader) { skipHeader = false; continue } // this record is the header row
+            if (skipHeader) { skipHeader = false; continue }
             when (section) {
                 "cycles" -> cycles += Cycle(
                     id = rec.lng(0),
@@ -156,21 +176,36 @@ object BackupCsv {
                 "sessions" -> sessions += Session(
                     id = rec.lng(0),
                     cycleId = rec.lng(1),
-                    routineId = rec.lngOrNull(2),
-                    mainExerciseId = rec.lngOrNull(3),
-                    date = rec.date(4) ?: LocalDate.now(),
-                    format = rec.str(5),
-                    repScheme = rec.str(6),
-                    notes = rec.str(7)
+                    date = rec.date(2) ?: LocalDate.now(),
+                    title = rec.str(3),
+                    notes = rec.str(4)
                 )
-                "sets" -> sets += SessionSet(
+                "blocks" -> blocks += SessionBlock(
                     id = rec.lng(0),
                     sessionId = rec.lng(1),
                     position = rec.int(2),
-                    reps = rec.int(3),
-                    weight = rec.dblOrNull(4),
-                    metricValue = rec.dblOrNull(5),
-                    notes = rec.str(6)
+                    name = rec.str(3),
+                    kind = runCatching { BlockKind.valueOf(rec.str(4)) }.getOrDefault(BlockKind.OTHER),
+                    format = rec.str(5),
+                    scheme = rec.str(6),
+                    mainExerciseId = rec.lngOrNull(7),
+                    routineId = rec.lngOrNull(8),
+                    description = rec.str(9),
+                    resultText = rec.str(10),
+                    resultValue = rec.dblOrNull(11),
+                    notes = rec.str(12)
+                )
+                "sets" -> sets += BlockSet(
+                    id = rec.lng(0),
+                    blockId = rec.lng(1),
+                    position = rec.int(2),
+                    groupIndex = rec.intOrNull(3),
+                    reps = rec.int(4),
+                    weight = rec.dblOrNull(5),
+                    metricValue = rec.dblOrNull(6),
+                    isWarmup = rec.str(7) == "1",
+                    isFailed = rec.str(8) == "1",
+                    notes = rec.str(9)
                 )
                 "repMaxes" -> repMaxes += RepMax(
                     id = rec.lng(0),
@@ -179,11 +214,12 @@ object BackupCsv {
                     weight = rec.dbl(3),
                     date = rec.date(4) ?: LocalDate.now(),
                     cycleId = rec.lngOrNull(5),
-                    sessionId = rec.lngOrNull(6)
+                    sessionId = rec.lngOrNull(6),
+                    blockId = rec.lngOrNull(7)
                 )
             }
         }
-        return BackupData(cycles, exercises, routines, sessions, sets, repMaxes)
+        return BackupData(cycles, exercises, routines, sessions, blocks, sets, repMaxes)
     }
 
     // --- field accessors (tolerant of short rows) -----------------------------
@@ -191,6 +227,7 @@ object BackupCsv {
     private fun List<String>.lng(i: Int): Long = str(i).toLongOrNull() ?: 0L
     private fun List<String>.lngOrNull(i: Int): Long? = str(i).toLongOrNull()
     private fun List<String>.int(i: Int): Int = str(i).toIntOrNull() ?: 0
+    private fun List<String>.intOrNull(i: Int): Int? = str(i).toIntOrNull()
     private fun List<String>.dbl(i: Int): Double = str(i).toDoubleOrNull() ?: 0.0
     private fun List<String>.dblOrNull(i: Int): Double? = str(i).toDoubleOrNull()
     private fun List<String>.date(i: Int): LocalDate? =

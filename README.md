@@ -18,10 +18,14 @@ no cost.
   date; one cycle is active at a time.
 - **Library** — your tracked exercises (seeded with common lifts + machines) and
   your routines/complexes. Logging an exercise that doesn't exist creates it.
-- **Log** — structured session entry: cycle, routine, main exercise, format
-  (EMOM/E3MOM/AMRAP/…), rep scheme (`3-2-1-3-2-1…`), per-set weight/metric, and
-  an optional "new rep-max" capture.
-- **History** — every logged session with its sets.
+- **Log** — a session is an ordered list of **blocks** (warm-up, strength,
+  accessory, WOD…). Each block has its own format (EMOM/E3MOM/AMRAP/…), rep
+  scheme (`3-2-1-3-2-1…`), optional target lift, and per-set entry with
+  **warm-up** and **failed-rep** toggles and an optional **wave/round** tag. A
+  WOD block takes free-text movements + a single score (e.g. "2 rounds + 15
+  reps"). Optional per-block "new rep-max" capture.
+- **History** — every logged session with its blocks and sets (warm-ups and
+  failed reps marked).
 - **Progress** — per-exercise rep-max bests (1/2/3/5RM…) with history, plus
   working-weight progression across sessions, shown as **line charts** (pick the
   rep count to chart) and tables.

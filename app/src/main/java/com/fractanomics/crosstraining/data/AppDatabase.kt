@@ -6,17 +6,19 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.fractanomics.crosstraining.data.dao.BlockDao
 import com.fractanomics.crosstraining.data.dao.CycleDao
 import com.fractanomics.crosstraining.data.dao.ExerciseDao
 import com.fractanomics.crosstraining.data.dao.RepMaxDao
 import com.fractanomics.crosstraining.data.dao.RoutineDao
 import com.fractanomics.crosstraining.data.dao.SessionDao
+import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.Session
-import com.fractanomics.crosstraining.data.model.SessionSet
+import com.fractanomics.crosstraining.data.model.SessionBlock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -28,10 +30,11 @@ import kotlinx.coroutines.launch
         Exercise::class,
         Routine::class,
         Session::class,
-        SessionSet::class,
+        SessionBlock::class,
+        BlockSet::class,
         RepMax::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -40,6 +43,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun exerciseDao(): ExerciseDao
     abstract fun routineDao(): RoutineDao
     abstract fun sessionDao(): SessionDao
+    abstract fun blockDao(): BlockDao
     abstract fun repMaxDao(): RepMaxDao
 
     companion object {
@@ -56,7 +60,7 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext,
                 AppDatabase::class.java,
                 "crosstraining.db"
-            ).addCallback(object : Callback() {
+            ).fallbackToDestructiveMigration().addCallback(object : Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     super.onCreate(db)
                     // Seed the starter library of common lifts and machines.

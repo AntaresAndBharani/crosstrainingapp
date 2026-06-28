@@ -1,6 +1,7 @@
 package com.fractanomics.crosstraining.data
 
 import androidx.room.TypeConverter
+import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
 import java.time.LocalDate
@@ -25,4 +26,10 @@ class Converters {
 
     @TypeConverter
     fun toMetricType(value: MetricType?): String? = value?.name
+
+    @TypeConverter
+    fun fromBlockKind(value: String?): BlockKind? = value?.let { BlockKind.valueOf(it) }
+
+    @TypeConverter
+    fun toBlockKind(value: BlockKind?): String? = value?.name
 }
