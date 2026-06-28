@@ -1,0 +1,9 @@
+# Keep shell scripts LF so the Linux CI runner can execute them.
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Windows batch scripts need CRLF.
+*.bat text eol=crlf
+
+# Treat the Gradle wrapper jar as binary.
+*.jar binary

@@ -1,0 +1,53 @@
+name: Release APK
+
+# Push a tag like v1.0.0 to build the APK and publish it to a GitHub Release.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Rename APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/crosstraining-${{ github.ref_name }}.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: CrossTraining ${{ github.ref_name }}
+          files: dist/crosstraining-${{ github.ref_name }}.apk
+          body: |
+            Installable Android APK for CrossTraining ${{ github.ref_name }}.
+
+            **Install on your phone**
+            1. Download the `.apk` below.
+            2. Open it; allow "Install unknown apps" for your browser/Files app when prompted.
+            3. Tap Install.
+
+            This is a debug-signed build for personal testing.

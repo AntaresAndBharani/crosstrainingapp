@@ -1,0 +1,29 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- A simple barbell glyph centered in the adaptive icon safe zone. -->
+    <group android:scaleX="1.0" android:scaleY="1.0">
+        <!-- bar -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M30,52h48v4h-48z" />
+        <!-- left inner plate -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M34,44h6v20h-6z" />
+        <!-- left outer plate -->
+        <path
+            android:fillColor="#7FB2FF"
+            android:pathData="M26,40h6v28h-6z" />
+        <!-- right inner plate -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M68,44h6v20h-6z" />
+        <!-- right outer plate -->
+        <path
+            android:fillColor="#7FB2FF"
+            android:pathData="M76,40h6v28h-6z" />
+    </group>
+</vector>

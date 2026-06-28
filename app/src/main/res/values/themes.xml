@@ -1,0 +1,7 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base theme; the live UI colors are driven by Compose Material3. -->
+    <style name="Theme.CrossTraining" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/brand_primary</item>
+        <item name="android:windowBackground">@color/surface</item>
+    </style>
+</resources>
