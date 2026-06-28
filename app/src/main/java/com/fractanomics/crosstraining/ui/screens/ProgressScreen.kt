@@ -25,7 +25,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Exercise
+import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.components.ChartPoint
 import com.fractanomics.crosstraining.ui.components.Dropdown
@@ -34,6 +36,20 @@ import com.fractanomics.crosstraining.ui.components.LineChart
 import com.fractanomics.crosstraining.ui.components.SectionCard
 import com.fractanomics.crosstraining.ui.formatShort
 import com.fractanomics.crosstraining.ui.trimmed
+import java.time.LocalDate
+
+/** A block that targets the selected exercise, tagged with its session date. */
+private data class BlockOnDate(
+    val date: LocalDate,
+    val block: SessionBlock,
+    val sets: List<BlockSet>
+)
+
+/** Top weight/metric among real working sets (excludes warm-ups and failures). */
+private fun BlockOnDate.topWorking(): Double? =
+    sets.filter { !it.isWarmup && !it.isFailed }
+        .mapNotNull { it.weight ?: it.metricValue }
+        .maxOrNull()
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -70,6 +86,13 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
 
             if (current == null) return@Column
 
+            // Blocks across all sessions that target this exercise.
+            val exerciseBlocks = sessions.flatMap { sw ->
+                sw.blocks
+                    .filter { it.block.mainExerciseId == current.id }
+                    .map { BlockOnDate(sw.session.date, it.block, it.sets) }
+            }
+
             // --- Rep-max progression chart ---------------------------------
             if (current.tracksRepMax) {
                 val rmSeries = repMaxes.filter { it.exerciseId == current.id }
@@ -97,11 +120,10 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
 
             // --- Working-weight progression chart --------------------------
             run {
-                val series = sessions.filter { it.session.mainExerciseId == current.id }
-                    .sortedBy { it.session.date }
-                    .mapNotNull { item ->
-                        val top = item.sets.mapNotNull { it.weight ?: it.metricValue }.maxOrNull()
-                        top?.let { ChartPoint(item.session.date.formatShort(), it.toFloat()) }
+                val series = exerciseBlocks
+                    .sortedBy { it.date }
+                    .mapNotNull { ob ->
+                        ob.topWorking()?.let { ChartPoint(ob.date.formatShort(), it.toFloat()) }
                     }
                 if (series.isNotEmpty()) {
                     SectionCard(title = "Working-weight progression (chart)") {
@@ -148,32 +170,31 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
                 }
             }
 
-            // --- Session / complex progression -----------------------------
-            val exerciseSessions = sessions.filter { it.session.mainExerciseId == current.id }
-            SectionCard(title = "Working-weight (per session)") {
-                if (exerciseSessions.isEmpty()) {
+            // --- Per-block working weight ----------------------------------
+            SectionCard(title = "Working-weight (per block)") {
+                if (exerciseBlocks.isEmpty()) {
                     Text("No sessions logged for this exercise yet.", style = MaterialTheme.typography.bodyMedium)
                 } else {
-                    exerciseSessions
-                        .sortedByDescending { it.session.date }
-                        .forEach { item ->
-                            val top = item.sets.mapNotNull { it.weight ?: it.metricValue }.maxOrNull()
+                    exerciseBlocks
+                        .sortedByDescending { it.date }
+                        .forEach { ob ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Column {
-                                    Text(item.session.date.formatShort(), fontWeight = FontWeight.SemiBold)
+                                    Text(ob.date.formatShort(), fontWeight = FontWeight.SemiBold)
                                     val sub = listOfNotNull(
-                                        item.session.format.ifBlank { null },
-                                        item.session.repScheme.ifBlank { null }
+                                        ob.block.name.ifBlank { null },
+                                        ob.block.format.ifBlank { null },
+                                        ob.block.scheme.ifBlank { null }
                                     ).joinToString(" · ")
                                     if (sub.isNotBlank()) {
                                         Text(sub, style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                                 Text(
-                                    top?.let { "top ${it.trimmed()} ${current.unit}" } ?: "—",
+                                    ob.topWorking()?.let { "top ${it.trimmed()} ${current.unit}" } ?: "—",
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }

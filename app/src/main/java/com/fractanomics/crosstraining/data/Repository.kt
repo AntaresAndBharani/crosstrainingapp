@@ -1,6 +1,7 @@
 package com.fractanomics.crosstraining.data
 
 import androidx.room.withTransaction
+import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
@@ -8,10 +9,21 @@ import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.Session
-import com.fractanomics.crosstraining.data.model.SessionSet
-import com.fractanomics.crosstraining.data.model.SessionWithSets
+import com.fractanomics.crosstraining.data.model.SessionBlock
+import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import kotlinx.coroutines.flow.Flow
 import java.time.LocalDate
+
+/**
+ * Input for one block when saving a session: the block (with [SessionBlock.mainExerciseId]
+ * already resolved), its sets, and an optional new rep-max to record for the
+ * block's main exercise.
+ */
+data class BlockInsert(
+    val block: SessionBlock,
+    val sets: List<BlockSet>,
+    val newRepMax: RepMax? = null
+)
 
 /**
  * Single point of access to the persistence layer. Hides the DAOs from the UI
@@ -25,6 +37,7 @@ class Repository(private val db: AppDatabase) {
     private val exerciseDao = db.exerciseDao()
     private val routineDao = db.routineDao()
     private val sessionDao = db.sessionDao()
+    private val blockDao = db.blockDao()
     private val repMaxDao = db.repMaxDao()
 
     // --- Cycles ---------------------------------------------------------------
@@ -90,41 +103,46 @@ class Repository(private val db: AppDatabase) {
     suspend fun deleteRoutine(routine: Routine) = routineDao.delete(routine)
 
     // --- Sessions -------------------------------------------------------------
-    fun sessionsForCycle(cycleId: Long): Flow<List<SessionWithSets>> =
+    fun sessionsForCycle(cycleId: Long): Flow<List<SessionWithBlocks>> =
         sessionDao.observeByCycle(cycleId)
 
-    val allSessions: Flow<List<SessionWithSets>> = sessionDao.observeAll()
-
-    fun sessionsForRoutine(routineId: Long): Flow<List<SessionWithSets>> =
-        sessionDao.observeByRoutine(routineId)
-
-    fun sessionsForExercise(exerciseId: Long): Flow<List<SessionWithSets>> =
-        sessionDao.observeByExercise(exerciseId)
+    val allSessions: Flow<List<SessionWithBlocks>> = sessionDao.observeAll()
 
     suspend fun deleteSession(session: Session) = sessionDao.deleteSession(session)
 
     /**
-     * Persist a session, its sets, and (optionally) a new rep-max for the main
-     * exercise in one go. [sets] are renumbered by their list order.
+     * Persist a session with its ordered [blocks], each block's sets, and any
+     * per-block new rep-maxes — all in one transaction. Blocks and sets are
+     * renumbered by their list order; foreign keys (sessionId/blockId) are wired
+     * up here.
      */
-    suspend fun saveSession(
-        session: Session,
-        sets: List<SessionSet>,
-        newRepMax: RepMax? = null
-    ): Long {
-        val sessionId = sessionDao.insertSession(session)
-        if (sets.isNotEmpty()) {
-            sessionDao.insertSets(
-                sets.mapIndexed { index, set ->
-                    set.copy(id = 0, sessionId = sessionId, position = index)
+    suspend fun saveSession(session: Session, blocks: List<BlockInsert>): Long =
+        db.withTransaction {
+            val sessionId = sessionDao.insertSession(session)
+            blocks.forEachIndexed { blockIndex, item ->
+                val blockId = blockDao.insertBlock(
+                    item.block.copy(id = 0, sessionId = sessionId, position = blockIndex)
+                )
+                if (item.sets.isNotEmpty()) {
+                    blockDao.insertSets(
+                        item.sets.mapIndexed { setIndex, set ->
+                            set.copy(id = 0, blockId = blockId, position = setIndex)
+                        }
+                    )
                 }
-            )
+                item.newRepMax?.let {
+                    repMaxDao.insert(
+                        it.copy(
+                            id = 0,
+                            sessionId = sessionId,
+                            blockId = blockId,
+                            cycleId = session.cycleId
+                        )
+                    )
+                }
+            }
+            sessionId
         }
-        newRepMax?.let {
-            repMaxDao.insert(it.copy(id = 0, sessionId = sessionId, cycleId = session.cycleId))
-        }
-        return sessionId
-    }
 
     // --- Rep maxes ------------------------------------------------------------
     val allRepMaxes: Flow<List<RepMax>> = repMaxDao.observeAll()
@@ -159,20 +177,22 @@ class Repository(private val db: AppDatabase) {
         exercises = exerciseDao.getAllOnce(),
         routines = routineDao.getAllOnce(),
         sessions = sessionDao.getAllSessionsOnce(),
-        sets = sessionDao.getAllSetsOnce(),
+        blocks = blockDao.getAllBlocksOnce(),
+        sets = blockDao.getAllSetsOnce(),
         repMaxes = repMaxDao.getAllOnce()
     )
 
     /**
      * Replace all data with [data]. Tables are cleared first, then rows are
      * inserted in foreign-key order (exercises/cycles → routines → sessions →
-     * sets → rep-maxes) so relationships restore intact.
+     * blocks → sets → rep-maxes) so relationships restore intact.
      */
     suspend fun importSnapshot(data: BackupData) {
         db.withTransaction {
             // Clear children before parents to respect foreign keys.
             repMaxDao.deleteAll()
-            sessionDao.deleteAllSets()
+            blockDao.deleteAllSets()
+            blockDao.deleteAllBlocks()
             sessionDao.deleteAllSessions()
             routineDao.deleteAll()
             cycleDao.deleteAll()
@@ -182,7 +202,8 @@ class Repository(private val db: AppDatabase) {
             cycleDao.insertAll(data.cycles)
             routineDao.insertAll(data.routines)
             sessionDao.insertSessions(data.sessions)
-            sessionDao.insertSets(data.sets)
+            blockDao.insertBlocks(data.blocks)
+            blockDao.insertSets(data.sets)
             repMaxDao.insertAll(data.repMaxes)
         }
     }

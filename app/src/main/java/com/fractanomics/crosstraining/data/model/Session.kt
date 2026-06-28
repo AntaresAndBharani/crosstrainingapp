@@ -7,10 +7,9 @@ import androidx.room.PrimaryKey
 import java.time.LocalDate
 
 /**
- * A single logged workout entry within a cycle. It captures the structured
- * prescription: [format] (E3MOM, EMOM, AMRAP...), the [repScheme]
- * ("3-2-1-3-2-1...") and links to the routine/complex and the main exercise.
- * Per-set detail lives in [SessionSet].
+ * A training day. A session is a container that owns an ordered list of
+ * [SessionBlock]s (warm-up, strength, accessory, WOD…). The structured
+ * prescription (format, rep scheme, target lift, sets) lives on the blocks.
  */
 @Entity(
     tableName = "sessions",
@@ -20,29 +19,14 @@ import java.time.LocalDate
             parentColumns = ["id"],
             childColumns = ["cycleId"],
             onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = Routine::class,
-            parentColumns = ["id"],
-            childColumns = ["routineId"],
-            onDelete = ForeignKey.SET_NULL
-        ),
-        ForeignKey(
-            entity = Exercise::class,
-            parentColumns = ["id"],
-            childColumns = ["mainExerciseId"],
-            onDelete = ForeignKey.SET_NULL
         )
     ],
-    indices = [Index("cycleId"), Index("routineId"), Index("mainExerciseId")]
+    indices = [Index("cycleId")]
 )
 data class Session(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val cycleId: Long,
-    val routineId: Long? = null,
-    val mainExerciseId: Long? = null,
     val date: LocalDate,
-    val format: String = "",
-    val repScheme: String = "",
+    val title: String = "",
     val notes: String = ""
 )
