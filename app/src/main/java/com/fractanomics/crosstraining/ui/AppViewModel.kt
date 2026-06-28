@@ -1,8 +1,11 @@
 package com.fractanomics.crosstraining.ui
 
+import android.content.ContentResolver
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.fractanomics.crosstraining.data.BackupCsv
 import com.fractanomics.crosstraining.data.Repository
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.Exercise
@@ -13,10 +16,12 @@ import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionSet
 import com.fractanomics.crosstraining.data.model.SessionWithSets
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
 /**
@@ -121,6 +126,34 @@ class AppViewModel(private val repo: Repository) : ViewModel() {
             newRepMax = repMax
         )
     }
+
+    // --- Backup / restore -----------------------------------------------------
+    /** Export the whole database as a CSV backup to [uri]. */
+    fun exportBackup(resolver: ContentResolver, uri: Uri, onResult: (Boolean) -> Unit) =
+        viewModelScope.launch {
+            val ok = runCatching {
+                val csv = BackupCsv.encode(repo.exportSnapshot())
+                withContext(Dispatchers.IO) {
+                    resolver.openOutputStream(uri, "rwt")?.use { out ->
+                        out.write(csv.toByteArray(Charsets.UTF_8))
+                    } ?: error("Could not open output stream")
+                }
+            }.isSuccess
+            onResult(ok)
+        }
+
+    /** Replace all data with the CSV backup at [uri]. */
+    fun importBackup(resolver: ContentResolver, uri: Uri, onResult: (Boolean) -> Unit) =
+        viewModelScope.launch {
+            val ok = runCatching {
+                val text = withContext(Dispatchers.IO) {
+                    resolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                        ?: error("Could not open input stream")
+                }
+                repo.importSnapshot(BackupCsv.decode(text))
+            }.isSuccess
+            onResult(ok)
+        }
 
     /** Create an exercise from a free-text name (used by quick-add flows). */
     fun quickAddExercise(

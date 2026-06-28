@@ -2,6 +2,8 @@ package com.fractanomics.crosstraining.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -9,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -24,13 +27,15 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.ui.AppViewModel
+import com.fractanomics.crosstraining.ui.components.ChartPoint
 import com.fractanomics.crosstraining.ui.components.Dropdown
 import com.fractanomics.crosstraining.ui.components.EmptyState
+import com.fractanomics.crosstraining.ui.components.LineChart
 import com.fractanomics.crosstraining.ui.components.SectionCard
 import com.fractanomics.crosstraining.ui.formatShort
 import com.fractanomics.crosstraining.ui.trimmed
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
@@ -64,6 +69,46 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
             )
 
             if (current == null) return@Column
+
+            // --- Rep-max progression chart ---------------------------------
+            if (current.tracksRepMax) {
+                val rmSeries = repMaxes.filter { it.exerciseId == current.id }
+                val repOptions = rmSeries.map { it.reps }.distinct().sorted()
+                if (repOptions.isNotEmpty()) {
+                    var selectedReps by remember(current.id) { mutableStateOf<Int?>(null) }
+                    val reps = selectedReps ?: if (repOptions.contains(1)) 1 else repOptions.first()
+                    SectionCard(title = "Rep-max progression") {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            repOptions.forEach { r ->
+                                FilterChip(
+                                    selected = r == reps,
+                                    onClick = { selectedReps = r },
+                                    label = { Text("${r}RM") }
+                                )
+                            }
+                        }
+                        val series = rmSeries.filter { it.reps == reps }
+                            .sortedBy { it.date }
+                            .map { ChartPoint(it.date.formatShort(), it.weight.toFloat()) }
+                        LineChart(points = series)
+                    }
+                }
+            }
+
+            // --- Working-weight progression chart --------------------------
+            run {
+                val series = sessions.filter { it.session.mainExerciseId == current.id }
+                    .sortedBy { it.session.date }
+                    .mapNotNull { item ->
+                        val top = item.sets.mapNotNull { it.weight ?: it.metricValue }.maxOrNull()
+                        top?.let { ChartPoint(item.session.date.formatShort(), it.toFloat()) }
+                    }
+                if (series.isNotEmpty()) {
+                    SectionCard(title = "Working-weight progression (chart)") {
+                        LineChart(points = series, lineColor = MaterialTheme.colorScheme.tertiary)
+                    }
+                }
+            }
 
             // --- Rep-max bests ---------------------------------------------
             if (current.tracksRepMax) {
@@ -105,7 +150,7 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
 
             // --- Session / complex progression -----------------------------
             val exerciseSessions = sessions.filter { it.session.mainExerciseId == current.id }
-            SectionCard(title = "Working-weight progression") {
+            SectionCard(title = "Working-weight (per session)") {
                 if (exerciseSessions.isEmpty()) {
                     Text("No sessions logged for this exercise yet.", style = MaterialTheme.typography.bodyMedium)
                 } else {
