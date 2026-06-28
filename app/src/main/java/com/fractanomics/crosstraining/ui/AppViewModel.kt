@@ -6,7 +6,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.fractanomics.crosstraining.data.BackupCsv
+import com.fractanomics.crosstraining.data.BlockInsert
 import com.fractanomics.crosstraining.data.Repository
+import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
@@ -14,8 +16,8 @@ import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.Session
-import com.fractanomics.crosstraining.data.model.SessionSet
-import com.fractanomics.crosstraining.data.model.SessionWithSets
+import com.fractanomics.crosstraining.data.model.SessionBlock
+import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,7 +41,7 @@ class AppViewModel(private val repo: Repository) : ViewModel() {
         repo.exercises.stateInDefault(emptyList())
     val routines: StateFlow<List<Routine>> =
         repo.routines.stateInDefault(emptyList())
-    val sessions: StateFlow<List<SessionWithSets>> =
+    val sessions: StateFlow<List<SessionWithBlocks>> =
         repo.allSessions.stateInDefault(emptyList())
     val repMaxes: StateFlow<List<RepMax>> =
         repo.allRepMaxes.stateInDefault(emptyList())
@@ -77,53 +79,63 @@ class AppViewModel(private val repo: Repository) : ViewModel() {
     fun deleteSession(session: Session) = viewModelScope.launch { repo.deleteSession(session) }
 
     /**
-     * Save a session. If [newExerciseName] is provided it is resolved (created
-     * if missing) and used as the main exercise. If [newRepMaxReps]/[newRepMaxWeight]
-     * are provided a rep-max is recorded for that exercise.
+     * Save a multi-block session. Each block's main exercise is resolved from an
+     * existing id or a free-text name (created if missing), and an optional
+     * per-block rep-max is recorded for it.
      */
-    fun saveSession(
-        cycleId: Long,
-        routineId: Long?,
-        existingExerciseId: Long?,
-        newExerciseName: String?,
-        date: LocalDate,
-        format: String,
-        repScheme: String,
-        notes: String,
-        sets: List<SessionSet>,
-        newRepMaxReps: Int?,
-        newRepMaxWeight: Double?
-    ) = viewModelScope.launch {
-        val exerciseId: Long? = when {
-            !newExerciseName.isNullOrBlank() ->
-                repo.getOrCreateExercise(newExerciseName).id
-            existingExerciseId != null -> existingExerciseId
-            else -> null
+    fun saveSession(draft: SessionDraft) = viewModelScope.launch {
+        val blockInserts = draft.blocks.map { bd ->
+            val exerciseId: Long? = when {
+                !bd.newExerciseName.isNullOrBlank() -> repo.getOrCreateExercise(bd.newExerciseName).id
+                bd.existingExerciseId != null -> bd.existingExerciseId
+                else -> null
+            }
+            val repMax: RepMax? =
+                if (exerciseId != null && bd.newRepMaxReps != null && bd.newRepMaxWeight != null) {
+                    RepMax(
+                        exerciseId = exerciseId,
+                        reps = bd.newRepMaxReps,
+                        weight = bd.newRepMaxWeight,
+                        date = draft.date
+                    )
+                } else null
+            BlockInsert(
+                block = SessionBlock(
+                    sessionId = 0,
+                    position = 0,
+                    name = bd.name,
+                    kind = bd.kind,
+                    format = bd.format,
+                    scheme = bd.scheme,
+                    mainExerciseId = exerciseId,
+                    routineId = bd.routineId,
+                    description = bd.description,
+                    resultText = bd.resultText,
+                    resultValue = bd.resultValue
+                ),
+                sets = bd.sets.map { sd ->
+                    BlockSet(
+                        blockId = 0,
+                        position = 0,
+                        groupIndex = sd.groupIndex,
+                        reps = sd.reps,
+                        weight = sd.weight,
+                        metricValue = sd.metricValue,
+                        isWarmup = sd.isWarmup,
+                        isFailed = sd.isFailed
+                    )
+                },
+                newRepMax = repMax
+            )
         }
-
-        val repMax: RepMax? =
-            if (exerciseId != null && newRepMaxReps != null && newRepMaxWeight != null) {
-                RepMax(
-                    exerciseId = exerciseId,
-                    reps = newRepMaxReps,
-                    weight = newRepMaxWeight,
-                    date = date,
-                    cycleId = cycleId
-                )
-            } else null
-
         repo.saveSession(
-            session = Session(
-                cycleId = cycleId,
-                routineId = routineId,
-                mainExerciseId = exerciseId,
-                date = date,
-                format = format,
-                repScheme = repScheme,
-                notes = notes
+            Session(
+                cycleId = draft.cycleId,
+                date = draft.date,
+                title = draft.title,
+                notes = draft.notes
             ),
-            sets = sets,
-            newRepMax = repMax
+            blockInserts
         )
     }
 

@@ -31,9 +31,15 @@ import java.time.LocalDate
             parentColumns = ["id"],
             childColumns = ["sessionId"],
             onDelete = ForeignKey.SET_NULL
+        ),
+        ForeignKey(
+            entity = SessionBlock::class,
+            parentColumns = ["id"],
+            childColumns = ["blockId"],
+            onDelete = ForeignKey.SET_NULL
         )
     ],
-    indices = [Index("exerciseId"), Index("cycleId"), Index("sessionId")]
+    indices = [Index("exerciseId"), Index("cycleId"), Index("sessionId"), Index("blockId")]
 )
 data class RepMax(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -42,5 +48,6 @@ data class RepMax(
     val weight: Double,
     val date: LocalDate,
     val cycleId: Long? = null,
-    val sessionId: Long? = null
+    val sessionId: Long? = null,
+    val blockId: Long? = null
 )

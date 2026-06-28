@@ -27,3 +27,16 @@ enum class MetricType(val label: String, val defaultUnit: String, val tracksRepM
     TIME("Time", "sec", false),
     REPS("Reps", "reps", false)
 }
+
+/**
+ * The role a block plays within a session. WARMUP and METCON change how the UI
+ * presents the block; STRENGTH/ACCESSORY are loaded work that can target a main
+ * lift for progression.
+ */
+enum class BlockKind(val label: String) {
+    WARMUP("Warm-up"),
+    STRENGTH("Strength"),
+    ACCESSORY("Accessory"),
+    METCON("WOD / Metcon"),
+    OTHER("Other")
+}
