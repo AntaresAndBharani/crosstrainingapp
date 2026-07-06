@@ -44,9 +44,18 @@ data class DayPerformance(
 
 /** All block occurrences targeting [exerciseId], oldest first. */
 fun List<SessionWithBlocks>.blockPerformances(exerciseId: Long): List<BlockPerformance> =
+    performances { it.mainExerciseId == exerciseId }
+
+/** All block occurrences performing routine [routineId], oldest first. */
+fun List<SessionWithBlocks>.routineBlockPerformances(routineId: Long): List<BlockPerformance> =
+    performances { it.routineId == routineId }
+
+private fun List<SessionWithBlocks>.performances(
+    match: (SessionBlock) -> Boolean
+): List<BlockPerformance> =
     flatMap { sw ->
         sw.blocks
-            .filter { it.block.mainExerciseId == exerciseId }
+            .filter { match(it.block) }
             .map { bws ->
                 BlockPerformance(
                     date = sw.session.date,

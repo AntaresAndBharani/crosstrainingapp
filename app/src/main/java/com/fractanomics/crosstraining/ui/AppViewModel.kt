@@ -58,6 +58,11 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     private fun <T> kotlinx.coroutines.flow.Flow<T>.stateInDefault(initial: T): StateFlow<T> =
         stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), initial)
 
+    init {
+        // Upgrade the demo dataset if the generator changed since it was seeded.
+        viewModelScope.launch { data.refreshDemoIfStale() }
+    }
+
     // --- Demo mode --------------------------------------------------------------
     val demoMode: StateFlow<Boolean> = data.demoMode
 

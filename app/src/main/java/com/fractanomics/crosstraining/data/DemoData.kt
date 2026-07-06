@@ -18,6 +18,12 @@ import java.util.Locale
  */
 object DemoData {
 
+    /**
+     * Bump when the generated dataset changes; [DataModeManager] re-seeds any
+     * demo database created from an older version.
+     */
+    const val SEED_VERSION = 2
+
     fun snapshot(today: java.time.LocalDate = java.time.LocalDate.now()): BackupData =
         Builder(today).build()
 
@@ -99,6 +105,15 @@ object DemoData {
             set(waves, reps = 2, weight = top - 2, group = 2)
             set(waves, reps = 1, weight = top, group = 2, failed = week == 2 || week == 5)
 
+            // Positional work performed as the saved 3-Position Snatch routine.
+            val complex = block(
+                s, "3-Position Snatch", BlockKind.STRENGTH,
+                format = "E2MOM", scheme = "6x1", exerciseId = snatch, routineId = 1
+            )
+            repeat(6) { i ->
+                set(complex, reps = 1, weight = 48.0 + week * 1.5 + if (i >= 3) 2 else 0)
+            }
+
             val squat = block(
                 s, "Back Squat", BlockKind.ACCESSORY,
                 format = "Sets x Reps", scheme = "5x5", exerciseId = backSquat
@@ -130,6 +145,15 @@ object DemoData {
             set(cj, reps = 2, weight = 60.0, warmup = true)
             listOf(base, base + 2, base + 4, base + 5, base + 6).forEachIndexed { i, w ->
                 set(cj, reps = 2, weight = w, failed = week == 6 && i == 4)
+            }
+
+            // The saved Clean + Front Squat + Jerk complex, building to a heavy single.
+            val complex = block(
+                s, "Clean + Front Squat + Jerk", BlockKind.STRENGTH,
+                format = "E3MOM", scheme = "5x1", exerciseId = cleanJerk, routineId = 2
+            )
+            listOf(0.0, 2.0, 4.0, 4.0, 6.0).forEach { d ->
+                set(complex, reps = 1, weight = 66.0 + week * 2 + d)
             }
 
             val fs = block(
@@ -187,6 +211,7 @@ object DemoData {
             format: String = "",
             scheme: String = "",
             exerciseId: Long? = null,
+            routineId: Long? = null,
             description: String = "",
             resultText: String = ""
         ): Long {
@@ -200,6 +225,7 @@ object DemoData {
                 format = format,
                 scheme = scheme,
                 mainExerciseId = exerciseId,
+                routineId = routineId,
                 description = description,
                 resultText = resultText
             )
