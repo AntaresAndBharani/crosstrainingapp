@@ -30,6 +30,17 @@ android {
                 "proguard-rules.pro"
             )
         }
+        // Pre-release test build: debug-signed like the distributed APK but
+        // with its own application id and launcher label, so a snapshot can be
+        // installed alongside the released app without touching its data.
+        // CI passes -PsnapshotLabel=<short-sha> to stamp the version name.
+        create("snapshot") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".snapshot"
+            signingConfig = signingConfigs.getByName("debug")
+            val label = (project.findProperty("snapshotLabel") as String?)?.takeIf { it.isNotBlank() }
+            versionNameSuffix = if (label != null) "-snapshot.$label" else "-snapshot"
+        }
     }
 
     compileOptions {

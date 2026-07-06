@@ -1,18 +1,22 @@
 package com.fractanomics.crosstraining.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -21,35 +25,29 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Exercise
-import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.ui.AppViewModel
+import com.fractanomics.crosstraining.ui.BlockPerformance
+import com.fractanomics.crosstraining.ui.blockPerformances
+import com.fractanomics.crosstraining.ui.byDay
 import com.fractanomics.crosstraining.ui.components.ChartPoint
+import com.fractanomics.crosstraining.ui.components.ChartSeries
 import com.fractanomics.crosstraining.ui.components.Dropdown
 import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.LineChart
+import com.fractanomics.crosstraining.ui.components.MultiLineChart
 import com.fractanomics.crosstraining.ui.components.SectionCard
 import com.fractanomics.crosstraining.ui.formatShort
 import com.fractanomics.crosstraining.ui.trimmed
-import java.time.LocalDate
-
-/** A block that targets the selected exercise, tagged with its session date. */
-private data class BlockOnDate(
-    val date: LocalDate,
-    val block: SessionBlock,
-    val sets: List<BlockSet>
-)
-
-/** Top weight/metric among real working sets (excludes warm-ups and failures). */
-private fun BlockOnDate.topWorking(): Double? =
-    sets.filter { !it.isWarmup && !it.isFailed }
-        .mapNotNull { it.weight ?: it.metricValue }
-        .maxOrNull()
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -86,14 +84,103 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
 
             if (current == null) return@Column
 
-            // Blocks across all sessions that target this exercise.
-            val exerciseBlocks = sessions.flatMap { sw ->
-                sw.blocks
-                    .filter { it.block.mainExerciseId == current.id }
-                    .map { BlockOnDate(sw.session.date, it.block, it.sets) }
+            val allBlocks = remember(sessions, current.id) {
+                sessions.blockPerformances(current.id)
             }
 
-            // --- Rep-max progression chart ---------------------------------
+            // --- Block filter (compare repeated blocks like-for-like) -------
+            var blockFilter by remember(current.id) { mutableStateOf<String?>(null) }
+            val namedBlocks = allBlocks.mapNotNull { it.block.name.ifBlank { null } }.distinct()
+            val showFilter = namedBlocks.size >= 2 ||
+                (namedBlocks.size == 1 && allBlocks.any { it.block.name.isBlank() })
+            if (showFilter) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = blockFilter == null,
+                        onClick = { blockFilter = null },
+                        label = { Text("All blocks") }
+                    )
+                    namedBlocks.forEach { name ->
+                        FilterChip(
+                            selected = blockFilter == name,
+                            onClick = { blockFilter = if (blockFilter == name) null else name },
+                            label = { Text(name) }
+                        )
+                    }
+                }
+            }
+            val blocks =
+                if (blockFilter == null) allBlocks
+                else allBlocks.filter { it.block.name == blockFilter }
+            val days = blocks.byDay()
+
+            // --- KPI dashboard ----------------------------------------------
+            val latest = days.lastOrNull()
+            val previous = days.getOrNull(days.size - 2)
+            val bestBlock = blocks.filter { it.top != null }.maxByOrNull { it.top!! }
+            if (latest != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    KpiCard(
+                        label = "All-time top",
+                        value = bestBlock?.top?.let { "${it.trimmed()} ${current.unit}" } ?: "—",
+                        sub = { SubText(bestBlock?.date?.formatShort() ?: "") }
+                    )
+                    KpiCard(
+                        label = "Last top",
+                        value = "${latest.top.trimmed()} ${current.unit}",
+                        sub = { DeltaText(previous?.let { latest.top - it.top }, current.unit) }
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    KpiCard(
+                        label = "Last average",
+                        value = "${latest.average.trimmed()} ${current.unit}",
+                        sub = { DeltaText(previous?.let { latest.average - it.average }, current.unit) }
+                    )
+                    KpiCard(
+                        label = "Last volume",
+                        value = latest.volume?.let { "${it.trimmed()} kg" } ?: "—",
+                        sub = {
+                            DeltaText(
+                                latest.volume?.let { v -> previous?.volume?.let { v - it } },
+                                "kg"
+                            )
+                        }
+                    )
+                }
+            }
+
+            // --- Evolution: top & average per session -----------------------
+            if (days.isNotEmpty()) {
+                SectionCard(title = "Evolution per session (${current.unit})") {
+                    MultiLineChart(
+                        series = listOf(
+                            ChartSeries(
+                                name = "Top",
+                                points = days.map { ChartPoint(it.date.formatShort(), it.top.toFloat()) },
+                                color = MaterialTheme.colorScheme.primary
+                            ),
+                            ChartSeries(
+                                name = "Average",
+                                points = days.map { ChartPoint(it.date.formatShort(), it.average.toFloat()) },
+                                color = MaterialTheme.colorScheme.tertiary
+                            )
+                        )
+                    )
+                }
+            }
+
+            // --- Volume per session -----------------------------------------
+            val volumePoints = days.mapNotNull { d ->
+                d.volume?.let { ChartPoint(d.date.formatShort(), it.toFloat()) }
+            }
+            if (volumePoints.size >= 2) {
+                SectionCard(title = "Volume per session (kg)") {
+                    LineChart(points = volumePoints, lineColor = MaterialTheme.colorScheme.secondary)
+                }
+            }
+
+            // --- Rep-max progression ----------------------------------------
             if (current.tracksRepMax) {
                 val rmSeries = repMaxes.filter { it.exerciseId == current.id }
                 val repOptions = rmSeries.map { it.reps }.distinct().sorted()
@@ -115,92 +202,214 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
                             .map { ChartPoint(it.date.formatShort(), it.weight.toFloat()) }
                         LineChart(points = series)
                     }
-                }
-            }
 
-            // --- Working-weight progression chart --------------------------
-            run {
-                val series = exerciseBlocks
-                    .sortedBy { it.date }
-                    .mapNotNull { ob ->
-                        ob.topWorking()?.let { ChartPoint(ob.date.formatShort(), it.toFloat()) }
-                    }
-                if (series.isNotEmpty()) {
-                    SectionCard(title = "Working-weight progression (chart)") {
-                        LineChart(points = series, lineColor = MaterialTheme.colorScheme.tertiary)
-                    }
-                }
-            }
-
-            // --- Rep-max bests ---------------------------------------------
-            if (current.tracksRepMax) {
-                val rms = repMaxes.filter { it.exerciseId == current.id }
-                SectionCard(title = "Rep-max bests") {
-                    if (rms.isEmpty()) {
-                        Text("No rep-maxes recorded yet.", style = MaterialTheme.typography.bodyMedium)
-                    } else {
-                        val bestByReps = rms.groupBy { it.reps }
+                    SectionCard(title = "Personal records") {
+                        TableHeader("RM", "Weight", "", "Date")
+                        val bestByReps = rmSeries.groupBy { it.reps }
                             .mapValues { (_, list) -> list.maxBy { it.weight } }
                             .toSortedMap()
-                        bestByReps.forEach { (reps, rm) ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("${reps}RM", fontWeight = FontWeight.SemiBold)
-                                Text("${rm.weight.trimmed()} kg")
-                                Text(rm.date.formatShort(), style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                    }
-                }
-
-                if (rms.isNotEmpty()) {
-                    SectionCard(title = "Rep-max history") {
-                        rms.sortedByDescending { it.date }.forEach { rm ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("${rm.reps}RM · ${rm.weight.trimmed()} kg")
-                                Text(rm.date.formatShort(), style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // --- Per-block working weight ----------------------------------
-            SectionCard(title = "Working-weight (per block)") {
-                if (exerciseBlocks.isEmpty()) {
-                    Text("No sessions logged for this exercise yet.", style = MaterialTheme.typography.bodyMedium)
-                } else {
-                    exerciseBlocks
-                        .sortedByDescending { it.date }
-                        .forEach { ob ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column {
-                                    Text(ob.date.formatShort(), fontWeight = FontWeight.SemiBold)
-                                    val sub = listOfNotNull(
-                                        ob.block.name.ifBlank { null },
-                                        ob.block.format.ifBlank { null },
-                                        ob.block.scheme.ifBlank { null }
-                                    ).joinToString(" · ")
-                                    if (sub.isNotBlank()) {
-                                        Text(sub, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                }
+                        bestByReps.forEach { (r, rm) ->
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                Text("${r}RM", Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    ob.topWorking()?.let { "top ${it.trimmed()} ${current.unit}" } ?: "—",
+                                    "${rm.weight.trimmed()} kg",
+                                    Modifier.weight(1f),
                                     fontWeight = FontWeight.SemiBold
+                                )
+                                Text("", Modifier.weight(1f))
+                                Text(
+                                    rm.date.formatShort(),
+                                    Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    textAlign = TextAlign.End
                                 )
                             }
                         }
+                    }
                 }
             }
+
+            // --- Block history table ----------------------------------------
+            SectionCard(title = "Block history") {
+                if (blocks.isEmpty()) {
+                    Text(
+                        "No sessions logged for this exercise yet.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } else {
+                    Text(
+                        "Tap a row to see every set.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TableHeader("Date", "Block", "Avg", "Top")
+                    HorizontalDivider()
+                    var expandedKey by remember(current.id) { mutableStateOf<Long?>(null) }
+                    blocks.asReversed().forEach { bp ->
+                        BlockHistoryRow(
+                            bp = bp,
+                            unit = current.unit,
+                            expanded = expandedKey == bp.block.id,
+                            onToggle = {
+                                expandedKey = if (expandedKey == bp.block.id) null else bp.block.id
+                            }
+                        )
+                        HorizontalDivider()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- Small building blocks --------------------------------------------------
+
+@Composable
+private fun RowScope.KpiCard(
+    label: String,
+    value: String,
+    sub: @Composable () -> Unit
+) {
+    OutlinedCard(modifier = Modifier.weight(1f)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                value,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            sub()
+        }
+    }
+}
+
+@Composable
+private fun SubText(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+/** Signed change vs the previous session, colored by direction. */
+@Composable
+private fun DeltaText(delta: Double?, unit: String) {
+    when {
+        delta == null -> SubText("first session")
+        delta > 0.0 -> Text(
+            "▲ +${delta.trimmed()} $unit",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.tertiary
+        )
+        delta < 0.0 -> Text(
+            "▼ ${delta.trimmed()} $unit",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+        )
+        else -> SubText("= no change")
+    }
+}
+
+@Composable
+private fun TableHeader(c1: String, c2: String, c3: String, c4: String) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        val style = MaterialTheme.typography.labelMedium
+        val color = MaterialTheme.colorScheme.onSurfaceVariant
+        Text(c1, Modifier.weight(1f), style = style, color = color)
+        Text(c2, Modifier.weight(1.2f), style = style, color = color)
+        Text(c3, Modifier.weight(0.7f), style = style, color = color, textAlign = TextAlign.End)
+        Text(c4, Modifier.weight(0.7f), style = style, color = color, textAlign = TextAlign.End)
+    }
+}
+
+/** "60×3" with optional warm-up prefix and failed mark. */
+private fun setToken(set: BlockSet): String {
+    val v = set.weight ?: set.metricValue
+    val core = if (v != null) "${v.trimmed()}×${set.reps}" else "${set.reps}"
+    val prefix = if (set.isWarmup) "wu " else ""
+    val suffix = if (set.isFailed) " ✗" else ""
+    return "$prefix$core$suffix"
+}
+
+@Composable
+private fun BlockHistoryRow(
+    bp: BlockPerformance,
+    unit: String,
+    expanded: Boolean,
+    onToggle: () -> Unit
+) {
+    val b = bp.block
+    val label = b.name.ifBlank { b.scheme.ifBlank { b.format.ifBlank { "Block" } } }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                bp.date.formatShort(),
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                label,
+                Modifier.weight(1.2f),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                bp.average?.trimmed() ?: "—",
+                Modifier.weight(0.7f),
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.End
+            )
+            Text(
+                bp.top?.trimmed() ?: "—",
+                Modifier.weight(0.7f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.End
+            )
+        }
+        if (expanded) {
+            val meta = listOfNotNull(
+                bp.sessionTitle.ifBlank { null },
+                b.kind.takeIf { it != BlockKind.STRENGTH }?.label,
+                b.format.ifBlank { null },
+                b.scheme.ifBlank { null }
+            ).joinToString(" · ")
+            if (meta.isNotBlank()) SubText(meta)
+            if (bp.sets.isNotEmpty()) {
+                Text(
+                    "Sets: " + bp.sets.joinToString("   ") { setToken(it) },
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            val detail = listOfNotNull(
+                bp.average?.let { "avg ${it.trimmed()} $unit" },
+                bp.top?.let { "top ${it.trimmed()} $unit" },
+                bp.volume?.let { "volume ${it.trimmed()} kg" }
+            ).joinToString(" · ")
+            if (detail.isNotBlank()) SubText(detail)
         }
     }
 }
