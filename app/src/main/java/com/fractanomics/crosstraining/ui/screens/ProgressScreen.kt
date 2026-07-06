@@ -35,8 +35,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Exercise
+import com.fractanomics.crosstraining.data.model.RepMax
+import com.fractanomics.crosstraining.data.model.Routine
+import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.BlockPerformance
+import com.fractanomics.crosstraining.ui.DayPerformance
 import com.fractanomics.crosstraining.ui.blockPerformances
 import com.fractanomics.crosstraining.ui.byDay
 import com.fractanomics.crosstraining.ui.components.ChartPoint
@@ -47,17 +51,21 @@ import com.fractanomics.crosstraining.ui.components.LineChart
 import com.fractanomics.crosstraining.ui.components.MultiLineChart
 import com.fractanomics.crosstraining.ui.components.SectionCard
 import com.fractanomics.crosstraining.ui.formatShort
+import com.fractanomics.crosstraining.ui.routineBlockPerformances
 import com.fractanomics.crosstraining.ui.trimmed
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
+    val routines by viewModel.routines.collectAsStateWithLifecycle()
     val repMaxes by viewModel.repMaxes.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
 
-    var selected by remember { mutableStateOf<Exercise?>(null) }
-    val current = selected ?: exercises.firstOrNull()
+    var selectedExercise by remember { mutableStateOf<Exercise?>(null) }
+    var selectedRoutine by remember { mutableStateOf<Routine?>(null) }
+    var byRoutine by remember { mutableStateOf(false) }
+    val routineMode = byRoutine && routines.isNotEmpty()
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
@@ -74,189 +82,303 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Dropdown(
-                label = "Exercise",
-                options = exercises,
-                selected = current,
-                labelOf = { it.name },
-                onSelect = { selected = it }
-            )
-
-            if (current == null) return@Column
-
-            val allBlocks = remember(sessions, current.id) {
-                sessions.blockPerformances(current.id)
-            }
-
-            // --- Block filter (compare repeated blocks like-for-like) -------
-            var blockFilter by remember(current.id) { mutableStateOf<String?>(null) }
-            val namedBlocks = allBlocks.mapNotNull { it.block.name.ifBlank { null } }.distinct()
-            val showFilter = namedBlocks.size >= 2 ||
-                (namedBlocks.size == 1 && allBlocks.any { it.block.name.isBlank() })
-            if (showFilter) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (routines.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
-                        selected = blockFilter == null,
-                        onClick = { blockFilter = null },
-                        label = { Text("All blocks") }
+                        selected = !routineMode,
+                        onClick = { byRoutine = false },
+                        label = { Text("By exercise") }
                     )
-                    namedBlocks.forEach { name ->
+                    FilterChip(
+                        selected = routineMode,
+                        onClick = { byRoutine = true },
+                        label = { Text("By routine") }
+                    )
+                }
+            }
+
+            if (routineMode) {
+                RoutineProgress(
+                    routines = routines,
+                    exercises = exercises,
+                    sessions = sessions,
+                    current = selectedRoutine ?: routines.firstOrNull(),
+                    onSelect = { selectedRoutine = it }
+                )
+            } else {
+                ExerciseProgress(
+                    exercises = exercises,
+                    repMaxes = repMaxes,
+                    sessions = sessions,
+                    current = selectedExercise ?: exercises.firstOrNull(),
+                    onSelect = { selectedExercise = it }
+                )
+            }
+        }
+    }
+}
+
+// --- Exercise view ------------------------------------------------------------
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ExerciseProgress(
+    exercises: List<Exercise>,
+    repMaxes: List<RepMax>,
+    sessions: List<SessionWithBlocks>,
+    current: Exercise?,
+    onSelect: (Exercise) -> Unit
+) {
+    Dropdown(
+        label = "Exercise",
+        options = exercises,
+        selected = current,
+        labelOf = { it.name },
+        onSelect = onSelect
+    )
+
+    if (current == null) return
+
+    val allBlocks = remember(sessions, current.id) {
+        sessions.blockPerformances(current.id)
+    }
+
+    // --- Block filter (compare repeated blocks like-for-like) ------------------
+    var blockFilter by remember(current.id) { mutableStateOf<String?>(null) }
+    val namedBlocks = allBlocks.mapNotNull { it.block.name.ifBlank { null } }.distinct()
+    val showFilter = namedBlocks.size >= 2 ||
+        (namedBlocks.size == 1 && allBlocks.any { it.block.name.isBlank() })
+    if (showFilter) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = blockFilter == null,
+                onClick = { blockFilter = null },
+                label = { Text("All blocks") }
+            )
+            namedBlocks.forEach { name ->
+                FilterChip(
+                    selected = blockFilter == name,
+                    onClick = { blockFilter = if (blockFilter == name) null else name },
+                    label = { Text(name) }
+                )
+            }
+        }
+    }
+    val blocks =
+        if (blockFilter == null) allBlocks
+        else allBlocks.filter { it.block.name == blockFilter }
+    val days = blocks.byDay()
+
+    KpiRows(blocks, days, current.unit)
+    EvolutionCards(days, current.unit)
+
+    // --- Rep-max progression ----------------------------------------------------
+    if (current.tracksRepMax) {
+        val rmSeries = repMaxes.filter { it.exerciseId == current.id }
+        val repOptions = rmSeries.map { it.reps }.distinct().sorted()
+        if (repOptions.isNotEmpty()) {
+            var selectedReps by remember(current.id) { mutableStateOf<Int?>(null) }
+            val reps = selectedReps ?: if (repOptions.contains(1)) 1 else repOptions.first()
+            SectionCard(title = "Rep-max progression") {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    repOptions.forEach { r ->
                         FilterChip(
-                            selected = blockFilter == name,
-                            onClick = { blockFilter = if (blockFilter == name) null else name },
-                            label = { Text(name) }
+                            selected = r == reps,
+                            onClick = { selectedReps = r },
+                            label = { Text("${r}RM") }
+                        )
+                    }
+                }
+                val series = rmSeries.filter { it.reps == reps }
+                    .sortedBy { it.date }
+                    .map { ChartPoint(it.date.formatShort(), it.weight.toFloat()) }
+                LineChart(points = series)
+            }
+
+            SectionCard(title = "Personal records") {
+                TableHeader("RM", "Weight", "", "Date")
+                val bestByReps = rmSeries.groupBy { it.reps }
+                    .mapValues { (_, list) -> list.maxBy { it.weight } }
+                    .toSortedMap()
+                bestByReps.forEach { (r, rm) ->
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text("${r}RM", Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "${rm.weight.trimmed()} kg",
+                            Modifier.weight(1f),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text("", Modifier.weight(1f))
+                        Text(
+                            rm.date.formatShort(),
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.End
                         )
                     }
                 }
             }
-            val blocks =
-                if (blockFilter == null) allBlocks
-                else allBlocks.filter { it.block.name == blockFilter }
-            val days = blocks.byDay()
+        }
+    }
 
-            // --- KPI dashboard ----------------------------------------------
-            val latest = days.lastOrNull()
-            val previous = days.getOrNull(days.size - 2)
-            val bestBlock = blocks.filter { it.top != null }.maxByOrNull { it.top!! }
-            if (latest != null) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    KpiCard(
-                        label = "All-time top",
-                        value = bestBlock?.top?.let { "${it.trimmed()} ${current.unit}" } ?: "—",
-                        sub = { SubText(bestBlock?.date?.formatShort() ?: "") }
-                    )
-                    KpiCard(
-                        label = "Last top",
-                        value = "${latest.top.trimmed()} ${current.unit}",
-                        sub = { DeltaText(previous?.let { latest.top - it.top }, current.unit) }
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    KpiCard(
-                        label = "Last average",
-                        value = "${latest.average.trimmed()} ${current.unit}",
-                        sub = { DeltaText(previous?.let { latest.average - it.average }, current.unit) }
-                    )
-                    KpiCard(
-                        label = "Last volume",
-                        value = latest.volume?.let { "${it.trimmed()} kg" } ?: "—",
-                        sub = {
-                            DeltaText(
-                                latest.volume?.let { v -> previous?.volume?.let { v - it } },
-                                "kg"
-                            )
-                        }
-                    )
-                }
-            }
+    BlockHistoryCard(
+        blocks = blocks,
+        unit = current.unit,
+        selectionKey = "exercise-${current.id}",
+        emptyMessage = "No sessions logged for this exercise yet."
+    )
+}
 
-            // --- Evolution: top & average per session -----------------------
-            if (days.isNotEmpty()) {
-                SectionCard(title = "Evolution per session (${current.unit})") {
-                    MultiLineChart(
-                        series = listOf(
-                            ChartSeries(
-                                name = "Top",
-                                points = days.map { ChartPoint(it.date.formatShort(), it.top.toFloat()) },
-                                color = MaterialTheme.colorScheme.primary
-                            ),
-                            ChartSeries(
-                                name = "Average",
-                                points = days.map { ChartPoint(it.date.formatShort(), it.average.toFloat()) },
-                                color = MaterialTheme.colorScheme.tertiary
-                            )
-                        )
+// --- Routine view ---------------------------------------------------------------
+
+@Composable
+private fun RoutineProgress(
+    routines: List<Routine>,
+    exercises: List<Exercise>,
+    sessions: List<SessionWithBlocks>,
+    current: Routine?,
+    onSelect: (Routine) -> Unit
+) {
+    Dropdown(
+        label = "Routine / complex",
+        options = routines,
+        selected = current,
+        labelOf = { it.name },
+        onSelect = onSelect
+    )
+
+    if (current == null) return
+
+    val target = exercises.firstOrNull { it.id == current.mainExerciseId }
+    val meta = listOfNotNull(
+        target?.let { "Improves: ${it.name}" },
+        current.defaultFormat.ifBlank { null }
+    ).joinToString(" · ")
+    if (meta.isNotBlank()) {
+        Text(
+            meta,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    val blocks = remember(sessions, current.id) {
+        sessions.routineBlockPerformances(current.id)
+    }
+    val days = blocks.byDay()
+    val unit = target?.unit ?: "kg"
+
+    KpiRows(blocks, days, unit)
+    EvolutionCards(days, unit)
+    BlockHistoryCard(
+        blocks = blocks,
+        unit = unit,
+        selectionKey = "routine-${current.id}",
+        emptyMessage = "No logged blocks use this routine yet. Link a block to it when logging a session."
+    )
+}
+
+// --- Shared sections ------------------------------------------------------------
+
+/** The four KPI stat cards with deltas vs the previous training day. */
+@Composable
+private fun KpiRows(blocks: List<BlockPerformance>, days: List<DayPerformance>, unit: String) {
+    val latest = days.lastOrNull() ?: return
+    val previous = days.getOrNull(days.size - 2)
+    val bestBlock = blocks.filter { it.top != null }.maxByOrNull { it.top!! }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        KpiCard(
+            label = "All-time top",
+            value = bestBlock?.top?.let { "${it.trimmed()} $unit" } ?: "—",
+            sub = { SubText(bestBlock?.date?.formatShort() ?: "") }
+        )
+        KpiCard(
+            label = "Last top",
+            value = "${latest.top.trimmed()} $unit",
+            sub = { DeltaText(previous?.let { latest.top - it.top }, unit) }
+        )
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        KpiCard(
+            label = "Last average",
+            value = "${latest.average.trimmed()} $unit",
+            sub = { DeltaText(previous?.let { latest.average - it.average }, unit) }
+        )
+        KpiCard(
+            label = "Last volume",
+            value = latest.volume?.let { "${it.trimmed()} kg" } ?: "—",
+            sub = {
+                DeltaText(
+                    latest.volume?.let { v -> previous?.volume?.let { v - it } },
+                    "kg"
+                )
+            }
+        )
+    }
+}
+
+/** Top & average evolution chart plus the volume-per-session chart. */
+@Composable
+private fun EvolutionCards(days: List<DayPerformance>, unit: String) {
+    if (days.isNotEmpty()) {
+        SectionCard(title = "Evolution per session ($unit)") {
+            MultiLineChart(
+                series = listOf(
+                    ChartSeries(
+                        name = "Top",
+                        points = days.map { ChartPoint(it.date.formatShort(), it.top.toFloat()) },
+                        color = MaterialTheme.colorScheme.primary
+                    ),
+                    ChartSeries(
+                        name = "Average",
+                        points = days.map { ChartPoint(it.date.formatShort(), it.average.toFloat()) },
+                        color = MaterialTheme.colorScheme.tertiary
                     )
-                }
-            }
+                )
+            )
+        }
+    }
 
-            // --- Volume per session -----------------------------------------
-            val volumePoints = days.mapNotNull { d ->
-                d.volume?.let { ChartPoint(d.date.formatShort(), it.toFloat()) }
-            }
-            if (volumePoints.size >= 2) {
-                SectionCard(title = "Volume per session (kg)") {
-                    LineChart(points = volumePoints, lineColor = MaterialTheme.colorScheme.secondary)
-                }
-            }
+    val volumePoints = days.mapNotNull { d ->
+        d.volume?.let { ChartPoint(d.date.formatShort(), it.toFloat()) }
+    }
+    if (volumePoints.size >= 2) {
+        SectionCard(title = "Volume per session (kg)") {
+            LineChart(points = volumePoints, lineColor = MaterialTheme.colorScheme.secondary)
+        }
+    }
+}
 
-            // --- Rep-max progression ----------------------------------------
-            if (current.tracksRepMax) {
-                val rmSeries = repMaxes.filter { it.exerciseId == current.id }
-                val repOptions = rmSeries.map { it.reps }.distinct().sorted()
-                if (repOptions.isNotEmpty()) {
-                    var selectedReps by remember(current.id) { mutableStateOf<Int?>(null) }
-                    val reps = selectedReps ?: if (repOptions.contains(1)) 1 else repOptions.first()
-                    SectionCard(title = "Rep-max progression") {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            repOptions.forEach { r ->
-                                FilterChip(
-                                    selected = r == reps,
-                                    onClick = { selectedReps = r },
-                                    label = { Text("${r}RM") }
-                                )
-                            }
-                        }
-                        val series = rmSeries.filter { it.reps == reps }
-                            .sortedBy { it.date }
-                            .map { ChartPoint(it.date.formatShort(), it.weight.toFloat()) }
-                        LineChart(points = series)
+/** Expandable table of every block occurrence, newest first. */
+@Composable
+private fun BlockHistoryCard(
+    blocks: List<BlockPerformance>,
+    unit: String,
+    selectionKey: String,
+    emptyMessage: String
+) {
+    SectionCard(title = "Block history") {
+        if (blocks.isEmpty()) {
+            Text(emptyMessage, style = MaterialTheme.typography.bodyMedium)
+        } else {
+            Text(
+                "Tap a row to see every set.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            TableHeader("Date", "Block", "Avg", "Top")
+            HorizontalDivider()
+            var expandedKey by remember(selectionKey) { mutableStateOf<Long?>(null) }
+            blocks.asReversed().forEach { bp ->
+                BlockHistoryRow(
+                    bp = bp,
+                    unit = unit,
+                    expanded = expandedKey == bp.block.id,
+                    onToggle = {
+                        expandedKey = if (expandedKey == bp.block.id) null else bp.block.id
                     }
-
-                    SectionCard(title = "Personal records") {
-                        TableHeader("RM", "Weight", "", "Date")
-                        val bestByReps = rmSeries.groupBy { it.reps }
-                            .mapValues { (_, list) -> list.maxBy { it.weight } }
-                            .toSortedMap()
-                        bestByReps.forEach { (r, rm) ->
-                            Row(modifier = Modifier.fillMaxWidth()) {
-                                Text("${r}RM", Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "${rm.weight.trimmed()} kg",
-                                    Modifier.weight(1f),
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text("", Modifier.weight(1f))
-                                Text(
-                                    rm.date.formatShort(),
-                                    Modifier.weight(1f),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    textAlign = TextAlign.End
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // --- Block history table ----------------------------------------
-            SectionCard(title = "Block history") {
-                if (blocks.isEmpty()) {
-                    Text(
-                        "No sessions logged for this exercise yet.",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                } else {
-                    Text(
-                        "Tap a row to see every set.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    TableHeader("Date", "Block", "Avg", "Top")
-                    HorizontalDivider()
-                    var expandedKey by remember(current.id) { mutableStateOf<Long?>(null) }
-                    blocks.asReversed().forEach { bp ->
-                        BlockHistoryRow(
-                            bp = bp,
-                            unit = current.unit,
-                            expanded = expandedKey == bp.block.id,
-                            onToggle = {
-                                expandedKey = if (expandedKey == bp.block.id) null else bp.block.id
-                            }
-                        )
-                        HorizontalDivider()
-                    }
-                }
+                )
+                HorizontalDivider()
             }
         }
     }
