@@ -16,12 +16,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val repository = (application as CrossTrainingApp).repository
+        val dataModes = (application as CrossTrainingApp).dataModes
         setContent {
             CrossTrainingTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val viewModel: AppViewModel =
-                        viewModel(factory = AppViewModel.factory(repository))
+                        viewModel(factory = AppViewModel.factory(dataModes))
                     AppNavigation(viewModel)
                 }
             }

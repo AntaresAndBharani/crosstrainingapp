@@ -1,5 +1,8 @@
 package com.fractanomics.crosstraining.ui.navigation
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -7,12 +10,19 @@ import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -45,28 +55,32 @@ enum class Destination(
 fun AppNavigation(viewModel: AppViewModel) {
     val navController = rememberNavController()
     val destinations = Destination.entries
+    val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                val backStackEntry = navController.currentBackStackEntryAsState().value
-                val currentDestination = backStackEntry?.destination
-                destinations.forEach { dest ->
-                    val selected = currentDestination?.hierarchy?.any { it.route == dest.route } == true
-                    NavigationBarItem(
-                        selected = selected,
-                        onClick = {
-                            navController.navigate(dest.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
+            Column {
+                if (demoMode) DemoBanner()
+                NavigationBar {
+                    val backStackEntry = navController.currentBackStackEntryAsState().value
+                    val currentDestination = backStackEntry?.destination
+                    destinations.forEach { dest ->
+                        val selected = currentDestination?.hierarchy?.any { it.route == dest.route } == true
+                        NavigationBarItem(
+                            selected = selected,
+                            onClick = {
+                                navController.navigate(dest.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
                                 }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        icon = { Icon(dest.icon, contentDescription = dest.label) },
-                        label = { Text(dest.label) }
-                    )
+                            },
+                            icon = { Icon(dest.icon, contentDescription = dest.label) },
+                            label = { Text(dest.label) }
+                        )
+                    }
                 }
             }
         }
@@ -112,5 +126,21 @@ fun AppNavigation(viewModel: AppViewModel) {
                 LibraryScreen(viewModel, innerPadding)
             }
         }
+    }
+}
+
+/** Persistent strip shown above the nav bar while demo data is active. */
+@Composable
+private fun DemoBanner() {
+    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+        Text(
+            "Demo data — your real data is untouched",
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onTertiaryContainer,
+            textAlign = TextAlign.Center
+        )
     }
 }
