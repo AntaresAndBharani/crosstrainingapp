@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,12 +28,43 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Compute short commit SHA
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Build snapshot APK
+        run: ./gradlew assembleSnapshot -PsnapshotLabel=${{ env.SHORT_SHA }} --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/snapshot/app-snapshot.apk dist/crosstraining-snapshot.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: crosstraining-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: crosstraining-snapshot-${{ env.SHORT_SHA }}
+          path: dist/crosstraining-snapshot.apk
           if-no-files-found: error
+
+      # Rolling pre-release so the latest snapshot can be downloaded straight
+      # from a phone (Releases -> "Snapshot"). Skipped on pull_request events
+      # because the branch push event already publishes the same commit.
+      - name: Update rolling snapshot pre-release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: snapshot
+          name: Snapshot (latest dev build)
+          prerelease: true
+          files: dist/crosstraining-snapshot.apk
+          body: |
+            Latest development snapshot — branch `${{ github.ref_name }}`, commit `${{ env.SHORT_SHA }}`.
+
+            Installs **alongside** the released app as **CrossTraining Snapshot**
+            (`com.fractanomics.crosstraining.snapshot`), so you can test a branch
+            before merging and releasing without touching your real data.
+
+            **Install on your phone**
+            1. Download `crosstraining-snapshot.apk` below.
+            2. Open it; allow "Install unknown apps" if prompted.
+            3. Tap Install.
