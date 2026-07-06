@@ -1,10 +1,9 @@
 package com.fractanomics.crosstraining
 
 import android.app.Application
-import com.fractanomics.crosstraining.data.AppDatabase
-import com.fractanomics.crosstraining.data.Repository
+import com.fractanomics.crosstraining.data.DataModeManager
 
-/** Application that owns the database/repository singletons. */
+/** Application that owns the data-mode manager (real vs demo database). */
 class CrossTrainingApp : Application() {
-    val repository: Repository by lazy { Repository(AppDatabase.get(this)) }
+    val dataModes: DataModeManager by lazy { DataModeManager(this) }
 }

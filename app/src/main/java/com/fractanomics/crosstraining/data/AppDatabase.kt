@@ -50,9 +50,25 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
+        @Volatile
+        private var DEMO: AppDatabase? = null
+
         fun get(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: build(context).also { INSTANCE = it }
+            }
+
+        /**
+         * Separate database file backing demo mode. Populated from [DemoData]
+         * by [DataModeManager]; never mixes with the real database.
+         */
+        fun demo(context: Context): AppDatabase =
+            DEMO ?: synchronized(this) {
+                DEMO ?: Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    "crosstraining-demo.db"
+                ).fallbackToDestructiveMigration().build().also { DEMO = it }
             }
 
         private fun build(context: Context): AppDatabase =

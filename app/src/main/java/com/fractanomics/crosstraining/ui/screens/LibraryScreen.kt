@@ -18,6 +18,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -59,6 +60,7 @@ import com.fractanomics.crosstraining.ui.components.ScreenList
 fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
     val routines by viewModel.routines.collectAsStateWithLifecycle()
+    val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
 
     var tab by remember { mutableIntStateOf(0) }
     var showExerciseEditor by remember { mutableStateOf(false) }
@@ -116,6 +118,31 @@ fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
                                 importLauncher.launch(arrayOf("text/*", "application/octet-stream"))
                             }
                         )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text(if (demoMode) "Switch to my data" else "Try demo data") },
+                            onClick = {
+                                showMenu = false
+                                val enable = !demoMode
+                                viewModel.setDemoMode(enable)
+                                scope.launch {
+                                    snackbar.showSnackbar(
+                                        if (enable) "Demo data active — your real data is untouched"
+                                        else "Back to your data"
+                                    )
+                                }
+                            }
+                        )
+                        if (demoMode) {
+                            DropdownMenuItem(
+                                text = { Text("Reset demo data") },
+                                onClick = {
+                                    showMenu = false
+                                    viewModel.resetDemoData()
+                                    scope.launch { snackbar.showSnackbar("Demo data reset") }
+                                }
+                            )
+                        }
                     }
                 }
             )
