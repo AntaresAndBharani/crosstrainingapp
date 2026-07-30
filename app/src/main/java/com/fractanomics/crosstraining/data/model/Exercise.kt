@@ -17,9 +17,9 @@ import androidx.room.PrimaryKey
 data class Exercise(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val category: ExerciseCategory,
-    val metricType: MetricType,
-    val unit: String,
-    val tracksRepMax: Boolean,
+    val category: ExerciseCategory = ExerciseCategory.BARBELL,
+    val metricType: MetricType = MetricType.WEIGHT,
+    val unit: String = MetricType.WEIGHT.defaultUnit,
+    val tracksRepMax: Boolean = true,
     val notes: String = ""
 )
