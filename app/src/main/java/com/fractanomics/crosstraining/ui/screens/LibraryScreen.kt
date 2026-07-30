@@ -75,6 +75,7 @@ import com.fractanomics.crosstraining.ui.WORKOUT_FORMATS
 import com.fractanomics.crosstraining.ui.components.Dropdown
 import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.ScreenList
+import com.fractanomics.crosstraining.util.RepScheme
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
@@ -341,6 +342,7 @@ private fun RoutineCard(
 
                         val detailLine = listOfNotNull(
                             blk.format.takeIf { it.isNotBlank() }?.let { "Format: $it" },
+                            if (blk.targetRepsScheme.isNotBlank()) "Reps: ${blk.targetRepsScheme}" else null,
                             if (blk.setsCount > 1) "${blk.setsCount} sets" else null
                         ).joinToString(" · ")
 
@@ -448,6 +450,7 @@ private class RoutineBlockFormState(
     kind: BlockKind = BlockKind.WEIGHTLIFTING,
     format: String = "EMOM",
     setsCount: String = "4",
+    targetRepsScheme: String = "5",
     selectedExerciseIds: List<Long> = emptyList(),
     notes: String = ""
 ) {
@@ -455,6 +458,7 @@ private class RoutineBlockFormState(
     var kind by mutableStateOf(kind)
     var format by mutableStateOf(format)
     var setsCount by mutableStateOf(setsCount)
+    var targetRepsScheme by mutableStateOf(targetRepsScheme)
     var selectedExerciseIds by mutableStateOf(selectedExerciseIds)
     var notes by mutableStateOf(notes)
 }
@@ -477,6 +481,7 @@ private fun RoutineEditorDialog(
                 kind = blk.kind,
                 format = blk.format,
                 setsCount = blk.setsCount.toString(),
+                targetRepsScheme = blk.targetRepsScheme,
                 selectedExerciseIds = blk.exerciseIdsCsv.split(",")
                     .mapNotNull { it.trim().toLongOrNull() },
                 notes = blk.notes
@@ -586,6 +591,49 @@ private fun RoutineEditorDialog(
                                 modifier = Modifier.fillMaxWidth()
                             )
 
+                            Text("Rep Scheme per Set:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+
+                            // Wave Presets
+                            Text("Wave Schemes:", style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                FilterChip(
+                                    selected = block.targetRepsScheme == RepScheme.WAVE_321,
+                                    onClick = {
+                                        block.targetRepsScheme = RepScheme.WAVE_321
+                                        block.setsCount = "12"
+                                    },
+                                    label = { Text("Wave 3-2-1 (12 sets)") }
+                                )
+                                FilterChip(
+                                    selected = block.targetRepsScheme == RepScheme.WAVE_221,
+                                    onClick = {
+                                        block.targetRepsScheme = RepScheme.WAVE_221
+                                        block.setsCount = "12"
+                                    },
+                                    label = { Text("Wave 2-2-1 (12 sets)") }
+                                )
+                            }
+
+                            // Fixed Reps Presets
+                            Text("Fixed Reps per Set:", style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                RepScheme.FIXED_REPS_PRESETS.forEach { r ->
+                                    FilterChip(
+                                        selected = block.targetRepsScheme == r.toString(),
+                                        onClick = { block.targetRepsScheme = r.toString() },
+                                        label = { Text("$r reps") }
+                                    )
+                                }
+                            }
+
+                            OutlinedTextField(
+                                value = block.targetRepsScheme,
+                                onValueChange = { block.targetRepsScheme = it },
+                                label = { Text("Custom Rep Scheme (e.g. 3-2-1-3-2-1 or 5x5 or 8)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
                             Text("Exercises in this Block:", style = MaterialTheme.typography.labelMedium)
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 exercises.forEach { ex ->
@@ -643,6 +691,7 @@ private fun RoutineEditorDialog(
                             kind = bs.kind,
                             format = bs.format.trim(),
                             setsCount = bs.setsCount.toIntOrNull() ?: 1,
+                            targetRepsScheme = bs.targetRepsScheme.trim(),
                             exerciseIdsCsv = bs.selectedExerciseIds.joinToString(","),
                             notes = bs.notes.trim()
                         )
