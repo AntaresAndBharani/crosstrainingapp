@@ -16,6 +16,8 @@ import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
+import com.fractanomics.crosstraining.data.model.RoutineBlock
+import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
@@ -48,8 +50,11 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         data.repositoryFlow.flatMapLatest { it.activeCycle }.stateInDefault(null)
     val exercises: StateFlow<List<Exercise>> =
         data.repositoryFlow.flatMapLatest { it.exercises }.stateInDefault(emptyList())
+
     val routines: StateFlow<List<Routine>> =
         data.repositoryFlow.flatMapLatest { it.routines }.stateInDefault(emptyList())
+    val routinesWithBlocks: StateFlow<List<RoutineWithBlocks>> =
+        data.repositoryFlow.flatMapLatest { it.routinesWithBlocks }.stateInDefault(emptyList())
     val sessions: StateFlow<List<SessionWithBlocks>> =
         data.repositoryFlow.flatMapLatest { it.allSessions }.stateInDefault(emptyList())
     val repMaxes: StateFlow<List<RepMax>> =
@@ -87,6 +92,9 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
 
     // --- Routines -------------------------------------------------------------
     fun saveRoutine(routine: Routine) = viewModelScope.launch { repo.saveRoutine(routine) }
+
+    fun saveRoutineWithBlocks(routine: Routine, blocks: List<RoutineBlock>) =
+        viewModelScope.launch { repo.saveRoutineWithBlocks(routine, blocks) }
 
     fun deleteRoutine(routine: Routine) = viewModelScope.launch { repo.deleteRoutine(routine) }
 
