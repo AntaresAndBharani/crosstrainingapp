@@ -31,6 +31,7 @@ data class RoutineBlock(
     val kind: BlockKind = BlockKind.WEIGHTLIFTING,
     val format: String = "",
     val setsCount: Int = 1,
+    val targetRepsScheme: String = "",
     val exerciseIdsCsv: String = "",
     val notes: String = ""
 )
