@@ -19,7 +19,7 @@ import kotlinx.coroutines.launch
 class TimerEngine(private val context: Context? = null) {
 
     private var toneGenerator: ToneGenerator? = try {
-        ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80)
+        ToneGenerator(AudioManager.STREAM_MUSIC, 100)
     } catch (_: Exception) {
         null
     }
@@ -275,8 +275,9 @@ class TimerEngine(private val context: Context? = null) {
 
     private fun playBeep(high: Boolean) {
         try {
-            val type = if (high) ToneGenerator.TONE_PROP_BEEP2 else ToneGenerator.TONE_PROP_BEEP
-            toneGenerator?.startTone(type, 150)
+            val type = if (high) ToneGenerator.TONE_CDMA_HIGH_L else ToneGenerator.TONE_PROP_BEEP
+            val duration = if (high) 400 else 200
+            toneGenerator?.startTone(type, duration)
         } catch (_: Exception) {}
     }
 
