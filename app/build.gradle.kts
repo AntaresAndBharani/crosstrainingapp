@@ -20,10 +20,13 @@ android {
 
     signingConfigs {
         getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            val customKeystore = file("debug.keystore")
+            if (customKeystore.exists()) {
+                storeFile = customKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
     }
 
