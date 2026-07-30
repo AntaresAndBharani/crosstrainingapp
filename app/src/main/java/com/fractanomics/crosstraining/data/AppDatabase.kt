@@ -24,17 +24,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
+import com.fractanomics.crosstraining.data.model.RoutineBlock
+
 @Database(
     entities = [
         Cycle::class,
         Exercise::class,
         Routine::class,
+        RoutineBlock::class,
         Session::class,
         SessionBlock::class,
         BlockSet::class,
         RepMax::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

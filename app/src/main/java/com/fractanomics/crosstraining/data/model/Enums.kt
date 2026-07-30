@@ -34,9 +34,13 @@ enum class MetricType(val label: String, val defaultUnit: String, val tracksRepM
  * lift for progression.
  */
 enum class BlockKind(val label: String) {
+    WEIGHTLIFTING("Weightlifting"),
+    HYPERTROPHY("Hypertrophy"),
+    ACCESSORY("Accessory"),
+    METABOLIC("Metabolic"),
+    CARDIO("Cardio"),
     WARMUP("Warm-up"),
     STRENGTH("Strength"),
-    ACCESSORY("Accessory"),
     METCON("WOD / Metcon"),
     OTHER("Other")
 }

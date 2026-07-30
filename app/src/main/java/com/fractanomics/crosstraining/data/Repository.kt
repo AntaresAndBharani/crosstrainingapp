@@ -8,6 +8,8 @@ import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
+import com.fractanomics.crosstraining.data.model.RoutineBlock
+import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
@@ -94,10 +96,26 @@ class Repository(private val db: AppDatabase) {
 
     // --- Routines -------------------------------------------------------------
     val routines: Flow<List<Routine>> = routineDao.observeAll()
+    val routinesWithBlocks: Flow<List<RoutineWithBlocks>> = routineDao.observeWithBlocks()
 
     suspend fun saveRoutine(routine: Routine): Long =
         if (routine.id == 0L) routineDao.insert(routine) else {
             routineDao.update(routine); routine.id
+        }
+
+    suspend fun saveRoutineWithBlocks(routine: Routine, blocks: List<RoutineBlock>): Long =
+        db.withTransaction {
+            val routineId = if (routine.id == 0L) routineDao.insert(routine) else {
+                routineDao.update(routine)
+                routine.id
+            }
+            routineDao.deleteBlocksForRoutine(routineId)
+            if (blocks.isNotEmpty()) {
+                routineDao.insertBlocks(blocks.mapIndexed { idx, b ->
+                    b.copy(id = 0, routineId = routineId, position = idx)
+                })
+            }
+            routineId
         }
 
     suspend fun deleteRoutine(routine: Routine) = routineDao.delete(routine)

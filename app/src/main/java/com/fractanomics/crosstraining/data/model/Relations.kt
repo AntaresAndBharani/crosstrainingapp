@@ -20,3 +20,10 @@ data class SessionWithBlocks(
     )
     val blocks: List<BlockWithSets>
 )
+
+/** A daily routine together with all of its blocks, ordered by [RoutineBlock.position]. */
+data class RoutineWithBlocks(
+    @Embedded val routine: Routine,
+    @Relation(parentColumn = "id", entityColumn = "routineId")
+    val blocks: List<RoutineBlock>
+)
