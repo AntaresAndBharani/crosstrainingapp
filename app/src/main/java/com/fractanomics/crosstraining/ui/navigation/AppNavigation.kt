@@ -39,6 +39,9 @@ import com.fractanomics.crosstraining.ui.screens.LogSessionScreen
 import com.fractanomics.crosstraining.ui.screens.ProgressScreen
 import com.fractanomics.crosstraining.ui.screens.SessionEditorScreen
 
+import androidx.compose.material.icons.filled.Timer
+import com.fractanomics.crosstraining.ui.screens.TimerScreen
+
 enum class Destination(
     val route: String,
     val label: String,
@@ -48,7 +51,8 @@ enum class Destination(
     HISTORY("history", "History", Icons.Filled.History),
     PROGRESS("progress", "Progress", Icons.Filled.BarChart),
     CYCLES("cycles", "Cycles", Icons.Filled.CalendarMonth),
-    LIBRARY("library", "Library", Icons.Filled.MenuBook)
+    LIBRARY("library", "Library", Icons.Filled.MenuBook),
+    TIMER("timer", "Timer", Icons.Filled.Timer)
 }
 
 @Composable
@@ -124,6 +128,9 @@ fun AppNavigation(viewModel: AppViewModel) {
             }
             composable(Destination.LIBRARY.route) {
                 LibraryScreen(viewModel, innerPadding)
+            }
+            composable(Destination.TIMER.route) {
+                TimerScreen(innerPadding)
             }
         }
     }
