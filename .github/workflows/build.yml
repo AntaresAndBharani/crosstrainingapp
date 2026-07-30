@@ -31,6 +31,12 @@ jobs:
       - name: Compute short commit SHA
         run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
+      - name: Ensure debug keystore
+        run: |
+          if [ ! -f app/debug.keystore ]; then
+            keytool -genkey -v -keystore app/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
       - name: Build snapshot APK
         run: ./gradlew assembleSnapshot -PsnapshotLabel=${{ env.SHORT_SHA }} --stacktrace
 
