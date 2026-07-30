@@ -59,9 +59,12 @@ import com.fractanomics.crosstraining.ui.BlockDraft
 import com.fractanomics.crosstraining.ui.SessionDraft
 import com.fractanomics.crosstraining.ui.SetDraft
 import com.fractanomics.crosstraining.ui.WORKOUT_FORMATS
+import androidx.compose.material.icons.filled.AutoAwesome
 import com.fractanomics.crosstraining.ui.components.DateField
 import com.fractanomics.crosstraining.ui.components.Dropdown
 import com.fractanomics.crosstraining.ui.components.EmptyState
+import com.fractanomics.crosstraining.ui.components.QuickAddWorkoutDialog
+import com.fractanomics.crosstraining.util.ParsedWorkout
 import com.fractanomics.crosstraining.ui.trimmed
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -254,6 +257,34 @@ fun SessionEditorBody(
         seed.blocks.map { buildBlockState(it, exercises, routines) }.toMutableStateList()
     }
     val effectiveCycleId = selectedCycleId ?: activeCycle?.id
+    var showQuickAddDialog by remember { mutableStateOf(false) }
+
+    if (showQuickAddDialog) {
+        QuickAddWorkoutDialog(
+            exercises = exercises,
+            routines = routines,
+            onDismiss = { showQuickAddDialog = false },
+            onConfirm = { parsed ->
+                val newBlock = BlockState(
+                    name = parsed.name,
+                    kind = parsed.kind,
+                    format = parsed.format,
+                    scheme = parsed.scheme,
+                    exercise = exercises.firstOrNull { it.id == parsed.existingExerciseId },
+                    newExerciseName = parsed.newExerciseName ?: "",
+                    routine = routines.firstOrNull { it.id == parsed.routineId },
+                    sets = parsed.sets.map { s ->
+                        SetState(
+                            reps = s.reps.toString(),
+                            value = s.weight?.trimmed() ?: "",
+                            warm = s.isWarmup
+                        )
+                    }.ifEmpty { listOf(SetState()) }
+                )
+                blocks.add(newBlock)
+            }
+        )
+    }
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
@@ -306,13 +337,27 @@ fun SessionEditorBody(
                 )
             }
 
-            OutlinedButton(
-                onClick = { blocks.add(BlockState()) },
-                modifier = Modifier.fillMaxWidth()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Filled.Add, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Add block")
+                Button(
+                    onClick = { showQuickAddDialog = true },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.AutoAwesome, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Quick Add / Parse")
+                }
+
+                OutlinedButton(
+                    onClick = { blocks.add(BlockState()) },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Add block")
+                }
             }
 
             OutlinedTextField(
