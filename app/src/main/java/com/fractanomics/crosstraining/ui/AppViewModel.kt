@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.fractanomics.crosstraining.data.BackupCsv
 import com.fractanomics.crosstraining.data.BlockInsert
+import com.fractanomics.crosstraining.data.DataModeManager
 import com.fractanomics.crosstraining.data.Repository
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
@@ -19,8 +20,10 @@ import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -29,25 +32,43 @@ import java.time.LocalDate
 /**
  * One ViewModel backing the whole app. The data set is small and entirely
  * local, so a single shared store keeps wiring simple while still exposing
- * lifecycle-aware [StateFlow]s for Compose.
+ * lifecycle-aware [StateFlow]s for Compose. Every flow re-binds through
+ * [DataModeManager] so switching between real and demo data updates the whole
+ * UI live.
  */
-class AppViewModel(private val repo: Repository) : ViewModel() {
+@OptIn(ExperimentalCoroutinesApi::class)
+class AppViewModel(private val data: DataModeManager) : ViewModel() {
+
+    private val repo: Repository
+        get() = data.current
 
     val cycles: StateFlow<List<Cycle>> =
-        repo.cycles.stateInDefault(emptyList())
+        data.repositoryFlow.flatMapLatest { it.cycles }.stateInDefault(emptyList())
     val activeCycle: StateFlow<Cycle?> =
-        repo.activeCycle.stateInDefault(null)
+        data.repositoryFlow.flatMapLatest { it.activeCycle }.stateInDefault(null)
     val exercises: StateFlow<List<Exercise>> =
-        repo.exercises.stateInDefault(emptyList())
+        data.repositoryFlow.flatMapLatest { it.exercises }.stateInDefault(emptyList())
     val routines: StateFlow<List<Routine>> =
-        repo.routines.stateInDefault(emptyList())
+        data.repositoryFlow.flatMapLatest { it.routines }.stateInDefault(emptyList())
     val sessions: StateFlow<List<SessionWithBlocks>> =
-        repo.allSessions.stateInDefault(emptyList())
+        data.repositoryFlow.flatMapLatest { it.allSessions }.stateInDefault(emptyList())
     val repMaxes: StateFlow<List<RepMax>> =
-        repo.allRepMaxes.stateInDefault(emptyList())
+        data.repositoryFlow.flatMapLatest { it.allRepMaxes }.stateInDefault(emptyList())
 
     private fun <T> kotlinx.coroutines.flow.Flow<T>.stateInDefault(initial: T): StateFlow<T> =
         stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), initial)
+
+    init {
+        // Upgrade the demo dataset if the generator changed since it was seeded.
+        viewModelScope.launch { data.refreshDemoIfStale() }
+    }
+
+    // --- Demo mode --------------------------------------------------------------
+    val demoMode: StateFlow<Boolean> = data.demoMode
+
+    fun setDemoMode(enabled: Boolean) = viewModelScope.launch { data.setDemoMode(enabled) }
+
+    fun resetDemoData() = viewModelScope.launch { data.resetDemoData() }
 
     // --- Cycles ---------------------------------------------------------------
     fun saveCycle(cycle: Cycle, makeActive: Boolean = false) = viewModelScope.launch {
@@ -179,11 +200,11 @@ class AppViewModel(private val repo: Repository) : ViewModel() {
     }
 
     companion object {
-        fun factory(repo: Repository): ViewModelProvider.Factory =
+        fun factory(data: DataModeManager): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    AppViewModel(repo) as T
+                    AppViewModel(data) as T
             }
     }
 }
