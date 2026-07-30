@@ -231,6 +231,7 @@ fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
             original = editingRoutine,
             exercises = exercises,
             onDismiss = { showRoutineEditor = false },
+            onAddQuickExercise = { name -> viewModel.saveExercise(Exercise(name = name)) },
             onSave = { routine, blocks ->
                 viewModel.saveRoutineWithBlocks(routine, blocks)
                 showRoutineEditor = false
@@ -460,6 +461,7 @@ private class RoutineBlockFormState(
     var setsCount by mutableStateOf(setsCount)
     var targetRepsScheme by mutableStateOf(targetRepsScheme)
     var selectedExerciseIds by mutableStateOf(selectedExerciseIds)
+    var pendingExerciseName by mutableStateOf("")
     var notes by mutableStateOf(notes)
 }
 
@@ -469,6 +471,7 @@ private fun RoutineEditorDialog(
     original: RoutineWithBlocks?,
     exercises: List<Exercise>,
     onDismiss: () -> Unit,
+    onAddQuickExercise: (String) -> Unit,
     onSave: (Routine, List<RoutineBlock>) -> Unit
 ) {
     var name by remember { mutableStateOf(original?.routine?.name ?: "") }
@@ -634,21 +637,75 @@ private fun RoutineEditorDialog(
                                 modifier = Modifier.fillMaxWidth()
                             )
 
-                            Text("Exercises in this Block:", style = MaterialTheme.typography.labelMedium)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                exercises.forEach { ex ->
-                                    val isSelected = block.selectedExerciseIds.contains(ex.id)
-                                    FilterChip(
-                                        selected = isSelected,
-                                        onClick = {
-                                            block.selectedExerciseIds = if (isSelected) {
-                                                block.selectedExerciseIds - ex.id
+                            Text("Exercises in this Block:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+
+                            val selectedExObjects = block.selectedExerciseIds.mapNotNull { id ->
+                                exercises.firstOrNull { it.id == id }
+                            }
+
+                            if (selectedExObjects.isNotEmpty()) {
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    selectedExObjects.forEach { ex ->
+                                        FilterChip(
+                                            selected = true,
+                                            onClick = { block.selectedExerciseIds = block.selectedExerciseIds - ex.id },
+                                            label = { Text(ex.name) },
+                                            trailingIcon = { Icon(Icons.Filled.Close, contentDescription = "Remove exercise") }
+                                        )
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    "No exercises added to this block yet.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            val unselectedExercises = exercises.filter { !block.selectedExerciseIds.contains(it.id) }
+                            if (unselectedExercises.isNotEmpty()) {
+                                Dropdown(
+                                    label = "Add from existing exercises",
+                                    options = unselectedExercises,
+                                    selected = null,
+                                    labelOf = { it.name },
+                                    onSelect = { ex ->
+                                        block.selectedExerciseIds = block.selectedExerciseIds + ex.id
+                                    },
+                                    placeholder = "Tap to pick existing exercise..."
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = block.pendingExerciseName,
+                                    onValueChange = { block.pendingExerciseName = it },
+                                    label = { Text("Or type new exercise name...") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Button(
+                                    enabled = block.pendingExerciseName.isNotBlank(),
+                                    onClick = {
+                                        val typedName = block.pendingExerciseName.trim()
+                                        if (typedName.isNotBlank()) {
+                                            val existing = exercises.firstOrNull { it.name.equals(typedName, ignoreCase = true) }
+                                            if (existing != null) {
+                                                if (!block.selectedExerciseIds.contains(existing.id)) {
+                                                    block.selectedExerciseIds = block.selectedExerciseIds + existing.id
+                                                }
                                             } else {
-                                                block.selectedExerciseIds + ex.id
+                                                onAddQuickExercise(typedName)
                                             }
-                                        },
-                                        label = { Text(ex.name) }
-                                    )
+                                            block.pendingExerciseName = ""
+                                        }
+                                    }
+                                ) {
+                                    Text("＋ Add")
                                 }
                             }
                         }
