@@ -49,6 +49,13 @@ jobs:
       # Rolling pre-release so the latest snapshot can be downloaded straight
       # from a phone (Releases -> "Snapshot"). Skipped on pull_request events
       # because the branch push event already publishes the same commit.
+      - name: Delete previous snapshot release and tag
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete snapshot --yes --cleanup-tag || true
+
       - name: Update rolling snapshot pre-release
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
