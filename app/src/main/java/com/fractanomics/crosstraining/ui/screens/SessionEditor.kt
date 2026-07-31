@@ -336,7 +336,7 @@ fun SessionEditorBody(
                         val targetEx = blk.exerciseIdsCsv.split(",")
                             .mapNotNull { idStr -> idStr.trim().toLongOrNull() }
                             .mapNotNull { id -> exercises.firstOrNull { it.id == id } }
-                            .firstOrNull()
+                            .firstOrNull() ?: exercises.firstOrNull { it.id == rwb.routine.mainExerciseId }
 
                         val parsedRepsList = RepScheme.parse(blk.targetRepsScheme, blk.setsCount)
 
@@ -346,6 +346,7 @@ fun SessionEditorBody(
                             format = blk.format,
                             scheme = blk.targetRepsScheme,
                             exercise = targetEx,
+                            routine = rwb.routine,
                             description = blk.notes,
                             sets = parsedRepsList.map { reps ->
                                 SetState(reps = reps.toString(), value = "")
