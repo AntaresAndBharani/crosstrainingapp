@@ -225,6 +225,12 @@ class Repository(private val db: AppDatabase) {
         )
     )
 
+    // --- Cloud Sync Getters ---------------------------------------------------
+    suspend fun getAllExercisesOnce(): List<Exercise> = exerciseDao.getAllOnce()
+    suspend fun getAllRoutinesWithBlocksOnce(): List<RoutineWithBlocks> = routineDao.getAllWithBlocksOnce()
+    suspend fun getAllSessionsWithBlocksOnce(): List<SessionWithBlocks> =
+        sessionDao.getAllSessionsOnce().mapNotNull { s -> sessionDao.getByIdOnce(s.id) }
+
     // --- Backup / restore -----------------------------------------------------
     /** Read the whole database into an in-memory snapshot. */
     suspend fun exportSnapshot(): BackupData = BackupData(
