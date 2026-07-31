@@ -42,6 +42,11 @@ import com.fractanomics.crosstraining.ui.screens.SessionEditorScreen
 import androidx.compose.material.icons.filled.Timer
 import com.fractanomics.crosstraining.ui.screens.TimerScreen
 
+import androidx.compose.material.icons.filled.AccountCircle
+import com.fractanomics.crosstraining.ui.screens.ProfileScreen
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.remember
+
 enum class Destination(
     val route: String,
     val label: String,
@@ -52,7 +57,8 @@ enum class Destination(
     PROGRESS("progress", "Progress", Icons.Filled.BarChart),
     CYCLES("cycles", "Cycles", Icons.Filled.CalendarMonth),
     LIBRARY("library", "Library", Icons.Filled.MenuBook),
-    TIMER("timer", "Timer", Icons.Filled.Timer)
+    TIMER("timer", "Timer", Icons.Filled.Timer),
+    PROFILE("profile", "Profile", Icons.Filled.AccountCircle)
 }
 
 @Composable
@@ -60,6 +66,7 @@ fun AppNavigation(viewModel: AppViewModel) {
     val navController = rememberNavController()
     val destinations = Destination.entries
     val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     Scaffold(
         bottomBar = {
@@ -131,6 +138,9 @@ fun AppNavigation(viewModel: AppViewModel) {
             }
             composable(Destination.TIMER.route) {
                 TimerScreen(innerPadding)
+            }
+            composable(Destination.PROFILE.route) {
+                ProfileScreen(viewModel, snackbarHostState)
             }
         }
     }
