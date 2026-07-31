@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "384900244521",
+    "project_id": "virgymia-c2cc7",
+    "storage_bucket": "virgymia-c2cc7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:384900244521:android:b12fed2e946b1c66b46838",
+        "android_client_info": {
+          "package_name": "com.fractanomics.crosstraining"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCnhmJWei5bO3yaebw-Gqthqynk5VCJu9s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
