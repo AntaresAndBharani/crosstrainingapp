@@ -19,6 +19,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeout
 import java.time.LocalDate
 
 data class AuthUser(
@@ -53,8 +54,10 @@ object UserCloudSyncManager {
     suspend fun ensureAuthenticated() {
         if (auth.currentUser == null) {
             try {
-                val result = auth.signInAnonymously().await()
-                _userState.value = result.user?.toAuthUser()
+                withTimeout(5000L) {
+                    val result = auth.signInAnonymously().await()
+                    _userState.value = result.user?.toAuthUser()
+                }
             } catch (e: Exception) {
                 // Ignore offline
             }
@@ -64,129 +67,137 @@ object UserCloudSyncManager {
     }
 
     suspend fun signUpWithEmail(email: String, pass: String): Result<Unit> = runCatching {
-        val currentUser = auth.currentUser
-        if (currentUser != null && currentUser.isAnonymous) {
-            // Link anonymous account to preserve local user data ID
-            val credential = EmailAuthProvider.getCredential(email, pass)
-            currentUser.linkWithCredential(credential).await()
-        } else {
-            auth.createUserWithEmailAndPassword(email, pass).await()
+        withTimeout(10000L) {
+            val currentUser = auth.currentUser
+            if (currentUser != null && currentUser.isAnonymous) {
+                val credential = EmailAuthProvider.getCredential(email, pass)
+                currentUser.linkWithCredential(credential).await()
+            } else {
+                auth.createUserWithEmailAndPassword(email, pass).await()
+            }
+            _userState.value = auth.currentUser?.toAuthUser()
         }
-        _userState.value = auth.currentUser?.toAuthUser()
     }
 
     suspend fun logInWithEmail(email: String, pass: String): Result<Unit> = runCatching {
-        auth.signInWithEmailAndPassword(email, pass).await()
-        _userState.value = auth.currentUser?.toAuthUser()
+        withTimeout(10000L) {
+            auth.signInWithEmailAndPassword(email, pass).await()
+            _userState.value = auth.currentUser?.toAuthUser()
+        }
     }
 
     suspend fun sendPasswordReset(email: String): Result<Unit> = runCatching {
-        auth.sendPasswordResetEmail(email).await()
+        withTimeout(10000L) {
+            auth.sendPasswordResetEmail(email).await()
+        }
     }
 
     fun signOut() {
         auth.signOut()
         _userState.value = null
+        _syncState.value = SyncStatus.IDLE
     }
 
     suspend fun uploadUserData(repo: Repository): Result<Unit> = runCatching {
-        ensureAuthenticated()
-        val uid = currentUserId
-        if (uid.isBlank()) error("User not authenticated")
-
         _syncState.value = SyncStatus.SYNCING
 
-        val userDoc = firestore.collection("users").document(uid)
+        withTimeout(10000L) {
+            ensureAuthenticated()
+            val uid = currentUserId
+            if (uid.isBlank()) error("User not authenticated")
 
-        // 1. Upload Exercises
-        val exercises = repo.getAllExercisesOnce()
-        val exPayload = exercises.map { ex ->
-            mapOf(
-                "id" to ex.id,
-                "name" to ex.name,
-                "category" to ex.category.name,
-                "metricType" to ex.metricType.name,
-                "unit" to ex.unit,
-                "tracksRepMax" to ex.tracksRepMax
-            )
-        }
-        userDoc.collection("data").document("exercises").set(mapOf("list" to exPayload)).await()
+            val userDoc = firestore.collection("users").document(uid)
 
-        // 2. Upload Routines
-        val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce()
-        val routinesPayload = routinesWithBlocks.map { rwb ->
-            mapOf(
-                "routine" to mapOf(
-                    "id" to rwb.routine.id,
-                    "name" to rwb.routine.name,
-                    "description" to rwb.routine.description,
-                    "mainExerciseId" to rwb.routine.mainExerciseId,
-                    "defaultFormat" to rwb.routine.defaultFormat
-                ),
-                "blocks" to rwb.blocks.map { b ->
-                    mapOf(
-                        "id" to b.id,
-                        "routineId" to b.routineId,
-                        "position" to b.position,
-                        "name" to b.name,
-                        "kind" to b.kind.name,
-                        "format" to b.format,
-                        "setsCount" to b.setsCount,
-                        "targetRepsScheme" to b.targetRepsScheme,
-                        "exerciseIdsCsv" to b.exerciseIdsCsv,
-                        "notes" to b.notes
-                    )
-                }
-            )
-        }
-        userDoc.collection("data").document("routines").set(mapOf("list" to routinesPayload)).await()
+            // 1. Upload Exercises
+            val exercises = repo.getAllExercisesOnce()
+            val exPayload = exercises.map { ex ->
+                mapOf(
+                    "id" to ex.id,
+                    "name" to ex.name,
+                    "category" to ex.category.name,
+                    "metricType" to ex.metricType.name,
+                    "unit" to ex.unit,
+                    "tracksRepMax" to ex.tracksRepMax
+                )
+            }
+            userDoc.collection("data").document("exercises").set(mapOf("list" to exPayload)).await()
 
-        // 3. Upload Sessions & Logs
-        val sessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
-        val sessionsPayload = sessionsWithBlocks.map { swb ->
-            mapOf(
-                "session" to mapOf(
-                    "id" to swb.session.id,
-                    "date" to swb.session.date.toString(),
-                    "title" to swb.session.title,
-                    "notes" to swb.session.notes
-                ),
-                "blocks" to swb.blocks.map { sb ->
-                    mapOf(
-                        "block" to mapOf(
-                            "id" to sb.block.id,
-                            "sessionId" to sb.block.sessionId,
-                            "position" to sb.block.position,
-                            "name" to sb.block.name,
-                            "kind" to sb.block.kind.name,
-                            "format" to sb.block.format,
-                            "scheme" to sb.block.scheme,
-                            "mainExerciseId" to sb.block.mainExerciseId,
-                            "routineId" to sb.block.routineId,
-                            "description" to sb.block.description,
-                            "resultText" to sb.block.resultText,
-                            "resultValue" to sb.block.resultValue,
-                            "notes" to sb.block.notes
-                        ),
-                        "sets" to sb.sets.map { st ->
-                            mapOf(
-                                "id" to st.id,
-                                "blockId" to st.blockId,
-                                "position" to st.position,
-                                "groupIndex" to st.groupIndex,
-                                "reps" to st.reps,
-                                "weight" to st.weight,
-                                "metricValue" to st.metricValue,
-                                "isWarmup" to st.isWarmup,
-                                "isFailed" to st.isFailed,
-                                "notes" to st.notes
-                            )
-                        }
-                    )
-                }
-            )
+            // 2. Upload Routines
+            val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce()
+            val routinesPayload = routinesWithBlocks.map { rwb ->
+                mapOf(
+                    "routine" to mapOf(
+                        "id" to rwb.routine.id,
+                        "name" to rwb.routine.name,
+                        "description" to rwb.routine.description,
+                        "mainExerciseId" to rwb.routine.mainExerciseId,
+                        "defaultFormat" to rwb.routine.defaultFormat
+                    ),
+                    "blocks" to rwb.blocks.map { b ->
+                        mapOf(
+                            "id" to b.id,
+                            "routineId" to b.routineId,
+                            "position" to b.position,
+                            "name" to b.name,
+                            "kind" to b.kind.name,
+                            "format" to b.format,
+                            "setsCount" to b.setsCount,
+                            "targetRepsScheme" to b.targetRepsScheme,
+                            "exerciseIdsCsv" to b.exerciseIdsCsv,
+                            "notes" to b.notes
+                        )
+                    }
+                )
+            }
+            userDoc.collection("data").document("routines").set(mapOf("list" to routinesPayload)).await()
+
+            // 3. Upload Sessions & Logs
+            val sessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
+            val sessionsPayload = sessionsWithBlocks.map { swb ->
+                mapOf(
+                    "session" to mapOf(
+                        "id" to swb.session.id,
+                        "date" to swb.session.date.toString(),
+                        "title" to swb.session.title,
+                        "notes" to swb.session.notes
+                    ),
+                    "blocks" to swb.blocks.map { sb ->
+                        mapOf(
+                            "block" to mapOf(
+                                "id" to sb.block.id,
+                                "sessionId" to sb.block.sessionId,
+                                "position" to sb.block.position,
+                                "name" to sb.block.name,
+                                "kind" to sb.block.kind.name,
+                                "format" to sb.block.format,
+                                "scheme" to sb.block.scheme,
+                                "mainExerciseId" to sb.block.mainExerciseId,
+                                "routineId" to sb.block.routineId,
+                                "description" to sb.block.description,
+                                "resultText" to sb.block.resultText,
+                                "resultValue" to sb.block.resultValue,
+                                "notes" to sb.block.notes
+                            ),
+                            "sets" to sb.sets.map { st ->
+                                mapOf(
+                                    "id" to st.id,
+                                    "blockId" to st.blockId,
+                                    "position" to st.position,
+                                    "groupIndex" to st.groupIndex,
+                                    "reps" to st.reps,
+                                    "weight" to st.weight,
+                                    "metricValue" to st.metricValue,
+                                    "isWarmup" to st.isWarmup,
+                                    "isFailed" to st.isFailed,
+                                    "notes" to st.notes
+                                )
+                            }
+                        )
+                    }
+                )
+            }
+            userDoc.collection("data").document("sessions").set(mapOf("list" to sessionsPayload)).await()
         }
-        userDoc.collection("data").document("sessions").set(mapOf("list" to sessionsPayload)).await()
 
         _syncState.value = SyncStatus.SUCCESS
     }.onFailure {
@@ -194,56 +205,58 @@ object UserCloudSyncManager {
     }
 
     suspend fun downloadUserData(repo: Repository): Result<Unit> = runCatching {
-        ensureAuthenticated()
-        val uid = currentUserId
-        if (uid.isBlank()) error("User not authenticated")
-
         _syncState.value = SyncStatus.SYNCING
 
-        val userDoc = firestore.collection("users").document(uid)
+        withTimeout(10000L) {
+            ensureAuthenticated()
+            val uid = currentUserId
+            if (uid.isBlank()) error("User not authenticated")
 
-        // 1. Download Exercises
-        val exSnap = userDoc.collection("data").document("exercises").get().await()
-        if (exSnap.exists()) {
-            @Suppress("UNCHECKED_CAST")
-            val exList = exSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
-            exList.forEach { map ->
-                val name = map["name"] as? String ?: return@forEach
-                val category = runCatching { ExerciseCategory.valueOf(map["category"] as String) }.getOrDefault(ExerciseCategory.BARBELL)
-                val metricType = runCatching { MetricType.valueOf(map["metricType"] as String) }.getOrDefault(MetricType.WEIGHT)
-                repo.getOrCreateExercise(name, category, metricType)
-            }
-        }
+            val userDoc = firestore.collection("users").document(uid)
 
-        // 2. Download Routines
-        val routSnap = userDoc.collection("data").document("routines").get().await()
-        if (routSnap.exists()) {
-            @Suppress("UNCHECKED_CAST")
-            val routList = routSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
-            routList.forEach { rwbMap ->
+            // 1. Download Exercises
+            val exSnap = userDoc.collection("data").document("exercises").get().await()
+            if (exSnap.exists()) {
                 @Suppress("UNCHECKED_CAST")
-                val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
-                val name = rMap["name"] as? String ?: return@forEach
-                val description = rMap["description"] as? String ?: ""
-                val defaultFormat = rMap["defaultFormat"] as? String ?: ""
-
-                @Suppress("UNCHECKED_CAST")
-                val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
-                val blocks = bList.mapIndexed { idx, bMap ->
-                    RoutineBlock(
-                        id = 0,
-                        routineId = 0,
-                        position = (bMap["position"] as? Number)?.toInt() ?: idx,
-                        name = bMap["name"] as? String ?: "",
-                        kind = runCatching { BlockKind.valueOf(bMap["kind"] as String) }.getOrDefault(BlockKind.WEIGHTLIFTING),
-                        format = bMap["format"] as? String ?: "",
-                        setsCount = (bMap["setsCount"] as? Number)?.toInt() ?: 1,
-                        targetRepsScheme = bMap["targetRepsScheme"] as? String ?: "",
-                        exerciseIdsCsv = bMap["exerciseIdsCsv"] as? String ?: "",
-                        notes = bMap["notes"] as? String ?: ""
-                    )
+                val exList = exSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
+                exList.forEach { map ->
+                    val name = map["name"] as? String ?: return@forEach
+                    val category = runCatching { ExerciseCategory.valueOf(map["category"] as String) }.getOrDefault(ExerciseCategory.BARBELL)
+                    val metricType = runCatching { MetricType.valueOf(map["metricType"] as String) }.getOrDefault(MetricType.WEIGHT)
+                    repo.getOrCreateExercise(name, category, metricType)
                 }
-                repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
+            }
+
+            // 2. Download Routines
+            val routSnap = userDoc.collection("data").document("routines").get().await()
+            if (routSnap.exists()) {
+                @Suppress("UNCHECKED_CAST")
+                val routList = routSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
+                routList.forEach { rwbMap ->
+                    @Suppress("UNCHECKED_CAST")
+                    val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
+                    val name = rMap["name"] as? String ?: return@forEach
+                    val description = rMap["description"] as? String ?: ""
+                    val defaultFormat = rMap["defaultFormat"] as? String ?: ""
+
+                    @Suppress("UNCHECKED_CAST")
+                    val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
+                    val blocks = bList.mapIndexed { idx, bMap ->
+                        RoutineBlock(
+                            id = 0,
+                            routineId = 0,
+                            position = (bMap["position"] as? Number)?.toInt() ?: idx,
+                            name = bMap["name"] as? String ?: "",
+                            kind = runCatching { BlockKind.valueOf(bMap["kind"] as String) }.getOrDefault(BlockKind.WEIGHTLIFTING),
+                            format = bMap["format"] as? String ?: "",
+                            setsCount = (bMap["setsCount"] as? Number)?.toInt() ?: 1,
+                            targetRepsScheme = bMap["targetRepsScheme"] as? String ?: "",
+                            exerciseIdsCsv = bMap["exerciseIdsCsv"] as? String ?: "",
+                            notes = bMap["notes"] as? String ?: ""
+                        )
+                    }
+                    repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
+                }
             }
         }
 
