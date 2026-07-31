@@ -45,7 +45,12 @@ import com.fractanomics.crosstraining.ui.screens.TimerScreen
 import androidx.compose.material.icons.filled.AccountCircle
 import com.fractanomics.crosstraining.ui.screens.ProfileScreen
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+
+import com.fractanomics.crosstraining.ui.screens.LoginWelcomeScreen
 
 enum class Destination(
     val route: String,
@@ -66,11 +71,23 @@ fun AppNavigation(viewModel: AppViewModel) {
     val navController = rememberNavController()
     val destinations = Destination.entries
     val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
+    val authUser by viewModel.authUser.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    Scaffold(
-        bottomBar = {
-            Column {
+    var guestModeAccepted by remember { mutableStateOf(false) }
+
+    val isAuthenticated = !authUser?.email.isNullOrBlank() || guestModeAccepted
+
+    if (!isAuthenticated) {
+        LoginWelcomeScreen(
+            viewModel = viewModel,
+            snackbar = snackbarHostState,
+            onContinueAsGuest = { guestModeAccepted = true }
+        )
+    } else {
+        Scaffold(
+            bottomBar = {
+                Column {
                 if (demoMode) DemoBanner()
                 NavigationBar {
                     val backStackEntry = navController.currentBackStackEntryAsState().value
@@ -144,6 +161,7 @@ fun AppNavigation(viewModel: AppViewModel) {
             }
         }
     }
+}
 }
 
 /** Persistent strip shown above the nav bar while demo data is active. */
