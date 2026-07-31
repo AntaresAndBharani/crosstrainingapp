@@ -63,16 +63,17 @@ object SeedData {
     suspend fun populate(
         exerciseDao: ExerciseDao,
         routineDao: RoutineDao,
-        cycleDao: CycleDao
+        cycleDao: CycleDao,
+        force: Boolean = false
     ) {
-        if (exerciseDao.count() == 0) {
+        if (force || exerciseDao.count() == 0) {
             exerciseDao.insertAll(defaults)
         }
 
         val allExercises = exerciseDao.getAllOnce()
         val exMap: Map<String, Exercise> = allExercises.associateBy { it.name }
 
-        if (cycleDao.getAllOnce().isEmpty()) {
+        if (force || cycleDao.getAllOnce().isEmpty()) {
             val defaultCycle = Cycle(
                 name = "8-Week CrossTraining Strength & Metcon",
                 startDate = LocalDate.now(),
@@ -83,7 +84,7 @@ object SeedData {
             cycleDao.insert(defaultCycle)
         }
 
-        if (routineDao.getAllOnce().isEmpty()) {
+        if (force || routineDao.getAllOnce().isEmpty()) {
             // 1. Fran
             val franEx = exMap["Thruster"]
             val franId = routineDao.insert(

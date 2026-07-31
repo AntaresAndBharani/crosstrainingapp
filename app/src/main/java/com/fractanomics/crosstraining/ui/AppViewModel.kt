@@ -30,8 +30,11 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.fractanomics.crosstraining.data.firebase.AuthUser
 import com.fractanomics.crosstraining.data.firebase.FirebaseSyncManager
 import com.fractanomics.crosstraining.data.firebase.SharedWorkoutPayload
+import com.fractanomics.crosstraining.data.firebase.SyncStatus
+import com.fractanomics.crosstraining.data.firebase.UserCloudSyncManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.time.LocalDate
 
@@ -47,6 +50,53 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
 
     private val repo: Repository
         get() = data.current
+
+    val authUser: StateFlow<AuthUser?> = UserCloudSyncManager.userState
+    val syncState: StateFlow<SyncStatus> = UserCloudSyncManager.syncState
+
+    fun signUpWithEmail(email: String, pass: String, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
+        val res = UserCloudSyncManager.signUpWithEmail(email, pass)
+        res.onSuccess {
+            UserCloudSyncManager.uploadUserData(repo)
+            onResult(true, null)
+        }.onFailure { err ->
+            onResult(false, err.localizedMessage)
+        }
+    }
+
+    fun logInWithEmail(email: String, pass: String, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
+        val res = UserCloudSyncManager.logInWithEmail(email, pass)
+        res.onSuccess {
+            UserCloudSyncManager.downloadUserData(repo)
+            onResult(true, null)
+        }.onFailure { err ->
+            onResult(false, err.localizedMessage)
+        }
+    }
+
+    fun sendPasswordReset(email: String, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
+        val res = UserCloudSyncManager.sendPasswordReset(email)
+        onResult(res.isSuccess, res.exceptionOrNull()?.localizedMessage)
+    }
+
+    fun signOut() {
+        UserCloudSyncManager.signOut()
+    }
+
+    fun triggerCloudSync(onResult: (Boolean) -> Unit) = viewModelScope.launch {
+        val uploadRes = UserCloudSyncManager.uploadUserData(repo)
+        onResult(uploadRes.isSuccess)
+    }
+
+    fun reseedDefaults(onComplete: () -> Unit) = viewModelScope.launch {
+        repo.reseedDefaults(force = true)
+        onComplete()
+    }
+
+    fun recoverCloudRoutines(onResult: (Int) -> Unit) = viewModelScope.launch {
+        val res = UserCloudSyncManager.recoverAllCloudRoutines(repo)
+        onResult(res.getOrDefault(0))
+    }
 
     val cycles: StateFlow<List<Cycle>> =
         data.repositoryFlow.flatMapLatest { it.cycles }.stateInDefault(emptyList())
