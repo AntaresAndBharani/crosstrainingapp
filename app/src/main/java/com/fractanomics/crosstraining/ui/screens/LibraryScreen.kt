@@ -1,5 +1,6 @@
 package com.fractanomics.crosstraining.ui.screens
 
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -24,8 +26,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -33,6 +38,10 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import com.fractanomics.crosstraining.data.firebase.FirebaseSyncManager
+import com.fractanomics.crosstraining.data.firebase.SharedWorkoutPayload
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -116,6 +125,10 @@ fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
             showImportConfirm = true
         }
     }
+
+    var activeShareCode by remember { mutableStateOf<String?>(null) }
+    var showImportModal by remember { mutableStateOf(false) }
+    var showCommunityModal by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
@@ -201,6 +214,26 @@ fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
                     }
                 }
             } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = false,
+                        onClick = { showImportModal = true },
+                        label = { Text("Import Code") },
+                        leadingIcon = { Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = { showCommunityModal = true },
+                        label = { Text("Community Library") },
+                        leadingIcon = { Icon(Icons.Filled.Public, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    )
+                }
+
                 if (routinesWithBlocks.isEmpty()) {
                     EmptyState("No daily routines created yet. Tap + to define one.")
                 } else {
@@ -209,6 +242,11 @@ fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
                             RoutineCard(
                                 routineWithBlocks = rwb,
                                 exercises = exercises,
+                                onShare = {
+                                    viewModel.shareRoutine(rwb) { code ->
+                                        activeShareCode = code
+                                    }
+                                },
                                 onEdit = { editingRoutine = rwb; showRoutineEditor = true },
                                 onDelete = { viewModel.deleteRoutine(rwb.routine) }
                             )
@@ -217,6 +255,48 @@ fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
                 }
             }
         }
+    }
+
+    if (activeShareCode != null) {
+        ShareWorkoutModalDialog(
+            shareCode = activeShareCode!!,
+            onDismiss = { activeShareCode = null }
+        )
+    }
+
+    if (showImportModal) {
+        ImportWorkoutModalDialog(
+            onDismiss = { showImportModal = false },
+            onImportCode = { code ->
+                showImportModal = false
+                scope.launch {
+                    val payload = FirebaseSyncManager.getSharedWorkout(code)
+                    if (payload != null) {
+                        viewModel.importSharedWorkout(payload) { ok ->
+                            scope.launch {
+                                snackbar.showSnackbar(if (ok) "Imported '${payload.routineName}'!" else "Import failed")
+                            }
+                        }
+                    } else {
+                        snackbar.showSnackbar("Invalid or expired share code '$code'")
+                    }
+                }
+            }
+        )
+    }
+
+    if (showCommunityModal) {
+        CommunityWorkoutsModalDialog(
+            viewModel = viewModel,
+            onDismiss = { showCommunityModal = false },
+            onImportPayload = { payload ->
+                viewModel.importSharedWorkout(payload) { ok ->
+                    scope.launch {
+                        snackbar.showSnackbar(if (ok) "Imported '${payload.routineName}' to library!" else "Import failed")
+                    }
+                }
+            }
+        )
     }
 
     if (showExerciseEditor) {
@@ -294,6 +374,7 @@ private fun ExerciseCard(exercise: Exercise, onEdit: () -> Unit, onDelete: () ->
 private fun RoutineCard(
     routineWithBlocks: RoutineWithBlocks,
     exercises: List<Exercise>,
+    onShare: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -374,7 +455,12 @@ private fun RoutineCard(
                 Text("Format: ${routine.defaultFormat}", style = MaterialTheme.typography.bodySmall)
             }
 
-            Row {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onShare) {
+                    Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Share")
+                }
                 TextButton(onClick = onEdit) { Text("Edit") }
                 TextButton(onClick = onDelete) { Text("Delete") }
             }
@@ -759,5 +845,165 @@ private fun RoutineEditorDialog(
             ) { Text("Save Routine") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun ShareWorkoutModalDialog(shareCode: String, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val shareLink = "https://crosstraining.app/w/$shareCode"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Share Workout") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Share this 6-character code with gym partners to let them import your workout:")
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(8.dp))
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        shareCode,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+                Text("Or send the share link via WhatsApp, Email, or SMS:", style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(
+                    onClick = {
+                        val sendIntent = Intent().apply {
+                            action = Intent.ACTION_SEND
+                            putExtra(Intent.EXTRA_TEXT, "Check out my workout in CrossTraining! Share Code: $shareCode\nLink: $shareLink")
+                            type = "text/plain"
+                        }
+                        val shareIntent = Intent.createChooser(sendIntent, "Share Workout via")
+                        context.startActivity(shareIntent)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Share via App...")
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) { Text("Done") }
+        }
+    )
+}
+
+@Composable
+private fun ImportWorkoutModalDialog(
+    onDismiss: () -> Unit,
+    onImportCode: (String) -> Unit
+) {
+    var codeInput by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Import Shared Workout") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Enter the 6-character Share Code provided by a gym partner or coach:")
+                OutlinedTextField(
+                    value = codeInput,
+                    onValueChange = { codeInput = it.uppercase() },
+                    label = { Text("Share Code (e.g. FRAN21)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = codeInput.trim().length >= 4,
+                onClick = { onImportCode(codeInput.trim()) }
+            ) { Text("Import Workout") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun CommunityWorkoutsModalDialog(
+    viewModel: AppViewModel,
+    onDismiss: () -> Unit,
+    onImportPayload: (SharedWorkoutPayload) -> Unit
+) {
+    val communityWorkouts by viewModel.communityWorkouts.collectAsStateWithLifecycle()
+    var isLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        viewModel.fetchCommunityWorkouts()
+        isLoading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Community Shared Workouts") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(380.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (isLoading) {
+                    Text("Loading community workouts...", style = MaterialTheme.typography.bodyMedium)
+                } else if (communityWorkouts.isEmpty()) {
+                    Text(
+                        "No community workouts shared yet. Be the first to share your daily routine!",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } else {
+                    communityWorkouts.forEach { workout ->
+                        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(workout.routineName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    Box(
+                                        modifier = Modifier
+                                            .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(workout.shareCode, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+
+                                if (workout.description.isNotBlank()) {
+                                    Text(workout.description, style = MaterialTheme.typography.bodySmall)
+                                }
+
+                                Text(
+                                    "Blocks: ${workout.blocks.size} · Format: ${workout.defaultFormat.ifBlank { "Custom" }}",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+
+                                Button(
+                                    onClick = { onImportPayload(workout) },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Import to My Library")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
     )
 }
