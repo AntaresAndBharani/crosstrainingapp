@@ -9,6 +9,7 @@ import com.fractanomics.crosstraining.data.BackupCsv
 import com.fractanomics.crosstraining.data.BlockInsert
 import com.fractanomics.crosstraining.data.DataModeManager
 import com.fractanomics.crosstraining.data.Repository
+import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.Exercise
@@ -29,6 +30,9 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.fractanomics.crosstraining.data.firebase.FirebaseSyncManager
+import com.fractanomics.crosstraining.data.firebase.SharedWorkoutPayload
+import kotlinx.coroutines.flow.MutableStateFlow
 import java.time.LocalDate
 
 /**
@@ -197,6 +201,52 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
             }.isSuccess
             onResult(ok)
         }
+
+    val communityWorkouts = MutableStateFlow<List<SharedWorkoutPayload>>(emptyList())
+
+    fun fetchCommunityWorkouts() = viewModelScope.launch {
+        communityWorkouts.value = FirebaseSyncManager.fetchCommunityWorkouts()
+    }
+
+    fun shareRoutine(rwb: RoutineWithBlocks, onComplete: (String) -> Unit) = viewModelScope.launch {
+        val exList = exercises.value
+        val exMap = exList.associateBy({ it.id }, { it.name })
+        val code = FirebaseSyncManager.publishRoutine(rwb.routine, rwb.blocks, exMap)
+        onComplete(code)
+    }
+
+    fun importSharedWorkout(payload: SharedWorkoutPayload, onComplete: (Boolean) -> Unit) = viewModelScope.launch {
+        try {
+            val targetRoutine = Routine(
+                name = payload.routineName,
+                description = payload.description,
+                defaultFormat = payload.defaultFormat
+            )
+
+            val blocks = payload.blocks.mapIndexed { idx, sb ->
+                val exIds = sb.exerciseNamesCsv.split(",")
+                    .mapNotNull { nameStr -> nameStr.trim().takeIf { it.isNotBlank() } }
+                    .map { exName -> repo.getOrCreateExercise(exName).id }
+
+                RoutineBlock(
+                    routineId = 0,
+                    position = idx,
+                    name = sb.name,
+                    kind = runCatching { BlockKind.valueOf(sb.kind) }.getOrDefault(BlockKind.WEIGHTLIFTING),
+                    format = sb.format,
+                    setsCount = sb.setsCount,
+                    targetRepsScheme = sb.targetRepsScheme,
+                    exerciseIdsCsv = exIds.joinToString(","),
+                    notes = sb.notes
+                )
+            }
+
+            repo.saveRoutineWithBlocks(targetRoutine, blocks)
+            onComplete(true)
+        } catch (e: Exception) {
+            onComplete(false)
+        }
+    }
 
     /** Create an exercise from a free-text name (used by quick-add flows). */
     fun quickAddExercise(

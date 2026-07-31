@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -13,46 +14,32 @@ android {
         applicationId = "com.fractanomics.crosstraining"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.5.1"
+        versionCode = 6
+        versionName = "1.6.0"
         vectorDrawables { useSupportLibrary = true }
     }
 
     signingConfigs {
         getByName("debug") {
-            val customKeystore = file("debug.keystore")
-            if (customKeystore.exists()) {
-                storeFile = customKeystore
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
-            }
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
     buildTypes {
-        debug {
-            applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
-            signingConfig = signingConfigs.getByName("debug")
-        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
         }
-        // Pre-release test build: debug-signed like the distributed APK but
-        // with its own application id and launcher label, so a snapshot can be
-        // installed alongside the released app without touching its data.
-        // CI passes -PsnapshotLabel=<short-sha> to stamp the version name.
         create("snapshot") {
             initWith(getByName("debug"))
-            applicationIdSuffix = ".snapshot"
-            signingConfig = signingConfigs.getByName("debug")
-            val label = (project.findProperty("snapshotLabel") as String?)?.takeIf { it.isNotBlank() }
-            versionNameSuffix = if (label != null) "-snapshot.$label" else "-snapshot"
+            matchingFallbacks += listOf("debug")
         }
     }
 
@@ -60,12 +47,15 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
     kotlinOptions {
         jvmTarget = "17"
     }
+
     buildFeatures {
         compose = true
     }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -89,6 +79,13 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+
+    // Firebase BoM and SDKs
+    implementation(platform("com.google.firebase:firebase-bom:33.9.0"))
+    implementation("com.google.firebase:firebase-firestore-ktx")
+    implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-analytics-ktx")
+
     testImplementation(libs.junit)
     debugImplementation(libs.androidx.ui.tooling)
 }

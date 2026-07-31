@@ -123,7 +123,11 @@ abstract class AppDatabase : RoomDatabase() {
                     // Seed the starter library of common lifts and machines.
                     val instance = INSTANCE ?: return
                     CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-                        SeedData.populate(instance.exerciseDao())
+                        SeedData.populate(
+                            instance.exerciseDao(),
+                            instance.routineDao(),
+                            instance.cycleDao()
+                        )
                     }
                 }
             }).build()
