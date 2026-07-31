@@ -93,6 +93,11 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         onComplete()
     }
 
+    fun recoverCloudRoutines(onResult: (Int) -> Unit) = viewModelScope.launch {
+        val res = UserCloudSyncManager.recoverAllCloudRoutines(repo)
+        onResult(res.getOrDefault(0))
+    }
+
     val cycles: StateFlow<List<Cycle>> =
         data.repositoryFlow.flatMapLatest { it.cycles }.stateInDefault(emptyList())
     val activeCycle: StateFlow<Cycle?> =

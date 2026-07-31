@@ -265,6 +265,46 @@ object UserCloudSyncManager {
         _syncState.value = SyncStatus.ERROR
     }
 
+    suspend fun recoverAllCloudRoutines(repo: Repository): Result<Int> = runCatching {
+        withTimeout(15000L) {
+            val querySnap = firestore.collectionGroup("data").get().await()
+            var count = 0
+            for (doc in querySnap.documents) {
+                if (doc.id == "routines") {
+                    @Suppress("UNCHECKED_CAST")
+                    val routList = doc.get("list") as? List<Map<String, Any>> ?: emptyList()
+                    routList.forEach { rwbMap ->
+                        @Suppress("UNCHECKED_CAST")
+                        val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
+                        val name = rMap["name"] as? String ?: return@forEach
+                        val description = rMap["description"] as? String ?: ""
+                        val defaultFormat = rMap["defaultFormat"] as? String ?: ""
+
+                        @Suppress("UNCHECKED_CAST")
+                        val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
+                        val blocks = bList.mapIndexed { idx, bMap ->
+                            RoutineBlock(
+                                id = 0,
+                                routineId = 0,
+                                position = (bMap["position"] as? Number)?.toInt() ?: idx,
+                                name = bMap["name"] as? String ?: "",
+                                kind = runCatching { BlockKind.valueOf(bMap["kind"] as String) }.getOrDefault(BlockKind.WEIGHTLIFTING),
+                                format = bMap["format"] as? String ?: "",
+                                setsCount = (bMap["setsCount"] as? Number)?.toInt() ?: 1,
+                                targetRepsScheme = bMap["targetRepsScheme"] as? String ?: "",
+                                exerciseIdsCsv = bMap["exerciseIdsCsv"] as? String ?: "",
+                                notes = bMap["notes"] as? String ?: ""
+                            )
+                        }
+                        repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
+                        count++
+                    }
+                }
+            }
+            count
+        }
+    }
+
     private fun FirebaseUser.toAuthUser(): AuthUser = AuthUser(
         uid = uid,
         email = email,
