@@ -263,7 +263,7 @@ private fun RoutineProgress(
     }
 
     val blocks = remember(sessions, current.id) {
-        sessions.routineBlockPerformances(current.id)
+        sessions.routineBlockPerformances(current.id, current)
     }
     val days = blocks.byDay()
     val unit = target?.unit ?: "kg"

@@ -53,8 +53,10 @@ import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.Routine
+import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.ui.AppViewModel
+import com.fractanomics.crosstraining.util.RepScheme
 import com.fractanomics.crosstraining.ui.BlockDraft
 import com.fractanomics.crosstraining.ui.SessionDraft
 import com.fractanomics.crosstraining.ui.SetDraft
@@ -286,6 +288,9 @@ fun SessionEditorBody(
         )
     }
 
+    val routinesWithBlocks by viewModel.routinesWithBlocks.collectAsStateWithLifecycle()
+    var selectedRoutineWithBlocks by remember(key) { mutableStateOf<RoutineWithBlocks?>(null) }
+
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
         topBar = {
@@ -316,6 +321,41 @@ fun SessionEditorBody(
                 labelOf = { it.name + if (it.isActive) " (active)" else "" },
                 onSelect = { selectedCycleId = it.id },
                 placeholder = "No cycle — create one in Cycles tab"
+            )
+
+            Dropdown(
+                label = "Load Daily Routine",
+                options = routinesWithBlocks,
+                selected = selectedRoutineWithBlocks,
+                labelOf = { it.routine.name },
+                onSelect = { rwb ->
+                    selectedRoutineWithBlocks = rwb
+                    if (title.isBlank()) title = rwb.routine.name
+                    blocks.clear()
+                    rwb.blocks.sortedBy { it.position }.forEach { blk ->
+                        val targetEx = blk.exerciseIdsCsv.split(",")
+                            .mapNotNull { idStr -> idStr.trim().toLongOrNull() }
+                            .mapNotNull { id -> exercises.firstOrNull { it.id == id } }
+                            .firstOrNull() ?: exercises.firstOrNull { it.id == rwb.routine.mainExerciseId }
+
+                        val parsedRepsList = RepScheme.parse(blk.targetRepsScheme, blk.setsCount)
+
+                        val newBlockState = BlockState(
+                            name = blk.name.ifBlank { blk.kind.label },
+                            kind = blk.kind,
+                            format = blk.format,
+                            scheme = blk.targetRepsScheme,
+                            exercise = targetEx,
+                            routine = rwb.routine,
+                            description = blk.notes,
+                            sets = parsedRepsList.map { reps ->
+                                SetState(reps = reps.toString(), value = "")
+                            }.toMutableStateList()
+                        )
+                        blocks.add(newBlockState)
+                    }
+                },
+                placeholder = "Select a Daily Routine to load..."
             )
             DateField("Date", date, { date = it }, Modifier.fillMaxWidth())
             OutlinedTextField(
@@ -522,7 +562,53 @@ private fun BlockEditor(
             }
 
             HorizontalDivider()
-            Text("Sets — weight/$valueLabel per round", style = MaterialTheme.typography.titleSmall)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Sets — weight/$valueLabel per round", style = MaterialTheme.typography.titleSmall)
+            }
+
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(
+                    selected = false,
+                    onClick = {
+                        val firstWeight = block.sets.firstOrNull()?.value ?: ""
+                        if (firstWeight.isNotBlank()) {
+                            block.sets.forEach { it.value = firstWeight }
+                        }
+                    },
+                    label = { Text("Copy 1st Weight to All", style = MaterialTheme.typography.labelSmall) }
+                )
+                FilterChip(
+                    selected = false,
+                    onClick = {
+                        var current = block.sets.firstOrNull()?.value?.toDoubleOrNull() ?: 0.0
+                        block.sets.forEach { set ->
+                            if (set.value.isBlank()) {
+                                set.value = current.trimmed()
+                            }
+                            current += 2.5
+                        }
+                    },
+                    label = { Text("+2.5 kg / set", style = MaterialTheme.typography.labelSmall) }
+                )
+                FilterChip(
+                    selected = false,
+                    onClick = {
+                        var current = block.sets.firstOrNull()?.value?.toDoubleOrNull() ?: 0.0
+                        block.sets.forEach { set ->
+                            if (set.value.isBlank()) {
+                                set.value = current.trimmed()
+                            }
+                            current += 5.0
+                        }
+                    },
+                    label = { Text("+5 kg / set", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
             block.sets.forEachIndexed { i, setState ->
                 SetEditorRow(
                     set = setState,
