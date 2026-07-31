@@ -5,6 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.fractanomics.crosstraining.data.dao.BlockDao
 import com.fractanomics.crosstraining.data.dao.CycleDao
@@ -17,14 +18,13 @@ import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
+import com.fractanomics.crosstraining.data.model.RoutineBlock
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-
-import com.fractanomics.crosstraining.data.model.RoutineBlock
 
 @Database(
     entities = [
@@ -37,7 +37,7 @@ import com.fractanomics.crosstraining.data.model.RoutineBlock
         BlockSet::class,
         RepMax::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -50,6 +50,38 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun repMaxDao(): RepMaxDao
 
     companion object {
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `routine_blocks` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `routineId` INTEGER NOT NULL,
+                        `position` INTEGER NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `format` TEXT NOT NULL,
+                        `setsCount` INTEGER NOT NULL,
+                        `exerciseIdsCsv` TEXT NOT NULL,
+                        `notes` TEXT NOT NULL,
+                        FOREIGN KEY(`routineId`) REFERENCES `routines`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_routine_blocks_routineId` ON `routine_blocks` (`routineId`)")
+            }
+        }
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Version 2 to 3 migration placeholder
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `routine_blocks` ADD COLUMN `targetRepsScheme` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -71,7 +103,10 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "crosstraining-demo.db"
-                ).fallbackToDestructiveMigration().build().also { DEMO = it }
+                )
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .fallbackToDestructiveMigrationOnDowngrade()
+                .build().also { DEMO = it }
             }
 
         private fun build(context: Context): AppDatabase =
@@ -79,7 +114,10 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext,
                 AppDatabase::class.java,
                 "crosstraining.db"
-            ).fallbackToDestructiveMigration().addCallback(object : Callback() {
+            )
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+            .fallbackToDestructiveMigrationOnDowngrade()
+            .addCallback(object : Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     super.onCreate(db)
                     // Seed the starter library of common lifts and machines.

@@ -1,6 +1,7 @@
 package com.fractanomics.crosstraining.ui
 
 import com.fractanomics.crosstraining.data.model.BlockSet
+import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import java.time.LocalDate
@@ -46,9 +47,13 @@ data class DayPerformance(
 fun List<SessionWithBlocks>.blockPerformances(exerciseId: Long): List<BlockPerformance> =
     performances { it.mainExerciseId == exerciseId }
 
-/** All block occurrences performing routine [routineId], oldest first. */
-fun List<SessionWithBlocks>.routineBlockPerformances(routineId: Long): List<BlockPerformance> =
-    performances { it.routineId == routineId }
+/** All block occurrences performing routine [routineId] or matching routine [routine], oldest first. */
+fun List<SessionWithBlocks>.routineBlockPerformances(routineId: Long, routine: Routine? = null): List<BlockPerformance> =
+    performances { b ->
+        b.routineId == routineId ||
+            (routine != null && routine.mainExerciseId != null && b.mainExerciseId == routine.mainExerciseId) ||
+            (routine != null && routine.name.isNotBlank() && (b.name.equals(routine.name, ignoreCase = true)))
+    }
 
 private fun List<SessionWithBlocks>.performances(
     match: (SessionBlock) -> Boolean
