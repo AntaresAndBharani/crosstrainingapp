@@ -88,6 +88,11 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         onResult(uploadRes.isSuccess)
     }
 
+    fun reseedDefaults(onComplete: () -> Unit) = viewModelScope.launch {
+        repo.reseedDefaults(force = true)
+        onComplete()
+    }
+
     val cycles: StateFlow<List<Cycle>> =
         data.repositoryFlow.flatMapLatest { it.cycles }.stateInDefault(emptyList())
     val activeCycle: StateFlow<Cycle?> =

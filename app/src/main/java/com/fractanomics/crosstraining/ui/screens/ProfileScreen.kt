@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Mail
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -180,16 +181,31 @@ fun ProfileScreen(
                     onClick = {
                         viewModel.triggerCloudSync { ok ->
                             scope.launch {
-                                snackbar.showSnackbar(if (ok) "Cloud sync completed successfully!" else "Cloud sync failed")
+                                snackbar.showSnackbar(if (ok) "Cloud sync completed!" else "Sync error — check internet or console")
                             }
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = syncState != SyncStatus.SYNCING
                 ) {
-                    Icon(Icons.Filled.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.CloudSync, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("Sync Now")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        viewModel.reseedDefaults {
+                            scope.launch {
+                                snackbar.showSnackbar("Default routines & exercises restored!")
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Restore Default Routines")
                 }
             }
         }

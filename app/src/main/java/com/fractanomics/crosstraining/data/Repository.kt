@@ -268,4 +268,8 @@ class Repository(private val db: AppDatabase) {
             repMaxDao.insertAll(data.repMaxes)
         }
     }
+
+    suspend fun reseedDefaults(force: Boolean = true) {
+        SeedData.populate(exerciseDao, routineDao, cycleDao, force)
+    }
 }
