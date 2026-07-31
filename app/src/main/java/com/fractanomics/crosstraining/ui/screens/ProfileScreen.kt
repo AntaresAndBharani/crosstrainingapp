@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Error
@@ -191,6 +192,21 @@ fun ProfileScreen(
                     Icon(Icons.Filled.CloudSync, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("Sync Now")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        viewModel.recoverCloudRoutines { count ->
+                            scope.launch {
+                                snackbar.showSnackbar(if (count > 0) "Recovered $count routines from cloud!" else "No previous routines found in cloud.")
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.CloudDownload, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Search Cloud for Lost Routines")
                 }
 
                 OutlinedButton(
