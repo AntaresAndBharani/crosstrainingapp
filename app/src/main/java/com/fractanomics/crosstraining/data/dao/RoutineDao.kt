@@ -54,4 +54,7 @@ interface RoutineDao {
 
     @Query("SELECT * FROM routines WHERE id = :id")
     suspend fun byId(id: Long): Routine?
+
+    @Query("SELECT * FROM routines WHERE LOWER(name) = LOWER(:name) LIMIT 1")
+    suspend fun byName(name: String): Routine?
 }

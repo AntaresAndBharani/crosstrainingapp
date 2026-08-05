@@ -51,6 +51,12 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     private val repo: Repository
         get() = data.current
 
+    init {
+        viewModelScope.launch {
+            repo.cleanupDuplicateRoutines()
+        }
+    }
+
     val authUser: StateFlow<AuthUser?> = UserCloudSyncManager.userState
     val syncState: StateFlow<SyncStatus> = UserCloudSyncManager.syncState
 
