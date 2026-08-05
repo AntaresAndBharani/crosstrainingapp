@@ -123,7 +123,8 @@ object UserCloudSyncManager {
             userDoc.collection("data").document("exercises").set(mapOf("list" to exPayload)).await()
 
             // 2. Upload Routines
-            val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce()
+            repo.cleanupDuplicateRoutines()
+            val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce().distinctBy { it.routine.name.trim().lowercase() }
             val routinesPayload = routinesWithBlocks.map { rwb ->
                 mapOf(
                     "routine" to mapOf(
@@ -258,6 +259,7 @@ object UserCloudSyncManager {
                     repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
                 }
             }
+            repo.cleanupDuplicateRoutines()
         }
 
         _syncState.value = SyncStatus.SUCCESS
@@ -301,6 +303,7 @@ object UserCloudSyncManager {
                     }
                 }
             }
+            repo.cleanupDuplicateRoutines()
             count
         }
     }
