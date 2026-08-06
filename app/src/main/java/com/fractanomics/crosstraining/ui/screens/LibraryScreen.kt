@@ -432,6 +432,22 @@ private fun RoutineCard(
                             Text(detailLine, style = MaterialTheme.typography.bodySmall)
                         }
 
+                        val (wInt, rInt, sMetric) = parseMetabolicNotes(blk.notes)
+                        if (wInt.isNotBlank() || rInt.isNotBlank()) {
+                            val metaSummary = listOfNotNull(
+                                if (wInt.isNotBlank()) "Work: $wInt" else null,
+                                if (rInt.isNotBlank()) "Rest: $rInt" else null,
+                                "Score: ${sMetric.label}"
+                            ).joinToString("  ·  ")
+                            Text(
+                                text = metaSummary,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+
                         val targetExNames = blk.exerciseIdsCsv.split(",")
                             .mapNotNull { idStr -> idStr.trim().toLongOrNull() }
                             .mapNotNull { id -> exercises.firstOrNull { it.id == id }?.name }
@@ -553,6 +569,34 @@ fun formatExerciseSequence(exNames: List<String>, repScheme: String): String {
     }.joinToString("  ➔  ")
 }
 
+fun parseMetabolicNotes(notes: String): Triple<String, String, MetricType> {
+    var work = ""
+    var rest = ""
+    var metric = MetricType.TIME
+    notes.lines().firstOrNull()?.split("|")?.forEach { part ->
+        val trimmed = part.trim()
+        when {
+            trimmed.startsWith("Work:", ignoreCase = true) -> work = trimmed.substringAfter("Work:").trim()
+            trimmed.startsWith("Rest:", ignoreCase = true) -> rest = trimmed.substringAfter("Rest:").trim()
+            trimmed.startsWith("Score:", ignoreCase = true) -> {
+                val mStr = trimmed.substringAfter("Score:").trim()
+                metric = runCatching { MetricType.valueOf(mStr.uppercase()) }.getOrDefault(MetricType.TIME)
+            }
+        }
+    }
+    return Triple(work, rest, metric)
+}
+
+fun formatMetabolicNotes(work: String, rest: String, metric: MetricType, notes: String): String {
+    val metaParts = mutableListOf<String>()
+    if (work.isNotBlank()) metaParts.add("Work: ${work.trim()}")
+    if (rest.isNotBlank()) metaParts.add("Rest: ${rest.trim()}")
+    metaParts.add("Score: ${metric.name}")
+    val metaHeader = metaParts.joinToString(" | ")
+    val userCustomNotes = notes.lines().filter { !it.contains("Score:") && !it.contains("Work:") && !it.contains("Rest:") }.joinToString("\n").trim()
+    return if (userCustomNotes.isNotBlank()) "$metaHeader\n$userCustomNotes" else metaHeader
+}
+
 private class SequenceItemState(
     val exerciseId: Long,
     targetReps: String = ""
@@ -567,6 +611,9 @@ private class RoutineBlockFormState(
     setsCount: String = "4",
     targetRepsScheme: String = "5",
     sequenceItems: List<SequenceItemState> = emptyList(),
+    workInterval: String = "",
+    restInterval: String = "",
+    scoreMetric: MetricType = MetricType.TIME,
     notes: String = ""
 ) {
     var name by mutableStateOf(name)
@@ -575,6 +622,9 @@ private class RoutineBlockFormState(
     var setsCount by mutableStateOf(setsCount)
     var targetRepsScheme by mutableStateOf(targetRepsScheme)
     val sequenceItems = sequenceItems.toMutableStateList()
+    var workInterval by mutableStateOf(workInterval)
+    var restInterval by mutableStateOf(restInterval)
+    var scoreMetric by mutableStateOf(scoreMetric)
     var pendingExerciseName by mutableStateOf("")
     var notes by mutableStateOf(notes)
 }
@@ -601,6 +651,7 @@ private fun RoutineEditorDialog(
                     targetReps = repParts.getOrNull(idx) ?: if (exIds.size == 1) blk.targetRepsScheme else "1"
                 )
             }
+            val (parsedWork, parsedRest, parsedMetric) = parseMetabolicNotes(blk.notes)
             RoutineBlockFormState(
                 name = blk.name,
                 kind = blk.kind,
@@ -608,6 +659,9 @@ private fun RoutineEditorDialog(
                 setsCount = blk.setsCount.toString(),
                 targetRepsScheme = blk.targetRepsScheme,
                 sequenceItems = seqItems,
+                workInterval = parsedWork,
+                restInterval = parsedRest,
+                scoreMetric = parsedMetric,
                 notes = blk.notes
             )
         } ?: listOf(RoutineBlockFormState(name = "Block 1", kind = BlockKind.WEIGHTLIFTING))
@@ -679,6 +733,95 @@ private fun RoutineEditorDialog(
                                 labelOf = { it.label },
                                 onSelect = { block.kind = it }
                             )
+
+                            val isMetabolic = block.kind == BlockKind.METABOLIC || block.kind == BlockKind.METCON || block.kind == BlockKind.CARDIO
+                            if (isMetabolic) {
+                                Text("Metabolic & Interval Structure:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+
+                                Text("Interval Presets:", style = MaterialTheme.typography.bodySmall)
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    FilterChip(
+                                        selected = block.workInterval == "15 cal" && block.restInterval == "1:00 min",
+                                        onClick = {
+                                            block.format = "Calorie Sprints"
+                                            block.setsCount = "5"
+                                            block.workInterval = "15 cal"
+                                            block.restInterval = "1:00 min"
+                                            block.scoreMetric = MetricType.TIME
+                                        },
+                                        label = { Text("15 Cal Sprint + 1m Rest (Score: Time)", style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                    FilterChip(
+                                        selected = block.workInterval == "40 sec" && block.restInterval == "20 sec",
+                                        onClick = {
+                                            block.format = "Work/Rest Intervals"
+                                            block.setsCount = "8"
+                                            block.workInterval = "40 sec"
+                                            block.restInterval = "20 sec"
+                                            block.scoreMetric = MetricType.CALORIES
+                                        },
+                                        label = { Text("40s Work / 20s Rest (Score: Calories)", style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                    FilterChip(
+                                        selected = block.workInterval == "500m" && block.restInterval == "2:00 min",
+                                        onClick = {
+                                            block.format = "Distance Sprints"
+                                            block.setsCount = "4"
+                                            block.workInterval = "500m"
+                                            block.restInterval = "2:00 min"
+                                            block.scoreMetric = MetricType.TIME
+                                        },
+                                        label = { Text("500m Row + 2m Rest (Score: Time)", style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                    FilterChip(
+                                        selected = block.workInterval == "20 sec" && block.restInterval == "10 sec",
+                                        onClick = {
+                                            block.format = "Tabata"
+                                            block.setsCount = "8"
+                                            block.workInterval = "20 sec"
+                                            block.restInterval = "10 sec"
+                                            block.scoreMetric = MetricType.REPS
+                                        },
+                                        label = { Text("Tabata 20s/10s (Score: Reps)", style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedTextField(
+                                        value = block.workInterval,
+                                        onValueChange = { block.workInterval = it },
+                                        label = { Text("Work Target (e.g. 15 cal, 40s)") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    OutlinedTextField(
+                                        value = block.restInterval,
+                                        onValueChange = { block.restInterval = it },
+                                        label = { Text("Rest Period (e.g. 1:00 min)") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+
+                                Text("Primary Score / Output Metric:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    listOf(
+                                        MetricType.TIME to "⏱️ Time (Elapsed)",
+                                        MetricType.CALORIES to "🔥 Calories (Total)",
+                                        MetricType.REPS to "🏋️ Reps / Rounds",
+                                        MetricType.DISTANCE to "📏 Distance (Meters)"
+                                    ).forEach { (mType, mLabel) ->
+                                        FilterChip(
+                                            selected = block.scoreMetric == mType,
+                                            onClick = { block.scoreMetric = mType },
+                                            label = { Text(mLabel, style = MaterialTheme.typography.labelSmall) }
+                                        )
+                                    }
+                                }
+                            }
 
                             OutlinedTextField(
                                 value = block.format,
@@ -888,6 +1031,7 @@ private fun RoutineEditorDialog(
                     )
 
                     val blocks = blockStates.mapIndexed { idx, bs ->
+                        val finalNotes = formatMetabolicNotes(bs.workInterval, bs.restInterval, bs.scoreMetric, bs.notes)
                         RoutineBlock(
                             id = 0,
                             routineId = routine.id,
@@ -898,7 +1042,7 @@ private fun RoutineEditorDialog(
                             setsCount = bs.setsCount.toIntOrNull() ?: 1,
                             targetRepsScheme = bs.targetRepsScheme.trim(),
                             exerciseIdsCsv = bs.sequenceItems.map { it.exerciseId }.joinToString(","),
-                            notes = bs.notes.trim()
+                            notes = finalNotes
                         )
                     }
 

@@ -454,7 +454,7 @@ private fun BlockEditor(
     val metric = block.exercise?.metricType ?: MetricType.WEIGHT
     val valueLabel = if (metric == MetricType.WEIGHT) "kg" else metric.defaultUnit
     val canRecordRm = block.exercise?.tracksRepMax ?: block.newExerciseName.isNotBlank()
-    val isMetcon = block.kind == BlockKind.METCON
+    val isMetabolic = block.kind == BlockKind.METCON || block.kind == BlockKind.METABOLIC || block.kind == BlockKind.CARDIO
 
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -477,7 +477,7 @@ private fun BlockEditor(
             OutlinedTextField(
                 value = block.name,
                 onValueChange = { block.name = it },
-                label = { Text("Block name (e.g. Snatch Waves)") },
+                label = { Text("Block name (e.g. Snatch Waves or 15 Cal Sprint)") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -524,7 +524,7 @@ private fun BlockEditor(
             OutlinedTextField(
                 value = block.format,
                 onValueChange = { block.format = it },
-                label = { Text("Format (e.g. E3MOM)") },
+                label = { Text("Format (e.g. Calorie Sprints or E3MOM)") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -541,21 +541,21 @@ private fun BlockEditor(
             OutlinedTextField(
                 value = block.scheme,
                 onValueChange = { block.scheme = it },
-                label = { Text("Rep scheme (e.g. 3-2-1-3-2-1-1-1-1)") },
+                label = { Text("Rep scheme / Interval structure") },
                 modifier = Modifier.fillMaxWidth()
             )
 
-            if (isMetcon) {
+            if (isMetabolic) {
                 OutlinedTextField(
                     value = block.description,
                     onValueChange = { block.description = it },
-                    label = { Text("Movements / intervals") },
+                    label = { Text("Movements / Work & Rest Intervals") },
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
                     value = block.resultText,
                     onValueChange = { block.resultText = it },
-                    label = { Text("Score (e.g. 2 rounds + 15 reps)") },
+                    label = { Text("Score / Result (e.g. 4:15 time or 125 cal or 5 rounds)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
