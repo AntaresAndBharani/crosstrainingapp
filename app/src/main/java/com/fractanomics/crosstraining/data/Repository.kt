@@ -105,9 +105,11 @@ class Repository(private val db: AppDatabase) {
 
     suspend fun saveRoutineWithBlocks(routine: Routine, blocks: List<RoutineBlock>): Long =
         db.withTransaction {
-            val routineId = if (routine.id == 0L) routineDao.insert(routine) else {
-                routineDao.update(routine)
-                routine.id
+            val existing = if (routine.id == 0L) routineDao.byName(routine.name.trim()) else null
+            val targetRoutine = if (existing != null) routine.copy(id = existing.id) else routine
+            val routineId = if (targetRoutine.id == 0L) routineDao.insert(targetRoutine) else {
+                routineDao.update(targetRoutine)
+                targetRoutine.id
             }
             routineDao.deleteBlocksForRoutine(routineId)
             if (blocks.isNotEmpty()) {
@@ -117,6 +119,21 @@ class Repository(private val db: AppDatabase) {
             }
             routineId
         }
+
+    suspend fun cleanupDuplicateRoutines() = db.withTransaction {
+        val allRoutines = routineDao.getAllOnce()
+        val grouped = allRoutines.groupBy { it.name.trim().lowercase() }
+        grouped.forEach { (_, list) ->
+            if (list.size > 1) {
+                val primary = list.first()
+                val duplicates = list.drop(1)
+                duplicates.forEach { dup ->
+                    routineDao.deleteBlocksForRoutine(dup.id)
+                    routineDao.delete(dup)
+                }
+            }
+        }
+    }
 
     suspend fun deleteRoutine(routine: Routine) = routineDao.delete(routine)
 

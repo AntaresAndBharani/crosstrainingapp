@@ -437,14 +437,25 @@ private fun RoutineCard(
                             .mapNotNull { id -> exercises.firstOrNull { it.id == id }?.name }
 
                         if (targetExNames.isNotEmpty()) {
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                targetExNames.forEach { exName ->
-                                    Box(
-                                        modifier = Modifier
-                                            .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(4.dp))
-                                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    ) {
-                                        Text(exName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                            if (targetExNames.size > 1 || blk.kind == BlockKind.COMPLEX || blk.kind == BlockKind.SUPERSET) {
+                                val seqText = formatExerciseSequence(targetExNames, blk.targetRepsScheme)
+                                Text(
+                                    text = "Sequence: $seqText",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            } else {
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    targetExNames.forEach { exName ->
+                                        Box(
+                                            modifier = Modifier
+                                                .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(4.dp))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(exName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                                        }
                                     }
                                 }
                             }
@@ -532,13 +543,30 @@ private fun ExerciseEditorDialog(
     )
 }
 
+fun formatExerciseSequence(exNames: List<String>, repScheme: String): String {
+    if (exNames.isEmpty()) return ""
+    if (exNames.size == 1) return exNames.first()
+    val repParts = repScheme.split(Regex("[+/\\-,]")).map { it.trim() }.filter { it.isNotBlank() }
+    return exNames.mapIndexed { idx, name ->
+        val reps = repParts.getOrNull(idx) ?: repParts.lastOrNull()
+        if (reps != null && reps.isNotBlank()) "$name ($reps reps)" else name
+    }.joinToString("  ➔  ")
+}
+
+private class SequenceItemState(
+    val exerciseId: Long,
+    targetReps: String = ""
+) {
+    var targetReps by mutableStateOf(targetReps)
+}
+
 private class RoutineBlockFormState(
     name: String = "",
     kind: BlockKind = BlockKind.WEIGHTLIFTING,
     format: String = "EMOM",
     setsCount: String = "4",
     targetRepsScheme: String = "5",
-    selectedExerciseIds: List<Long> = emptyList(),
+    sequenceItems: List<SequenceItemState> = emptyList(),
     notes: String = ""
 ) {
     var name by mutableStateOf(name)
@@ -546,7 +574,7 @@ private class RoutineBlockFormState(
     var format by mutableStateOf(format)
     var setsCount by mutableStateOf(setsCount)
     var targetRepsScheme by mutableStateOf(targetRepsScheme)
-    var selectedExerciseIds by mutableStateOf(selectedExerciseIds)
+    val sequenceItems = sequenceItems.toMutableStateList()
     var pendingExerciseName by mutableStateOf("")
     var notes by mutableStateOf(notes)
 }
@@ -565,14 +593,21 @@ private fun RoutineEditorDialog(
 
     val blockStates = remember(original) {
         val initialBlocks = original?.blocks?.sortedBy { it.position }?.map { blk ->
+            val exIds = blk.exerciseIdsCsv.split(",").mapNotNull { it.trim().toLongOrNull() }
+            val repParts = blk.targetRepsScheme.split(Regex("[+/\\-,]")).map { it.trim() }.filter { it.isNotBlank() }
+            val seqItems = exIds.mapIndexed { idx, id ->
+                SequenceItemState(
+                    exerciseId = id,
+                    targetReps = repParts.getOrNull(idx) ?: if (exIds.size == 1) blk.targetRepsScheme else "1"
+                )
+            }
             RoutineBlockFormState(
                 name = blk.name,
                 kind = blk.kind,
                 format = blk.format,
                 setsCount = blk.setsCount.toString(),
                 targetRepsScheme = blk.targetRepsScheme,
-                selectedExerciseIds = blk.exerciseIdsCsv.split(",")
-                    .mapNotNull { it.trim().toLongOrNull() },
+                sequenceItems = seqItems,
                 notes = blk.notes
             )
         } ?: listOf(RoutineBlockFormState(name = "Block 1", kind = BlockKind.WEIGHTLIFTING))
@@ -639,15 +674,7 @@ private fun RoutineEditorDialog(
 
                             Dropdown(
                                 label = "Block Type",
-                                options = listOf(
-                                    BlockKind.WEIGHTLIFTING,
-                                    BlockKind.HYPERTROPHY,
-                                    BlockKind.ACCESSORY,
-                                    BlockKind.METABOLIC,
-                                    BlockKind.CARDIO,
-                                    BlockKind.WARMUP,
-                                    BlockKind.OTHER
-                                ),
+                                options = BlockKind.entries,
                                 selected = block.kind,
                                 labelOf = { it.label },
                                 onSelect = { block.kind = it }
@@ -718,47 +745,79 @@ private fun RoutineEditorDialog(
                             OutlinedTextField(
                                 value = block.targetRepsScheme,
                                 onValueChange = { block.targetRepsScheme = it },
-                                label = { Text("Custom Rep Scheme (e.g. 3-2-1-3-2-1 or 5x5 or 8)") },
+                                label = { Text("Custom Rep Scheme (e.g. 3 + 2 + 1 or 8 / 10 / 12)") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
 
-                            Text("Exercises in this Block:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                            Text("Exercise Sequence in this Block:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
 
-                            val selectedExObjects = block.selectedExerciseIds.mapNotNull { id ->
-                                exercises.firstOrNull { it.id == id }
-                            }
-
-                            if (selectedExObjects.isNotEmpty()) {
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    selectedExObjects.forEach { ex ->
-                                        FilterChip(
-                                            selected = true,
-                                            onClick = { block.selectedExerciseIds = block.selectedExerciseIds - ex.id },
-                                            label = { Text(ex.name) },
-                                            trailingIcon = { Icon(Icons.Filled.Close, contentDescription = "Remove exercise") }
-                                        )
+                            if (block.sequenceItems.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    block.sequenceItems.forEachIndexed { sIdx, item ->
+                                        val exObj = exercises.firstOrNull { it.id == item.exerciseId }
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
+                                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text("${sIdx + 1}.", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                            Text(
+                                                exObj?.name ?: "Exercise #${item.exerciseId}",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            OutlinedTextField(
+                                                value = item.targetReps,
+                                                onValueChange = { newReps ->
+                                                    item.targetReps = newReps
+                                                    if (block.sequenceItems.size > 1 || block.kind == BlockKind.COMPLEX || block.kind == BlockKind.SUPERSET) {
+                                                        block.targetRepsScheme = block.sequenceItems.map { it.targetReps.ifBlank { "1" } }.joinToString(" + ")
+                                                    }
+                                                },
+                                                label = { Text("Reps") },
+                                                singleLine = true,
+                                                modifier = Modifier.width(75.dp)
+                                            )
+                                            IconButton(
+                                                onClick = {
+                                                    block.sequenceItems.removeAt(sIdx)
+                                                    if (block.sequenceItems.size > 1) {
+                                                        block.targetRepsScheme = block.sequenceItems.map { it.targetReps.ifBlank { "1" } }.joinToString(" + ")
+                                                    }
+                                                }
+                                            ) {
+                                                Icon(Icons.Filled.Close, contentDescription = "Remove from sequence")
+                                            }
+                                        }
                                     }
                                 }
                             } else {
                                 Text(
-                                    "No exercises added to this block yet.",
+                                    "No exercises in sequence yet. Select or type below to add movements.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
 
-                            val unselectedExercises = exercises.filter { !block.selectedExerciseIds.contains(it.id) }
+                            val selectedExIds = block.sequenceItems.map { it.exerciseId }.toSet()
+                            val unselectedExercises = exercises.filter { !selectedExIds.contains(it.id) }
                             if (unselectedExercises.isNotEmpty()) {
                                 Dropdown(
-                                    label = "Add from existing exercises",
+                                    label = "Add exercise to sequence...",
                                     options = unselectedExercises,
                                     selected = null,
                                     labelOf = { it.name },
                                     onSelect = { ex ->
-                                        block.selectedExerciseIds = block.selectedExerciseIds + ex.id
+                                        block.sequenceItems.add(SequenceItemState(ex.id, "1"))
+                                        if (block.sequenceItems.size > 1 || block.kind == BlockKind.COMPLEX || block.kind == BlockKind.SUPERSET) {
+                                            block.targetRepsScheme = block.sequenceItems.map { it.targetReps.ifBlank { "1" } }.joinToString(" + ")
+                                        }
                                     },
-                                    placeholder = "Tap to pick existing exercise..."
+                                    placeholder = "Tap to pick exercise for complex/superset sequence..."
                                 )
                             }
 
@@ -781,8 +840,11 @@ private fun RoutineEditorDialog(
                                         if (typedName.isNotBlank()) {
                                             val existing = exercises.firstOrNull { it.name.equals(typedName, ignoreCase = true) }
                                             if (existing != null) {
-                                                if (!block.selectedExerciseIds.contains(existing.id)) {
-                                                    block.selectedExerciseIds = block.selectedExerciseIds + existing.id
+                                                if (!selectedExIds.contains(existing.id)) {
+                                                    block.sequenceItems.add(SequenceItemState(existing.id, "1"))
+                                                    if (block.sequenceItems.size > 1 || block.kind == BlockKind.COMPLEX || block.kind == BlockKind.SUPERSET) {
+                                                        block.targetRepsScheme = block.sequenceItems.map { it.targetReps.ifBlank { "1" } }.joinToString(" + ")
+                                                    }
                                                 }
                                             } else {
                                                 onAddQuickExercise(typedName)
@@ -835,7 +897,7 @@ private fun RoutineEditorDialog(
                             format = bs.format.trim(),
                             setsCount = bs.setsCount.toIntOrNull() ?: 1,
                             targetRepsScheme = bs.targetRepsScheme.trim(),
-                            exerciseIdsCsv = bs.selectedExerciseIds.joinToString(","),
+                            exerciseIdsCsv = bs.sequenceItems.map { it.exerciseId }.joinToString(","),
                             notes = bs.notes.trim()
                         )
                     }
