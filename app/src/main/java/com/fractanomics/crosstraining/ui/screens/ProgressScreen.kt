@@ -37,6 +37,8 @@ import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
+import com.fractanomics.crosstraining.data.model.RoutineBlock
+import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.BlockPerformance
@@ -59,6 +61,7 @@ import com.fractanomics.crosstraining.ui.trimmed
 fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
     val routines by viewModel.routines.collectAsStateWithLifecycle()
+    val routinesWithBlocks by viewModel.routinesWithBlocks.collectAsStateWithLifecycle()
     val repMaxes by viewModel.repMaxes.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
 
@@ -100,6 +103,7 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
             if (routineMode) {
                 RoutineProgress(
                     routines = routines,
+                    routinesWithBlocks = routinesWithBlocks,
                     exercises = exercises,
                     sessions = sessions,
                     current = selectedRoutine ?: routines.firstOrNull(),
@@ -231,9 +235,11 @@ private fun ExerciseProgress(
 
 // --- Routine view ---------------------------------------------------------------
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RoutineProgress(
     routines: List<Routine>,
+    routinesWithBlocks: List<RoutineWithBlocks>,
     exercises: List<Exercise>,
     sessions: List<SessionWithBlocks>,
     current: Routine?,
@@ -262,19 +268,148 @@ private fun RoutineProgress(
         )
     }
 
-    val blocks = remember(sessions, current.id) {
+    val allRoutineBlocks = remember(sessions, current.id) {
         sessions.routineBlockPerformances(current.id, current)
     }
-    val days = blocks.byDay()
+
+    val currentRwb = routinesWithBlocks.firstOrNull { it.routine.id == current.id }
+    val definedBlocks = currentRwb?.blocks?.sortedBy { it.position } ?: emptyList()
+
+    fun matchesRoutineBlock(pb: BlockPerformance, rBlk: RoutineBlock, totalDefined: Int): Boolean {
+        val bName = rBlk.name.ifBlank { rBlk.kind.label }
+        val pbName = pb.block.name.ifBlank { pb.block.kind.label }
+        return pbName.equals(bName, ignoreCase = true) ||
+            (rBlk.name.isNotBlank() && pb.block.name.equals(rBlk.name, ignoreCase = true)) ||
+            (rBlk.targetRepsScheme.isNotBlank() && pb.block.scheme.equals(rBlk.targetRepsScheme, ignoreCase = true)) ||
+            (pb.block.kind == rBlk.kind && totalDefined == 1)
+    }
+
+    // --- Block Filter Chips ---------------------------------------------------
+    var selectedBlockFilter by remember(current.id) { mutableStateOf<String?>(null) }
+
+    if (definedBlocks.isNotEmpty()) {
+        Text(
+            "Filter Performance by Block:",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(
+                selected = selectedBlockFilter == null,
+                onClick = { selectedBlockFilter = null },
+                label = { Text("All Blocks (Global)") }
+            )
+            definedBlocks.forEach { rBlk ->
+                val bName = rBlk.name.ifBlank { rBlk.kind.label }
+                val matchCount = allRoutineBlocks.count { matchesRoutineBlock(it, rBlk, definedBlocks.size) }
+                FilterChip(
+                    selected = selectedBlockFilter == bName,
+                    onClick = { selectedBlockFilter = if (selectedBlockFilter == bName) null else bName },
+                    label = { Text("$bName ($matchCount done)") }
+                )
+            }
+        }
+    }
+
+    val activeBlocks = if (selectedBlockFilter == null) {
+        allRoutineBlocks
+    } else {
+        val targetRBlk = definedBlocks.firstOrNull { (it.name.ifBlank { it.kind.label }) == selectedBlockFilter }
+        if (targetRBlk != null) {
+            allRoutineBlocks.filter { pb -> matchesRoutineBlock(pb, targetRBlk, definedBlocks.size) }
+        } else {
+            allRoutineBlocks.filter { pb ->
+                val pbName = pb.block.name.ifBlank { pb.block.kind.label }
+                pbName.equals(selectedBlockFilter, ignoreCase = true)
+            }
+        }
+    }
+
+    val days = activeBlocks.byDay()
     val unit = target?.unit ?: "kg"
 
-    KpiRows(blocks, days, unit)
-    EvolutionCards(days, unit)
+    KpiRows(activeBlocks, days, unit)
+    EvolutionCards(days, unit, titlePrefix = selectedBlockFilter ?: "All Blocks")
+
+    // --- Per-Block Routine Breakdown Card --------------------------------------
+    if (definedBlocks.isNotEmpty()) {
+        SectionCard(title = "Per-Block Routine Breakdown") {
+            val totalRoutineSessions = allRoutineBlocks.map { it.sessionId }.distinct().size
+            if (totalRoutineSessions > 0) {
+                Text(
+                    "Breakdown of defined blocks executed in $totalRoutineSessions routine sessions:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            definedBlocks.forEach { rBlk ->
+                val bName = rBlk.name.ifBlank { rBlk.kind.label }
+                val blockPerfList = allRoutineBlocks.filter { matchesRoutineBlock(it, rBlk, definedBlocks.size) }
+                val performedTimes = blockPerfList.map { it.sessionId }.distinct().size
+                val skippedTimes = (totalRoutineSessions - performedTimes).coerceAtLeast(0)
+
+                val bestTop = blockPerfList.mapNotNull { it.top }.maxOrNull()
+                val avgTop = blockPerfList.mapNotNull { it.average }.takeIf { it.isNotEmpty() }?.average()
+                val totalVol = blockPerfList.mapNotNull { it.volume }.takeIf { it.isNotEmpty() }?.sum()
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = bName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        val badgeText = when {
+                            totalRoutineSessions == 0 -> "Not logged yet"
+                            skippedTimes > 0 -> "$performedTimes/$totalRoutineSessions done · $skippedTimes skipped"
+                            else -> "$performedTimes/$totalRoutineSessions done"
+                        }
+                        Text(
+                            text = badgeText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (performedTimes > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    if (performedTimes > 0) {
+                        val statParts = listOfNotNull(
+                            bestTop?.let { "Best Top: ${it.trimmed()} $unit" },
+                            avgTop?.let { "Avg: ${it.trimmed()} $unit" },
+                            totalVol?.let { "Vol: ${it.trimmed()} kg" }
+                        ).joinToString("  ·  ")
+                        Text(
+                            text = statParts.ifBlank { "Executed with recorded reps" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            text = "Skipped or omitted in routine sessions",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(top = 4.dp))
+                }
+            }
+        }
+    }
+
     BlockHistoryCard(
-        blocks = blocks,
+        blocks = activeBlocks,
         unit = unit,
-        selectionKey = "routine-${current.id}",
-        emptyMessage = "No logged blocks use this routine yet. Link a block to it when logging a session."
+        selectionKey = "routine-${current.id}-${selectedBlockFilter ?: "all"}",
+        emptyMessage = "No logged blocks match this selection yet."
     )
 }
 
@@ -319,9 +454,10 @@ private fun KpiRows(blocks: List<BlockPerformance>, days: List<DayPerformance>, 
 
 /** Top & average evolution chart plus the volume-per-session chart. */
 @Composable
-private fun EvolutionCards(days: List<DayPerformance>, unit: String) {
+private fun EvolutionCards(days: List<DayPerformance>, unit: String, titlePrefix: String = "") {
+    val chartTitle = if (titlePrefix.isNotBlank()) "Evolution: $titlePrefix ($unit)" else "Evolution per session ($unit)"
     if (days.isNotEmpty()) {
-        SectionCard(title = "Evolution per session ($unit)") {
+        SectionCard(title = chartTitle) {
             MultiLineChart(
                 series = listOf(
                     ChartSeries(
