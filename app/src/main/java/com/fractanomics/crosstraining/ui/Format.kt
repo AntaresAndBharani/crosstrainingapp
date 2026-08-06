@@ -21,5 +21,5 @@ fun Double.trimmed(): String =
 
 /** Common workout formats offered as quick-pick chips. */
 val WORKOUT_FORMATS = listOf(
-    "EMOM", "E2MOM", "E3MOM", "AMRAP", "Rest 90s", "Rest 2 min", "Death by", "Time cap", "For Time", "Tabata", "Chipper", "Rounds for Time", "Sets x Reps", "Wave", "Tempo"
+    "EMOM", "E2MOM", "E3MOM", "AMRAP", "Calorie Sprints", "Work/Rest Intervals", "Distance Sprints", "Rest 90s", "Rest 2 min", "Death by", "Time cap", "For Time", "Tabata", "Chipper", "Rounds for Time", "Sets x Reps", "Wave", "Tempo"
 )

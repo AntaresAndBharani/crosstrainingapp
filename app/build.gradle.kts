@@ -14,8 +14,8 @@ android {
         applicationId = "com.fractanomics.crosstraining"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.7.1"
+        versionCode = 9
+        versionName = "1.9.0"
         vectorDrawables { useSupportLibrary = true }
     }
 
