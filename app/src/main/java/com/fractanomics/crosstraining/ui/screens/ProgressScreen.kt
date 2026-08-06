@@ -275,6 +275,15 @@ private fun RoutineProgress(
     val currentRwb = routinesWithBlocks.firstOrNull { it.routine.id == current.id }
     val definedBlocks = currentRwb?.blocks?.sortedBy { it.position } ?: emptyList()
 
+    fun matchesRoutineBlock(pb: BlockPerformance, rBlk: RoutineBlock, totalDefined: Int): Boolean {
+        val bName = rBlk.name.ifBlank { rBlk.kind.label }
+        val pbName = pb.block.name.ifBlank { pb.block.kind.label }
+        return pbName.equals(bName, ignoreCase = true) ||
+            (rBlk.name.isNotBlank() && pb.block.name.equals(rBlk.name, ignoreCase = true)) ||
+            (rBlk.targetRepsScheme.isNotBlank() && pb.block.scheme.equals(rBlk.targetRepsScheme, ignoreCase = true)) ||
+            (pb.block.kind == rBlk.kind && totalDefined == 1)
+    }
+
     // --- Block Filter Chips ---------------------------------------------------
     var selectedBlockFilter by remember(current.id) { mutableStateOf<String?>(null) }
 
@@ -292,11 +301,7 @@ private fun RoutineProgress(
             )
             definedBlocks.forEach { rBlk ->
                 val bName = rBlk.name.ifBlank { rBlk.kind.label }
-                val matchCount = allRoutineBlocks.count {
-                    it.block.name.equals(bName, ignoreCase = true) ||
-                    it.block.scheme.equals(rBlk.targetRepsScheme, ignoreCase = true) ||
-                    (it.block.kind == rBlk.kind && definedBlocks.size == 1)
-                }
+                val matchCount = allRoutineBlocks.count { matchesRoutineBlock(it, rBlk, definedBlocks.size) }
                 FilterChip(
                     selected = selectedBlockFilter == bName,
                     onClick = { selectedBlockFilter = if (selectedBlockFilter == bName) null else bName },
@@ -309,8 +314,14 @@ private fun RoutineProgress(
     val activeBlocks = if (selectedBlockFilter == null) {
         allRoutineBlocks
     } else {
-        allRoutineBlocks.filter {
-            it.block.name.equals(selectedBlockFilter, ignoreCase = true)
+        val targetRBlk = definedBlocks.firstOrNull { (it.name.ifBlank { it.kind.label }) == selectedBlockFilter }
+        if (targetRBlk != null) {
+            allRoutineBlocks.filter { pb -> matchesRoutineBlock(pb, targetRBlk, definedBlocks.size) }
+        } else {
+            allRoutineBlocks.filter { pb ->
+                val pbName = pb.block.name.ifBlank { pb.block.kind.label }
+                pbName.equals(selectedBlockFilter, ignoreCase = true)
+            }
         }
     }
 
@@ -318,7 +329,7 @@ private fun RoutineProgress(
     val unit = target?.unit ?: "kg"
 
     KpiRows(activeBlocks, days, unit)
-    EvolutionCards(days, unit)
+    EvolutionCards(days, unit, titlePrefix = selectedBlockFilter ?: "All Blocks")
 
     // --- Per-Block Routine Breakdown Card --------------------------------------
     if (definedBlocks.isNotEmpty()) {
@@ -334,11 +345,7 @@ private fun RoutineProgress(
 
             definedBlocks.forEach { rBlk ->
                 val bName = rBlk.name.ifBlank { rBlk.kind.label }
-                val blockPerfList = allRoutineBlocks.filter {
-                    it.block.name.equals(bName, ignoreCase = true) ||
-                    it.block.scheme.equals(rBlk.targetRepsScheme, ignoreCase = true) ||
-                    (it.block.kind == rBlk.kind && definedBlocks.size == 1)
-                }
+                val blockPerfList = allRoutineBlocks.filter { matchesRoutineBlock(it, rBlk, definedBlocks.size) }
                 val performedTimes = blockPerfList.map { it.sessionId }.distinct().size
                 val skippedTimes = (totalRoutineSessions - performedTimes).coerceAtLeast(0)
 
@@ -447,9 +454,10 @@ private fun KpiRows(blocks: List<BlockPerformance>, days: List<DayPerformance>, 
 
 /** Top & average evolution chart plus the volume-per-session chart. */
 @Composable
-private fun EvolutionCards(days: List<DayPerformance>, unit: String) {
+private fun EvolutionCards(days: List<DayPerformance>, unit: String, titlePrefix: String = "") {
+    val chartTitle = if (titlePrefix.isNotBlank()) "Evolution: $titlePrefix ($unit)" else "Evolution per session ($unit)"
     if (days.isNotEmpty()) {
-        SectionCard(title = "Evolution per session ($unit)") {
+        SectionCard(title = chartTitle) {
             MultiLineChart(
                 series = listOf(
                     ChartSeries(
