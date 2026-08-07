@@ -52,9 +52,22 @@ import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.LineChart
 import com.fractanomics.crosstraining.ui.components.MultiLineChart
 import com.fractanomics.crosstraining.ui.components.SectionCard
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LinearProgressIndicator
+import com.fractanomics.crosstraining.data.model.Cycle
+import com.fractanomics.crosstraining.data.model.CycleGoal
+import com.fractanomics.crosstraining.ui.formatLong
 import com.fractanomics.crosstraining.ui.formatShort
 import com.fractanomics.crosstraining.ui.routineBlockPerformances
 import com.fractanomics.crosstraining.ui.trimmed
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
+
+enum class ProgressMode { BY_EXERCISE, BY_ROUTINE, CYCLE_GOALS }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,17 +75,20 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
     val routines by viewModel.routines.collectAsStateWithLifecycle()
     val routinesWithBlocks by viewModel.routinesWithBlocks.collectAsStateWithLifecycle()
+    val cycles by viewModel.cycles.collectAsStateWithLifecycle()
+    val activeCycle by viewModel.activeCycle.collectAsStateWithLifecycle()
+    val cycleGoals by viewModel.cycleGoals.collectAsStateWithLifecycle()
     val repMaxes by viewModel.repMaxes.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
 
     var selectedExercise by remember { mutableStateOf<Exercise?>(null) }
     var selectedRoutine by remember { mutableStateOf<Routine?>(null) }
-    var byRoutine by remember { mutableStateOf(false) }
-    val routineMode = byRoutine && routines.isNotEmpty()
+    var selectedCycleGoalCycle by remember { mutableStateOf<Cycle?>(null) }
+    var progressMode by remember { mutableStateOf(ProgressMode.BY_EXERCISE) }
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
-        topBar = { TopAppBar(title = { Text("Progress") }) }
+        topBar = { TopAppBar(title = { Text("Progress & Goals") }) }
     ) { pad ->
         if (exercises.isEmpty()) {
             EmptyState("Add exercises and log sessions to see progress here.", Modifier.padding(pad))
@@ -85,38 +101,241 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            if (routines.isNotEmpty()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = progressMode == ProgressMode.BY_EXERCISE,
+                    onClick = { progressMode = ProgressMode.BY_EXERCISE },
+                    label = { Text("By exercise") }
+                )
+                if (routines.isNotEmpty()) {
                     FilterChip(
-                        selected = !routineMode,
-                        onClick = { byRoutine = false },
-                        label = { Text("By exercise") }
-                    )
-                    FilterChip(
-                        selected = routineMode,
-                        onClick = { byRoutine = true },
+                        selected = progressMode == ProgressMode.BY_ROUTINE,
+                        onClick = { progressMode = ProgressMode.BY_ROUTINE },
                         label = { Text("By routine") }
+                    )
+                }
+                if (cycles.isNotEmpty()) {
+                    FilterChip(
+                        selected = progressMode == ProgressMode.CYCLE_GOALS,
+                        onClick = { progressMode = ProgressMode.CYCLE_GOALS },
+                        label = { Text("Cycle goals") }
                     )
                 }
             }
 
-            if (routineMode) {
-                RoutineProgress(
-                    routines = routines,
-                    routinesWithBlocks = routinesWithBlocks,
-                    exercises = exercises,
-                    sessions = sessions,
-                    current = selectedRoutine ?: routines.firstOrNull(),
-                    onSelect = { selectedRoutine = it }
-                )
-            } else {
-                ExerciseProgress(
-                    exercises = exercises,
-                    repMaxes = repMaxes,
-                    sessions = sessions,
-                    current = selectedExercise ?: exercises.firstOrNull(),
-                    onSelect = { selectedExercise = it }
-                )
+            when (progressMode) {
+                ProgressMode.BY_ROUTINE -> {
+                    RoutineProgress(
+                        routines = routines,
+                        routinesWithBlocks = routinesWithBlocks,
+                        exercises = exercises,
+                        sessions = sessions,
+                        current = selectedRoutine ?: routines.firstOrNull(),
+                        onSelect = { selectedRoutine = it }
+                    )
+                }
+                ProgressMode.CYCLE_GOALS -> {
+                    CycleGoalsProgress(
+                        cycles = cycles,
+                        currentCycle = selectedCycleGoalCycle ?: activeCycle ?: cycles.firstOrNull(),
+                        cycleGoals = cycleGoals,
+                        exercises = exercises,
+                        sessions = sessions,
+                        repMaxes = repMaxes,
+                        onSelectCycle = { selectedCycleGoalCycle = it }
+                    )
+                }
+                else -> {
+                    ExerciseProgress(
+                        exercises = exercises,
+                        repMaxes = repMaxes,
+                        sessions = sessions,
+                        current = selectedExercise ?: exercises.firstOrNull(),
+                        onSelect = { selectedExercise = it }
+                    )
+                }
+            }
+        }
+    }
+}
+
+// --- Cycle Goals View --------------------------------------------------------
+
+@Composable
+private fun CycleGoalsProgress(
+    cycles: List<Cycle>,
+    currentCycle: Cycle?,
+    cycleGoals: List<CycleGoal>,
+    exercises: List<Exercise>,
+    sessions: List<SessionWithBlocks>,
+    repMaxes: List<RepMax>,
+    onSelectCycle: (Cycle) -> Unit
+) {
+    Dropdown(
+        label = "Training cycle",
+        options = cycles,
+        selected = currentCycle,
+        labelOf = { if (it.isActive) "${it.name} (Active)" else it.name },
+        onSelect = onSelectCycle
+    )
+
+    if (currentCycle == null) return
+
+    val goals = remember(cycleGoals, currentCycle.id) {
+        cycleGoals.filter { it.cycleId == currentCycle.id }
+    }
+
+    if (goals.isEmpty()) {
+        SectionCard(title = "Cycle Goals Target Tracking") {
+            EmptyState("No basic movement goals defined for ${currentCycle.name} yet.\nAdd goals in the Cycles tab to track progress against your targets.")
+        }
+        return
+    }
+
+    SectionCard(title = "Cycle Goals Target Tracking (${currentCycle.name})") {
+        val startDate = currentCycle.startDate
+        val endDate = currentCycle.endDate
+        val today = LocalDate.now()
+
+        val weeksTotal = if (endDate != null) ChronoUnit.WEEKS.between(startDate, endDate).coerceAtLeast(1) else 8L
+        val weeksElapsed = ChronoUnit.WEEKS.between(startDate, today).coerceIn(0L, weeksTotal)
+        val weeksRemaining = (weeksTotal - weeksElapsed).coerceAtLeast(0L)
+
+        Text(
+            "Cycle timeframe: ${startDate.formatShort()} → ${endDate?.formatShort() ?: "open"} (${weeksRemaining} weeks remaining)",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        goals.forEach { goal ->
+            val exercise = exercises.firstOrNull { it.id == goal.exerciseId }
+            val exName = exercise?.name ?: "Basic Movement"
+            val unit = exercise?.unit ?: "kg"
+
+            // 1. Prior Rep Max before or at start date of cycle
+            val priorRm = repMaxes.filter {
+                it.exerciseId == goal.exerciseId &&
+                it.reps == goal.targetReps &&
+                it.date <= currentCycle.startDate
+            }.maxByOrNull { it.date }?.weight
+
+            // 2. Cycle sessions in chronological order
+            val cycleSessions = sessions.filter {
+                it.session.date >= currentCycle.startDate &&
+                (currentCycle.endDate == null || it.session.date <= currentCycle.endDate)
+            }.sortedBy { it.session.date }
+
+            val firstLoggedWeightInCycle = cycleSessions.flatMap { swb ->
+                swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }.flatMap { b ->
+                    b.sets.filter { !it.isWarmup && !it.isFailed && it.reps == goal.targetReps }
+                        .mapNotNull { it.weight ?: it.metricValue }
+                }
+            }.firstOrNull()
+
+            val baselineStartWeight = priorRm ?: firstLoggedWeightInCycle ?: 0.0
+
+            val cycleRms = repMaxes.filter {
+                it.exerciseId == goal.exerciseId &&
+                it.reps == goal.targetReps &&
+                it.date >= currentCycle.startDate &&
+                (currentCycle.endDate == null || it.date <= currentCycle.endDate)
+            }
+
+            val loggedRmBest = cycleRms.maxOfOrNull { it.weight }
+            val blockWorkingBest = cycleSessions.flatMap { swb ->
+                swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }.flatMap { b ->
+                    b.sets.filter { !it.isWarmup && !it.isFailed && it.reps == goal.targetReps }
+                        .mapNotNull { it.weight ?: it.metricValue }
+                }
+            }.maxOrNull()
+
+            val currentBest = maxOf(baselineStartWeight, loggedRmBest ?: 0.0, blockWorkingBest ?: 0.0)
+
+            val totalSpan = (goal.targetWeight - baselineStartWeight).coerceAtLeast(0.1)
+            val achievedGain = (currentBest - baselineStartWeight).coerceAtLeast(0.0)
+            val remainingGap = (goal.targetWeight - currentBest).coerceAtLeast(0.0)
+            val progressFraction = (achievedGain / totalSpan).coerceIn(0.0, 1.0).toFloat()
+            val progressPercent = (progressFraction * 100).toInt()
+
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "$exName (${goal.targetReps}RM Goal)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    if (progressPercent >= 100) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                if (progressPercent >= 100) "Goal Reached! 🎉" else "$progressPercent% Reached",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (progressPercent >= 100) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+
+                    // Progress bar
+                    LinearProgressIndicator(
+                        progress = { progressFraction },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+
+                    // Target line stats
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            if (baselineStartWeight > 0.0) "Start: ${baselineStartWeight.trimmed()} $unit" else "Start: --",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "Current Best: ${if (currentBest > 0.0) "${currentBest.trimmed()} $unit" else "--"}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text("Goal: ${goal.targetWeight.trimmed()} $unit", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                    }
+
+                    HorizontalDivider()
+
+                    // Gap Analysis & Action Recommendations
+                    val weeklyReqRate = if (weeksRemaining > 0 && remainingGap > 0) remainingGap / weeksRemaining else 0.0
+                    val recText = when {
+                        remainingGap <= 0.0 -> "Congratulations! Goal achieved in this cycle."
+                        weeklyReqRate > 0.0 -> "Remaining gap: ${remainingGap.trimmed()} $unit. Target weekly progression: +${weeklyReqRate.trimmed()} $unit/week."
+                        else -> "Remaining gap: ${remainingGap.trimmed()} $unit to reach goal."
+                    }
+
+                    Text(
+                        recText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

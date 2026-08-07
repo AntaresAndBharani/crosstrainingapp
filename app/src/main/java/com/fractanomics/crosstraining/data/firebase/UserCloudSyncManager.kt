@@ -198,6 +198,21 @@ object UserCloudSyncManager {
                 )
             }
             userDoc.collection("data").document("sessions").set(mapOf("list" to sessionsPayload)).await()
+
+            // 4. Upload Cycle Goals
+            val cycleGoals = repo.snapshotCycleGoals()
+            val goalsPayload = cycleGoals.map { cg ->
+                mapOf(
+                    "id" to cg.id,
+                    "cycleId" to cg.cycleId,
+                    "exerciseId" to cg.exerciseId,
+                    "targetReps" to cg.targetReps,
+                    "startWeight" to cg.startWeight,
+                    "targetWeight" to cg.targetWeight,
+                    "notes" to cg.notes
+                )
+            }
+            userDoc.collection("data").document("cycle_goals").set(mapOf("list" to goalsPayload)).await()
         }
 
         _syncState.value = SyncStatus.SUCCESS
@@ -260,6 +275,22 @@ object UserCloudSyncManager {
                 }
             }
             repo.cleanupDuplicateRoutines()
+
+            // 3. Download Cycle Goals
+            val goalsSnap = userDoc.collection("data").document("cycle_goals").get().await()
+            if (goalsSnap.exists()) {
+                @Suppress("UNCHECKED_CAST")
+                val goalsList = goalsSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
+                goalsList.forEach { map ->
+                    val cycleId = (map["cycleId"] as? Number)?.toLong() ?: return@forEach
+                    val exerciseId = (map["exerciseId"] as? Number)?.toLong() ?: return@forEach
+                    val targetReps = (map["targetReps"] as? Number)?.toInt() ?: 1
+                    val startWeight = (map["startWeight"] as? Number)?.toDouble() ?: 0.0
+                    val targetWeight = (map["targetWeight"] as? Number)?.toDouble() ?: 0.0
+                    val notes = map["notes"] as? String ?: ""
+                    repo.saveCycleGoal(com.fractanomics.crosstraining.data.model.CycleGoal(cycleId = cycleId, exerciseId = exerciseId, targetReps = targetReps, startWeight = startWeight, targetWeight = targetWeight, notes = notes))
+                }
+            }
         }
 
         _syncState.value = SyncStatus.SUCCESS

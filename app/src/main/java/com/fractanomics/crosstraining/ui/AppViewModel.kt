@@ -12,6 +12,7 @@ import com.fractanomics.crosstraining.data.Repository
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
+import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
@@ -108,6 +109,8 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         data.repositoryFlow.flatMapLatest { it.cycles }.stateInDefault(emptyList())
     val activeCycle: StateFlow<Cycle?> =
         data.repositoryFlow.flatMapLatest { it.activeCycle }.stateInDefault(null)
+    val cycleGoals: StateFlow<List<CycleGoal>> =
+        data.repositoryFlow.flatMapLatest { it.cycleGoals }.stateInDefault(emptyList())
     val exercises: StateFlow<List<Exercise>> =
         data.repositoryFlow.flatMapLatest { it.exercises }.stateInDefault(emptyList())
 
@@ -139,6 +142,18 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     fun saveCycle(cycle: Cycle, makeActive: Boolean = false) = viewModelScope.launch {
         val id = repo.saveCycle(cycle)
         if (makeActive) repo.activateCycle(id)
+        UserCloudSyncManager.uploadUserData(repo)
+    }
+
+    fun saveCycleWithGoals(cycle: Cycle, goals: List<CycleGoal>, makeActive: Boolean = false) = viewModelScope.launch {
+        val id = repo.saveCycleWithGoals(cycle, goals)
+        if (makeActive) repo.activateCycle(id)
+        UserCloudSyncManager.uploadUserData(repo)
+    }
+
+    fun deleteCycleGoal(goal: CycleGoal) = viewModelScope.launch {
+        repo.deleteCycleGoal(goal)
+        UserCloudSyncManager.uploadUserData(repo)
     }
 
     fun activateCycle(id: Long) = viewModelScope.launch { repo.activateCycle(id) }
