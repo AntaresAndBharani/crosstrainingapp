@@ -3,6 +3,8 @@ package com.fractanomics.crosstraining.data
 import androidx.room.withTransaction
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
+import com.fractanomics.crosstraining.data.model.CycleGoal
+import com.fractanomics.crosstraining.data.model.CycleWithGoals
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
@@ -41,14 +43,39 @@ class Repository(private val db: AppDatabase) {
     private val sessionDao = db.sessionDao()
     private val blockDao = db.blockDao()
     private val repMaxDao = db.repMaxDao()
+    private val cycleGoalDao = db.cycleGoalDao()
 
     // --- Cycles ---------------------------------------------------------------
     val cycles: Flow<List<Cycle>> = cycleDao.observeAll()
     val activeCycle: Flow<Cycle?> = cycleDao.observeActive()
+    val cycleGoals: Flow<List<CycleGoal>> = cycleGoalDao.all()
+
+    fun cycleGoalsForCycle(cycleId: Long): Flow<List<CycleGoal>> = cycleGoalDao.byCycle(cycleId)
 
     suspend fun saveCycle(cycle: Cycle): Long =
         if (cycle.id == 0L) cycleDao.insert(cycle) else {
             cycleDao.update(cycle); cycle.id
+        }
+
+    suspend fun saveCycleGoal(goal: CycleGoal): Long =
+        if (goal.id == 0L) cycleGoalDao.insert(goal) else {
+            cycleGoalDao.update(goal); goal.id
+        }
+
+    suspend fun deleteCycleGoal(goal: CycleGoal) = cycleGoalDao.delete(goal)
+
+    suspend fun snapshotCycleGoals(): List<CycleGoal> = cycleGoalDao.snapshot()
+
+    suspend fun saveCycleWithGoals(cycle: Cycle, goals: List<CycleGoal>): Long =
+        db.withTransaction {
+            val cycleId = if (cycle.id == 0L) cycleDao.insert(cycle) else {
+                cycleDao.update(cycle); cycle.id
+            }
+            cycleGoalDao.deleteByCycle(cycleId)
+            if (goals.isNotEmpty()) {
+                cycleGoalDao.insertAll(goals.map { it.copy(cycleId = cycleId) })
+            }
+            cycleId
         }
 
     suspend fun deleteCycle(cycle: Cycle) = cycleDao.delete(cycle)

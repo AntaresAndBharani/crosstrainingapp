@@ -27,3 +27,10 @@ data class RoutineWithBlocks(
     @Relation(parentColumn = "id", entityColumn = "routineId")
     val blocks: List<RoutineBlock>
 )
+
+/** A training cycle together with all of its movement target goals. */
+data class CycleWithGoals(
+    @Embedded val cycle: Cycle,
+    @Relation(parentColumn = "id", entityColumn = "cycleId")
+    val goals: List<CycleGoal>
+)
