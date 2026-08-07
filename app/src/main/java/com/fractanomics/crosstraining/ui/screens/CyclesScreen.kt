@@ -160,7 +160,7 @@ private fun CycleCard(
                             onClick = {},
                             label = {
                                 Text(
-                                    "${ex?.name ?: "Lift"} (${g.targetReps}RM): ${g.startWeight.trimmed()} → ${g.targetWeight.trimmed()} $unit",
+                                    "${ex?.name ?: "Lift"} (${g.targetReps}RM Goal): ${g.targetWeight.trimmed()} $unit",
                                     style = MaterialTheme.typography.labelSmall
                                 )
                             }
@@ -183,7 +183,6 @@ private fun CycleCard(
 private data class GoalDraftState(
     val exercise: Exercise?,
     val reps: String,
-    val startWeight: String,
     val targetWeight: String
 )
 
@@ -209,7 +208,6 @@ private fun CycleEditorDialog(
                     GoalDraftState(
                         exercise = ex,
                         reps = g.targetReps.toString(),
-                        startWeight = if (g.startWeight > 0.0) g.startWeight.trimmed() else "",
                         targetWeight = if (g.targetWeight > 0.0) g.targetWeight.trimmed() else ""
                     )
                 )
@@ -256,7 +254,7 @@ private fun CycleEditorDialog(
                 ) {
                     Text("Basic Movement Goals", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     TextButton(onClick = {
-                        goalDrafts.add(GoalDraftState(exercises.firstOrNull(), "1", "", ""))
+                        goalDrafts.add(GoalDraftState(exercises.firstOrNull(), "1", ""))
                     }) {
                         Icon(Icons.Filled.Add, contentDescription = "Add goal")
                         Text("Add Movement")
@@ -307,22 +305,13 @@ private fun CycleEditorDialog(
                                     modifier = Modifier.weight(1f)
                                 )
                                 OutlinedTextField(
-                                    value = draft.startWeight,
-                                    onValueChange = { newStart ->
-                                        goalDrafts[index] = draft.copy(startWeight = newStart)
-                                    },
-                                    label = { Text("Start (${draft.exercise?.unit ?: "kg"})") },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1.2f)
-                                )
-                                OutlinedTextField(
                                     value = draft.targetWeight,
                                     onValueChange = { newTarget ->
                                         goalDrafts[index] = draft.copy(targetWeight = newTarget)
                                     },
-                                    label = { Text("Target Goal") },
+                                    label = { Text("Target Goal (${draft.exercise?.unit ?: "kg"})") },
                                     singleLine = true,
-                                    modifier = Modifier.weight(1.2f)
+                                    modifier = Modifier.weight(1.5f)
                                 )
                             }
                         }
@@ -343,14 +332,13 @@ private fun CycleEditorDialog(
                     val finalGoals = goalDrafts.mapNotNull { d ->
                         val ex = d.exercise ?: return@mapNotNull null
                         val reps = d.reps.toIntOrNull() ?: 1
-                        val startVal = d.startWeight.toDoubleOrNull() ?: 0.0
                         val targetVal = d.targetWeight.toDoubleOrNull() ?: 0.0
                         if (targetVal <= 0.0) return@mapNotNull null
                         CycleGoal(
                             cycleId = finalCycle.id,
                             exerciseId = ex.id,
                             targetReps = reps,
-                            startWeight = startVal,
+                            startWeight = 0.0,
                             targetWeight = targetVal
                         )
                     }

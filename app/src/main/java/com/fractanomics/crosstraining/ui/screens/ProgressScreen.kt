@@ -213,11 +213,28 @@ private fun CycleGoalsProgress(
             val exName = exercise?.name ?: "Basic Movement"
             val unit = exercise?.unit ?: "kg"
 
-            // Compute current best in this cycle
+            // 1. Prior Rep Max before or at start date of cycle
+            val priorRm = repMaxes.filter {
+                it.exerciseId == goal.exerciseId &&
+                it.reps == goal.targetReps &&
+                it.date <= currentCycle.startDate
+            }.maxByOrNull { it.date }?.weight
+
+            // 2. Cycle sessions in chronological order
             val cycleSessions = sessions.filter {
                 it.session.date >= currentCycle.startDate &&
                 (currentCycle.endDate == null || it.session.date <= currentCycle.endDate)
-            }
+            }.sortedBy { it.session.date }
+
+            val firstLoggedWeightInCycle = cycleSessions.flatMap { swb ->
+                swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }.flatMap { b ->
+                    b.sets.filter { !it.isWarmup && !it.isFailed && it.reps == goal.targetReps }
+                        .mapNotNull { it.weight ?: it.metricValue }
+                }
+            }.firstOrNull()
+
+            val baselineStartWeight = priorRm ?: firstLoggedWeightInCycle ?: 0.0
+
             val cycleRms = repMaxes.filter {
                 it.exerciseId == goal.exerciseId &&
                 it.reps == goal.targetReps &&
@@ -233,10 +250,10 @@ private fun CycleGoalsProgress(
                 }
             }.maxOrNull()
 
-            val currentBest = maxOf(goal.startWeight, loggedRmBest ?: 0.0, blockWorkingBest ?: 0.0)
+            val currentBest = maxOf(baselineStartWeight, loggedRmBest ?: 0.0, blockWorkingBest ?: 0.0)
 
-            val totalSpan = (goal.targetWeight - goal.startWeight).coerceAtLeast(0.1)
-            val achievedGain = (currentBest - goal.startWeight).coerceAtLeast(0.0)
+            val totalSpan = (goal.targetWeight - baselineStartWeight).coerceAtLeast(0.1)
+            val achievedGain = (currentBest - baselineStartWeight).coerceAtLeast(0.0)
             val remainingGap = (goal.targetWeight - currentBest).coerceAtLeast(0.0)
             val progressFraction = (achievedGain / totalSpan).coerceIn(0.0, 1.0).toFloat()
             val progressPercent = (progressFraction * 100).toInt()
@@ -290,9 +307,12 @@ private fun CycleGoalsProgress(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Start: ${goal.startWeight.trimmed()} $unit", style = MaterialTheme.typography.bodySmall)
                         Text(
-                            "Current Best: ${currentBest.trimmed()} $unit",
+                            if (baselineStartWeight > 0.0) "Start: ${baselineStartWeight.trimmed()} $unit" else "Start: --",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "Current Best: ${if (currentBest > 0.0) "${currentBest.trimmed()} $unit" else "--"}",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
