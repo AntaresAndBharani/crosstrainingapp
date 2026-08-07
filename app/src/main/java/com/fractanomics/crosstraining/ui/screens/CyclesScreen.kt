@@ -181,10 +181,10 @@ private fun CycleCard(
 }
 
 private data class GoalDraftState(
-    var exercise: Exercise?,
-    var reps: String,
-    var startWeight: String,
-    var targetWeight: String
+    val exercise: Exercise?,
+    val reps: String,
+    val startWeight: String,
+    val targetWeight: String
 )
 
 @Composable
@@ -291,27 +291,35 @@ private fun CycleEditorDialog(
                                 options = exercises,
                                 selected = draft.exercise,
                                 labelOf = { it.name },
-                                onSelect = { draft.exercise = it }
+                                onSelect = { selectedEx ->
+                                    goalDrafts[index] = draft.copy(exercise = selectedEx)
+                                }
                             )
 
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedTextField(
                                     value = draft.reps,
-                                    onValueChange = { draft.reps = it },
+                                    onValueChange = { newReps ->
+                                        goalDrafts[index] = draft.copy(reps = newReps)
+                                    },
                                     label = { Text("Reps (RM)") },
                                     singleLine = true,
                                     modifier = Modifier.weight(1f)
                                 )
                                 OutlinedTextField(
                                     value = draft.startWeight,
-                                    onValueChange = { draft.startWeight = it },
+                                    onValueChange = { newStart ->
+                                        goalDrafts[index] = draft.copy(startWeight = newStart)
+                                    },
                                     label = { Text("Start (${draft.exercise?.unit ?: "kg"})") },
                                     singleLine = true,
                                     modifier = Modifier.weight(1.2f)
                                 )
                                 OutlinedTextField(
                                     value = draft.targetWeight,
-                                    onValueChange = { draft.targetWeight = it },
+                                    onValueChange = { newTarget ->
+                                        goalDrafts[index] = draft.copy(targetWeight = newTarget)
+                                    },
                                     label = { Text("Target Goal") },
                                     singleLine = true,
                                     modifier = Modifier.weight(1.2f)
