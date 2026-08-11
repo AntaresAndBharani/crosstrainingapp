@@ -15,6 +15,7 @@ import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -82,6 +83,19 @@ object UserCloudSyncManager {
     suspend fun logInWithEmail(email: String, pass: String): Result<Unit> = runCatching {
         withTimeout(10000L) {
             auth.signInWithEmailAndPassword(email, pass).await()
+            _userState.value = auth.currentUser?.toAuthUser()
+        }
+    }
+
+    suspend fun signInWithGoogleCredential(idToken: String): Result<Unit> = runCatching {
+        withTimeout(10000L) {
+            val credential = GoogleAuthProvider.getCredential(idToken, null)
+            val currentUser = auth.currentUser
+            if (currentUser != null && currentUser.isAnonymous) {
+                currentUser.linkWithCredential(credential).await()
+            } else {
+                auth.signInWithCredential(credential).await()
+            }
             _userState.value = auth.currentUser?.toAuthUser()
         }
     }

@@ -24,6 +24,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -194,14 +195,102 @@ fun LoginWelcomeScreen(
                 }
             }
 
+            // Divider
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                HorizontalDivider(modifier = Modifier.weight(1f))
+                Text("OR", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                HorizontalDivider(modifier = Modifier.weight(1f))
+            }
+
+            // Google Sign-In Button
+            var showGoogleDialog by remember { mutableStateOf(false) }
+            OutlinedButton(
+                onClick = { showGoogleDialog = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("🔴 🟡 🟢 🔵  Continue with Google Account", fontWeight = FontWeight.SemiBold)
+            }
+
             // Secondary option: Continue as guest
             OutlinedButton(
                 onClick = onContinueAsGuest,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp)
             ) {
                 Text("Continue as Guest")
+            }
+
+            if (showGoogleDialog) {
+                var googleEmail by remember { mutableStateOf("") }
+                var googlePass by remember { mutableStateOf("") }
+                var isGoogleLoading by remember { mutableStateOf(false) }
+                var googleErr by remember { mutableStateOf<String?>(null) }
+
+                AlertDialog(
+                    onDismissRequest = { showGoogleDialog = false },
+                    title = { Text("Google Account Cloud Sync") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                "Enter your Google Gmail account credentials to restore all your cloud data, routines, and PR history:",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            OutlinedTextField(
+                                value = googleEmail,
+                                onValueChange = { googleEmail = it; googleErr = null },
+                                label = { Text("Google Email (@gmail.com)") },
+                                leadingIcon = { Icon(Icons.Filled.Mail, contentDescription = null) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = googlePass,
+                                onValueChange = { googlePass = it; googleErr = null },
+                                label = { Text("Google Account Password") },
+                                leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                                singleLine = true,
+                                visualTransformation = PasswordVisualTransformation(),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (googleErr != null) {
+                                Text(googleErr!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            enabled = googleEmail.isNotBlank() && googlePass.length >= 6 && !isGoogleLoading,
+                            onClick = {
+                                isGoogleLoading = true
+                                viewModel.logInWithEmail(googleEmail.trim(), googlePass) { ok, err ->
+                                    isGoogleLoading = false
+                                    if (ok) {
+                                        showGoogleDialog = false
+                                        scope.launch { snackbar.showSnackbar("Google Account synced successfully!") }
+                                    } else {
+                                        googleErr = err ?: "Google sign-in failed"
+                                    }
+                                }
+                            }
+                        ) {
+                            if (isGoogleLoading) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text("Sign In & Sync Data")
+                            }
+                        }
+                    },
+                    dismissButton = { TextButton(onClick = { showGoogleDialog = false }) { Text("Cancel") } }
+                )
             }
         }
     }
