@@ -18,6 +18,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ElevatedCard
@@ -88,6 +90,7 @@ data class BlockSeed(
     val scheme: String = "",
     val exerciseId: Long? = null,
     val routineId: Long? = null,
+    val sequenceExerciseIds: List<Long> = emptyList(),
     val description: String = "",
     val resultText: String = "",
     val resultValue: String = "",
@@ -152,6 +155,7 @@ private class SetState(
 private class BlockState(
     name: String = "", kind: BlockKind = BlockKind.STRENGTH, format: String = "", scheme: String = "",
     exercise: Exercise? = null, newExerciseName: String = "", routine: Routine? = null,
+    sequenceExercises: List<Exercise> = emptyList(),
     description: String = "", resultText: String = "", resultValue: String = "",
     sets: List<SetState> = listOf(SetState())
 ) {
@@ -162,6 +166,7 @@ private class BlockState(
     var exercise by mutableStateOf(exercise)
     var newExerciseName by mutableStateOf(newExerciseName)
     var routine by mutableStateOf(routine)
+    val sequenceExercises: SnapshotStateList<Exercise> = sequenceExercises.toMutableStateList()
     var description by mutableStateOf(description)
     var resultText by mutableStateOf(resultText)
     var resultValue by mutableStateOf(resultValue)
@@ -179,6 +184,7 @@ private fun buildBlockState(seed: BlockSeed, exercises: List<Exercise>, routines
         scheme = seed.scheme,
         exercise = exercises.firstOrNull { it.id == seed.exerciseId },
         routine = routines.firstOrNull { it.id == seed.routineId },
+        sequenceExercises = seed.sequenceExerciseIds.mapNotNull { id -> exercises.firstOrNull { it.id == id } },
         description = seed.description,
         resultText = seed.resultText,
         resultValue = seed.resultValue,
@@ -333,11 +339,11 @@ fun SessionEditorBody(
                     if (title.isBlank()) title = rwb.routine.name
                     blocks.clear()
                     rwb.blocks.sortedBy { it.position }.forEach { blk ->
-                        val targetEx = blk.exerciseIdsCsv.split(",")
+                        val seqExList = blk.exerciseIdsCsv.split(",")
                             .mapNotNull { idStr -> idStr.trim().toLongOrNull() }
                             .mapNotNull { id -> exercises.firstOrNull { it.id == id } }
-                            .firstOrNull() ?: exercises.firstOrNull { it.id == rwb.routine.mainExerciseId }
 
+                        val targetEx = seqExList.firstOrNull() ?: exercises.firstOrNull { it.id == rwb.routine.mainExerciseId }
                         val parsedRepsList = RepScheme.parse(blk.targetRepsScheme, blk.setsCount)
 
                         val newBlockState = BlockState(
@@ -347,6 +353,7 @@ fun SessionEditorBody(
                             scheme = blk.targetRepsScheme,
                             exercise = targetEx,
                             routine = rwb.routine,
+                            sequenceExercises = seqExList,
                             description = blk.notes,
                             sets = parsedRepsList.map { reps ->
                                 SetState(reps = reps.toString(), value = "")
@@ -370,6 +377,7 @@ fun SessionEditorBody(
                 BlockEditor(
                     index = index,
                     block = block,
+                    blocks = blocks,
                     exercises = exercises,
                     routines = routines,
                     canRemove = blocks.size > 1,
@@ -446,6 +454,7 @@ fun SessionEditorBody(
 private fun BlockEditor(
     index: Int,
     block: BlockState,
+    blocks: SnapshotStateList<BlockState>,
     exercises: List<Exercise>,
     routines: List<Routine>,
     canRemove: Boolean,
@@ -505,6 +514,56 @@ private fun BlockEditor(
                     }
                 }
             )
+
+            if (block.sequenceExercises.isNotEmpty()) {
+                Text(
+                    "Exercises in Routine Block Sequence:",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    block.sequenceExercises.forEach { ex ->
+                        val isSelected = block.exercise?.id == ex.id
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = {
+                                block.exercise = ex
+                                block.newExerciseName = ""
+                            },
+                            label = { Text("🏋️ ${ex.name}", style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+
+                val unloggedSeqExercises = block.sequenceExercises.filter { seqEx ->
+                    blocks.none { b -> b.exercise?.id == seqEx.id }
+                }
+                if (unloggedSeqExercises.isNotEmpty()) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        unloggedSeqExercises.forEach { seqEx ->
+                            TextButton(
+                                onClick = {
+                                    val newBlock = BlockState(
+                                        name = "${block.name} - ${seqEx.name}",
+                                        kind = block.kind,
+                                        format = block.format,
+                                        scheme = block.scheme,
+                                        exercise = seqEx,
+                                        routine = block.routine,
+                                        sequenceExercises = block.sequenceExercises,
+                                        description = block.description,
+                                        sets = block.sets.map { s -> SetState(s.reps, "", s.group, s.isWarmup, s.isFailed) }
+                                    )
+                                    blocks.add(newBlock)
+                                }
+                            ) {
+                                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text("Add block for ${seqEx.name}", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            }
 
             Dropdown(
                 label = "Main exercise (optional)",
