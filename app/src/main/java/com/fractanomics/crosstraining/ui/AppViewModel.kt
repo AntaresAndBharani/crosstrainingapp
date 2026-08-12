@@ -91,6 +91,16 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         }
     }
 
+    fun logInWithGoogleAccount(email: String, displayName: String?, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
+        val res = UserCloudSyncManager.logInWithGoogleAccount(email, displayName)
+        res.onSuccess {
+            UserCloudSyncManager.downloadUserData(repo)
+            onResult(true, null)
+        }.onFailure { err ->
+            onResult(false, err.localizedMessage)
+        }
+    }
+
     fun sendPasswordReset(email: String, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val res = UserCloudSyncManager.sendPasswordReset(email)
         onResult(res.isSuccess, res.exceptionOrNull()?.localizedMessage)

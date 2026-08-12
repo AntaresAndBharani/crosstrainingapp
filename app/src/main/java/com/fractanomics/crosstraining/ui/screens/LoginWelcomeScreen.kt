@@ -47,6 +47,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
 import com.fractanomics.crosstraining.ui.AppViewModel
 import kotlinx.coroutines.launch
 
@@ -56,6 +62,7 @@ fun LoginWelcomeScreen(
     snackbar: SnackbarHostState,
     onContinueAsGuest: () -> Unit
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var selectedTab by remember { mutableIntStateOf(0) } // 0 = Log In, 1 = Sign Up
     var email by remember { mutableStateOf("") }
@@ -64,6 +71,54 @@ fun LoginWelcomeScreen(
     var isLoading by remember { mutableStateOf(false) }
 
     var showForgotDialog by remember { mutableStateOf(false) }
+
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        isLoading = true
+        try {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            val account = task.getResult(ApiException::class.java)
+            val idToken = account?.idToken
+            val emailAddr = account?.email
+            val name = account?.displayName ?: account?.givenName
+
+            if (!idToken.isNullOrBlank()) {
+                viewModel.logInWithGoogle(idToken) { ok, err ->
+                    isLoading = false
+                    if (ok) {
+                        scope.launch { snackbar.showSnackbar("Welcome back, ${name ?: emailAddr}!") }
+                    } else if (!emailAddr.isNullOrBlank()) {
+                        viewModel.logInWithGoogleAccount(emailAddr, name) { ok2, err2 ->
+                            if (ok2) {
+                                scope.launch { snackbar.showSnackbar("Logged in with Google ($emailAddr)!") }
+                            } else {
+                                errorMessage = err2 ?: err ?: "Google Sign-In failed"
+                            }
+                        }
+                    } else {
+                        errorMessage = err ?: "Google Sign-In failed"
+                    }
+                }
+            } else if (!emailAddr.isNullOrBlank()) {
+                viewModel.logInWithGoogleAccount(emailAddr, name) { ok, err ->
+                    isLoading = false
+                    if (ok) {
+                        scope.launch { snackbar.showSnackbar("Logged in with Google ($emailAddr)!") }
+                    } else {
+                        errorMessage = err ?: "Google account sync failed"
+                    }
+                }
+            } else {
+                isLoading = false
+            }
+        } catch (e: Exception) {
+            isLoading = false
+            if (e is ApiException && e.statusCode != 12501) { // 12501 = user cancelled
+                errorMessage = "Google Sign-In error code: ${e.statusCode}"
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -206,10 +261,17 @@ fun LoginWelcomeScreen(
                 HorizontalDivider(modifier = Modifier.weight(1f))
             }
 
-            // Google Sign-In Button
-            var showGoogleDialog by remember { mutableStateOf(false) }
+            // Google Sign-In Button (Native Google System Account Chooser)
             OutlinedButton(
-                onClick = { showGoogleDialog = true },
+                enabled = !isLoading,
+                onClick = {
+                    errorMessage = null
+                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                        .requestEmail()
+                        .build()
+                    val googleSignInClient = GoogleSignIn.getClient(context, gso)
+                    googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp),
@@ -227,70 +289,6 @@ fun LoginWelcomeScreen(
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Text("Continue as Guest")
-            }
-
-            if (showGoogleDialog) {
-                var googleEmail by remember { mutableStateOf("") }
-                var googlePass by remember { mutableStateOf("") }
-                var isGoogleLoading by remember { mutableStateOf(false) }
-                var googleErr by remember { mutableStateOf<String?>(null) }
-
-                AlertDialog(
-                    onDismissRequest = { showGoogleDialog = false },
-                    title = { Text("Google Account Cloud Sync") },
-                    text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text(
-                                "Enter your Google Gmail account credentials to restore all your cloud data, routines, and PR history:",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            OutlinedTextField(
-                                value = googleEmail,
-                                onValueChange = { googleEmail = it; googleErr = null },
-                                label = { Text("Google Email (@gmail.com)") },
-                                leadingIcon = { Icon(Icons.Filled.Mail, contentDescription = null) },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            OutlinedTextField(
-                                value = googlePass,
-                                onValueChange = { googlePass = it; googleErr = null },
-                                label = { Text("Google Account Password") },
-                                leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
-                                singleLine = true,
-                                visualTransformation = PasswordVisualTransformation(),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            if (googleErr != null) {
-                                Text(googleErr!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                            }
-                        }
-                    },
-                    confirmButton = {
-                        Button(
-                            enabled = googleEmail.isNotBlank() && googlePass.length >= 6 && !isGoogleLoading,
-                            onClick = {
-                                isGoogleLoading = true
-                                viewModel.logInWithEmail(googleEmail.trim(), googlePass) { ok, err ->
-                                    isGoogleLoading = false
-                                    if (ok) {
-                                        showGoogleDialog = false
-                                        scope.launch { snackbar.showSnackbar("Google Account synced successfully!") }
-                                    } else {
-                                        googleErr = err ?: "Google sign-in failed"
-                                    }
-                                }
-                            }
-                        ) {
-                            if (isGoogleLoading) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                            } else {
-                                Text("Sign In & Sync Data")
-                            }
-                        }
-                    },
-                    dismissButton = { TextButton(onClick = { showGoogleDialog = false }) { Text("Cancel") } }
-                )
             }
         }
     }
