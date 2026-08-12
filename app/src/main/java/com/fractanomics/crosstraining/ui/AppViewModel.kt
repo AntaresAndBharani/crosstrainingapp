@@ -110,9 +110,12 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         UserCloudSyncManager.signOut()
     }
 
-    fun triggerCloudSync(onResult: (Boolean) -> Unit) = viewModelScope.launch {
+    fun triggerCloudSync(onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val uploadRes = UserCloudSyncManager.uploadUserData(repo)
-        onResult(uploadRes.isSuccess)
+        val downloadRes = UserCloudSyncManager.downloadUserData(repo)
+        val success = uploadRes.isSuccess || downloadRes.isSuccess
+        val err = uploadRes.exceptionOrNull()?.localizedMessage ?: downloadRes.exceptionOrNull()?.localizedMessage
+        onResult(success, err)
     }
 
     fun reseedDefaults(onComplete: () -> Unit) = viewModelScope.launch {
