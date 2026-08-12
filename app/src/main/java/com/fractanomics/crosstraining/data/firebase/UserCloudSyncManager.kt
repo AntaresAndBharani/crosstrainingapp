@@ -100,6 +100,17 @@ object UserCloudSyncManager {
         }
     }
 
+    suspend fun logInWithGoogleAccount(email: String, displayName: String?): Result<Unit> = runCatching {
+        withTimeout(10000L) {
+            ensureAuthenticated()
+            _userState.value = AuthUser(
+                uid = auth.currentUser?.uid ?: email,
+                email = email,
+                isAnonymous = false
+            )
+        }
+    }
+
     suspend fun sendPasswordReset(email: String): Result<Unit> = runCatching {
         withTimeout(10000L) {
             auth.sendPasswordResetEmail(email).await()
