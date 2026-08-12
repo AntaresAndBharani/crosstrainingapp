@@ -180,9 +180,9 @@ fun ProfileScreen(
 
                 Button(
                     onClick = {
-                        viewModel.triggerCloudSync { ok ->
+                        viewModel.triggerCloudSync { ok, err ->
                             scope.launch {
-                                snackbar.showSnackbar(if (ok) "Cloud sync completed!" else "Sync error — check internet or console")
+                                snackbar.showSnackbar(if (ok) "Cloud sync completed!" else (err ?: "Sync error"))
                             }
                         }
                     },

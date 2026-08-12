@@ -43,12 +43,20 @@ object UserCloudSyncManager {
     val syncState: StateFlow<SyncStatus> = _syncState
 
     val currentUserId: String
-        get() = auth.currentUser?.uid ?: ""
+        get() {
+            val user = _userState.value
+            if (user != null && user.uid.isNotBlank()) {
+                return user.uid.replace("/", "_")
+            }
+            return auth.currentUser?.uid?.replace("/", "_") ?: ""
+        }
 
     init {
         auth.addAuthStateListener { firebaseAuth ->
             val user = firebaseAuth.currentUser
-            _userState.value = user?.toAuthUser()
+            if (_userState.value == null) {
+                _userState.value = user?.toAuthUser()
+            }
         }
     }
 
@@ -57,13 +65,13 @@ object UserCloudSyncManager {
             try {
                 withTimeout(5000L) {
                     val result = auth.signInAnonymously().await()
-                    _userState.value = result.user?.toAuthUser()
+                    if (_userState.value == null) {
+                        _userState.value = result.user?.toAuthUser()
+                    }
                 }
             } catch (e: Exception) {
                 // Ignore offline
             }
-        } else {
-            _userState.value = auth.currentUser?.toAuthUser()
         }
     }
 
@@ -126,7 +134,7 @@ object UserCloudSyncManager {
     suspend fun uploadUserData(repo: Repository): Result<Unit> = runCatching {
         _syncState.value = SyncStatus.SYNCING
 
-        withTimeout(10000L) {
+        withTimeout(20000L) {
             ensureAuthenticated()
             val uid = currentUserId
             if (uid.isBlank()) error("User not authenticated")
@@ -248,7 +256,7 @@ object UserCloudSyncManager {
     suspend fun downloadUserData(repo: Repository): Result<Unit> = runCatching {
         _syncState.value = SyncStatus.SYNCING
 
-        withTimeout(10000L) {
+        withTimeout(20000L) {
             ensureAuthenticated()
             val uid = currentUserId
             if (uid.isBlank()) error("User not authenticated")
