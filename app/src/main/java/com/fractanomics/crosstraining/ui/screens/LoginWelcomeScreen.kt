@@ -56,6 +56,8 @@ import com.google.android.gms.common.api.ApiException
 import com.fractanomics.crosstraining.ui.AppViewModel
 import kotlinx.coroutines.launch
 
+import android.accounts.AccountManager
+
 @Composable
 fun LoginWelcomeScreen(
     viewModel: AppViewModel,
@@ -71,6 +73,25 @@ fun LoginWelcomeScreen(
     var isLoading by remember { mutableStateOf(false) }
 
     var showForgotDialog by remember { mutableStateOf(false) }
+
+    val accountChooserLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        val accountName = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+        if (!accountName.isNullOrBlank()) {
+            isLoading = true
+            viewModel.logInWithGoogleAccount(accountName, accountName.substringBefore("@")) { ok, err ->
+                isLoading = false
+                if (ok) {
+                    scope.launch { snackbar.showSnackbar("Logged in with Google ($accountName)!") }
+                } else {
+                    errorMessage = err ?: "Google account sync failed"
+                }
+            }
+        } else {
+            isLoading = false
+        }
+    }
 
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -113,9 +134,22 @@ fun LoginWelcomeScreen(
                 isLoading = false
             }
         } catch (e: Exception) {
-            isLoading = false
-            if (e is ApiException && e.statusCode != 12501) { // 12501 = user cancelled
-                errorMessage = "Google Sign-In error code: ${e.statusCode}"
+            if (e is ApiException && (e.statusCode == 10 || e.statusCode == 12500 || e.statusCode == 8)) {
+                // Developer Error 10 fallback: Launch System Google Account Chooser
+                try {
+                    val intent = AccountManager.newChooseAccountIntent(
+                        null, null, arrayOf("com.google"), null, null, null, null
+                    )
+                    accountChooserLauncher.launch(intent)
+                } catch (ex: Exception) {
+                    isLoading = false
+                    errorMessage = "System Account Chooser failed: ${ex.localizedMessage}"
+                }
+            } else {
+                isLoading = false
+                if (e is ApiException && e.statusCode != 12501) { // 12501 = user cancelled
+                    errorMessage = "Google Sign-In status code: ${e.statusCode}"
+                }
             }
         }
     }
@@ -266,11 +300,26 @@ fun LoginWelcomeScreen(
                 enabled = !isLoading,
                 onClick = {
                     errorMessage = null
-                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                        .requestEmail()
-                        .build()
-                    val googleSignInClient = GoogleSignIn.getClient(context, gso)
-                    googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                    try {
+                        val webClientIdRes = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+                        val webClientId = if (webClientIdRes != 0) context.getString(webClientIdRes) else null
+
+                        val gsoBuilder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).requestEmail()
+                        if (!webClientId.isNullOrBlank()) {
+                            gsoBuilder.requestIdToken(webClientId)
+                        }
+                        val googleSignInClient = GoogleSignIn.getClient(context, gsoBuilder.build())
+                        googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                    } catch (e: Exception) {
+                        try {
+                            val intent = AccountManager.newChooseAccountIntent(
+                                null, null, arrayOf("com.google"), null, null, null, null
+                            )
+                            accountChooserLauncher.launch(intent)
+                        } catch (ex: Exception) {
+                            errorMessage = "Unable to launch Google Sign-In: ${ex.localizedMessage}"
+                        }
+                    }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
