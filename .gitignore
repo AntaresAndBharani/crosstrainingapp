@@ -34,3 +34,7 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Local Test Scripts and APKs
+local_test/
+
