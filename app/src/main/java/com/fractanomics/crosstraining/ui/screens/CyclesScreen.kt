@@ -14,6 +14,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Checkbox
@@ -55,7 +57,12 @@ import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CyclesScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
+fun CyclesScreen(
+    viewModel: AppViewModel,
+    outerPadding: PaddingValues,
+    onOpenDrawer: () -> Unit = {},
+    onOpenTimer: () -> Unit = {}
+) {
     val cycles by viewModel.cycles.collectAsStateWithLifecycle()
     val allGoals by viewModel.cycleGoals.collectAsStateWithLifecycle()
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
@@ -65,7 +72,21 @@ fun CyclesScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
-        topBar = { TopAppBar(title = { Text("Training Cycles") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Training Cycles") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open Menu")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onOpenTimer) {
+                        Icon(Icons.Filled.Timer, contentDescription = "Quick Timer")
+                    }
+                }
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 editing = null

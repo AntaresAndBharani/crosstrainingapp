@@ -12,6 +12,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -60,6 +65,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
+import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.ui.formatLong
 import com.fractanomics.crosstraining.ui.formatShort
 import com.fractanomics.crosstraining.ui.routineBlockPerformances
@@ -69,9 +75,14 @@ import java.time.temporal.ChronoUnit
 
 enum class ProgressMode { BY_EXERCISE, BY_ROUTINE, CYCLE_GOALS }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
+fun ProgressScreen(
+    viewModel: AppViewModel,
+    outerPadding: PaddingValues,
+    onOpenDrawer: () -> Unit = {},
+    onOpenTimer: () -> Unit = {}
+) {
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
     val routines by viewModel.routines.collectAsStateWithLifecycle()
     val routinesWithBlocks by viewModel.routinesWithBlocks.collectAsStateWithLifecycle()
@@ -88,7 +99,21 @@ fun ProgressScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
-        topBar = { TopAppBar(title = { Text("Progress & Goals") }) }
+        topBar = {
+            TopAppBar(
+                title = { Text("Progress & Goals") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open Menu")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onOpenTimer) {
+                        Icon(Icons.Filled.Timer, contentDescription = "Quick Timer")
+                    }
+                }
+            )
+        }
     ) { pad ->
         if (exercises.isEmpty()) {
             EmptyState("Add exercises and log sessions to see progress here.", Modifier.padding(pad))
