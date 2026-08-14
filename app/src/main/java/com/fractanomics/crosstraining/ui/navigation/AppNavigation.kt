@@ -431,7 +431,7 @@ private fun AppDrawerContent(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "v2.4.2",
+                "v2.5.0",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline
             )
