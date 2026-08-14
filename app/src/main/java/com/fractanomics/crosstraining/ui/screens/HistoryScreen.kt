@@ -7,6 +7,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -36,7 +41,9 @@ import com.fractanomics.crosstraining.ui.trimmed
 fun HistoryScreen(
     viewModel: AppViewModel,
     outerPadding: PaddingValues,
-    onOpenEditor: (sessionId: Long, copy: Boolean) -> Unit
+    onOpenEditor: (sessionId: Long, copy: Boolean) -> Unit,
+    onOpenDrawer: () -> Unit = {},
+    onOpenTimer: () -> Unit = {}
 ) {
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
@@ -47,7 +54,21 @@ fun HistoryScreen(
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
-        topBar = { TopAppBar(title = { Text("Session History") }) }
+        topBar = {
+            TopAppBar(
+                title = { Text("Session History") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open Menu")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onOpenTimer) {
+                        Icon(Icons.Filled.Timer, contentDescription = "Quick Timer")
+                    }
+                }
+            )
+        }
     ) { pad ->
         if (sessions.isEmpty()) {
             EmptyState("No sessions logged yet.\nUse the Log tab to add your first one.", Modifier.padding(pad))

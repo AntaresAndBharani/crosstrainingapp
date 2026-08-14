@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Share
@@ -90,7 +92,12 @@ import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
+fun LibraryScreen(
+    viewModel: AppViewModel,
+    outerPadding: PaddingValues,
+    onOpenDrawer: () -> Unit = {},
+    onOpenTimer: () -> Unit = {}
+) {
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
     val routinesWithBlocks by viewModel.routinesWithBlocks.collectAsStateWithLifecycle()
     val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
@@ -136,7 +143,15 @@ fun LibraryScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
         topBar = {
             TopAppBar(
                 title = { Text("Library") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open Menu")
+                    }
+                },
                 actions = {
+                    IconButton(onClick = onOpenTimer) {
+                        Icon(Icons.Filled.Timer, contentDescription = "Quick Timer")
+                    }
                     IconButton(onClick = { showMenu = true }) {
                         Icon(Icons.Filled.MoreVert, contentDescription = "More")
                     }
