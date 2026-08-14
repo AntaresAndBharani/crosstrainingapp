@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudDownload
@@ -24,22 +25,27 @@ import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Mail
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -53,15 +59,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.firebase.SyncStatus
 import com.fractanomics.crosstraining.ui.AppViewModel
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileScreen(
     viewModel: AppViewModel,
-    snackbar: SnackbarHostState
+    snackbar: SnackbarHostState,
+    outerPadding: PaddingValues = PaddingValues(),
+    onOpenDrawer: () -> Unit = {},
+    onOpenTimer: () -> Unit = {}
 ) {
     val authUser by viewModel.authUser.collectAsStateWithLifecycle()
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
@@ -69,13 +80,32 @@ fun ProfileScreen(
 
     var showAuthModal by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
+    Scaffold(
+        modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
+        topBar = {
+            TopAppBar(
+                title = { Text("Profile & Sync") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open Menu")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onOpenTimer) {
+                        Icon(Icons.Filled.Timer, contentDescription = "Quick Timer")
+                    }
+                }
+            )
+        }
+    ) { pad ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(pad)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
         // User Profile Card
         ElevatedCard(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -124,7 +154,7 @@ fun ProfileScreen(
                     }
                 } else {
                     OutlinedButton(onClick = { viewModel.signOut() }) {
-                        Icon(Icons.Filled.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("Sign Out")
                     }
@@ -226,6 +256,7 @@ fun ProfileScreen(
             }
         }
     }
+}
 
     if (showAuthModal) {
         AuthDialog(

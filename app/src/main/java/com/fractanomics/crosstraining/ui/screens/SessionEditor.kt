@@ -18,6 +18,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Button
@@ -244,6 +246,8 @@ fun SessionEditorBody(
     saveLabel: String,
     clearAfterSave: Boolean,
     onBack: (() -> Unit)?,
+    onOpenDrawer: (() -> Unit)? = null,
+    onOpenTimer: (() -> Unit)? = null,
     onSubmit: (SessionDraft) -> Unit
 ) {
     val cycles by viewModel.cycles.collectAsStateWithLifecycle()
@@ -306,6 +310,17 @@ fun SessionEditorBody(
                     if (onBack != null) {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    } else if (onOpenDrawer != null) {
+                        IconButton(onClick = onOpenDrawer) {
+                            Icon(Icons.Filled.Menu, contentDescription = "Menu")
+                        }
+                    }
+                },
+                actions = {
+                    if (onOpenTimer != null) {
+                        IconButton(onClick = onOpenTimer) {
+                            Icon(Icons.Filled.Timer, contentDescription = "Quick Timer")
                         }
                     }
                 }

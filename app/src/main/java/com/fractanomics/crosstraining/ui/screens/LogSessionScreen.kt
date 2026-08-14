@@ -7,7 +7,12 @@ import com.fractanomics.crosstraining.ui.AppViewModel
 
 /** The Log tab: a fresh session form that clears itself after each save. */
 @Composable
-fun LogSessionScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
+fun LogSessionScreen(
+    viewModel: AppViewModel,
+    outerPadding: PaddingValues,
+    onOpenDrawer: () -> Unit = {},
+    onOpenTimer: () -> Unit = {}
+) {
     SessionEditorBody(
         viewModel = viewModel,
         outerPadding = outerPadding,
@@ -17,6 +22,8 @@ fun LogSessionScreen(viewModel: AppViewModel, outerPadding: PaddingValues) {
         saveLabel = "Save session",
         clearAfterSave = true,
         onBack = null,
+        onOpenDrawer = onOpenDrawer,
+        onOpenTimer = onOpenTimer,
         onSubmit = { viewModel.saveSession(it) }
     )
 }
