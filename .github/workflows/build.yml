@@ -1,14 +1,13 @@
-name: Build APK
+name: PR Snapshot Build & Pre-Release
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   build:
@@ -29,14 +28,27 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Compute short commit SHA
-        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+      - name: Compute build metadata
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            echo "SHORT_SHA=${HEAD_SHA:0:7}" >> "$GITHUB_ENV"
+            echo "BRANCH_NAME=${{ github.head_ref }}" >> "$GITHUB_ENV"
+            echo "PR_LABEL=PR #${{ github.event.pull_request.number }}" >> "$GITHUB_ENV"
+          else
+            echo "SHORT_SHA=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+            echo "BRANCH_NAME=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            echo "PR_LABEL=Manual Build" >> "$GITHUB_ENV"
+          fi
 
       - name: Ensure debug keystore
         run: |
           if [ ! -f app/debug.keystore ]; then
             keytool -genkey -v -keystore app/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
+
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --stacktrace
 
       - name: Build snapshot APK
         run: ./gradlew assembleSnapshot -PsnapshotLabel=${{ env.SHORT_SHA }} --stacktrace
@@ -53,18 +65,15 @@ jobs:
           path: dist/crosstraining-snapshot.apk
           if-no-files-found: error
 
-      # Rolling pre-release so the latest snapshot can be downloaded straight
-      # from a phone (Releases -> "Snapshot"). Skipped on pull_request events
-      # because the branch push event already publishes the same commit.
+      # Rolling pre-release so the snapshot can be downloaded directly
+      # to a phone from the Releases page (Releases -> "Snapshot").
       - name: Delete previous snapshot release and tag
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release delete snapshot --yes --cleanup-tag || true
 
-      - name: Update rolling snapshot pre-release
-        if: github.event_name != 'pull_request'
+      - name: Publish rolling snapshot pre-release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: snapshot
@@ -72,13 +81,12 @@ jobs:
           prerelease: true
           files: dist/crosstraining-snapshot.apk
           body: |
-            Latest development snapshot — branch `${{ github.ref_name }}`, commit `${{ env.SHORT_SHA }}`.
+            Latest development snapshot — ${{ env.PR_LABEL }} (`${{ env.BRANCH_NAME }}`), commit `${{ env.SHORT_SHA }}`.
 
             Installs **alongside** the released app as **CrossTraining Snapshot**
-            (`com.fractanomics.crosstraining.snapshot`), so you can test a branch
-            before merging and releasing without touching your real data.
+            (`com.fractanomics.crosstraining.snapshot`), so you can test before merging without touching real data.
 
-            **Install on your phone**
+            **Install on your phone:**
             1. Download `crosstraining-snapshot.apk` below.
             2. Open it; allow "Install unknown apps" if prompted.
             3. Tap Install.
