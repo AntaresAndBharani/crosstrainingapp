@@ -19,3 +19,6 @@
 ## 4. Strict Boundary Rules
 - `@Developer` MUST NEVER modify or delete existing test assertions in `app/src/test/` to make a build pass.
 - All fixes must be implemented in `app/src/main/`.
+
+## 5. GitHub Operations & Permissions
+- Always invoke `C:\Users\rogal\workspaces\Set-GhToken-Antares.ps1` before any `git push` or GitHub CLI (`gh`) operations on `AntaresAndBharani` repositories to guarantee valid permissions.
