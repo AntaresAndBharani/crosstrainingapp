@@ -20,3 +20,7 @@
 4. **Environment Isolation:** Never commit machine-specific paths (such as Windows `org.gradle.java.home`) into repository `gradle.properties`. User-specific JVM paths belong in `~/.gradle/gradle.properties`.
 5. **Local APK Sync:** When building APKs, automatically copy the output APK to `local_test\latest.apk`.
 6. **GitHub Permissions:** Always run `C:\Users\rogal\workspaces\Set-GhToken-Antares.ps1` for Git push and `gh` operations under the `AntaresAndBharani` organization.
+7. **CI/CD Lifecycle & Definition of Done:**
+   - **PR Workflow:** Opening/updating a PR builds the snapshot APK and updates the rolling `snapshot` pre-release on GitHub.
+   - **Merge to Main:** Merging into `main` automatically tags the release and publishes the official GitHub Release with the APK.
+   - **Agent Completion Gate:** Development is only complete when the PR is opened AND all remote GitHub Actions CI checks pass (Green).
