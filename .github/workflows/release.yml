@@ -45,16 +45,19 @@ jobs:
             BASE_VERSION="3.0.0"
           fi
           
-          TAG="v$BASE_VERSION"
+          # Parse Major.Minor.Patch (X.Y.Z)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+          MAJOR=${MAJOR:-3}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
           
-          # Check if tag already exists in remote/local git history
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            PATCH=1
-            while git rev-parse "v${BASE_VERSION}.${PATCH}" >/dev/null 2>&1; do
-              PATCH=$((PATCH + 1))
-            done
-            TAG="v${BASE_VERSION}.${PATCH}"
-          fi
+          TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          
+          # If tag already exists, increment the PATCH number (3rd digit)
+          while git rev-parse "$TAG" >/dev/null 2>&1; do
+            PATCH=$((PATCH + 1))
+            TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          done
           
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
           echo "Resolved release tag: $TAG"
