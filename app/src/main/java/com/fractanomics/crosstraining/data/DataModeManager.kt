@@ -1,6 +1,7 @@
 package com.fractanomics.crosstraining.data
 
 import android.content.Context
+import com.fractanomics.crosstraining.ui.theme.AppThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,6 +13,8 @@ import kotlinx.coroutines.flow.map
  * points the UI at another database file, so anything logged while exploring
  * demo data cannot touch the user's history. The chosen mode is persisted so
  * the app reopens where it was left.
+ *
+ * Also manages app-level preference persistence, such as [AppThemeMode].
  */
 class DataModeManager(context: Context) {
 
@@ -23,6 +26,20 @@ class DataModeManager(context: Context) {
 
     private val _demoMode = MutableStateFlow(prefs.getBoolean(KEY_DEMO_MODE, false))
     val demoMode: StateFlow<Boolean> = _demoMode
+
+    private val _themeMode = MutableStateFlow(
+        runCatching {
+            val saved = prefs.getString(KEY_THEME_MODE, AppThemeMode.LIGHT.name)
+            AppThemeMode.valueOf(saved ?: AppThemeMode.LIGHT.name)
+        }.getOrDefault(AppThemeMode.LIGHT)
+    )
+    val themeMode: StateFlow<AppThemeMode> = _themeMode
+
+    /** Set and persist the app theme mode. */
+    fun setThemeMode(mode: AppThemeMode) {
+        prefs.edit().putString(KEY_THEME_MODE, mode.name).apply()
+        _themeMode.value = mode
+    }
 
     /** Repository currently backing the UI. */
     val current: Repository
@@ -62,5 +79,6 @@ class DataModeManager(context: Context) {
     private companion object {
         const val KEY_DEMO_MODE = "demoMode"
         const val KEY_SEED_VERSION = "demoSeedVersion"
+        const val KEY_THEME_MODE = "themeMode"
     }
 }

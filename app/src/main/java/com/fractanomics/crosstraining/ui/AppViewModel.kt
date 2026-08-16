@@ -161,6 +161,13 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
 
     fun resetDemoData() = viewModelScope.launch { data.resetDemoData() }
 
+    // --- Theme mode -------------------------------------------------------------
+    val themeMode: StateFlow<com.fractanomics.crosstraining.ui.theme.AppThemeMode> = data.themeMode
+
+    fun setThemeMode(mode: com.fractanomics.crosstraining.ui.theme.AppThemeMode) {
+        data.setThemeMode(mode)
+    }
+
     // --- Cycles ---------------------------------------------------------------
     fun saveCycle(cycle: Cycle, makeActive: Boolean = false) = viewModelScope.launch {
         val id = repo.saveCycle(cycle)
