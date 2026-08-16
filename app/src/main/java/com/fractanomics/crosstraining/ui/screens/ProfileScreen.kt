@@ -46,6 +46,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -59,6 +60,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -72,8 +74,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.res.painterResource
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import android.accounts.AccountManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.firebase.SyncStatus
@@ -506,17 +514,45 @@ private fun AuthDialog(
     var selectedTab by remember { mutableIntStateOf(0) } // 0 = Log In, 1 = Sign Up
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
+
+    val googleAccountLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        val accountName = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+        if (!accountName.isNullOrBlank()) {
+            isLoading = true
+            viewModel.logInWithGoogleAccount(accountName, accountName.substringBefore("@")) { ok, err ->
+                isLoading = false
+                if (ok) {
+                    onSuccess("Welcome, $accountName!")
+                } else {
+                    errorMessage = err ?: "Google account sync failed"
+                }
+            }
+        } else {
+            isLoading = false
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (selectedTab == 0) "Log In to Account" else "Create New Account") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 TabRow(selectedTabIndex = selectedTab) {
-                    Tab(selected = selectedTab == 0, onClick = { selectedTab = 0; errorMessage = null }, text = { Text("Log In") })
-                    Tab(selected = selectedTab == 1, onClick = { selectedTab = 1; errorMessage = null }, text = { Text("Sign Up") })
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0; errorMessage = null },
+                        text = { Text("Log In", fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal) }
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1; errorMessage = null },
+                        text = { Text("Sign Up", fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal) }
+                    )
                 }
 
                 OutlinedTextField(
@@ -525,6 +561,7 @@ private fun AuthDialog(
                     label = { Text("Email Address") },
                     leadingIcon = { Icon(Icons.Filled.Mail, contentDescription = null) },
                     singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -533,19 +570,80 @@ private fun AuthDialog(
                     onValueChange = { password = it; errorMessage = null },
                     label = { Text("Password") },
                     leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                            )
+                        }
+                    },
                     singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 if (errorMessage != null) {
                     Text(errorMessage!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    HorizontalDivider(modifier = Modifier.weight(1f))
+                    Text(
+                        "OR",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    HorizontalDivider(modifier = Modifier.weight(1f))
+                }
+
+                OutlinedButton(
+                    enabled = !isLoading,
+                    onClick = {
+                        errorMessage = null
+                        try {
+                            val intent = AccountManager.newChooseAccountIntent(
+                                null, null, arrayOf("com.google"), null, null, null, null
+                            )
+                            googleAccountLauncher.launch(intent)
+                        } catch (e: Exception) {
+                            errorMessage = "Unable to open Google Account chooser"
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(id = com.fractanomics.crosstraining.R.drawable.ic_google_logo),
+                            contentDescription = "Google",
+                            tint = Color.Unspecified,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Continue with Google",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
                 enabled = email.isNotBlank() && password.length >= 6 && !isLoading,
+                shape = RoundedCornerShape(10.dp),
                 onClick = {
                     isLoading = true
                     if (selectedTab == 0) {
@@ -564,7 +662,7 @@ private fun AuthDialog(
                 if (isLoading) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                 } else {
-                    Text(if (selectedTab == 0) "Log In" else "Sign Up")
+                    Text(if (selectedTab == 0) "Log In" else "Sign Up", fontWeight = FontWeight.Bold)
                 }
             }
         },

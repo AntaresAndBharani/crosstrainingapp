@@ -1,5 +1,8 @@
 package com.fractanomics.crosstraining.ui.screens
 
+import android.accounts.AccountManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,12 +23,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mail
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -44,19 +50,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.ui.platform.LocalContext
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInOptions
-import com.google.android.gms.common.api.ApiException
+import androidx.compose.ui.unit.sp
+import com.fractanomics.crosstraining.R
 import com.fractanomics.crosstraining.ui.AppViewModel
 import kotlinx.coroutines.launch
-
-import android.accounts.AccountManager
 
 @Composable
 fun LoginWelcomeScreen(
@@ -64,17 +67,18 @@ fun LoginWelcomeScreen(
     snackbar: SnackbarHostState,
     onContinueAsGuest: () -> Unit
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var selectedTab by remember { mutableIntStateOf(0) } // 0 = Log In, 1 = Sign Up
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
 
     var showForgotDialog by remember { mutableStateOf(false) }
 
-    val accountChooserLauncher = rememberLauncherForActivityResult(
+    // Direct single-pass Google System Account Chooser (never shows double popups)
+    val googleAccountLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { res ->
         val accountName = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
@@ -83,74 +87,13 @@ fun LoginWelcomeScreen(
             viewModel.logInWithGoogleAccount(accountName, accountName.substringBefore("@")) { ok, err ->
                 isLoading = false
                 if (ok) {
-                    scope.launch { snackbar.showSnackbar("Logged in with Google ($accountName)!") }
+                    scope.launch { snackbar.showSnackbar("Welcome, $accountName!") }
                 } else {
-                    errorMessage = err ?: "Google account sync failed"
+                    errorMessage = err ?: "Google account synchronization failed"
                 }
             }
         } else {
             isLoading = false
-        }
-    }
-
-    val googleSignInLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        isLoading = true
-        try {
-            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-            val account = task.getResult(ApiException::class.java)
-            val idToken = account?.idToken
-            val emailAddr = account?.email
-            val name = account?.displayName ?: account?.givenName
-
-            if (!idToken.isNullOrBlank()) {
-                viewModel.logInWithGoogle(idToken) { ok, err ->
-                    isLoading = false
-                    if (ok) {
-                        scope.launch { snackbar.showSnackbar("Welcome back, ${name ?: emailAddr}!") }
-                    } else if (!emailAddr.isNullOrBlank()) {
-                        viewModel.logInWithGoogleAccount(emailAddr, name) { ok2, err2 ->
-                            if (ok2) {
-                                scope.launch { snackbar.showSnackbar("Logged in with Google ($emailAddr)!") }
-                            } else {
-                                errorMessage = err2 ?: err ?: "Google Sign-In failed"
-                            }
-                        }
-                    } else {
-                        errorMessage = err ?: "Google Sign-In failed"
-                    }
-                }
-            } else if (!emailAddr.isNullOrBlank()) {
-                viewModel.logInWithGoogleAccount(emailAddr, name) { ok, err ->
-                    isLoading = false
-                    if (ok) {
-                        scope.launch { snackbar.showSnackbar("Logged in with Google ($emailAddr)!") }
-                    } else {
-                        errorMessage = err ?: "Google account sync failed"
-                    }
-                }
-            } else {
-                isLoading = false
-            }
-        } catch (e: Exception) {
-            if (e is ApiException && (e.statusCode == 10 || e.statusCode == 12500 || e.statusCode == 8)) {
-                // Developer Error 10 fallback: Launch System Google Account Chooser
-                try {
-                    val intent = AccountManager.newChooseAccountIntent(
-                        null, null, arrayOf("com.google"), null, null, null, null
-                    )
-                    accountChooserLauncher.launch(intent)
-                } catch (ex: Exception) {
-                    isLoading = false
-                    errorMessage = "System Account Chooser failed: ${ex.localizedMessage}"
-                }
-            } else {
-                isLoading = false
-                if (e is ApiException && e.statusCode != 12501) { // 12501 = user cancelled
-                    errorMessage = "Google Sign-In status code: ${e.statusCode}"
-                }
-            }
         }
     }
 
@@ -179,7 +122,7 @@ fun LoginWelcomeScreen(
                 Icon(
                     Icons.Filled.FitnessCenter,
                     contentDescription = null,
-                    modifier = Modifier.size(40.dp),
+                    modifier = Modifier.size(38.dp),
                     tint = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             }
@@ -198,7 +141,7 @@ fun LoginWelcomeScreen(
                 )
             }
 
-            // Auth Card
+            // Authentication Card
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp)
@@ -208,8 +151,16 @@ fun LoginWelcomeScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     TabRow(selectedTabIndex = selectedTab) {
-                        Tab(selected = selectedTab == 0, onClick = { selectedTab = 0; errorMessage = null }, text = { Text("Log In") })
-                        Tab(selected = selectedTab == 1, onClick = { selectedTab = 1; errorMessage = null }, text = { Text("Sign Up") })
+                        Tab(
+                            selected = selectedTab == 0,
+                            onClick = { selectedTab = 0; errorMessage = null },
+                            text = { Text("Log In", fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal) }
+                        )
+                        Tab(
+                            selected = selectedTab == 1,
+                            onClick = { selectedTab = 1; errorMessage = null },
+                            text = { Text("Sign Up", fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal) }
+                        )
                     }
 
                     OutlinedTextField(
@@ -218,6 +169,7 @@ fun LoginWelcomeScreen(
                         label = { Text("Email Address") },
                         leadingIcon = { Icon(Icons.Filled.Mail, contentDescription = null) },
                         singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -226,8 +178,17 @@ fun LoginWelcomeScreen(
                         onValueChange = { password = it; errorMessage = null },
                         label = { Text("Password") },
                         leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Icon(
+                                    imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                    contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                                )
+                            }
+                        },
                         singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -264,7 +225,7 @@ fun LoginWelcomeScreen(
                                 viewModel.signUpWithEmail(email.trim(), password) { ok, err ->
                                     isLoading = false
                                     if (ok) {
-                                        scope.launch { snackbar.showSnackbar("Account created! History synced.") }
+                                        scope.launch { snackbar.showSnackbar("Account created! Cloud sync active.") }
                                     } else {
                                         errorMessage = err ?: "Sign up failed"
                                     }
@@ -273,12 +234,13 @@ fun LoginWelcomeScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
+                            .height(50.dp),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
                         if (isLoading) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
-                            Text(if (selectedTab == 0) "Log In" else "Sign Up")
+                            Text(if (selectedTab == 0) "Log In" else "Sign Up", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -291,34 +253,27 @@ fun LoginWelcomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 HorizontalDivider(modifier = Modifier.weight(1f))
-                Text("OR", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "OR",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold
+                )
                 HorizontalDivider(modifier = Modifier.weight(1f))
             }
 
-            // Google Sign-In Button (Native Google System Account Chooser)
+            // Modern, Elegant Google Sign-In Button (Clean Vector Logo & Single Dialog)
             OutlinedButton(
                 enabled = !isLoading,
                 onClick = {
                     errorMessage = null
                     try {
-                        val webClientIdRes = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
-                        val webClientId = if (webClientIdRes != 0) context.getString(webClientIdRes) else null
-
-                        val gsoBuilder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).requestEmail()
-                        if (!webClientId.isNullOrBlank()) {
-                            gsoBuilder.requestIdToken(webClientId)
-                        }
-                        val googleSignInClient = GoogleSignIn.getClient(context, gsoBuilder.build())
-                        googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                        val intent = AccountManager.newChooseAccountIntent(
+                            null, null, arrayOf("com.google"), null, null, null, null
+                        )
+                        googleAccountLauncher.launch(intent)
                     } catch (e: Exception) {
-                        try {
-                            val intent = AccountManager.newChooseAccountIntent(
-                                null, null, arrayOf("com.google"), null, null, null, null
-                            )
-                            accountChooserLauncher.launch(intent)
-                        } catch (ex: Exception) {
-                            errorMessage = "Unable to launch Google Sign-In: ${ex.localizedMessage}"
-                        }
+                        errorMessage = "Unable to open Google Account selector: ${e.localizedMessage}"
                     }
                 },
                 modifier = Modifier
@@ -326,10 +281,26 @@ fun LoginWelcomeScreen(
                     .height(48.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text("🔴 🟡 🟢 🔵  Continue with Google Account", fontWeight = FontWeight.SemiBold)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_google_logo),
+                        contentDescription = "Google",
+                        tint = Color.Unspecified,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "Continue with Google",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
 
-            // Secondary option: Continue as guest
+            // Secondary option: Continue as Guest
             OutlinedButton(
                 onClick = onContinueAsGuest,
                 modifier = Modifier
@@ -337,7 +308,12 @@ fun LoginWelcomeScreen(
                     .height(48.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text("Continue as Guest")
+                Text(
+                    "Continue as Guest",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
@@ -352,16 +328,24 @@ fun LoginWelcomeScreen(
             title = { Text("Reset Password") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Enter your email address to receive a password reset link:")
+                    Text(
+                        "Enter your email address to receive a password reset link:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                     OutlinedTextField(
                         value = resetEmail,
                         onValueChange = { resetEmail = it },
                         label = { Text("Email Address") },
                         singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     if (resetMsg != null) {
-                        Text(resetMsg!!, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            resetMsg!!,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
             },
