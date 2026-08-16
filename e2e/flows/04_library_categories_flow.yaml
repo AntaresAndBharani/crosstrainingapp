@@ -1,0 +1,14 @@
+appId: com.fractanomics.crosstraining
+---
+- launchApp
+- tapOn: "Library"
+- assertVisible: "Movements & Routines"
+- assertVisible: "All"
+- assertVisible: "Weightlifting"
+- assertVisible: "Powerlifting"
+- tapOn: "Weightlifting"
+- assertVisible: "Snatch"
+- tapOn: "Search exercises..."
+- inputText: "Clean"
+- hideKeyboard
+- assertVisible: "Clean & Jerk"

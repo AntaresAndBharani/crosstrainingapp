@@ -1,0 +1,9 @@
+appId: com.fractanomics.crosstraining
+---
+- launchApp:
+    clearState: true
+- assertVisible: "CrossTraining"
+- assertVisible: "Sign in with Google"
+- assertVisible: "Continue as Guest"
+- tapOn: "Continue as Guest"
+- assertVisible: "Log Session"

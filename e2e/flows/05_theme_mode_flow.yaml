@@ -1,0 +1,10 @@
+appId: com.fractanomics.crosstraining
+---
+- launchApp
+- tapOn:
+    contentDescription: "Open navigation menu"
+- tapOn: "Profile & Settings"
+- assertVisible: "Appearance & Theme"
+- tapOn: "Dark"
+- tapOn: "Dark High Contrast"
+- tapOn: "Default (Light)"
