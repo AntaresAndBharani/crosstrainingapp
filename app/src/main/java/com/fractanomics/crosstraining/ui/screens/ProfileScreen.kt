@@ -1,9 +1,13 @@
 package com.fractanomics.crosstraining.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,18 +23,26 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.BrightnessMedium
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudSync
-import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mail
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.RadioButtonChecked
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -38,9 +50,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -56,13 +70,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.firebase.SyncStatus
 import com.fractanomics.crosstraining.ui.AppViewModel
+import com.fractanomics.crosstraining.ui.theme.AppThemeMode
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -76,6 +92,7 @@ fun ProfileScreen(
 ) {
     val authUser by viewModel.authUser.collectAsStateWithLifecycle()
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
+    val currentThemeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     var showAuthModal by remember { mutableStateOf(false) }
@@ -84,7 +101,7 @@ fun ProfileScreen(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
         topBar = {
             TopAppBar(
-                title = { Text("Profile & Sync") },
+                title = { Text("Profile & Settings") },
                 navigationIcon = {
                     IconButton(onClick = onOpenDrawer) {
                         Icon(Icons.Filled.Menu, contentDescription = "Open Menu")
@@ -106,157 +123,234 @@ fun ProfileScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-        // User Profile Card
-        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Filled.AccountCircle,
-                        contentDescription = null,
-                        modifier = Modifier.size(36.dp),
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    val email = authUser?.email
-                    if (!email.isNullOrBlank()) {
-                        Text(email, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text("Permanent Account · Cloud Sync Active", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    } else {
-                        Text("Guest Athlete", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text("Anonymous session — Sign in to sync history", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
-                if (authUser?.email.isNullOrBlank()) {
-                    Button(onClick = { showAuthModal = true }) {
-                        Text("Log In / Sign Up")
-                    }
-                } else {
-                    OutlinedButton(onClick = { viewModel.signOut() }) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Sign Out")
-                    }
-                }
-            }
-        }
-
-        // Cloud Backup & Sync Card
-        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            // User Profile Card
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Text("Cloud Backup & Sync", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Box(
                         modifier = Modifier
-                            .background(
-                                when (syncState) {
-                                    SyncStatus.SUCCESS -> MaterialTheme.colorScheme.primaryContainer
-                                    SyncStatus.SYNCING -> MaterialTheme.colorScheme.secondaryContainer
-                                    SyncStatus.ERROR -> MaterialTheme.colorScheme.errorContainer
-                                    SyncStatus.IDLE -> MaterialTheme.colorScheme.surfaceVariant
-                                },
-                                RoundedCornerShape(6.dp)
-                            )
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .size(56.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primaryContainer),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            when (syncState) {
-                                SyncStatus.SYNCING -> CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
-                                SyncStatus.SUCCESS -> Icon(Icons.Filled.CloudDone, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                                SyncStatus.ERROR -> Icon(Icons.Filled.Error, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onErrorContainer)
-                                SyncStatus.IDLE -> Icon(Icons.Filled.CloudSync, contentDescription = null, modifier = Modifier.size(14.dp))
-                            }
+                        Icon(
+                            Icons.Filled.AccountCircle,
+                            contentDescription = null,
+                            modifier = Modifier.size(36.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        val email = authUser?.email
+                        if (!email.isNullOrBlank()) {
+                            Text(email, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text("Permanent Account · Cloud Sync Active", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                        } else {
+                            Text("Guest Athlete", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text("Anonymous session — Sign in to sync history", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (authUser?.email.isNullOrBlank()) {
+                        Button(onClick = { showAuthModal = true }) {
+                            Text("Log In / Sign Up")
+                        }
+                    } else {
+                        OutlinedButton(onClick = { viewModel.signOut() }) {
+                            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Sign Out")
+                        }
+                    }
+                }
+            }
+
+            // Appearance & Theme Mode Card
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Palette,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
                             Text(
-                                syncState.name,
-                                style = MaterialTheme.typography.labelSmall,
+                                "Appearance & Theme",
+                                style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                         }
+
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = currentThemeMode.title.uppercase(),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    Text(
+                        "Choose your preferred interface theme. Mode changes take effect across all workouts, charts, and timers instantly.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        AppThemeMode.entries.forEach { mode ->
+                            val isSelected = currentThemeMode == mode
+                            ThemeOptionCard(
+                                mode = mode,
+                                isSelected = isSelected,
+                                onClick = { viewModel.setThemeMode(mode) }
+                            )
+                        }
                     }
                 }
+            }
 
-                Text(
-                    "Your exercises, daily routines, training cycles, logged workouts, and rep maxes are synced with Cloud Firestore.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-
-                Button(
-                    onClick = {
-                        viewModel.triggerCloudSync { ok, err ->
-                            scope.launch {
-                                snackbar.showSnackbar(if (ok) "Cloud sync completed!" else (err ?: "Sync error"))
+            // Cloud Backup & Sync Card
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.CloudSync,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "Cloud Backup & Sync",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    when (syncState) {
+                                        SyncStatus.SUCCESS -> MaterialTheme.colorScheme.primaryContainer
+                                        SyncStatus.SYNCING -> MaterialTheme.colorScheme.secondaryContainer
+                                        SyncStatus.ERROR -> MaterialTheme.colorScheme.errorContainer
+                                        SyncStatus.IDLE -> MaterialTheme.colorScheme.surfaceVariant
+                                    },
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                when (syncState) {
+                                    SyncStatus.SYNCING -> CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
+                                    SyncStatus.SUCCESS -> Icon(Icons.Filled.CloudDone, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                                    SyncStatus.ERROR -> Icon(Icons.Filled.Error, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onErrorContainer)
+                                    SyncStatus.IDLE -> Icon(Icons.Filled.CloudSync, contentDescription = null, modifier = Modifier.size(14.dp))
+                                }
+                                Text(
+                                    syncState.name,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = syncState != SyncStatus.SYNCING
-                ) {
-                    Icon(Icons.Filled.CloudSync, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Sync Now")
-                }
+                    }
 
-                OutlinedButton(
-                    onClick = {
-                        viewModel.recoverCloudRoutines { count ->
-                            scope.launch {
-                                snackbar.showSnackbar(if (count > 0) "Recovered $count routines from cloud!" else "No previous routines found in cloud.")
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Filled.CloudDownload, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Search Cloud for Lost Routines")
-                }
+                    Text(
+                        "Your exercises, daily routines, training cycles, logged workouts, and rep maxes are synced with Cloud Firestore.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
 
-                OutlinedButton(
-                    onClick = {
-                        viewModel.reseedDefaults {
-                            scope.launch {
-                                snackbar.showSnackbar("Default routines & exercises restored!")
+                    Button(
+                        onClick = {
+                            viewModel.triggerCloudSync { ok, err ->
+                                scope.launch {
+                                    snackbar.showSnackbar(if (ok) "Cloud sync completed!" else (err ?: "Sync error"))
+                                }
                             }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Restore Default Routines")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = syncState != SyncStatus.SYNCING
+                    ) {
+                        Icon(Icons.Filled.CloudSync, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Sync Now")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.recoverCloudRoutines { count ->
+                                scope.launch {
+                                    snackbar.showSnackbar(if (count > 0) "Recovered $count routines from cloud!" else "No previous routines found in cloud.")
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Filled.CloudDownload, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Search Cloud for Lost Routines")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.reseedDefaults {
+                                scope.launch {
+                                    snackbar.showSnackbar("Default routines & exercises restored!")
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Restore Default Routines")
+                    }
                 }
             }
         }
     }
-}
 
     if (showAuthModal) {
         AuthDialog(
@@ -269,6 +363,139 @@ fun ProfileScreen(
         )
     }
 }
+
+@Composable
+private fun ThemeOptionCard(
+    mode: AppThemeMode,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    val (icon, badgeTag, bgPreview, primaryPreview, borderPreview) = when (mode) {
+        AppThemeMode.LIGHT -> ThemePreviewConfig(
+            icon = Icons.Filled.LightMode,
+            badgeTag = "DEFAULT",
+            bgColor = Color(0xFFF8FAFC),
+            primaryColor = Color(0xFF007A3D),
+            borderColor = Color(0xFFCBD5E1)
+        )
+        AppThemeMode.DARK -> ThemePreviewConfig(
+            icon = Icons.Filled.DarkMode,
+            badgeTag = null,
+            bgColor = Color(0xFF121214),
+            primaryColor = Color(0xFF10B981),
+            borderColor = Color(0xFF52525B)
+        )
+        AppThemeMode.LIGHT_HIGH_CONTRAST -> ThemePreviewConfig(
+            icon = Icons.Filled.Contrast,
+            badgeTag = "WCAG AAA",
+            bgColor = Color(0xFFFFFFFF),
+            primaryColor = Color(0xFF005A28),
+            borderColor = Color(0xFF000000)
+        )
+        AppThemeMode.DARK_HIGH_CONTRAST -> ThemePreviewConfig(
+            icon = Icons.Filled.Contrast,
+            badgeTag = "OLED PITCH",
+            bgColor = Color(0xFF000000),
+            primaryColor = Color(0xFF00FF88),
+            borderColor = Color(0xFFA1A1AA)
+        )
+    }
+
+    val cardBorder = if (isSelected) {
+        BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+    } else {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    }
+
+    val containerColor = if (isSelected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+
+    OutlinedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        border = cardBorder,
+        colors = CardDefaults.outlinedCardColors(containerColor = containerColor)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // Theme Visual Swatch Preview
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(bgPreview)
+                    .border(1.5.dp, borderPreview, RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clip(CircleShape)
+                        .background(primaryPreview)
+                )
+            }
+
+            // Title & Description
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = mode.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
+                    )
+                    if (badgeTag != null) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Text(
+                                text = badgeTag,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = mode.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // Radio Selection Indicator
+            Icon(
+                imageVector = if (isSelected) Icons.Filled.RadioButtonChecked else Icons.Filled.RadioButtonUnchecked,
+                contentDescription = if (isSelected) "Selected" else "Unselected",
+                tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+    }
+}
+
+private data class ThemePreviewConfig(
+    val icon: ImageVector,
+    val badgeTag: String?,
+    val bgColor: Color,
+    val primaryColor: Color,
+    val borderColor: Color
+)
 
 @Composable
 private fun AuthDialog(
