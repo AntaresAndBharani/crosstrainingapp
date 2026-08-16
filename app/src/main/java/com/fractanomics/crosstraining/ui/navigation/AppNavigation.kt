@@ -105,13 +105,13 @@ enum class DrawerItem(
     CYCLES("cycles", "Training Cycles", "Periodization & blocks", Icons.Filled.CalendarMonth, DrawerSection.TOOLS),
 
     // Account & Settings
-    PROFILE("profile", "Profile & Sync", "Account & cloud backup", Icons.Filled.AccountCircle, DrawerSection.ACCOUNT)
+    PROFILE("profile", "Profile & Settings", "Account, theme & cloud backup", Icons.Filled.AccountCircle, DrawerSection.ACCOUNT)
 }
 
 enum class DrawerSection(val header: String) {
     WORKOUTS("Workouts"),
     TOOLS("Tools & Planning"),
-    ACCOUNT("Account")
+    ACCOUNT("Settings & Account")
 }
 
 @Composable
