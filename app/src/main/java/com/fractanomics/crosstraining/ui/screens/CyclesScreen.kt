@@ -16,8 +16,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -29,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -143,11 +146,14 @@ private fun CycleCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp)
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
@@ -155,47 +161,87 @@ private fun CycleCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(cycle.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        cycle.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+
                 if (cycle.isActive) {
-                    AssistChip(onClick = {}, label = { Text("Active") })
+                    AssistChip(
+                        onClick = {},
+                        label = { Text("Active Cycle", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            labelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    )
                 }
             }
+
             val range = buildString {
                 append(cycle.startDate.formatLong())
                 append("  →  ")
                 append(cycle.endDate?.formatLong() ?: "open (extendable)")
             }
-            Text(range, style = MaterialTheme.typography.bodyMedium)
+            Text(range, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
             if (cycle.goal.isNotBlank()) {
-                Text("Cycle focus: ${cycle.goal}", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Focus: ${cycle.goal}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
             }
 
             if (goals.isNotEmpty()) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-                Text("Basic Movement Goals:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    "Target Goals (${goals.size}):",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     goals.forEach { g ->
                         val ex = exercises.firstOrNull { it.id == g.exerciseId }
                         val unit = ex?.unit ?: "kg"
-                        AssistChip(
-                            onClick = {},
-                            label = {
-                                Text(
-                                    "${ex?.name ?: "Lift"} (${g.targetReps}RM Goal): ${g.targetWeight.trimmed()} $unit",
-                                    style = MaterialTheme.typography.labelSmall
-                                )
-                            }
-                        )
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        ) {
+                            Text(
+                                "${ex?.name ?: "Lift"} (${g.targetReps}RM): ${g.targetWeight.trimmed()}$unit",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
                     }
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 if (!cycle.isActive) {
-                    TextButton(onClick = onActivate) { Text("Set active") }
+                    TextButton(onClick = onActivate) { Text("Set Active") }
                 }
                 TextButton(onClick = onEdit) { Text("Edit") }
-                TextButton(onClick = onDelete) { Text("Delete") }
+                TextButton(onClick = onDelete) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }
