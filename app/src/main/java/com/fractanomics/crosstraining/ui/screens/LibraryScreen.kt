@@ -28,11 +28,15 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -90,7 +94,7 @@ import com.fractanomics.crosstraining.util.RepScheme
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun LibraryScreen(
     viewModel: AppViewModel,
@@ -133,16 +137,38 @@ fun LibraryScreen(
         }
     }
 
+    var exerciseSearch by remember { mutableStateOf("") }
+    var exerciseCategoryFilter by remember { mutableStateOf<ExerciseCategory?>(null) }
+    var routineSearch by remember { mutableStateOf("") }
+
     var activeShareCode by remember { mutableStateOf<String?>(null) }
     var showImportModal by remember { mutableStateOf(false) }
     var showCommunityModal by remember { mutableStateOf(false) }
+
+    val filteredExercises = remember(exercises, exerciseSearch, exerciseCategoryFilter) {
+        exercises.filter { ex ->
+            val matchesCategory = exerciseCategoryFilter == null || ex.category == exerciseCategoryFilter
+            val matchesSearch = exerciseSearch.isBlank() || ex.name.lowercase().contains(exerciseSearch.trim().lowercase())
+            matchesCategory && matchesSearch
+        }
+    }
+
+    val filteredRoutines = remember(routinesWithBlocks, routineSearch) {
+        routinesWithBlocks.filter { rwb ->
+            val query = routineSearch.trim().lowercase()
+            query.isBlank() ||
+                rwb.routine.name.lowercase().contains(query) ||
+                rwb.routine.description.lowercase().contains(query) ||
+                rwb.blocks.any { b -> b.name.lowercase().contains(query) }
+        }
+    }
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
-                title = { Text("Library") },
+                title = { Text("Library", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onOpenDrawer) {
                         Icon(Icons.Filled.Menu, contentDescription = "Open Menu")
@@ -211,16 +237,63 @@ fun LibraryScreen(
     ) { pad ->
         Column(modifier = Modifier.padding(pad)) {
             TabRow(selectedTabIndex = tab) {
-                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Exercises") })
-                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Daily Routines") })
+                Tab(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    text = { Text("Exercises (${exercises.size})", fontWeight = if (tab == 0) FontWeight.Bold else FontWeight.Normal) }
+                )
+                Tab(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    text = { Text("Daily Routines (${routinesWithBlocks.size})", fontWeight = if (tab == 1) FontWeight.Bold else FontWeight.Normal) }
+                )
             }
             if (tab == 0) {
-                if (exercises.isEmpty()) {
-                    EmptyState("No exercises yet. Tap + to add one.")
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OutlinedTextField(
+                        value = exerciseSearch,
+                        onValueChange = { exerciseSearch = it },
+                        placeholder = { Text("Search exercises...") },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                    )
+
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(
+                            selected = exerciseCategoryFilter == null,
+                            onClick = { exerciseCategoryFilter = null },
+                            label = { Text("All", style = MaterialTheme.typography.labelSmall) }
+                        )
+                        ExerciseCategory.entries.forEach { cat ->
+                            FilterChip(
+                                selected = exerciseCategoryFilter == cat,
+                                onClick = {
+                                    exerciseCategoryFilter = if (exerciseCategoryFilter == cat) null else cat
+                                },
+                                label = { Text(cat.label, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+                }
+
+                if (filteredExercises.isEmpty()) {
+                    EmptyState(
+                        if (exerciseSearch.isNotBlank() || exerciseCategoryFilter != null) "No exercises match your filter."
+                        else "No exercises yet. Tap + to add one."
+                    )
                 } else {
                     ScreenList {
-                        items(exercises, key = { it.id }) { ex ->
-                            ExerciseCard(
+                        items(filteredExercises, key = { it.id }) { ex ->
+                            CompactExerciseCard(
                                 exercise = ex,
                                 onEdit = { editingExercise = ex; showExerciseEditor = true },
                                 onDelete = { viewModel.deleteExercise(ex) }
@@ -229,31 +302,51 @@ fun LibraryScreen(
                     }
                 }
             } else {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    FilterChip(
-                        selected = false,
-                        onClick = { showImportModal = true },
-                        label = { Text("Import Code") },
-                        leadingIcon = { Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    OutlinedTextField(
+                        value = routineSearch,
+                        onValueChange = { routineSearch = it },
+                        placeholder = { Text("Search routines & complexes...") },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
                     )
-                    FilterChip(
-                        selected = false,
-                        onClick = { showCommunityModal = true },
-                        label = { Text("Community Library") },
-                        leadingIcon = { Icon(Icons.Filled.Public, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = false,
+                            onClick = { showImportModal = true },
+                            label = { Text("Import Code", style = MaterialTheme.typography.labelSmall) },
+                            leadingIcon = { Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        )
+                        FilterChip(
+                            selected = false,
+                            onClick = { showCommunityModal = true },
+                            label = { Text("Community Library", style = MaterialTheme.typography.labelSmall) },
+                            leadingIcon = { Icon(Icons.Filled.Public, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        )
+                    }
                 }
 
-                if (routinesWithBlocks.isEmpty()) {
-                    EmptyState("No daily routines created yet. Tap + to define one.")
+                if (filteredRoutines.isEmpty()) {
+                    EmptyState(
+                        if (routineSearch.isNotBlank()) "No routines match '$routineSearch'."
+                        else "No daily routines created yet. Tap + to define one."
+                    )
                 } else {
                     ScreenList {
-                        items(routinesWithBlocks, key = { it.routine.id }) { rwb ->
+                        items(filteredRoutines, key = { it.routine.id }) { rwb ->
                             RoutineCard(
                                 routineWithBlocks = rwb,
                                 exercises = exercises,
@@ -367,18 +460,76 @@ fun LibraryScreen(
 }
 
 @Composable
-private fun ExerciseCard(exercise: Exercise, onEdit: () -> Unit, onDelete: () -> Unit) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(exercise.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(
-                "${exercise.category.label} · ${exercise.metricType.label} (${exercise.unit})" +
-                    if (exercise.tracksRepMax) " · tracks RM" else "",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Row {
-                TextButton(onClick = onEdit) { Text("Edit") }
-                TextButton(onClick = onDelete) { Text("Delete") }
+private fun CompactExerciseCard(exercise: Exercise, onEdit: () -> Unit, onDelete: () -> Unit) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Exercise Category Icon Box
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.FitnessCenter,
+                    contentDescription = null,
+                    modifier = Modifier.size(22.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+
+            // Exercise Title & Details
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    exercise.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        exercise.category.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text("·", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Text(
+                        "${exercise.metricType.label} (${exercise.unit})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (exercise.tracksRepMax) {
+                        Text("·", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                        Text(
+                            "Tracks PR 🔥",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                }
+            }
+
+            // Actions
+            IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Filled.Edit, contentDescription = "Edit", modifier = Modifier.size(18.dp))
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Filled.Delete, contentDescription = "Delete", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
             }
         }
     }
