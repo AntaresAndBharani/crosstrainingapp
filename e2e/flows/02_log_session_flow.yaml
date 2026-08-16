@@ -1,0 +1,19 @@
+appId: com.fractanomics.crosstraining
+---
+- launchApp
+- tapOn: "Log"
+- assertVisible: "Log Session"
+- assertVisible: "Select Exercise"
+- tapOn: "Select Exercise"
+- tapOn: "Back Squat"
+- assertVisible: "SET 1"
+- tapOn:
+    id: "reps_0"
+- inputText: "5"
+- tapOn:
+    id: "weight_0"
+- inputText: "100"
+- tapOn: "+ Add Set"
+- assertVisible: "SET 2"
+- tapOn: "Save Session"
+- assertVisible: "Session saved"

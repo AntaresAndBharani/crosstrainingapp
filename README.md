@@ -62,12 +62,15 @@ Every push to `main` runs the **Build APK** workflow and uploads
 `crosstraining-debug-apk` as an artifact (Actions tab → run → Artifacts). Unzip
 and sideload the APK the same way.
 
-### Local build (optional)
+### Local build & testing
 
 With JDK 17 and the Android SDK installed:
 ```sh
-./gradlew assembleDebug
-# APK at app/build/outputs/apk/debug/app-debug.apk
+# Fast unit & lint suite
+.\gradlew.bat testDebugUnitTest assembleSnapshot -PsnapshotLabel=localtest --no-daemon
+
+# Run local End-to-End (E2E) UI flows on Emulator or Device with Maestro:
+.\scripts\run-e2e-tests.ps1
 ```
 
 > The published APK is **debug-signed** — perfect for personal testing and free

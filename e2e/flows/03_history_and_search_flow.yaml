@@ -1,0 +1,10 @@
+appId: com.fractanomics.crosstraining
+---
+- launchApp
+- tapOn: "History"
+- assertVisible: "Session History"
+- assertVisible: "Search workouts, lifts, notes..."
+- tapOn: "Search workouts, lifts, notes..."
+- inputText: "Squat"
+- hideKeyboard
+- assertVisible: "Back Squat"
