@@ -34,6 +34,12 @@ object FirebaseSyncManager {
     private val auth by lazy { FirebaseAuth.getInstance() }
     private val firestore by lazy { FirebaseFirestore.getInstance() }
 
+    private val currentEnv: String
+        get() = runCatching { com.fractanomics.crosstraining.BuildConfig.APP_ENV }.getOrDefault("snapshot")
+
+    private fun sharedWorkoutsCollection() =
+        firestore.collection("environments").document(currentEnv).collection("shared_workouts")
+
     val currentUserId: String
         get() = auth.currentUser?.uid ?: ""
 
@@ -83,7 +89,7 @@ object FirebaseSyncManager {
         )
 
         try {
-            firestore.collection("shared_workouts")
+            sharedWorkoutsCollection()
                 .document(code)
                 .set(payload)
                 .await()
@@ -98,7 +104,7 @@ object FirebaseSyncManager {
         ensureAuthenticated()
         val cleanCode = shareCode.trim().uppercase(Locale.ROOT)
         return try {
-            val doc = firestore.collection("shared_workouts")
+            val doc = sharedWorkoutsCollection()
                 .document(cleanCode)
                 .get()
                 .await()
@@ -114,7 +120,7 @@ object FirebaseSyncManager {
     suspend fun fetchCommunityWorkouts(limit: Long = 20): List<SharedWorkoutPayload> {
         ensureAuthenticated()
         return try {
-            val snapshot = firestore.collection("shared_workouts")
+            val snapshot = sharedWorkoutsCollection()
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .limit(limit)
                 .get()

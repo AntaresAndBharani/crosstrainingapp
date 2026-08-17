@@ -314,6 +314,6 @@ class Repository(private val db: AppDatabase) {
     }
 
     suspend fun reseedDefaults(force: Boolean = true) {
-        SeedData.populate(exerciseDao, routineDao, cycleDao, force)
+        SeedData.populate(exerciseDao, routineDao, cycleDao, cycleGoalDao, force)
     }
 }

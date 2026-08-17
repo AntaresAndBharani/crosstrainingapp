@@ -741,17 +741,17 @@ private fun AuthDialog(
         },
         confirmButton = {
             Button(
-                enabled = email.isNotBlank() && password.length >= 6 && !isLoading,
+                enabled = email.isNotBlank() && password.isNotBlank() && !isLoading,
                 shape = RoundedCornerShape(10.dp),
                 onClick = {
                     isLoading = true
                     if (selectedTab == 0) {
-                        viewModel.logInWithEmail(email.trim(), password) { ok, err ->
+                        viewModel.logInWithEmail(email.trim(), password, remember = true) { ok, err ->
                             isLoading = false
                             if (ok) onSuccess("Logged in as $email") else errorMessage = err ?: "Log in failed"
                         }
                     } else {
-                        viewModel.signUpWithEmail(email.trim(), password) { ok, err ->
+                        viewModel.signUpWithEmail(email.trim(), password, remember = true) { ok, err ->
                             isLoading = false
                             if (ok) onSuccess("Account created for $email!") else errorMessage = err ?: "Sign up failed"
                         }
