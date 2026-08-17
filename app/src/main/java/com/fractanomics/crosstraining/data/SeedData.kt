@@ -1,10 +1,12 @@
 package com.fractanomics.crosstraining.data
 
 import com.fractanomics.crosstraining.data.dao.CycleDao
+import com.fractanomics.crosstraining.data.dao.CycleGoalDao
 import com.fractanomics.crosstraining.data.dao.ExerciseDao
 import com.fractanomics.crosstraining.data.dao.RoutineDao
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.Cycle
+import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
@@ -64,6 +66,7 @@ object SeedData {
         exerciseDao: ExerciseDao,
         routineDao: RoutineDao,
         cycleDao: CycleDao,
+        cycleGoalDao: CycleGoalDao? = null,
         force: Boolean = false
     ) {
         if (force || exerciseDao.count() == 0) {
@@ -75,13 +78,27 @@ object SeedData {
 
         if (force || cycleDao.getAllOnce().isEmpty()) {
             val defaultCycle = Cycle(
-                name = "8-Week CrossTraining Strength & Metcon",
-                startDate = LocalDate.now(),
-                endDate = LocalDate.now().plusWeeks(8),
-                goal = "Primary training cycle for building raw strength and metabolic conditioning.",
+                name = "Olympic Lifting & Strength Block",
+                startDate = LocalDate.now().minusWeeks(4),
+                endDate = LocalDate.now().plusWeeks(4),
+                goal = "Peaking Snatch & Clean & Jerk 1RM while building front squat stability and threshold capacity.",
                 isActive = true
             )
-            cycleDao.insert(defaultCycle)
+            val cycleId = cycleDao.insert(defaultCycle)
+            if (cycleGoalDao != null) {
+                val snatchId = exMap["Snatch"]?.id
+                val cleanJerkId = exMap["Clean & Jerk"]?.id
+                val backSquatId = exMap["Back Squat"]?.id
+                val frontSquatId = exMap["Front Squat"]?.id
+
+                val sampleGoals = listOfNotNull(
+                    snatchId?.let { CycleGoal(cycleId = cycleId, exerciseId = it, targetReps = 1, startWeight = 70.0, targetWeight = 85.0, notes = "Full snatch form") },
+                    cleanJerkId?.let { CycleGoal(cycleId = cycleId, exerciseId = it, targetReps = 1, startWeight = 90.0, targetWeight = 105.0, notes = "Solid split jerk") },
+                    backSquatId?.let { CycleGoal(cycleId = cycleId, exerciseId = it, targetReps = 1, startWeight = 120.0, targetWeight = 140.0, notes = "Heavy leg drive") },
+                    frontSquatId?.let { CycleGoal(cycleId = cycleId, exerciseId = it, targetReps = 3, startWeight = 100.0, targetWeight = 120.0, notes = "Clean recovery stability") }
+                )
+                cycleGoalDao.insertAll(sampleGoals)
+            }
         }
 
         if (force || routineDao.getAllOnce().isEmpty()) {

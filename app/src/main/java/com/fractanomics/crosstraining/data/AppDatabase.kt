@@ -150,7 +150,8 @@ abstract class AppDatabase : RoomDatabase() {
                         SeedData.populate(
                             instance.exerciseDao(),
                             instance.routineDao(),
-                            instance.cycleDao()
+                            instance.cycleDao(),
+                            instance.cycleGoalDao()
                         )
                     }
                 }

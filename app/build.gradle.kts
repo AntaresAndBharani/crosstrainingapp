@@ -36,10 +36,15 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("String", "APP_ENV", "\"production\"")
+        }
+        debug {
+            buildConfigField("String", "APP_ENV", "\"snapshot\"")
         }
         create("snapshot") {
             initWith(getByName("debug"))
             matchingFallbacks += listOf("debug")
+            buildConfigField("String", "APP_ENV", "\"snapshot\"")
         }
     }
 
@@ -54,6 +59,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
