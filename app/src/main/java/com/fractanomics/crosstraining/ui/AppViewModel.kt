@@ -168,6 +168,13 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         data.setThemeMode(mode)
     }
 
+    // --- User Role (Athlete vs Coach) --------------------------------------------
+    val userRole: StateFlow<com.fractanomics.crosstraining.data.model.UserRole> = data.userRole
+
+    fun setUserRole(role: com.fractanomics.crosstraining.data.model.UserRole) {
+        data.setUserRole(role)
+    }
+
     // --- Cycles ---------------------------------------------------------------
     fun saveCycle(cycle: Cycle, makeActive: Boolean = false) = viewModelScope.launch {
         val id = repo.saveCycle(cycle)

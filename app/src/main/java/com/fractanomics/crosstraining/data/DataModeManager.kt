@@ -1,6 +1,7 @@
 package com.fractanomics.crosstraining.data
 
 import android.content.Context
+import com.fractanomics.crosstraining.data.model.UserRole
 import com.fractanomics.crosstraining.ui.theme.AppThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,7 +15,7 @@ import kotlinx.coroutines.flow.map
  * demo data cannot touch the user's history. The chosen mode is persisted so
  * the app reopens where it was left.
  *
- * Also manages app-level preference persistence, such as [AppThemeMode].
+ * Also manages app-level preference persistence, such as [AppThemeMode] and [UserRole].
  */
 class DataModeManager(context: Context) {
 
@@ -35,10 +36,24 @@ class DataModeManager(context: Context) {
     )
     val themeMode: StateFlow<AppThemeMode> = _themeMode
 
+    private val _userRole = MutableStateFlow(
+        runCatching {
+            val saved = prefs.getString(KEY_USER_ROLE, UserRole.ATHLETE.name)
+            UserRole.valueOf(saved ?: UserRole.ATHLETE.name)
+        }.getOrDefault(UserRole.ATHLETE)
+    )
+    val userRole: StateFlow<UserRole> = _userRole
+
     /** Set and persist the app theme mode. */
     fun setThemeMode(mode: AppThemeMode) {
         prefs.edit().putString(KEY_THEME_MODE, mode.name).apply()
         _themeMode.value = mode
+    }
+
+    /** Set and persist the app user role (Athlete vs Coach). */
+    fun setUserRole(role: UserRole) {
+        prefs.edit().putString(KEY_USER_ROLE, role.name).apply()
+        _userRole.value = role
     }
 
     /** Repository currently backing the UI. */
@@ -80,5 +95,6 @@ class DataModeManager(context: Context) {
         const val KEY_DEMO_MODE = "demoMode"
         const val KEY_SEED_VERSION = "demoSeedVersion"
         const val KEY_THEME_MODE = "themeMode"
+        const val KEY_USER_ROLE = "userRole"
     }
 }
