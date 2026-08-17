@@ -67,11 +67,14 @@ object SeedData {
         routineDao: RoutineDao,
         cycleDao: CycleDao,
         cycleGoalDao: CycleGoalDao? = null,
-        force: Boolean = false
+        force: Boolean = false,
+        isProduction: Boolean = false
     ) {
         if (force || exerciseDao.count() == 0) {
             exerciseDao.insertAll(defaults)
         }
+
+        if (isProduction) return
 
         val allExercises = exerciseDao.getAllOnce()
         val exMap: Map<String, Exercise> = allExercises.associateBy { it.name }
