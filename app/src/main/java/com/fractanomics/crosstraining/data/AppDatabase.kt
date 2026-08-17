@@ -147,11 +147,13 @@ abstract class AppDatabase : RoomDatabase() {
                     // Seed the starter library of common lifts and machines.
                     val instance = INSTANCE ?: return
                     CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                        val isProduction = com.fractanomics.crosstraining.BuildConfig.APP_ENV == "production"
                         SeedData.populate(
                             instance.exerciseDao(),
                             instance.routineDao(),
                             instance.cycleDao(),
-                            instance.cycleGoalDao()
+                            instance.cycleGoalDao(),
+                            isProduction = isProduction
                         )
                     }
                 }
