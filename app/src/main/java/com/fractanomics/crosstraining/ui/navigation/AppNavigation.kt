@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -62,6 +63,9 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import com.fractanomics.crosstraining.data.model.UserRole
 import com.fractanomics.crosstraining.data.firebase.AuthUser
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.screens.CyclesScreen
@@ -83,7 +87,9 @@ enum class BottomDestination(
 ) {
     LOG("log", "Log", Icons.Filled.FitnessCenter),
     HISTORY("history", "History", Icons.Filled.History),
-    PROGRESS("progress", "Progress", Icons.Filled.BarChart)
+    PROGRESS("progress", "Progress", Icons.Filled.BarChart),
+    CYCLES("cycles", "Cycles", Icons.Filled.CalendarMonth),
+    LIBRARY("library", "Library", Icons.AutoMirrored.Filled.MenuBook)
 }
 
 /** Drawer destinations grouped by purpose. */
@@ -94,15 +100,15 @@ enum class DrawerItem(
     val icon: ImageVector,
     val section: DrawerSection
 ) {
-    // Workouts Section
+    // Workouts Section (Athlete primary)
     LOG("log", "Log Workout", "Active training session", Icons.Filled.FitnessCenter, DrawerSection.WORKOUTS),
     HISTORY("history", "Session History", "Past logged workouts", Icons.Filled.History, DrawerSection.WORKOUTS),
     PROGRESS("progress", "Progress & Analytics", "Charts, volume & PRs", Icons.Filled.BarChart, DrawerSection.WORKOUTS),
 
-    // Tools & Planning Section
+    // Tools & Planning Section (Coach primary)
+    CYCLES("cycles", "Training Cycles", "Periodization & blocks", Icons.Filled.CalendarMonth, DrawerSection.PROGRAMMING),
+    LIBRARY("library", "Movement Library", "Exercises & daily routines", Icons.AutoMirrored.Filled.MenuBook, DrawerSection.PROGRAMMING),
     TIMER("timer", "Workout Timers", "Stopwatch, EMOM, Tabata", Icons.Filled.Timer, DrawerSection.TOOLS),
-    LIBRARY("library", "Movement Library", "Exercises & daily routines", Icons.AutoMirrored.Filled.MenuBook, DrawerSection.TOOLS),
-    CYCLES("cycles", "Training Cycles", "Periodization & blocks", Icons.Filled.CalendarMonth, DrawerSection.TOOLS),
 
     // Account & Settings
     PROFILE("profile", "Profile & Settings", "Account, theme & cloud backup", Icons.Filled.AccountCircle, DrawerSection.ACCOUNT)
@@ -110,7 +116,8 @@ enum class DrawerItem(
 
 enum class DrawerSection(val header: String) {
     WORKOUTS("Workouts"),
-    TOOLS("Tools & Planning"),
+    PROGRAMMING("Programming & Planning"),
+    TOOLS("Tools & Timers"),
     ACCOUNT("Settings & Account")
 }
 
@@ -119,6 +126,7 @@ fun AppNavigation(viewModel: AppViewModel) {
     val navController = rememberNavController()
     val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
     val authUser by viewModel.authUser.collectAsStateWithLifecycle()
+    val userRole by viewModel.userRole.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
     var guestModeAccepted by remember { mutableStateOf(false) }
@@ -146,16 +154,32 @@ fun AppNavigation(viewModel: AppViewModel) {
             }
         }
 
+        val athleteBottomDests = listOf(BottomDestination.LOG, BottomDestination.HISTORY, BottomDestination.PROGRESS)
+        val coachBottomDests = listOf(BottomDestination.CYCLES, BottomDestination.LIBRARY, BottomDestination.PROGRESS)
+        val currentBottomDests = if (userRole.isCoach) coachBottomDests else athleteBottomDests
+
         ModalNavigationDrawer(
             drawerState = drawerState,
             drawerContent = {
                 ModalDrawerSheet(
-                    modifier = Modifier.width(310.dp)
+                    modifier = Modifier.width(320.dp)
                 ) {
                     AppDrawerContent(
                         authUser = authUser,
                         currentRoute = currentRoute,
                         demoMode = demoMode,
+                        userRole = userRole,
+                        onToggleRole = {
+                            val newRole = if (userRole.isCoach) UserRole.ATHLETE else UserRole.COACH
+                            viewModel.setUserRole(newRole)
+                            // Navigate to default starting tab for new role
+                            val targetRoute = if (newRole.isCoach) BottomDestination.CYCLES.route else BottomDestination.LOG.route
+                            navController.navigate(targetRoute) {
+                                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
                         onNavigate = { route ->
                             scope.launch { drawerState.close() }
                             navController.navigate(route) {
@@ -176,7 +200,7 @@ fun AppNavigation(viewModel: AppViewModel) {
                     Column {
                         if (demoMode) DemoBanner()
                         PrimaryNavigationBar(
-                            destinations = BottomDestination.entries,
+                            destinations = currentBottomDests,
                             currentRoute = currentRoute,
                             onNavigate = { dest ->
                                 navController.navigate(dest.route) {
@@ -193,7 +217,7 @@ fun AppNavigation(viewModel: AppViewModel) {
             ) { innerPadding ->
                 NavHost(
                     navController = navController,
-                    startDestination = BottomDestination.LOG.route
+                    startDestination = if (userRole.isCoach) BottomDestination.CYCLES.route else BottomDestination.LOG.route
                 ) {
                     composable(BottomDestination.LOG.route) {
                         LogSessionScreen(
@@ -237,7 +261,7 @@ fun AppNavigation(viewModel: AppViewModel) {
                             onOpenTimer = openTimer
                         )
                     }
-                    composable(DrawerItem.CYCLES.route) {
+                    composable(BottomDestination.CYCLES.route) {
                         CyclesScreen(
                             viewModel = viewModel,
                             outerPadding = innerPadding,
@@ -245,7 +269,7 @@ fun AppNavigation(viewModel: AppViewModel) {
                             onOpenTimer = openTimer
                         )
                     }
-                    composable(DrawerItem.LIBRARY.route) {
+                    composable(BottomDestination.LIBRARY.route) {
                         LibraryScreen(
                             viewModel = viewModel,
                             outerPadding = innerPadding,
@@ -290,7 +314,7 @@ private fun DemoBanner() {
     }
 }
 
-/** Modern fixed 3-item Material 3 Bottom Navigation Bar. */
+/** Modern fixed Material 3 Bottom Navigation Bar. */
 @Composable
 private fun PrimaryNavigationBar(
     destinations: List<BottomDestination>,
@@ -322,12 +346,14 @@ private fun PrimaryNavigationBar(
     }
 }
 
-/** Slide-out Navigation Drawer content with categorized sections. */
+/** Slide-out Navigation Drawer content with categorized sections and Role Switcher. */
 @Composable
 private fun AppDrawerContent(
     authUser: AuthUser?,
     currentRoute: String?,
     demoMode: Boolean,
+    userRole: UserRole,
+    onToggleRole: () -> Unit,
     onNavigate: (String) -> Unit,
     onCloseDrawer: () -> Unit
 ) {
@@ -342,7 +368,7 @@ private fun AppDrawerContent(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 12.dp),
+                .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -383,16 +409,72 @@ private fun AppDrawerContent(
             }
         }
 
+        // Active Role Banner & Quick Switcher
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = if (userRole.isCoach) {
+                MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
+            } else {
+                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(userRole.emoji, style = MaterialTheme.typography.titleMedium)
+                    Column {
+                        Text(
+                            userRole.title,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            if (userRole.isCoach) "Programmer View" else "Athlete View",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                OutlinedButton(
+                    onClick = onToggleRole,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.height(32.dp),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        if (userRole.isCoach) "To Athlete" else "To Coach",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-        // Render Categorized Drawer Sections
-        DrawerSection.entries.forEach { section ->
+        // Dynamic Drawer Sections based on Active Role
+        val visibleSections = if (userRole.isCoach) {
+            listOf(DrawerSection.PROGRAMMING, DrawerSection.WORKOUTS, DrawerSection.TOOLS, DrawerSection.ACCOUNT)
+        } else {
+            listOf(DrawerSection.WORKOUTS, DrawerSection.PROGRAMMING, DrawerSection.TOOLS, DrawerSection.ACCOUNT)
+        }
+
+        visibleSections.forEach { section ->
             Text(
                 text = section.header.uppercase(),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
             )
 
             val sectionItems = DrawerItem.entries.filter { it.section == section }
@@ -431,7 +513,7 @@ private fun AppDrawerContent(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "v2.5.0",
+                "v3.1.0",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline
             )
