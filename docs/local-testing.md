@@ -50,6 +50,7 @@ Located in `e2e/flows/`:
 3. **`03_history_and_search_flow.yaml`**: Navigates to History, verifies the compact summary cards, expands details, and tests the live search filter.
 4. **`04_library_categories_flow.yaml`**: Tests the exercise library search bar and category filter chips (`Weightlifting`, `Powerlifting`, `Gymnastics`).
 5. **`05_theme_mode_flow.yaml`**: Opens Profile & Settings and verifies instant theme mode switching (Default Light, Dark, Dark High Contrast, Light High Contrast).
+6. **`06_coach_mode_flow.yaml`**: Tests role switching between Athlete Mode and Coach Mode and verifies dynamic bottom navigation tabs (`Log/History/Progress` vs `Cycles/Library/Progress`).
 
 ---
 

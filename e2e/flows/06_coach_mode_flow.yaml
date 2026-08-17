@@ -1,0 +1,19 @@
+appId: com.fractanomics.crosstraining
+---
+- launchApp
+- tapOn:
+    contentDescription: "Open navigation menu"
+- assertVisible: "Athlete Mode"
+- tapOn: "To Coach"
+- assertVisible: "Coach Mode"
+- assertVisible: "Cycles"
+- assertVisible: "Library"
+- assertVisible: "Progress"
+- tapOn: "Cycles"
+- assertVisible: "COACH"
+- tapOn:
+    contentDescription: "Open navigation menu"
+- tapOn: "To Athlete"
+- assertVisible: "Athlete Mode"
+- assertVisible: "Log"
+- assertVisible: "History"

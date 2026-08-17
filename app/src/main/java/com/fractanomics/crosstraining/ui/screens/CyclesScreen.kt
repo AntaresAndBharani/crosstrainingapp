@@ -69,6 +69,7 @@ fun CyclesScreen(
     val cycles by viewModel.cycles.collectAsStateWithLifecycle()
     val allGoals by viewModel.cycleGoals.collectAsStateWithLifecycle()
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
+    val userRole by viewModel.userRole.collectAsStateWithLifecycle()
 
     var editing by remember { mutableStateOf<Cycle?>(null) }
     var showEditor by remember { mutableStateOf(false) }
@@ -77,7 +78,25 @@ fun CyclesScreen(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
         topBar = {
             TopAppBar(
-                title = { Text("Training Cycles") },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("Training Cycles")
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (userRole.isCoach) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Text(
+                                if (userRole.isCoach) "COACH" else "ATHLETE",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onOpenDrawer) {
                         Icon(Icons.Filled.Menu, contentDescription = "Open Menu")
@@ -91,15 +110,18 @@ fun CyclesScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = {
-                editing = null
-                showEditor = true
-            }) { Icon(Icons.Filled.Add, contentDescription = "New cycle") }
+            if (userRole.isCoach) {
+                FloatingActionButton(onClick = {
+                    editing = null
+                    showEditor = true
+                }) { Icon(Icons.Filled.Add, contentDescription = "New cycle") }
+            }
         }
     ) { pad ->
         if (cycles.isEmpty()) {
             EmptyState(
-                "No training cycles yet.\nCreate one to group your sessions into a block.",
+                if (userRole.isCoach) "No training cycles yet.\nTap '+' below to program your first cycle."
+                else "No training cycles yet.\nSwitch to Coach Mode to create training blocks and periodization goals.",
                 Modifier.padding(pad)
             )
         } else {
@@ -110,6 +132,7 @@ fun CyclesScreen(
                         cycle = cycle,
                         goals = cycleGoals,
                         exercises = exercises,
+                        userRole = userRole,
                         onActivate = { viewModel.activateCycle(cycle.id) },
                         onEdit = { editing = cycle; showEditor = true },
                         onDelete = { viewModel.deleteCycle(cycle) }
@@ -142,6 +165,7 @@ private fun CycleCard(
     cycle: Cycle,
     goals: List<CycleGoal>,
     exercises: List<Exercise>,
+    userRole: com.fractanomics.crosstraining.data.model.UserRole,
     onActivate: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
@@ -238,9 +262,11 @@ private fun CycleCard(
                 if (!cycle.isActive) {
                     TextButton(onClick = onActivate) { Text("Set Active") }
                 }
-                TextButton(onClick = onEdit) { Text("Edit") }
-                TextButton(onClick = onDelete) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                if (userRole.isCoach) {
+                    TextButton(onClick = onEdit) { Text("Edit") }
+                    TextButton(onClick = onDelete) {
+                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
         }
