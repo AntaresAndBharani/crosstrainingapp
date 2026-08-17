@@ -22,7 +22,7 @@ object DemoData {
      * Bump when the generated dataset changes; [DataModeManager] re-seeds any
      * demo database created from an older version.
      */
-    const val SEED_VERSION = 2
+    const val SEED_VERSION = 3
 
     fun snapshot(today: java.time.LocalDate = java.time.LocalDate.now()): BackupData =
         Builder(today).build()
@@ -46,9 +46,9 @@ object DemoData {
                 goal = "Rebuild the strength base"
             ),
             Cycle(
-                id = 2, name = "Olympic lifting cycle",
-                startDate = today.minusWeeks(8), endDate = today.plusWeeks(4),
-                goal = "Snatch & C&J technique + top-end strength", isActive = true
+                id = 2, name = "Olympic Lifting & Strength Block",
+                startDate = today.minusWeeks(4), endDate = today.plusWeeks(4),
+                goal = "Peaking Snatch & Clean & Jerk 1RM while building front squat stability and threshold capacity.", isActive = true
             )
         )
 

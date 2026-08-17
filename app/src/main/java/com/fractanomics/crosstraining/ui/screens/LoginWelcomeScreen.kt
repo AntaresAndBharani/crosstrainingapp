@@ -61,6 +61,12 @@ import com.fractanomics.crosstraining.R
 import com.fractanomics.crosstraining.ui.AppViewModel
 import kotlinx.coroutines.launch
 
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import com.fractanomics.crosstraining.BuildConfig
+
 @Composable
 fun LoginWelcomeScreen(
     viewModel: AppViewModel,
@@ -71,11 +77,14 @@ fun LoginWelcomeScreen(
     var selectedTab by remember { mutableIntStateOf(0) } // 0 = Log In, 1 = Sign Up
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var rememberMe by remember { mutableStateOf(true) }
     var passwordVisible by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
 
     var showForgotDialog by remember { mutableStateOf(false) }
+
+    val isSnapshot = runCatching { BuildConfig.APP_ENV }.getOrDefault("snapshot") == "snapshot"
 
     // Direct single-pass Google System Account Chooser (never shows double popups)
     val googleAccountLauncher = rememberLauncherForActivityResult(
@@ -84,7 +93,7 @@ fun LoginWelcomeScreen(
         val accountName = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
         if (!accountName.isNullOrBlank()) {
             isLoading = true
-            viewModel.logInWithGoogleAccount(accountName, accountName.substringBefore("@")) { ok, err ->
+            viewModel.logInWithGoogleAccount(accountName, accountName.substringBefore("@"), remember = rememberMe) { ok, err ->
                 isLoading = false
                 if (ok) {
                     scope.launch { snackbar.showSnackbar("Welcome, $accountName!") }
@@ -109,12 +118,12 @@ fun LoginWelcomeScreen(
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // App Logo & Header
             Box(
                 modifier = Modifier
-                    .size(72.dp)
+                    .size(68.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
@@ -122,7 +131,7 @@ fun LoginWelcomeScreen(
                 Icon(
                     Icons.Filled.FitnessCenter,
                     contentDescription = null,
-                    modifier = Modifier.size(38.dp),
+                    modifier = Modifier.size(36.dp),
                     tint = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             }
@@ -135,7 +144,7 @@ fun LoginWelcomeScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    "Master Your Lifts & Conditioning",
+                    if (isSnapshot) "Snapshot / Testing Environment" else "Master Your Lifts & Conditioning",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -147,8 +156,8 @@ fun LoginWelcomeScreen(
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     TabRow(selectedTabIndex = selectedTab) {
                         Tab(
@@ -166,7 +175,7 @@ fun LoginWelcomeScreen(
                     OutlinedTextField(
                         value = email,
                         onValueChange = { email = it; errorMessage = null },
-                        label = { Text("Email Address") },
+                        label = { Text(if (selectedTab == 0) "Email or Username" else "Email Address") },
                         leadingIcon = { Icon(Icons.Filled.Mail, contentDescription = null) },
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp),
@@ -192,6 +201,25 @@ fun LoginWelcomeScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
 
+                    // Remember Me Checkbox
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { rememberMe = !rememberMe }
+                    ) {
+                        Checkbox(
+                            checked = rememberMe,
+                            onCheckedChange = { rememberMe = it }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Remember me on this device",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
                     if (errorMessage != null) {
                         Text(
                             errorMessage!!,
@@ -209,11 +237,11 @@ fun LoginWelcomeScreen(
                     }
 
                     Button(
-                        enabled = email.isNotBlank() && password.length >= 6 && !isLoading,
+                        enabled = email.isNotBlank() && password.isNotBlank() && !isLoading,
                         onClick = {
                             isLoading = true
                             if (selectedTab == 0) {
-                                viewModel.logInWithEmail(email.trim(), password) { ok, err ->
+                                viewModel.logInWithEmail(email.trim(), password, remember = rememberMe) { ok, err ->
                                     isLoading = false
                                     if (ok) {
                                         scope.launch { snackbar.showSnackbar("Welcome back!") }
@@ -222,7 +250,7 @@ fun LoginWelcomeScreen(
                                     }
                                 }
                             } else {
-                                viewModel.signUpWithEmail(email.trim(), password) { ok, err ->
+                                viewModel.signUpWithEmail(email.trim(), password, remember = rememberMe) { ok, err ->
                                     isLoading = false
                                     if (ok) {
                                         scope.launch { snackbar.showSnackbar("Account created! Cloud sync active.") }
@@ -241,6 +269,58 @@ fun LoginWelcomeScreen(
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
                             Text(if (selectedTab == 0) "Log In" else "Sign Up", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    // Quick-login chips for testing & snapshot mode
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            if (isSnapshot) "Snapshot Test Accounts:" else "Quick Test Accounts:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (isSnapshot) {
+                                FilterChip(
+                                    selected = email == "coach",
+                                    onClick = {
+                                        email = "coach"
+                                        password = "coach"
+                                        errorMessage = null
+                                    },
+                                    label = { Text("🏋️ coach/coach", style = MaterialTheme.typography.labelSmall) }
+                                )
+                                FilterChip(
+                                    selected = email == "athlete",
+                                    onClick = {
+                                        email = "athlete"
+                                        password = "athlete"
+                                        errorMessage = null
+                                    },
+                                    label = { Text("🏃 athlete/athlete", style = MaterialTheme.typography.labelSmall) }
+                                )
+                            } else {
+                                FilterChip(
+                                    selected = email == "pv.joseangel@gmail.com",
+                                    onClick = {
+                                        email = "pv.joseangel@gmail.com"
+                                        errorMessage = null
+                                    },
+                                    label = { Text("🏋️ Coach (pv.joseangel)", style = MaterialTheme.typography.labelSmall) }
+                                )
+                                FilterChip(
+                                    selected = email == "jangelpv",
+                                    onClick = {
+                                        email = "jangelpv"
+                                        password = "crossAthlet3"
+                                        errorMessage = null
+                                    },
+                                    label = { Text("🏃 Athlete (jangelpv)", style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
                         }
                     }
                 }

@@ -55,15 +55,25 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     init {
         viewModelScope.launch {
             repo.cleanupDuplicateRoutines()
+            val persisted = data.getPersistedAuthUser()
+            if (persisted != null) {
+                UserCloudSyncManager.setAuthenticatedUser(persisted)
+                val role = data.resolveRoleForUser(persisted.email)
+                data.setUserRole(role)
+            }
         }
     }
 
     val authUser: StateFlow<AuthUser?> = UserCloudSyncManager.userState
     val syncState: StateFlow<SyncStatus> = UserCloudSyncManager.syncState
 
-    fun signUpWithEmail(email: String, pass: String, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
+    fun signUpWithEmail(email: String, pass: String, remember: Boolean = true, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val res = UserCloudSyncManager.signUpWithEmail(email, pass)
         res.onSuccess {
+            val u = authUser.value
+            if (u != null) {
+                data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
+            }
             UserCloudSyncManager.uploadUserData(repo)
             onResult(true, null)
         }.onFailure { err ->
@@ -71,9 +81,13 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         }
     }
 
-    fun logInWithEmail(email: String, pass: String, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
+    fun logInWithEmail(email: String, pass: String, remember: Boolean = true, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val res = UserCloudSyncManager.logInWithEmail(email, pass)
         res.onSuccess {
+            val u = authUser.value
+            if (u != null) {
+                data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
+            }
             UserCloudSyncManager.downloadUserData(repo)
             onResult(true, null)
         }.onFailure { err ->
@@ -81,9 +95,13 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         }
     }
 
-    fun logInWithGoogle(idToken: String, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
+    fun logInWithGoogle(idToken: String, remember: Boolean = true, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val res = UserCloudSyncManager.signInWithGoogleCredential(idToken)
         res.onSuccess {
+            val u = authUser.value
+            if (u != null) {
+                data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
+            }
             UserCloudSyncManager.downloadUserData(repo)
             onResult(true, null)
         }.onFailure { err ->
@@ -91,9 +109,13 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         }
     }
 
-    fun logInWithGoogleAccount(email: String, displayName: String?, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
+    fun logInWithGoogleAccount(email: String, displayName: String?, remember: Boolean = true, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val res = UserCloudSyncManager.logInWithGoogleAccount(email, displayName)
         res.onSuccess {
+            val u = authUser.value
+            if (u != null) {
+                data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
+            }
             UserCloudSyncManager.downloadUserData(repo)
             onResult(true, null)
         }.onFailure { err ->
@@ -108,6 +130,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
 
     fun signOut() {
         UserCloudSyncManager.signOut()
+        data.clearAuthSession()
     }
 
     fun triggerCloudSync(onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
