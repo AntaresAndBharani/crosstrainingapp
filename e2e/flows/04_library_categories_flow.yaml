@@ -12,3 +12,4 @@ appId: com.fractanomics.crosstraining
 - inputText: "Clean"
 - hideKeyboard
 - assertVisible: "Clean & Jerk"
+- takeScreenshot: "04_library_filtered"
