@@ -86,6 +86,10 @@ With JDK 17 and the Android SDK installed:
 4. (If "app not installed" appears because an older copy exists, uninstall the
    previous version first — debug builds use the `.debug` application id.)
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed release notes, version history, and migration details.
+
 ## License
 
 See [LICENSE](LICENSE).
