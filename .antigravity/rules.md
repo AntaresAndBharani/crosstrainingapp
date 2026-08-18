@@ -4,4 +4,5 @@
 - **Test Command:** `.\gradlew.bat testDebugUnitTest --no-daemon`
 - **Build Command:** `.\gradlew.bat assembleDebug --no-daemon`
 - **APK Target:** `local_test\latest.apk`
+- **Changelog Maintenance:** Always update `CHANGELOG.md` under `## [Unreleased]` before opening a PR.
 - For full details, see [GEMINI.md](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/GEMINI.md) and [.agents/rules/](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/.agents/rules).
