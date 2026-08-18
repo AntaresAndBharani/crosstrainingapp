@@ -22,6 +22,5 @@
 6. **GitHub Permissions:** Always run `C:\Users\rogal\workspaces\Set-GhToken-Antares.ps1` for Git push and `gh` operations under the `AntaresAndBharani` organization.
 7. **CI/CD Lifecycle & Definition of Done:**
    - **PR Workflow:** Opening/updating a PR builds the snapshot APK and updates the rolling `snapshot` pre-release on GitHub.
-   - **Changelog Maintenance:** Before opening a PR, always add an entry to `CHANGELOG.md` under the `## [Unreleased]` section detailing the changes following the Keep a Changelog format.
    - **Merge to Main:** Merging into `main` automatically tags the release and publishes the official GitHub Release with the APK.
    - **Agent Completion Gate:** Development is only complete when the PR is opened AND all remote GitHub Actions CI checks pass (Green).
