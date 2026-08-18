@@ -99,7 +99,13 @@ if ($CaptureArtifacts) {
     & $MaestroPath test $Flow --format html --output "$ReportDir\report.html"
     $TestExitCode = $LASTEXITCODE
 
-    Write-Host "Moving screenshots to $ReportDir..." -ForegroundColor Cyan
+    $LatestDir = "docs\screenshots"
+    if (!(Test-Path $LatestDir)) { New-Item -ItemType Directory -Path $LatestDir -Force | Out-Null }
+
+    Write-Host "Syncing latest screenshots to main repo ($LatestDir)..." -ForegroundColor Cyan
+    Get-ChildItem -Path . -Filter "*.png" | Copy-Item -Destination $LatestDir -Force
+
+    Write-Host "Archiving screenshots to QA repo ($ReportDir)..." -ForegroundColor Cyan
     Get-ChildItem -Path . -Filter "*.png" | Move-Item -Destination $ReportDir -Force
 
     if ($PushArtifacts) {
