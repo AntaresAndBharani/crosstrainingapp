@@ -7,3 +7,4 @@ appId: com.fractanomics.crosstraining
 - assertVisible: "Continue as Guest"
 - tapOn: "Continue as Guest"
 - assertVisible: "Log Session"
+- takeScreenshot: "01_auth_success"
