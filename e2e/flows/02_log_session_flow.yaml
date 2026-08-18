@@ -17,3 +17,4 @@ appId: com.fractanomics.crosstraining
 - assertVisible: "SET 2"
 - tapOn: "Save Session"
 - assertVisible: "Session saved"
+- takeScreenshot: "02_log_session_complete"

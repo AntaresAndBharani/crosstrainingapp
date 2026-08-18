@@ -8,3 +8,4 @@ appId: com.fractanomics.crosstraining
 - inputText: "Squat"
 - hideKeyboard
 - assertVisible: "Back Squat"
+- takeScreenshot: "03_history_expanded"

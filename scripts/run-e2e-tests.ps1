@@ -17,12 +17,16 @@ param (
     [string]$Flow = "e2e/flows",
     [string]$AvdName = "Pixel_10_API_35",
     [switch]$SkipBuild,
-    [switch]$Headless
+    [switch]$Headless,
+    [switch]$CaptureArtifacts,
+    [string]$OutputRepo = "..\virgymia-qa",
+    [string]$Version = "latest",
+    [switch]$PushArtifacts
 )
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host " [APP] CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
 Write-Host " 📱 CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
@@ -87,14 +91,41 @@ Write-Host "`n[4/4] Executing Maestro E2E test flows: '$Flow'..." -ForegroundCol
 $Env:MAESTRO_CLI_NO_ANALYTICS = "true"
 $Env:MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED = "true"
 
-& $MaestroPath test $Flow
-$TestExitCode = $LASTEXITCODE
+if ($CaptureArtifacts) {
+    $ReportDir = "$OutputRepo\screenshots\$Version"
+    if (!(Test-Path $ReportDir)) { New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null }
+    
+    Write-Host "Capturing artifacts and HTML report to $ReportDir..." -ForegroundColor Cyan
+    & $MaestroPath test $Flow --format html --output "$ReportDir\report.html"
+    $TestExitCode = $LASTEXITCODE
+
+    $LatestDir = "docs\screenshots"
+    if (!(Test-Path $LatestDir)) { New-Item -ItemType Directory -Path $LatestDir -Force | Out-Null }
+
+    Write-Host "Syncing latest screenshots to main repo ($LatestDir)..." -ForegroundColor Cyan
+    Get-ChildItem -Path . -Filter "*.png" | Copy-Item -Destination $LatestDir -Force
+
+    Write-Host "Archiving screenshots to QA repo ($ReportDir)..." -ForegroundColor Cyan
+    Get-ChildItem -Path . -Filter "*.png" | Move-Item -Destination $ReportDir -Force
+
+    if ($PushArtifacts) {
+        Write-Host "Pushing artifacts to remote QA repository..." -ForegroundColor Cyan
+        Push-Location $OutputRepo
+        git add .
+        git commit -m "chore: add E2E test artifacts for $Version"
+        git push
+        Pop-Location
+    }
+} else {
+    & $MaestroPath test $Flow
+    $TestExitCode = $LASTEXITCODE
+}
 
 Write-Host "`n==========================================" -ForegroundColor Cyan
 if ($TestExitCode -eq 0) {
-    Write-Host " ✅ All local E2E test flows passed successfully!" -ForegroundColor Green
+    Write-Host " [PASS] All local E2E test flows passed successfully!" -ForegroundColor Green
 } else {
-    Write-Host " ❌ E2E test flows encountered failures (Exit Code: $TestExitCode)." -ForegroundColor Red
+    Write-Host " [FAIL] E2E test flows encountered failures (Exit Code: `$TestExitCode)." -ForegroundColor Red
 }
 Write-Host "==========================================" -ForegroundColor Cyan
 exit $TestExitCode

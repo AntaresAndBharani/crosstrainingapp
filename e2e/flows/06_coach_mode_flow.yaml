@@ -11,6 +11,7 @@ appId: com.fractanomics.crosstraining
 - assertVisible: "Progress"
 - tapOn: "Cycles"
 - assertVisible: "COACH"
+- takeScreenshot: "06_coach_dashboard"
 - tapOn:
     contentDescription: "Open navigation menu"
 - tapOn: "To Athlete"

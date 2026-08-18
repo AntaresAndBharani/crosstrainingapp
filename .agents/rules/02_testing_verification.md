@@ -7,7 +7,8 @@
 ## 2. Pre-PR CI Parity Verification (Mandatory Gate)
 - Before creating a PR or pushing to a feature branch, execute the complete CI build matrix locally:
   `.\gradlew.bat testDebugUnitTest assembleSnapshot -PsnapshotLabel=localtest --no-daemon`
-- This guarantees 100% parity with GitHub Actions CI (`build.yml`), catching compilation errors, snapshot packaging failures, and broken tests before remote submission.
+- If modifying UI components, capture and sync visual E2E test artifacts:
+  `.\scripts\run-e2e-tests.ps1 -CaptureArtifacts -Version "latest" -PushArtifacts`
 - Ensure no machine-specific paths (e.g. Windows paths in `gradle.properties`) are committed to version control.
 
 ## 3. Test Authoring Best Practices

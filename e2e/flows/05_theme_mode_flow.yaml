@@ -8,3 +8,4 @@ appId: com.fractanomics.crosstraining
 - tapOn: "Dark"
 - tapOn: "Dark High Contrast"
 - tapOn: "Default (Light)"
+- takeScreenshot: "05_dark_theme_active"
