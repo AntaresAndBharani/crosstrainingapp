@@ -23,7 +23,6 @@
 ## 5. GitHub Operations & Permissions
 - Always invoke `C:\Users\rogal\workspaces\Set-GhToken-Antares.ps1` before any `git push` or GitHub CLI (`gh`) operations on `AntaresAndBharani` repositories to guarantee valid permissions.
 
-## 6. Remote PR CI Monitoring & Definition of Done
-- Before opening a Pull Request, you MUST update `CHANGELOG.md` under the `## [Unreleased]` section following the Keep a Changelog format.
+## 6. Remote PR CI Monitoring (Definition of Done)
 - After opening a Pull Request, the agent MUST monitor the remote GitHub Actions checks (`gh pr checks` / `gh run watch`) and ensure all CI jobs turn 100% Green.
 - The task is only considered complete and ready to report to the user once the PR checks pass and the snapshot pre-release is published.
