@@ -1,0 +1,171 @@
+name: User Story
+description: A product-level definition of a feature or capability, broken down into subtasks. Written during the definition phase.
+title: "[Story]: "
+labels: ["type:user-story", "status:definition"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue defines **what** needs to be built and **why**, not **how**.
+        It must contain enough context for an implementer working with no prior
+        knowledge of the discussion that produced it — including a different AI
+        model in a different tool.
+
+        The fields below follow **SMART**: Specific, Measurable, Achievable,
+        Relevant, Time-bound. Each field is tagged with the letter it covers.
+        A story that cannot fill these in is not ready to leave the definition phase.
+
+  - type: textarea
+    id: story-statement
+    attributes:
+      label: Story statement — Specific
+      description: One sentence, in the standard form. Name a real role, one capability, and the outcome that role gets.
+      placeholder: |
+        As a coach, I want to compare two players' shooting stats side by side,
+        so that I can make a substitution decision without leaving the live game view.
+      value: |
+        As a <role>, I want <capability>, so that <outcome>.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Business context — Relevant
+      description: Why does this story exist now? What problem does it solve, for whom, and which product goal or OKR does it serve? Note what happens if we do not build it.
+      placeholder: |
+        e.g. Coaches currently have no way to compare two players' shooting
+        stats side by side. This slows down lineup decisions during a game.
+        Supports Q3 goal "reduce in-game decision time". Without it, coaches
+        keep exporting stats to a spreadsheet at halftime.
+    validations:
+      required: true
+
+  - type: textarea
+    id: success-metrics
+    attributes:
+      label: Success metrics — Measurable
+      description: How will we know this worked, in numbers? Give the metric, its current baseline, and the target. "It works" is not a metric — acceptance criteria cover that separately.
+      placeholder: |
+        - Time to compare two players: 45s (spreadsheet workaround) -> under 5s in-app
+        - Comparison view p95 render time: < 1s on a mid-tier device
+        - Adoption: used in >= 30% of live game sessions within 2 weeks of release
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria — Specific / Measurable
+      description: Testable, unambiguous conditions that define "this works." Prefer Given/When/Then. Every criterion must be checkable by someone with no context on this discussion.
+      placeholder: |
+        - [ ] Given two selected players, when the comparison view opens, then FG%, 3P%, and FT% are shown side by side
+        - [ ] Given a player is swapped, when the selection changes, then the view updates in under 1s
+        - [ ] Given a player with zero recorded games, when the view renders, then it shows "No data" instead of crashing
+    validations:
+      required: true
+
+  - type: textarea
+    id: feasibility
+    attributes:
+      label: Feasibility and dependencies — Achievable
+      description: What must already exist for this to be buildable? List known unknowns, external blockers, and anything needing a spike. If a spike is needed, this story stays in definition until the spike closes.
+      placeholder: |
+        - Requires the Player.seasonStats field, already shipped in basketiq-backend#88
+        - Blocked by: nothing
+        - Open question: do we have FT% for pre-2024 seasons? (spike: AntaresAndBharani/basketiq-backend#91)
+        - Team has done similar side-by-side views (RosterCompareView), so no new patterns needed
+    validations:
+      required: true
+
+  - type: dropdown
+    id: story-size
+    attributes:
+      label: Story size — Time-bound
+      description: A story should decompose into roughly 2-6 subtasks. If it needs more, split it into multiple stories before leaving definition.
+      options:
+        - Small (2-3 subtasks, ~1 day of implementation)
+        - Medium (4-6 subtasks, ~2-3 days of implementation)
+        - Too large — split into multiple stories before starting
+    validations:
+      required: true
+
+  - type: input
+    id: target-date
+    attributes:
+      label: Target milestone or date — Time-bound
+      description: When does this need to be done, and why that date? Use a milestone, sprint, or an explicit date.
+      placeholder: e.g. Sprint 14 (ends 2026-09-04) — needed before pre-season testing starts
+    validations:
+      required: true
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: What should the implementer explicitly NOT do, even if it seems related?
+      placeholder: |
+        - Does not include historical season-over-season comparison
+        - Does not include exporting the comparison as an image
+    validations:
+      required: false
+
+  - type: textarea
+    id: architecture-references
+    attributes:
+      label: Architecture references
+      description: Links to AGENTS.md sections, ADRs, or other repos/issues this depends on architecturally.
+      placeholder: |
+        - See AGENTS.md > "Data layer conventions"
+        - Depends on the Player model defined in AntaresAndBharani/basketiq-mobile#12
+    validations:
+      required: false
+
+  - type: input
+    id: target-repo
+    attributes:
+      label: Target repository
+      description: Which repo will this be implemented in? (mobile, frontend, backend, etc.)
+      placeholder: e.g. basketiq-frontend
+    validations:
+      required: true
+
+  - type: textarea
+    id: definition-of-done
+    attributes:
+      label: Definition of done
+      description: What must be true for this to be considered complete — beyond passing acceptance criteria?
+      placeholder: |
+        - [ ] Unit tests cover the new comparison logic
+        - [ ] No new lint warnings
+        - [ ] Success metrics above are instrumented and reporting
+        - [ ] Subtasks below are all closed
+    validations:
+      required: true
+
+  - type: textarea
+    id: subtasks
+    attributes:
+      label: Subtasks
+      description: Link sub-issues here as they are created. Each one must be independently implementable in under two hours — see the Subtask template.
+      placeholder: |
+        - [ ] #0 (placeholder — replace with real sub-issue links)
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: smart-check
+    attributes:
+      label: SMART check
+      description: Confirm before moving this story out of the definition phase.
+      options:
+        - label: "Specific — the story statement names one role, one capability, one outcome, and the acceptance criteria are unambiguous"
+          required: true
+        - label: "Measurable — success metrics have a baseline and a target number, not just \"it works\""
+          required: true
+        - label: "Achievable — dependencies are resolved or explicitly tracked, and no open question blocks a start"
+          required: true
+        - label: "Relevant — the business context ties this to a current product goal"
+          required: true
+        - label: "Time-bound — a target milestone/date is set and the story fits the size selected above"
+          required: true
