@@ -69,11 +69,13 @@ $RestComment = $RestComments | Where-Object { $_.body -match "<!-- e2e-evidence 
 
 if ($RestComment) {
     Write-Host "Updating existing PR comment on PR #$PrNumber (ID: $($RestComment.id))..."
-    $CommentBody | gh api "repos/AntaresAndBharani/crosstrainingapp/issues/comments/$($RestComment.id)" -X PATCH -F body=@-
+    $CommentBody | Set-Content body.txt -Encoding utf8
+    gh api "repos/AntaresAndBharani/crosstrainingapp/issues/comments/$($RestComment.id)" -X PATCH -F body=@body.txt
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to update comment." }
 } else {
     Write-Host "Posting new PR comment on PR #$PrNumber..."
-    $CommentBody | gh api "repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments" -X POST -F body=@-
+    $CommentBody | Set-Content body.txt -Encoding utf8
+    gh api "repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments" -X POST -F body=@body.txt
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to post comment." }
 }
 
