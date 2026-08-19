@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Runs local end-to-end (E2E) UI test flows using Maestro on an Android emulator or physical device.
 
@@ -26,8 +26,27 @@ param (
 
 $ErrorActionPreference = "Stop"
 
+if ($Version -eq "latest") {
+    $PrNumber = ""
+    if ($null -ne (Get-Command gh -ErrorAction SilentlyContinue)) {
+        try {
+            $PrJson = gh pr view --json number 2>$null | ConvertFrom-Json
+            if ($null -ne $PrJson -and $null -ne $PrJson.number) {
+                $PrNumber = $PrJson.number
+            }
+        } catch {}
+    }
+    if ($PrNumber) {
+        $Version = "e2e-pr-$PrNumber"
+    } else {
+        $Branch = git rev-parse --abbrev-ref HEAD 2>$null
+        if (-not $Branch) { $Branch = "local" }
+        $BranchSafe = $Branch -replace '[^a-zA-Z0-9-]', '-'
+        $Version = "e2e-$BranchSafe"
+    }
+}
 Write-Host " [APP] CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
-Write-Host " 📱 CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
+Write-Host " Ã°Å¸â€œÂ± CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
 # 1. Locate ADB
@@ -96,8 +115,30 @@ if ($CaptureArtifacts) {
     if (!(Test-Path $ReportDir)) { New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null }
     
     Write-Host "Capturing artifacts and HTML report to $ReportDir..." -ForegroundColor Cyan
-    & $MaestroPath test $Flow --format html --output "$ReportDir\report.html"
+    $MaestroOutput = & $MaestroPath test $Flow --format html --output "$ReportDir\report.html" 2>&1 | Tee-Object -Variable CapturedOutput | Out-String
     $TestExitCode = $LASTEXITCODE
+
+    # Parse Maestro 2.8.0 output for pass/fail. Validated regex against version 2.8.0.
+    $SummaryFile = "$ReportDir\summary.json"
+    $FlowSummaries = @()
+    # Match lines like "Passed flow_name.yaml" or "o. flow.yaml"
+    $Regex = "(?m)^.*?(Passed|Failed|" + [char]::ConvertFromUtf32(0x2705) + "|" + [char]::ConvertFromUtf32(0x274C) + ").*?([a-zA-Z0-9_-]+\.yaml)"
+    
+    $Matches = [regex]::Matches($MaestroOutput, $Regex)
+    foreach ($Match in $Matches) {
+        $StatusStr = $Match.Groups[1].Value
+        $FlowName = $Match.Groups[2].Value
+        $IsPassed = ($StatusStr -match "Passed|" + [char]::ConvertFromUtf32(0x2705))
+        $FlowSummaries += @{ flow = $FlowName; passed = $IsPassed }
+    }
+    # Validate parsed flow count against actual targeted flow files
+    $TargetFiles = if (Test-Path $Flow -PathType Leaf) { @(Get-Item $Flow) } else { Get-ChildItem -Path $Flow -Filter "*.yaml" -Recurse }
+    $TargetCount = @($TargetFiles).Count
+    if ($TargetCount -gt 0 -and $FlowSummaries.Count -ne $TargetCount) {
+        Write-Error "Parsed flow count ($($FlowSummaries.Count)) does not match targeted flow files ($TargetCount). Maestro output format may have changed."
+    }
+
+    $FlowSummaries | ConvertTo-Json -Depth 2 | Set-Content $SummaryFile -Encoding utf8
 
     $LatestDir = "docs\screenshots"
     if (!(Test-Path $LatestDir)) { New-Item -ItemType Directory -Path $LatestDir -Force | Out-Null }
@@ -109,12 +150,21 @@ if ($CaptureArtifacts) {
     Get-ChildItem -Path . -Filter "*.png" | Move-Item -Destination $ReportDir -Force
 
     if ($PushArtifacts) {
-        Write-Host "Pushing artifacts to remote QA repository..." -ForegroundColor Cyan
-        Push-Location $OutputRepo
-        git add .
-        git commit -m "chore: add E2E test artifacts for $Version"
-        git push
-        Pop-Location
+        Write-Host "Uploading artifacts to virgymia-qa release $Version..." -ForegroundColor Cyan
+        
+        $ReleaseExists = $false
+        try {
+            $null = gh release view $Version --repo AntaresAndBharani/virgymia-qa 2>&1
+            $ReleaseExists = $LASTEXITCODE -eq 0
+        } catch {}
+
+        $FilesToUpload = @("$ReportDir\report.html") + (Get-ChildItem -Path $ReportDir -Filter "*.png" | Select-Object -ExpandProperty FullName)
+
+        if ($ReleaseExists) {
+            gh release upload $Version $FilesToUpload --repo AntaresAndBharani/virgymia-qa --clobber
+        } else {
+            gh release create $Version $FilesToUpload --repo AntaresAndBharani/virgymia-qa --title "E2E Evidence $Version" --notes "Automated E2E screenshots and HTML report."
+        }
     }
 } else {
     & $MaestroPath test $Flow
@@ -129,3 +179,6 @@ if ($TestExitCode -eq 0) {
 }
 Write-Host "==========================================" -ForegroundColor Cyan
 exit $TestExitCode
+
+
+
