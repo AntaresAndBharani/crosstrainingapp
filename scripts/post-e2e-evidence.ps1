@@ -1,6 +1,7 @@
 ﻿param (
     [string]$SummaryPath,
-    [string]$PrNumber = ""
+    [string]$PrNumber = "",
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,7 +26,17 @@ if (-not (Test-Path $SummaryPath)) {
     Write-Error "Summary file not found at $SummaryPath"
 }
 
-$Version = (Get-Item $SummaryPath).Directory.Name
+if (-not $Version) {
+    $Version = (Get-Item $SummaryPath).Directory.Name
+}
+
+# Check if release actually exists to avoid dead links
+try {
+    $null = gh release view $Version --repo AntaresAndBharani/virgymia-qa 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Not found" }
+} catch {
+    Write-Error "Release $Version not found on virgymia-qa. Please ensure you ran the tests with -PushArtifacts."
+}
 
 $Summary = Get-Content $SummaryPath -Raw | ConvertFrom-Json
 
@@ -47,15 +58,19 @@ if ($AnyFailed) {
 
 $CommentBody += "`n[🔗 View Full HTML Report & Screenshots](https://github.com/AntaresAndBharani/virgymia-qa/releases/download/$Version/report.html)`n"
 
-$Comments = gh pr view $PrNumber --json comments | ConvertFrom-Json
-$ExistingComment = $Comments.comments | Where-Object { $_.body -match "<!-- e2e-evidence -->" } | Select-Object -Last 1
+$RestComments = gh api repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments | ConvertFrom-Json
+$RestComment = $RestComments | Where-Object { $_.body -match "<!-- e2e-evidence -->" } | Select-Object -Last 1
 
-if ($ExistingComment) {
-    Write-Host "Updating existing PR comment on PR #$PrNumber..."
-    $CommentBody | gh pr comment $PrNumber --edit $ExistingComment.id -F -
+$Payload = @{ body = $CommentBody } | ConvertTo-Json
+
+if ($RestComment) {
+    Write-Host "Updating existing PR comment on PR #$PrNumber (ID: $($RestComment.id))..."
+    $Payload | gh api "repos/AntaresAndBharani/crosstrainingapp/issues/comments/$($RestComment.id)" -X PATCH --input -
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to update comment." }
 } else {
     Write-Host "Posting new PR comment on PR #$PrNumber..."
-    $CommentBody | gh pr comment $PrNumber -F -
+    $Payload | gh api "repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments" -X POST --input -
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to post comment." }
 }
 
 Write-Host "Evidence posted successfully." -ForegroundColor Green
