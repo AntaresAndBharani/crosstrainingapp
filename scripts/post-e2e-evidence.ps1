@@ -66,15 +66,14 @@ $CommentBody += "`n[$($link) View Full HTML Report & Screenshots](https://github
 $RestComments = gh api repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments | ConvertFrom-Json
 $RestComment = $RestComments | Where-Object { $_.body -match "<!-- e2e-evidence -->" } | Select-Object -Last 1
 
-$Payload = @{ body = $CommentBody } | ConvertTo-Json
 
 if ($RestComment) {
     Write-Host "Updating existing PR comment on PR #$PrNumber (ID: $($RestComment.id))..."
-    $Payload | gh api "repos/AntaresAndBharani/crosstrainingapp/issues/comments/$($RestComment.id)" -X PATCH --input -
+    $CommentBody | gh api "repos/AntaresAndBharani/crosstrainingapp/issues/comments/$($RestComment.id)" -X PATCH -F body=@-
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to update comment." }
 } else {
     Write-Host "Posting new PR comment on PR #$PrNumber..."
-    $Payload | gh api "repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments" -X POST --input -
+    $CommentBody | gh api "repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments" -X POST -F body=@-
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to post comment." }
 }
 
