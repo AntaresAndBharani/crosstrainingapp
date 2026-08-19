@@ -115,8 +115,9 @@ if ($CaptureArtifacts) {
     if (!(Test-Path $ReportDir)) { New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null }
     
     Write-Host "Capturing artifacts and HTML report to $ReportDir..." -ForegroundColor Cyan
-    $MaestroOutput = & $MaestroPath test $Flow --format html --output "$ReportDir\report.html" 2>&1 | Tee-Object -Variable CapturedOutput | Out-String
+    & $MaestroPath test $Flow --format html --output "$ReportDir\report.html" 2>&1 | Tee-Object -Variable CapturedOutput
     $TestExitCode = $LASTEXITCODE
+    $MaestroOutput = $CapturedOutput | Out-String
 
     # Parse Maestro 2.8.0 output for pass/fail. Validated regex against version 2.8.0.
     $SummaryFile = "$ReportDir\summary.json"
