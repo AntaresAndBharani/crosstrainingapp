@@ -45,18 +45,23 @@ $CommentBody += "| Flow | Status |`n|---|---|`n"
 
 $AnyFailed = $false
 foreach ($flow in $Summary) {
-    $StatusIcon = if ($flow.passed) { "✅" } else { "❌" }
+    $check = [char]::ConvertFromUtf32(0x2705)
+    $cross = [char]::ConvertFromUtf32(0x274C)
+    $StatusIcon = if ($flow.passed) { $check } else { $cross }
     $CommentBody += "| $($flow.flow) | $StatusIcon |`n"
     if (-not $flow.passed) { $AnyFailed = $true }
 }
 
 if ($AnyFailed) {
-    $CommentBody += "`n**Status:** ❌ Some flows failed.`n"
+    $cross = [char]::ConvertFromUtf32(0x274C)
+    $CommentBody += "`n**Status:** $($cross) Some flows failed.`n"
 } else {
-    $CommentBody += "`n**Status:** ✅ All flows passed.`n"
+    $check = [char]::ConvertFromUtf32(0x2705)
+    $CommentBody += "`n**Status:** $($check) All flows passed.`n"
 }
 
-$CommentBody += "`n[🔗 View Full HTML Report & Screenshots](https://github.com/AntaresAndBharani/virgymia-qa/releases/download/$Version/report.html)`n"
+$link = [char]::ConvertFromUtf32(0x1F517)
+$CommentBody += "`n[$($link) View Full HTML Report & Screenshots](https://github.com/AntaresAndBharani/virgymia-qa/releases/download/$Version/report.html)`n"
 
 $RestComments = gh api repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments | ConvertFrom-Json
 $RestComment = $RestComments | Where-Object { $_.body -match "<!-- e2e-evidence -->" } | Select-Object -Last 1
