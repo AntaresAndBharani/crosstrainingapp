@@ -1,0 +1,150 @@
+name: Subtask
+description: A single, implementable unit of work belonging to a user story. Small enough to finish in one sitting and pick up directly by an implementer (human or AI).
+title: "[Subtask]: "
+labels: ["type:subtask", "status:ready"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **One subtask = one deliverable, under two hours, one pull request.**
+
+        It must be self-contained enough that the implementer never needs to open
+        the parent story to understand what to do, and specific enough that work
+        can start on the first read — no discovery phase, no open questions.
+
+        If you cannot fill in *Files / entry points* and *How to verify* concretely,
+        the task is not ready. If it does not fit in two hours, split it first.
+
+  - type: input
+    id: parent-story
+    attributes:
+      label: Parent user story
+      description: Link to the user story this belongs to.
+      placeholder: e.g. AntaresAndBharani/basketiq-frontend#42
+    validations:
+      required: true
+
+  - type: input
+    id: target-repo
+    attributes:
+      label: Target repository
+      description: Which repo does this subtask apply to?
+      placeholder: e.g. basketiq-frontend
+    validations:
+      required: true
+
+  - type: textarea
+    id: task-description
+    attributes:
+      label: Task description
+      description: What exactly needs to be implemented, in a few sentences. One deliverable only — if you need the word "and" to describe it, consider splitting.
+      placeholder: |
+        Add a PlayerComparisonView component that accepts two Player objects
+        and renders FG%, 3P%, and FT% side by side using the existing StatCard component.
+    validations:
+      required: true
+
+  - type: textarea
+    id: entry-points
+    attributes:
+      label: Files / entry points
+      description: Where the work happens. List the files to create or change and the existing code to imitate, so the implementer starts editing instead of searching.
+      placeholder: |
+        - Create: src/components/PlayerComparisonView.tsx
+        - Create: src/components/__tests__/PlayerComparisonView.test.tsx
+        - Reuse: src/components/StatCard.tsx (do not create a new card component)
+        - Pattern to follow: src/components/RosterCompareView.tsx
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: Testable conditions specific to this subtask. Aim for 1-3 — more than three usually means this is really two subtasks.
+      placeholder: |
+        - [ ] Component renders FG%, 3P%, and FT% for two valid Player objects
+        - [ ] Component renders a "No data" state for a player with zero games
+        - [ ] Unit test covers both cases
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: How to verify
+      description: The exact commands or steps that prove this is done. The implementer should be able to copy-paste these.
+      placeholder: |
+        npm run test -- PlayerComparisonView
+        npm run lint && npm run typecheck
+        Manual: open /compare?a=1&b=2 and confirm three stat rows render.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size (time-boxed)
+      description: Estimated hands-on implementation time, tests included. Anything larger must be split before this issue is opened.
+      options:
+        - XS — under 30 min (config, copy, a single pure function)
+        - S — under 1 hour (one component or function plus its test)
+        - M — under 2 hours (a few files, some edge cases)
+        - Too large — split this into smaller subtasks before starting
+    validations:
+      required: true
+
+  - type: dropdown
+    id: complexity
+    attributes:
+      label: Complexity
+      description: Rough judgement to help decide which model/executor should pick this up. Independent of size — a task can be short but subtle.
+      options:
+        - Trivial (boilerplate, config, simple UI)
+        - Moderate (standard logic, some edge cases)
+        - Complex (architectural decisions, cross-module impact)
+    validations:
+      required: true
+
+  - type: input
+    id: blocked-by
+    attributes:
+      label: Blocked by
+      description: Issues that must close before this can start. Leave as "none" if it can be picked up right now — subtasks should be parallelisable by default.
+      placeholder: e.g. none
+    validations:
+      required: true
+
+  - type: textarea
+    id: technical-constraints
+    attributes:
+      label: Technical constraints
+      description: Conventions, patterns, or libraries to follow. Reference AGENTS.md where relevant.
+      placeholder: |
+        - Use the existing StatCard component, do not create a new one
+        - Follow naming conventions in AGENTS.md > "Component structure"
+    validations:
+      required: false
+
+  - type: textarea
+    id: testing-notes
+    attributes:
+      label: Testing notes
+      description: What kind of testing is expected (unit, integration, manual) and any relevant test data or fixtures.
+      placeholder: |
+        Unit tests only. Use the mock Player fixtures in test/fixtures/players.ts.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: ready-check
+    attributes:
+      label: Ready check
+      description: Confirm before labelling this "status:ready".
+      options:
+        - label: "Small — fits the selected size box; no step of it is still undecided"
+          required: true
+        - label: "Self-contained — implementable without reading the parent story or asking a question"
+          required: true
+        - label: "Verifiable — the commands under \"How to verify\" prove it works"
+          required: true
