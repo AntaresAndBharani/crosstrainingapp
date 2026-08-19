@@ -123,13 +123,16 @@ if ($CaptureArtifacts) {
     $SummaryFile = "$ReportDir\summary.json"
     $FlowSummaries = @()
     # Match lines like "Passed flow_name.yaml" or "o. flow.yaml"
-    $Regex = "(?m)^.*?(Passed|Failed|" + [char]::ConvertFromUtf32(0x2705) + "|" + [char]::ConvertFromUtf32(0x274C) + ").*?([a-zA-Z0-9_-]+\.yaml)"
+    $check = [char]::ConvertFromUtf32(0x2705)
+    $cross = [char]::ConvertFromUtf32(0x274C)
+    $Regex = '(?m)^.*?\[?(Passed|Failed|{0}|{1})\]?\s+([a-zA-Z0-9_-]+)(?:\.yaml|\s*\()' -f $check, $cross
     
     $Matches = [regex]::Matches($MaestroOutput, $Regex)
     foreach ($Match in $Matches) {
         $StatusStr = $Match.Groups[1].Value
         $FlowName = $Match.Groups[2].Value
-        $IsPassed = ($StatusStr -match "Passed|" + [char]::ConvertFromUtf32(0x2705))
+        $MatchStr = '^(Passed|{0})$' -f $check
+        $IsPassed = ($StatusStr -match $MatchStr)
         $FlowSummaries += @{ flow = $FlowName; passed = $IsPassed }
     }
     # Validate parsed flow count against actual targeted flow files
