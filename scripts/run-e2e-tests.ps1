@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Runs local end-to-end (E2E) UI test flows using Maestro on an Android emulator or physical device.
 
@@ -46,7 +46,7 @@ if ($Version -eq "latest") {
     }
 }
 Write-Host " [APP] CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
-Write-Host " 📱 CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
+Write-Host " Ã°Å¸â€œÂ± CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
 # 1. Locate ADB
@@ -115,9 +115,8 @@ if ($CaptureArtifacts) {
     if (!(Test-Path $ReportDir)) { New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null }
     
     Write-Host "Capturing artifacts and HTML report to $ReportDir..." -ForegroundColor Cyan
-    & $MaestroPath test $Flow --format html --output "$ReportDir\report.html" 2>&1 | Tee-Object -Variable CapturedOutput
+    $MaestroOutput = & $MaestroPath test $Flow --format html --output "$ReportDir\report.html" 2>&1 | Tee-Object -Variable CapturedOutput | Out-String
     $TestExitCode = $LASTEXITCODE
-    $MaestroOutput = $CapturedOutput | Out-String
 
     # Parse Maestro 2.8.0 output for pass/fail. Validated regex against version 2.8.0.
     $SummaryFile = "$ReportDir\summary.json"
@@ -180,7 +179,6 @@ if ($TestExitCode -eq 0) {
 }
 Write-Host "==========================================" -ForegroundColor Cyan
 exit $TestExitCode
-
 
 
 
