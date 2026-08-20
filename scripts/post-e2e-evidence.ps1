@@ -81,3 +81,5 @@ if ($RestComment) {
 }
 
 Write-Host "Evidence posted successfully." -ForegroundColor Green
+
+Remove-Item body.txt -ErrorAction SilentlyContinue
