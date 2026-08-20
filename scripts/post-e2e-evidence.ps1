@@ -1,4 +1,4 @@
-﻿param (
+param (
     [string]$SummaryPath,
     [string]$PrNumber = "",
     [string]$Version = ""
@@ -64,7 +64,8 @@ $link = [char]::ConvertFromUtf32(0x1F517)
 $CommentBody += "`n[$($link) View Full HTML Report & Screenshots](https://github.com/AntaresAndBharani/virgymia-qa/releases/download/$Version/report.html)`n"
 
 $RestComments = gh api repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments | ConvertFrom-Json
-$RestComment = $RestComments | Where-Object { $_.body -match "<!-- e2e-evidence -->" } | Select-Object -Last 1
+$CurrentUser = gh api user --jq .login
+$RestComment = $RestComments | Where-Object { $_.user.login -eq $CurrentUser -and $_.body -match "^<!-- e2e-evidence -->" } | Select-Object -Last 1
 
 
 if ($RestComment) {

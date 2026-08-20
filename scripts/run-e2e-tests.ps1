@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Runs local end-to-end (E2E) UI test flows using Maestro on an Android emulator or physical device.
 
@@ -118,6 +118,7 @@ if ($CaptureArtifacts) {
     & $MaestroPath test $Flow --format html --output "$ReportDir\report.html" 2>&1 | Tee-Object -Variable CapturedOutput
     $TestExitCode = $LASTEXITCODE
     $MaestroOutput = $CapturedOutput | Out-String
+    $MaestroOutput = $MaestroOutput -replace '\x1B\[[0-9;]*[a-zA-Z]', ''
 
     # Parse Maestro 2.8.0 output for pass/fail. Validated regex against version 2.8.0.
     $SummaryFile = "$ReportDir\summary.json"
