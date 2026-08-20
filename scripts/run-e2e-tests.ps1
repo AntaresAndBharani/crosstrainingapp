@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Runs local end-to-end (E2E) UI test flows using Maestro on an Android emulator or physical device.
 
@@ -46,7 +46,7 @@ if ($Version -eq "latest") {
     }
 }
 Write-Host " [APP] CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
-Write-Host " Ã°Å¸â€œÂ± CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
+Write-Host " 📱 CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
 # 1. Locate ADB

@@ -2,7 +2,7 @@ appId: com.fractanomics.crosstraining
 ---
 - launchApp
 - tapOn:
-    id: "Open navigation menu"
+    contentDescription: "Open navigation menu"
 - assertVisible: "Athlete Mode"
 - tapOn: "To Coach"
 - assertVisible: "Coach Mode"
@@ -13,7 +13,7 @@ appId: com.fractanomics.crosstraining
 - assertVisible: "COACH"
 - takeScreenshot: "06_coach_dashboard"
 - tapOn:
-    id: "Open navigation menu"
+    contentDescription: "Open navigation menu"
 - tapOn: "To Athlete"
 - assertVisible: "Athlete Mode"
 - assertVisible: "Log"
