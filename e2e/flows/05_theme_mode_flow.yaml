@@ -1,6 +1,7 @@
 appId: com.fractanomics.crosstraining
 ---
 - launchApp
+- tapOn: "Continue as Guest"
 - tapOn: "Open navigation menu"
 - tapOn: "Profile & Settings"
 - assertVisible: "Appearance & Theme"
