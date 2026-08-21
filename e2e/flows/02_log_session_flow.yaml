@@ -1,6 +1,7 @@
 appId: com.fractanomics.crosstraining
 ---
 - launchApp
+- tapOn: "Continue as Guest"
 - tapOn: "Log"
 - assertVisible: "Log Session"
 - assertVisible: "Select Exercise"

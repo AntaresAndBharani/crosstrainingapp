@@ -1,6 +1,7 @@
 appId: com.fractanomics.crosstraining
 ---
 - launchApp
+- tapOn: "Continue as Guest"
 - tapOn: "Open navigation menu"
 - assertVisible: "Athlete Mode"
 - tapOn: "To Coach"
