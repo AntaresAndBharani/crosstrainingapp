@@ -1,6 +1,7 @@
 appId: com.fractanomics.crosstraining
 ---
 - launchApp
+- tapOn: "Continue as Guest"
 - tapOn: "History"
 - assertVisible: "Session History"
 - assertVisible: "Search workouts, lifts, notes..."
