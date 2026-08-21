@@ -2,6 +2,9 @@ appId: com.fractanomics.crosstraining
 ---
 - launchApp:
     clearState: true
+- extendedWaitUntil:
+    visible: "CrossTraining"
+    timeout: 30000
 - assertVisible: "CrossTraining"
 - assertVisible: "Continue with Google"
 - assertVisible: "Continue as Guest"

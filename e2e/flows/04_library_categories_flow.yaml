@@ -1,14 +1,18 @@
 appId: com.fractanomics.crosstraining
 ---
 - launchApp
+- extendedWaitUntil:
+    visible: "Continue as Guest"
+    timeout: 30000
 - tapOn: "Continue as Guest"
-- tapOn: "Library"
-- assertVisible: "Movements & Routines"
+- tapOn: "Menu"
+- tapOn: "Movement Library"
+- assertVisible: "Library"
 - assertVisible: "All"
-- assertVisible: "Weightlifting"
-- assertVisible: "Powerlifting"
-- tapOn: "Weightlifting"
-- assertVisible: "Snatch"
+- assertVisible: "Barbell"
+- assertVisible: "Gymnastics"
+- tapOn: "Barbell"
+- assertVisible: "Back Squat"
 - tapOn: "Search exercises..."
 - inputText: "Clean"
 - hideKeyboard

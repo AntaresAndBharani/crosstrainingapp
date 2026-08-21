@@ -72,6 +72,8 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -981,7 +983,8 @@ private fun SpreadsheetSetRow(
             contentAlignment = Alignment.Center
         ) {
             BasicTextField(
-                value = set.reps,
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "reps_${setIndex - 1}" },
+                  value = set.reps,
                 onValueChange = { set.reps = it.filter { c -> c.isDigit() } },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -990,8 +993,7 @@ private fun SpreadsheetSetRow(
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface
-                ),
-                modifier = Modifier.fillMaxWidth()
+                )
             )
             if (set.reps.isEmpty()) {
                 Text(
@@ -1015,7 +1017,8 @@ private fun SpreadsheetSetRow(
             contentAlignment = Alignment.Center
         ) {
             BasicTextField(
-                value = set.value,
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "weight_${setIndex - 1}" },
+                  value = set.value,
                 onValueChange = { set.value = it },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -1024,8 +1027,7 @@ private fun SpreadsheetSetRow(
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface
-                ),
-                modifier = Modifier.fillMaxWidth()
+                )
             )
             if (set.value.isEmpty()) {
                 Text(
