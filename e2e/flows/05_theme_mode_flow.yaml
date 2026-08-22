@@ -1,6 +1,11 @@
 appId: com.fractanomics.crosstraining
+tags:
+  - settings
+  - theme
+  - core
 ---
-- launchApp
+- launchApp:
+    clearState: true
 - extendedWaitUntil:
     visible: "Continue as Guest"
     timeout: 30000
