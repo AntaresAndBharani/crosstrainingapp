@@ -1,12 +1,16 @@
 appId: com.fractanomics.crosstraining
 ---
 - launchApp
+- extendedWaitUntil:
+    visible: "Continue as Guest"
+    timeout: 30000
 - tapOn: "Continue as Guest"
 - tapOn: "History"
 - assertVisible: "Session History"
-- assertVisible: "Search workouts, lifts, notes..."
-- tapOn: "Search workouts, lifts, notes..."
+- assertVisible: "Search workouts, lifts, or notes..."
+- tapOn: "Search workouts, lifts, or notes..."
 - inputText: "Squat"
 - hideKeyboard
+- tapOn: "Workout Session"
 - assertVisible: "Back Squat"
 - takeScreenshot: "03_history_expanded"

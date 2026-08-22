@@ -1,21 +1,23 @@
 appId: com.fractanomics.crosstraining
 ---
 - launchApp
+- extendedWaitUntil:
+    visible: "Continue as Guest"
+    timeout: 30000
 - tapOn: "Continue as Guest"
 - tapOn: "Log"
 - assertVisible: "Log Session"
 - assertVisible: "Select Exercise"
 - tapOn: "Select Exercise"
 - tapOn: "Back Squat"
-- assertVisible: "SET 1"
-- tapOn:
-    id: "reps_0"
+- assertVisible: "Add Set"
+- tapOn: "reps_0"
 - inputText: "5"
-- tapOn:
-    id: "weight_0"
+- tapOn: "weight_0"
 - inputText: "100"
-- tapOn: "+ Add Set"
-- assertVisible: "SET 2"
-- tapOn: "Save Session"
-- assertVisible: "Session saved"
+- hideKeyboard
+- tapOn: "Add Set"
+- assertVisible: "reps_1"
+- tapOn: "Save session"
+- assertVisible: "Session saved successfully!"
 - takeScreenshot: "02_log_session_complete"
