@@ -1,4 +1,4 @@
-﻿param (
+param (
     [string]$SummaryPath,
     [string]$PrNumber = "",
     [string]$Version = ""
@@ -48,7 +48,15 @@ foreach ($flow in $Summary) {
     $check = [char]::ConvertFromUtf32(0x2705)
     $cross = [char]::ConvertFromUtf32(0x274C)
     $StatusIcon = if ($flow.passed) { $check } else { $cross }
-    $CommentBody += "| $($flow.flow) | $StatusIcon |`n"
+    
+    $StatusCell = $StatusIcon
+    if (-not $flow.passed -and $flow.screenshot) {
+        $ScreenshotUrl = "https://github.com/AntaresAndBharani/virgymia-qa/releases/download/$Version/$($flow.screenshot)"
+        $camera = [char]::ConvertFromUtf32(0x1F4F8)
+        $StatusCell += " [$($camera) Failure Screenshot]($ScreenshotUrl)"
+    }
+
+    $CommentBody += "| $($flow.flow) | $StatusCell |`n"
     if (-not $flow.passed) { $AnyFailed = $true }
 }
 
