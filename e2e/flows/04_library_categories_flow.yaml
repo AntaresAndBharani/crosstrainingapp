@@ -7,7 +7,7 @@ appId: com.fractanomics.crosstraining
 - tapOn: "Continue as Guest"
 - tapOn: "Open Menu"
 - tapOn: "Movement Library"
-- assertVisible: "Import Code"
+- assertVisible: "Search exercises..."
 - assertVisible: "All"
 - assertVisible: "Barbell"
 - assertVisible: "Gymnastics"
