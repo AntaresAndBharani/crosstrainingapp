@@ -5,7 +5,7 @@ appId: com.fractanomics.crosstraining
     visible: "Continue as Guest"
     timeout: 30000
 - tapOn: "Continue as Guest"
-- tapOn: "Menu"
+- tapOn: "Open Menu"
 - tapOn: "Profile & Settings"
 - assertVisible: "Appearance & Theme"
 - scrollUntilVisible:

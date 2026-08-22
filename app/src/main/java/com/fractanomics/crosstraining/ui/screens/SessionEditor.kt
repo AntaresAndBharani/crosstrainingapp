@@ -334,7 +334,7 @@ fun SessionEditorBody(
                         }
                     } else if (onOpenDrawer != null) {
                         IconButton(onClick = onOpenDrawer) {
-                            Icon(Icons.Filled.Menu, contentDescription = "Menu")
+                            Icon(Icons.Filled.Menu, contentDescription = "Open Menu")
                         }
                     }
                 },
@@ -984,7 +984,7 @@ private fun SpreadsheetSetRow(
         ) {
             BasicTextField(
                 modifier = Modifier.fillMaxWidth().semantics { contentDescription = "reps_${setIndex - 1}" },
-                  value = set.reps,
+                value = set.reps,
                 onValueChange = { set.reps = it.filter { c -> c.isDigit() } },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -1018,7 +1018,7 @@ private fun SpreadsheetSetRow(
         ) {
             BasicTextField(
                 modifier = Modifier.fillMaxWidth().semantics { contentDescription = "weight_${setIndex - 1}" },
-                  value = set.value,
+                value = set.value,
                 onValueChange = { set.value = it },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
