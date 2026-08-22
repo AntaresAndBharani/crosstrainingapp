@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Runs local end-to-end (E2E) UI test flows using Maestro on an Android emulator or physical device.
 
@@ -45,8 +45,8 @@ if ($Version -eq "latest") {
         $Version = "e2e-$BranchSafe"
     }
 }
+Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host " [APP] CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
-Write-Host " 📱 CrossTraining App - Local E2E Test Suite" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
 # 1. Locate ADB
@@ -114,8 +114,13 @@ if ($CaptureArtifacts) {
     $ReportDir = "$OutputRepo\screenshots\$Version"
     if (!(Test-Path $ReportDir)) { New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null }
     
+    $DebugDir = "$ReportDir\debug"
+    if (Test-Path $DebugDir) {
+        Remove-Item -Path "$DebugDir\*" -Recurse -Force -ErrorAction SilentlyContinue | Out-Null
+    }
+
     Write-Host "Capturing artifacts and HTML report to $ReportDir..." -ForegroundColor Cyan
-    & $MaestroPath test $Flow --format html --output "$ReportDir\report.html" 2>&1 | Tee-Object -Variable CapturedOutput
+    & $MaestroPath test $Flow --format html --output "$ReportDir\report.html" --debug-output "$DebugDir" 2>&1 | Tee-Object -Variable CapturedOutput
     $TestExitCode = $LASTEXITCODE
     $MaestroOutput = $CapturedOutput | Out-String
     $MaestroOutput = $MaestroOutput -replace '\x1B\[[0-9;]*[a-zA-Z]', ''
@@ -134,7 +139,28 @@ if ($CaptureArtifacts) {
         $FlowName = $Match.Groups[2].Value
         $MatchStr = '^(Passed|{0})$' -f $check
         $IsPassed = ($StatusStr -match $MatchStr)
-        $FlowSummaries += @{ flow = $FlowName; passed = $IsPassed }
+
+        $SummaryEntry = [ordered]@{
+            flow = $FlowName
+            passed = $IsPassed
+        }
+
+        if (-not $IsPassed -and (Test-Path $DebugDir)) {
+            # Find failure screenshot under $DebugDir\<flow>\screenshots\*.png
+            $FailurePng = Get-ChildItem -Path $DebugDir -Recurse -Filter "*.png" -ErrorAction SilentlyContinue |
+                Where-Object { $_.Directory.Name -eq "screenshots" -and ($_.FullName.Contains($FlowName)) } |
+                Select-Object -First 1
+
+            if ($FailurePng) {
+                $FailScreenshotName = "${FlowName}_FAILED.png"
+                $DestPath = Join-Path $ReportDir $FailScreenshotName
+                Copy-Item -Path $FailurePng.FullName -Destination $DestPath -Force
+                $SummaryEntry["screenshot"] = $FailScreenshotName
+                Write-Host "Captured failure screenshot: $FailScreenshotName" -ForegroundColor Yellow
+            }
+        }
+
+        $FlowSummaries += $SummaryEntry
     }
     # Validate parsed flow count against actual targeted flow files
     $TargetFiles = if (Test-Path $Flow -PathType Leaf) { @(Get-Item $Flow) } else { Get-ChildItem -Path $Flow -Filter "*.yaml" -Recurse }
@@ -180,7 +206,7 @@ Write-Host "`n==========================================" -ForegroundColor Cyan
 if ($TestExitCode -eq 0) {
     Write-Host " [PASS] All local E2E test flows passed successfully!" -ForegroundColor Green
 } else {
-    Write-Host " [FAIL] E2E test flows encountered failures (Exit Code: `$TestExitCode)." -ForegroundColor Red
+    Write-Host " [FAIL] E2E test flows encountered failures (Exit Code: $TestExitCode)." -ForegroundColor Red
 }
 Write-Host "==========================================" -ForegroundColor Cyan
 exit $TestExitCode
