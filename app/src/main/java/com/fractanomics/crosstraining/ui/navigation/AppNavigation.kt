@@ -139,7 +139,10 @@ fun AppNavigation(viewModel: AppViewModel) {
         LoginWelcomeScreen(
             viewModel = viewModel,
             snackbar = snackbarHostState,
-            onContinueAsGuest = { guestModeAccepted = true }
+            onContinueAsGuest = {
+                guestModeAccepted = true
+                viewModel.setDemoMode(true)
+            }
         )
     } else {
         val backStackEntry = navController.currentBackStackEntryAsState().value

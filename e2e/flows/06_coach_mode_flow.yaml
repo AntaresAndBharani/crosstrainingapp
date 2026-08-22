@@ -1,19 +1,23 @@
 appId: com.fractanomics.crosstraining
 ---
 - launchApp
+- extendedWaitUntil:
+    visible: "Continue as Guest"
+    timeout: 30000
 - tapOn: "Continue as Guest"
-- tapOn: "Open navigation menu"
+- tapOn: "Open Menu"
 - assertVisible: "Athlete Mode"
 - tapOn: "To Coach"
 - assertVisible: "Coach Mode"
+- tapOn: "Training Cycles"
+- assertVisible: "COACH"
 - assertVisible: "Cycles"
 - assertVisible: "Library"
 - assertVisible: "Progress"
-- tapOn: "Cycles"
-- assertVisible: "COACH"
 - takeScreenshot: "06_coach_dashboard"
-- tapOn: "Open navigation menu"
+- tapOn: "Open Menu"
 - tapOn: "To Athlete"
 - assertVisible: "Athlete Mode"
+- tapOn: "Log Workout"
 - assertVisible: "Log"
 - assertVisible: "History"

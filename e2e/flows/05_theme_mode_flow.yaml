@@ -1,11 +1,26 @@
 appId: com.fractanomics.crosstraining
 ---
 - launchApp
+- extendedWaitUntil:
+    visible: "Continue as Guest"
+    timeout: 30000
 - tapOn: "Continue as Guest"
-- tapOn: "Open navigation menu"
+- tapOn: "Open Menu"
 - tapOn: "Profile & Settings"
 - assertVisible: "Appearance & Theme"
+- scrollUntilVisible:
+    element:
+      text: "Dark"
+    direction: DOWN
 - tapOn: "Dark"
+- scrollUntilVisible:
+    element:
+      text: "Dark High Contrast"
+    direction: DOWN
 - tapOn: "Dark High Contrast"
-- tapOn: "Default (Light)"
+- scrollUntilVisible:
+    element:
+      text: "Light"
+    direction: UP
+- tapOn: "Light"
 - takeScreenshot: "05_dark_theme_active"
