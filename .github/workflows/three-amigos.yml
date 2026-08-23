@@ -3,12 +3,17 @@ name: Three Amigos
 # Readiness gate for the agentic SDLC pipeline. Design:
 # ws-setups/graph-engineering/docs/three-amigos-node.md
 #
-# Trigger: status:review on a type:subtask issue.
-# Iteration cap (3 rounds) is implemented via the issue's own comment
-# history — no separate state store — per the design's "GitHub artifacts
-# are the state" principle. Each verdict comment this workflow posts starts
-# with a fixed HTML marker; if a 4th round would start, skip evaluation and
-# escalate to the PO directly instead of calling the model again.
+# Batch model (2026-08-23 redesign): triggers once per STORY, not once per
+# subtask — status:review on a type:user-story, evaluating every one of its
+# subtasks together in one pass. This lets it catch structural problems
+# (a subtask that should split, two that should merge, a gap in coverage)
+# that a single-subtask view never could, and it also removes the earlier
+# risk of N subtasks firing N concurrent Gemini calls against the 10 RPM
+# free-tier cap — there's only ever one Three Amigos run per story now.
+#
+# Iteration cap (3 rounds) is counted from the PARENT issue's own comment
+# history now, not a subtask's — same "GitHub artifacts are the state"
+# principle as before, just moved up a level.
 #
 # NOTE (verify before relying on): the exact `gemini_model` string and
 # whether high-thinking-effort is set via a plain model suffix or via the
@@ -30,12 +35,6 @@ concurrency:
 permissions:
   contents: read
   issues: write
-  id-token: write  # preventive, not yet confirmed necessary for this action —
-                   # architect.yml's run failed without it (claude-code-action
-                   # requests a GitHub OIDC token internally regardless of
-                   # auth method); run-gemini-cli exposes GCP WIF-style inputs
-                   # too, so adding this defensively rather than waiting to
-                   # hit the same class of failure here.
 
 env:
   GEMINI_MODEL: gemini-3.7-flash
@@ -51,18 +50,18 @@ jobs:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       REPO: ${{ github.repository }}
     steps:
-      - name: Confirm this is a type:subtask issue
+      - name: Confirm this is a type:user-story issue
         id: gate
         run: |
           set -euo pipefail
           TYPES=$(gh issue view "$ISSUE_NUMBER" -R "$REPO" --json labels -q '[.labels[].name] | join(",")')
-          IS_SUBTASK=false
-          case ",$TYPES," in *,type:subtask,*) IS_SUBTASK=true;; esac
-          echo "is_subtask=$IS_SUBTASK" >> "$GITHUB_OUTPUT"
+          IS_STORY=false
+          case ",$TYPES," in *,type:user-story,*) IS_STORY=true;; esac
+          echo "is_story=$IS_STORY" >> "$GITHUB_OUTPUT"
 
       - name: Count prior Three Amigos rounds
         id: rounds
-        if: steps.gate.outputs.is_subtask == 'true'
+        if: steps.gate.outputs.is_story == 'true'
         run: |
           set -euo pipefail
           COUNT=$(gh issue view "$ISSUE_NUMBER" -R "$REPO" --json comments \
@@ -70,7 +69,7 @@ jobs:
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Escalate directly if round cap reached
-        if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count >= env.ROUND_CAP
+        if: steps.gate.outputs.is_story == 'true' && steps.rounds.outputs.count >= env.ROUND_CAP
         run: |
           set -euo pipefail
           gh issue edit "$ISSUE_NUMBER" -R "$REPO" \
@@ -78,24 +77,36 @@ jobs:
           {
             echo "**Three Amigos escalation — round cap reached (3):**"
             echo
-            echo "This subtask has gone through 3 rounds of readiness review without"
-            echo "reaching READY. Escalating to you rather than looping further —"
-            echo "please review the history above and decide how to proceed."
+            echo "This story's subtask batch has gone through 3 rounds of"
+            echo "readiness review without reaching READY. Escalating to you"
+            echo "rather than looping further — please review the history"
+            echo "above and decide how to proceed."
           } | gh issue comment "$ISSUE_NUMBER" -R "$REPO" --body-file -
 
       - name: Checkout
-        if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
+        if: steps.gate.outputs.is_story == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
         uses: actions/checkout@v4
 
-      - name: Fetch issue + comments (safe — via gh/jq, not shell-interpolated)
-        if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
+      - name: Fetch story + all its subtasks (safe — via gh/jq/python, not shell-interpolated)
+        if: steps.gate.outputs.is_story == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
         run: |
           set -euo pipefail
           gh issue view "$ISSUE_NUMBER" -R "$REPO" \
             --json number,title,body,labels,comments > issue_context.json
 
+          gh issue list -R "$REPO" --label "type:subtask" --state open \
+            --json number,title,body,labels,comments --limit 100 \
+            | python3 .github/workflows/scripts/filter_subtasks_by_parent.py "$ISSUE_NUMBER" \
+            > subtasks_context.json
+
+          SUBTASK_COUNT=$(jq 'length' subtasks_context.json)
+          if [ "$SUBTASK_COUNT" -eq 0 ]; then
+            echo "::error::No subtasks found for story #${ISSUE_NUMBER} — nothing to review. Did Architect actually create any?"
+            exit 1
+          fi
+
       - name: Run Three Amigos (Gemini)
-        if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
+        if: steps.gate.outputs.is_story == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
         uses: google-github-actions/run-gemini-cli@v0
         env:
           # Confirmed from a real failure: Gemini CLI refuses to operate in
@@ -110,11 +121,11 @@ jobs:
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/three-amigos.md exactly. Read
-            issue_context.json for the real issue content before doing
-            anything else.
+            issue_context.json and subtasks_context.json for the real
+            content before doing anything else.
 
-      - name: Apply Three Amigos' verdict
-        if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
+      - name: Apply Three Amigos' batch verdict
+        if: steps.gate.outputs.is_story == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
         run: |
           set -euo pipefail
 
@@ -123,41 +134,59 @@ jobs:
             exit 1
           fi
 
-          VERDICT=$(jq -r '.verdict' gemini_output.json)
+          BATCH_VERDICT=$(jq -r '.batch_verdict' gemini_output.json)
 
           COMMENT_FILE=$(mktemp)
           {
             echo "$VERDICT_MARKER"
-            echo "**Three Amigos verdict: $VERDICT**"
+            echo "**Three Amigos batch verdict: $BATCH_VERDICT**"
             echo
-            echo "**Product:** $(jq -r '.product_analysis.scope_verdict' gemini_output.json) — $(jq -r '.product_analysis.notes' gemini_output.json)"
+            echo "$(jq -r '.overall_notes' gemini_output.json)"
             echo
-            echo "**Developer — technical risks:**"
-            jq -r '.developer_analysis.technical_risks[] | "- " + .' gemini_output.json
-            echo
-            echo "**QA — BDD scenarios:**"
-            jq -r '.qa_analysis.bdd_scenarios[] | "- " + .' gemini_output.json
-            echo
-            echo "**QA — unhandled edge cases:**"
-            jq -r '.qa_analysis.unhandled_edge_cases[] | "- " + .' gemini_output.json
-            if [ "$VERDICT" = "NEEDS_REVISION" ]; then
+            SUBTASK_REVIEW_COUNT=$(jq '.subtask_reviews | length' gemini_output.json)
+            for i in $(seq 0 $((SUBTASK_REVIEW_COUNT - 1))); do
+              NUM=$(jq -r ".subtask_reviews[$i].subtask_number" gemini_output.json)
+              V=$(jq -r ".subtask_reviews[$i].verdict" gemini_output.json)
+              echo "---"
+              echo "**#$NUM: $V**"
+              echo "Product: $(jq -r ".subtask_reviews[$i].product_analysis.notes" gemini_output.json)"
               echo
-              echo "**Feedback for Architect:**"
-              jq -r '.architect_feedback' gemini_output.json
-            fi
-            if [ "$VERDICT" = "NEEDS_CLARIFICATION" ]; then
-              echo
-              echo "**Questions for Architect:**"
-              jq -r '.clarification_questions[] | "- **" + .field + ":** " + .question' gemini_output.json
-            fi
+              echo "BDD scenarios:"
+              jq -r ".subtask_reviews[$i].qa_analysis.bdd_scenarios[] | \"- \" + ." gemini_output.json
+              if [ "$V" = "NEEDS_REVISION" ]; then
+                echo
+                echo "Feedback: $(jq -r ".subtask_reviews[$i].feedback" gemini_output.json)"
+              fi
+              if [ "$V" = "NEEDS_CLARIFICATION" ]; then
+                echo
+                echo "Questions:"
+                jq -r ".subtask_reviews[$i].clarification_questions[] | \"- **\" + .field + \":** \" + .question" gemini_output.json
+              fi
+            done
+            echo "---"
+            echo "**Structural issues:**"
+            echo "Split needed:"
+            jq -r '.structural_issues.split_needed[]? | "- #" + (.subtask_number | tostring) + ": " + .reason' gemini_output.json
+            echo "Merge needed:"
+            jq -r '.structural_issues.merge_needed[]? | "- " + (.subtask_numbers | map("#" + (. | tostring)) | join(", ")) + ": " + .reason' gemini_output.json
+            echo "Missing coverage:"
+            jq -r '.structural_issues.missing_coverage[]? | "- " + .' gemini_output.json
           } > "$COMMENT_FILE"
           gh issue comment "$ISSUE_NUMBER" -R "$REPO" --body-file "$COMMENT_FILE"
           rm -f "$COMMENT_FILE"
 
-          case "$VERDICT" in
+          case "$BATCH_VERDICT" in
             READY)
-              gh issue edit "$ISSUE_NUMBER" -R "$REPO" \
-                --remove-label "status:review" --add-label "status:awaiting-approval"
+              # Promote every subtask individually — PO approval and Dev
+              # handoff both still happen per-subtask, that part is unchanged.
+              SUBTASK_COUNT=$(jq 'length' subtasks_context.json)
+              for i in $(seq 0 $((SUBTASK_COUNT - 1))); do
+                NUM=$(jq -r ".[$i].number" subtasks_context.json)
+                gh issue edit "$NUM" -R "$REPO" \
+                  --remove-label "status:pending-review" --add-label "status:awaiting-approval" || \
+                  gh issue edit "$NUM" -R "$REPO" --add-label "status:awaiting-approval"
+              done
+              gh issue edit "$ISSUE_NUMBER" -R "$REPO" --remove-label "status:review"
               ;;
             NEEDS_REVISION)
               gh issue edit "$ISSUE_NUMBER" -R "$REPO" \
@@ -168,7 +197,7 @@ jobs:
                 --remove-label "status:review" --add-label "status:needs-clarification"
               ;;
             *)
-              echo "::error::Unexpected verdict '$VERDICT' — leaving status:review in place for manual triage."
+              echo "::error::Unexpected batch_verdict '$BATCH_VERDICT' — leaving status:review in place for manual triage."
               exit 1
               ;;
           esac
