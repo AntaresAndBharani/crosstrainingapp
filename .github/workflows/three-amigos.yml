@@ -1,0 +1,161 @@
+name: Three Amigos
+
+# Readiness gate for the agentic SDLC pipeline. Design:
+# ws-setups/graph-engineering/docs/three-amigos-node.md
+#
+# Trigger: status:review on a type:subtask issue.
+# Iteration cap (3 rounds) is implemented via the issue's own comment
+# history — no separate state store — per the design's "GitHub artifacts
+# are the state" principle. Each verdict comment this workflow posts starts
+# with a fixed HTML marker; if a 4th round would start, skip evaluation and
+# escalate to the PO directly instead of calling the model again.
+#
+# NOTE (verify before relying on): the exact `gemini_model` string and
+# whether high-thinking-effort is set via a plain model suffix or via the
+# `settings` JSON passthrough is unconfirmed against the live action as of
+# this writing — see ws-setups/graph-engineering README "Claude & Gemini
+# auth / free-tier status". Adjust GEMINI_MODEL below once verified.
+#
+# Security note: same as architect.yml — issue content is untrusted input
+# on a public repo, never interpolated directly into run/with expressions.
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: three-amigos-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  GEMINI_MODEL: gemini-3.7-flash
+  ROUND_CAP: 3
+  VERDICT_MARKER: "<!-- three-amigos-verdict -->"
+
+jobs:
+  three-amigos:
+    runs-on: ubuntu-latest
+    if: github.event.label.name == 'status:review'
+    env:
+      GH_TOKEN: ${{ secrets.ORCHESTRATION_PAT }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Confirm this is a type:subtask issue
+        id: gate
+        run: |
+          set -euo pipefail
+          TYPES=$(gh issue view "$ISSUE_NUMBER" -R "$REPO" --json labels -q '[.labels[].name] | join(",")')
+          IS_SUBTASK=false
+          case ",$TYPES," in *,type:subtask,*) IS_SUBTASK=true;; esac
+          echo "is_subtask=$IS_SUBTASK" >> "$GITHUB_OUTPUT"
+
+      - name: Count prior Three Amigos rounds
+        id: rounds
+        if: steps.gate.outputs.is_subtask == 'true'
+        run: |
+          set -euo pipefail
+          COUNT=$(gh issue view "$ISSUE_NUMBER" -R "$REPO" --json comments \
+            -q "[.comments[].body | select(startswith(\"$VERDICT_MARKER\"))] | length")
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Escalate directly if round cap reached
+        if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count >= env.ROUND_CAP
+        run: |
+          set -euo pipefail
+          gh issue edit "$ISSUE_NUMBER" -R "$REPO" \
+            --remove-label "status:review" --add-label "status:needs-po-input"
+          {
+            echo "**Three Amigos escalation — round cap reached (3):**"
+            echo
+            echo "This subtask has gone through 3 rounds of readiness review without"
+            echo "reaching READY. Escalating to you rather than looping further —"
+            echo "please review the history above and decide how to proceed."
+          } | gh issue comment "$ISSUE_NUMBER" -R "$REPO" --body-file -
+
+      - name: Checkout
+        if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
+        uses: actions/checkout@v4
+
+      - name: Fetch issue + comments (safe — via gh/jq, not shell-interpolated)
+        if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE_NUMBER" -R "$REPO" \
+            --json number,title,body,labels,comments > issue_context.json
+
+      - name: Run Three Amigos (Gemini)
+        if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
+        uses: google-github-actions/run-gemini-cli@v0
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ env.GEMINI_MODEL }}
+          prompt: |
+            Follow the instructions in the file
+            .github/workflows/prompts/three-amigos.md exactly. Read
+            issue_context.json for the real issue content before doing
+            anything else.
+
+      - name: Apply Three Amigos' verdict
+        if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
+        run: |
+          set -euo pipefail
+
+          if [ ! -f gemini_output.json ]; then
+            echo "::error::gemini_output.json was not produced — failing rather than guessing at a verdict."
+            exit 1
+          fi
+
+          VERDICT=$(jq -r '.verdict' gemini_output.json)
+
+          COMMENT_FILE=$(mktemp)
+          {
+            echo "$VERDICT_MARKER"
+            echo "**Three Amigos verdict: $VERDICT**"
+            echo
+            echo "**Product:** $(jq -r '.product_analysis.scope_verdict' gemini_output.json) — $(jq -r '.product_analysis.notes' gemini_output.json)"
+            echo
+            echo "**Developer — technical risks:**"
+            jq -r '.developer_analysis.technical_risks[] | "- " + .' gemini_output.json
+            echo
+            echo "**QA — BDD scenarios:**"
+            jq -r '.qa_analysis.bdd_scenarios[] | "- " + .' gemini_output.json
+            echo
+            echo "**QA — unhandled edge cases:**"
+            jq -r '.qa_analysis.unhandled_edge_cases[] | "- " + .' gemini_output.json
+            if [ "$VERDICT" = "NEEDS_REVISION" ]; then
+              echo
+              echo "**Feedback for Architect:**"
+              jq -r '.architect_feedback' gemini_output.json
+            fi
+            if [ "$VERDICT" = "NEEDS_CLARIFICATION" ]; then
+              echo
+              echo "**Questions for Architect:**"
+              jq -r '.clarification_questions[] | "- **" + .field + ":** " + .question' gemini_output.json
+            fi
+          } > "$COMMENT_FILE"
+          gh issue comment "$ISSUE_NUMBER" -R "$REPO" --body-file "$COMMENT_FILE"
+          rm -f "$COMMENT_FILE"
+
+          case "$VERDICT" in
+            READY)
+              gh issue edit "$ISSUE_NUMBER" -R "$REPO" \
+                --remove-label "status:review" --add-label "status:awaiting-approval"
+              ;;
+            NEEDS_REVISION)
+              gh issue edit "$ISSUE_NUMBER" -R "$REPO" \
+                --remove-label "status:review" --add-label "status:needs-revision"
+              ;;
+            NEEDS_CLARIFICATION)
+              gh issue edit "$ISSUE_NUMBER" -R "$REPO" \
+                --remove-label "status:review" --add-label "status:needs-clarification"
+              ;;
+            *)
+              echo "::error::Unexpected verdict '$VERDICT' — leaving status:review in place for manual triage."
+              exit 1
+              ;;
+          esac
