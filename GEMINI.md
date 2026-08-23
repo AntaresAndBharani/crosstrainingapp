@@ -26,3 +26,29 @@
    - **PR Workflow:** Opening/updating a PR builds the snapshot APK and updates the rolling `snapshot` pre-release on GitHub.
    - **Merge to Main:** Merging into `main` automatically tags the release and publishes the official GitHub Release with the APK.
    - **Agent Completion Gate:** Development is only complete when local tests pass, E2E artifacts are captured, the PR is opened, AND all remote GitHub Actions CI checks pass (Green).
+
+## Agentic SDLC Pipeline
+Headless Architect (Claude) and Three Amigos (Gemini) run automatically on
+issue label changes (`.github/workflows/architect.yml`,
+`three-amigos.yml`). Full design and rationale live in the
+`AntaresAndBharani/graph-engineering` repo (`docs/definition-node.md`,
+`docs/three-amigos-node.md`, `README.md`) — this is the quick-reference for
+using it here, not a copy of that design.
+
+- **As PO, draft a User Story** with the `user-story.yml` issue template.
+  When ready, relabel it `status:ready-for-architect` to hand off.
+- **Label meanings:**
+  - `status:definition` — still drafting
+  - `status:ready-for-architect` — PO says go (on a story: decompose; on a
+    subtask: incorporate my answer to a prior `status:needs-po-input`)
+  - `status:needs-po-input` — Architect needs your decision; read the
+    comment, answer, then relabel `status:ready-for-architect`
+  - `status:review` — Architect handed this subtask to Three Amigos
+  - `status:needs-revision` / `status:needs-clarification` — Three Amigos
+    bounced it back to Architect; no action needed from you unless it
+    escalates to `status:needs-po-input`
+  - `status:awaiting-approval` — Three Amigos passed it; nothing happens
+    until you relabel `status:ready`
+- **Nothing gets implemented automatically.** The final `status:ready`
+  relabel is always yours, and only then does the existing interactive
+  `@Developer`/`@Tester` (Antigravity) workflow pick it up.
