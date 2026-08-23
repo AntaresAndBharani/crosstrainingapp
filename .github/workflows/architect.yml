@@ -90,6 +90,19 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # --model: confirmed run #2 silently defaulted to claude-sonnet-5,
+          # never Opus, since no model was specified.
+          # --permission-mode dontAsk + --allowedTools: confirmed run #3
+          # completed 9 turns / $0.25 but never wrote architect_output.json —
+          # "permission_denials_count": 2 in the run's own JSON summary.
+          # claude-code-action's headless "agent" mode runs in Claude Code's
+          # default (Manual) permission mode, which only auto-approves reads,
+          # and there's no human to approve the Write. dontAsk pre-approves
+          # exactly the tools this node needs (read the repo, write one
+          # output file) and denies everything else outright — a locked-down
+          # allowlist, not a blanket bypass, matching Claude Code's own
+          # documented recommendation for CI ("Locked-down CI and scripts").
+          claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
           prompt: |
             Follow the instructions in the file architect_task.md at the
             repository root exactly. Read issue_context.json for the real
