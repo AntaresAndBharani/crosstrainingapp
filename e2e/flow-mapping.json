@@ -1,0 +1,170 @@
+{
+  "version": "1.0",
+  "description": "Deterministic mapping from changed file path patterns to Maestro E2E flow tags.",
+  "rules": [
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/screens/LoginWelcomeScreen.kt",
+      "tags": ["auth"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/firebase/**",
+      "tags": ["auth"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/screens/LogSessionScreen.kt",
+      "tags": ["logging"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/screens/SessionEditor.kt",
+      "tags": ["logging"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/SessionDraft.kt",
+      "tags": ["logging"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/screens/HistoryScreen.kt",
+      "tags": ["history"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/screens/LibraryScreen.kt",
+      "tags": ["library"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/dao/ExerciseDao.kt",
+      "tags": ["library"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/dao/RoutineDao.kt",
+      "tags": ["library"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/screens/ProfileSettingsScreen.kt",
+      "tags": ["settings", "theme"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/theme/**",
+      "tags": ["theme", "settings"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/screens/CoachScreen.kt",
+      "tags": ["coach"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/screens/CyclesScreen.kt",
+      "tags": ["coach"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/dao/Cycle*.kt",
+      "tags": ["coach"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/navigation/**",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/MainActivity.kt",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/CrossTrainingApp.kt",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/AppDatabase.kt",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/Repository.kt",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/SeedData.kt",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/DemoData.kt",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/DataModeManager.kt",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/AppViewModel.kt",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/ui/components/**",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/dao/SessionDao.kt",
+      "tags": ["logging", "history"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/dao/BlockDao.kt",
+      "tags": ["logging", "history"]
+    },
+    {
+      "pattern": "app/src/main/java/com/fractanomics/crosstraining/data/model/**",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "*.gradle*",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "app/*.gradle*",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "gradle/**",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "e2e/flows/01_auth_flow.yaml",
+      "tags": ["auth"]
+    },
+    {
+      "pattern": "e2e/flows/02_log_session_flow.yaml",
+      "tags": ["logging"]
+    },
+    {
+      "pattern": "e2e/flows/03_history_and_search_flow.yaml",
+      "tags": ["history"]
+    },
+    {
+      "pattern": "e2e/flows/04_library_categories_flow.yaml",
+      "tags": ["library"]
+    },
+    {
+      "pattern": "e2e/flows/05_theme_mode_flow.yaml",
+      "tags": ["theme", "settings"]
+    },
+    {
+      "pattern": "e2e/flows/06_coach_mode_flow.yaml",
+      "tags": ["coach"]
+    },
+    {
+      "pattern": "e2e/flow-mapping.json",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "scripts/**",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "docs/**",
+      "tags": ["core"]
+    },
+    {
+      "pattern": "CHANGELOG.md",
+      "tags": ["core"]
+    }
+  ],
+  "fallback": {
+    "unrecognizedFile": "core",
+    "description": "If a changed file does not match any rule, default to 'core' (all flows) to ensure safety."
+  }
+}

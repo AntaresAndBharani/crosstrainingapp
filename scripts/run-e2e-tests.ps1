@@ -21,7 +21,10 @@ param (
     [switch]$CaptureArtifacts,
     [string]$OutputRepo = "..\virgymia-qa",
     [string]$Version = "latest",
-    [switch]$PushArtifacts
+    [switch]$PushArtifacts,
+    [switch]$Delta,
+    [string[]]$Tags = @(),
+    [string]$BaseBranch = "main"
 )
 
 $ErrorActionPreference = "Stop"
@@ -105,10 +108,99 @@ if (Test-Path "local_test\latest.apk") {
     Write-Warning "local_test\latest.apk not found. Skipping install step."
 }
 
-# 5. Run Maestro E2E Flows
+# 5. Determine Active Tags / Delta Coverage
+$ActiveTags = @()
+if ($Tags.Count -gt 0) {
+    $ActiveTags = $Tags
+    Write-Host "`n[TAGS] Targeting explicit tag(s): $($ActiveTags -join ', ')" -ForegroundColor Cyan
+} elseif ($Delta) {
+    Write-Host "`n[DELTA] Computing targeted test coverage against '$BaseBranch'..." -ForegroundColor Cyan
+    
+    $ChangedFiles = @()
+    try {
+        $DiffTarget = "origin/$BaseBranch"
+        $null = git rev-parse --verify $DiffTarget 2>&1
+        if ($LASTEXITCODE -ne 0) { $DiffTarget = $BaseBranch }
+        
+        $BranchDiff = git diff --name-only "$DiffTarget...HEAD" 2>$null
+        if ($BranchDiff) { $ChangedFiles += $BranchDiff }
+        
+        $WorkingDiff = git diff --name-only HEAD 2>$null
+        if ($WorkingDiff) { $ChangedFiles += $WorkingDiff }
+        
+        $Untracked = git ls-files --others --exclude-standard 2>$null
+        if ($Untracked) { $ChangedFiles += $Untracked }
+    } catch {}
+    
+    $ChangedFiles = $ChangedFiles | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique
+    
+    if (-not $ChangedFiles -or $ChangedFiles.Count -eq 0) {
+        Write-Host "[DELTA] No changed files detected against $BaseBranch. Running full suite as safety baseline." -ForegroundColor Yellow
+        $ActiveTags = @()
+    } else {
+        Write-Host "[DELTA] Changed files detected ($($ChangedFiles.Count)):" -ForegroundColor DarkGray
+        foreach ($file in $ChangedFiles) { Write-Host " - $file" -ForegroundColor DarkGray }
+        
+        $MappingFile = "e2e/flow-mapping.json"
+        if (-not (Test-Path $MappingFile)) {
+            Write-Warning "[DELTA] Mapping file '$MappingFile' not found. Falling back to full test suite."
+            $ActiveTags = @()
+        } else {
+            $Mapping = Get-Content $MappingFile -Raw | ConvertFrom-Json
+            $ResolvedTags = [System.Collections.Generic.HashSet[string]]::new()
+            $TriggerFullSuite = $false
+            $FallbackReason = ""
+
+            foreach ($file in $ChangedFiles) {
+                $NormalizedPath = $file -replace '\\', '/'
+                $MatchedRule = $false
+
+                foreach ($rule in $Mapping.rules) {
+                    $Pattern = $rule.pattern
+                    $RegexPattern = '^' + ([regex]::Escape($Pattern) -replace '\\\*\\\*', '.*' -replace '\\\*', '[^/]*') + '$'
+                    if ($NormalizedPath -match $RegexPattern) {
+                        $MatchedRule = $true
+                        foreach ($t in $rule.tags) {
+                            if ($t -eq "core") {
+                                $TriggerFullSuite = $true
+                                $FallbackReason = "Core architectural file changed: '$NormalizedPath'"
+                            } else {
+                                [void]$ResolvedTags.Add($t)
+                            }
+                        }
+                    }
+                }
+
+                if (-not $MatchedRule) {
+                    $TriggerFullSuite = $true
+                    $FallbackReason = "Unrecognized changed file: '$NormalizedPath' (not found in $MappingFile)"
+                }
+            }
+
+            if ($TriggerFullSuite) {
+                Write-Host "`n[DELTA SAFETY NET] $FallbackReason" -ForegroundColor Yellow
+                Write-Host "[DELTA SAFETY NET] Defaulting to full 6-flow test suite to prevent regressions." -ForegroundColor Yellow
+                $ActiveTags = @()
+            } elseif ($ResolvedTags.Count -gt 0) {
+                $ActiveTags = @($ResolvedTags)
+                Write-Host "`n[DELTA] Targeted tag(s) resolved: $($ActiveTags -join ', ')" -ForegroundColor Green
+            } else {
+                Write-Host "`n[DELTA] No specific tags resolved. Defaulting to full test suite." -ForegroundColor Yellow
+                $ActiveTags = @()
+            }
+        }
+    }
+}
+
+# 6. Run Maestro E2E Flows
 Write-Host "`n[4/4] Executing Maestro E2E test flows: '$Flow'..." -ForegroundColor Yellow
 $Env:MAESTRO_CLI_NO_ANALYTICS = "true"
 $Env:MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED = "true"
+
+$TagArgs = @()
+if ($ActiveTags.Count -gt 0) {
+    $TagArgs = @("--include-tags", ($ActiveTags -join ","))
+}
 
 if ($CaptureArtifacts) {
     $ReportDir = "$OutputRepo\screenshots\$Version"
@@ -120,7 +212,7 @@ if ($CaptureArtifacts) {
     }
 
     Write-Host "Capturing artifacts and HTML report to $ReportDir..." -ForegroundColor Cyan
-    & $MaestroPath test $Flow --format html --output "$ReportDir\report.html" --debug-output "$DebugDir" 2>&1 | Tee-Object -Variable CapturedOutput
+    & $MaestroPath test $Flow $TagArgs --format html --output "$ReportDir\report.html" --debug-output "$DebugDir" 2>&1 | Tee-Object -Variable CapturedOutput
     $TestExitCode = $LASTEXITCODE
     $MaestroOutput = $CapturedOutput | Out-String
     $MaestroOutput = $MaestroOutput -replace '\x1B\[[0-9;]*[a-zA-Z]', ''
@@ -162,11 +254,39 @@ if ($CaptureArtifacts) {
 
         $FlowSummaries += $SummaryEntry
     }
-    # Validate parsed flow count against actual targeted flow files
+    # Validate parsed flow count against actual targeted flow files (adapting dynamically for tag filtering)
     $TargetFiles = if (Test-Path $Flow -PathType Leaf) { @(Get-Item $Flow) } else { Get-ChildItem -Path $Flow -Filter "*.yaml" -Recurse }
-    $TargetCount = @($TargetFiles).Count
-    if ($TargetCount -gt 0 -and $FlowSummaries.Count -ne $TargetCount) {
-        Write-Error "Parsed flow count ($($FlowSummaries.Count)) does not match targeted flow files ($TargetCount). Maestro output format may have changed."
+    
+    $ExpectedCount = 0
+    if ($ActiveTags.Count -gt 0) {
+        foreach ($file in $TargetFiles) {
+            $Content = Get-Content $file.FullName -Raw
+            $FileTags = @()
+            if ($Content -match '(?ms)^tags:\s*\r?\n(.*?)(?:^---|\Z)') {
+                $TagLines = $Matches[1] -split "\r?\n"
+                foreach ($line in $TagLines) {
+                    if ($line -match '^\s*-\s*([a-zA-Z0-9_-]+)') {
+                        $FileTags += $Matches[1].Trim()
+                    }
+                }
+            }
+            $MatchesActiveTag = $false
+            foreach ($tag in $ActiveTags) {
+                if ($FileTags -contains $tag) {
+                    $MatchesActiveTag = $true
+                    break
+                }
+            }
+            if ($MatchesActiveTag) {
+                $ExpectedCount++
+            }
+        }
+    } else {
+        $ExpectedCount = @($TargetFiles).Count
+    }
+
+    if ($ExpectedCount -gt 0 -and $FlowSummaries.Count -ne $ExpectedCount) {
+        Write-Error "Parsed flow count ($($FlowSummaries.Count)) does not match targeted flow files ($ExpectedCount). Maestro output format may have changed."
     }
 
     $FlowSummaries | ConvertTo-Json -Depth 2 | Set-Content $SummaryFile -Encoding utf8
@@ -198,7 +318,7 @@ if ($CaptureArtifacts) {
         }
     }
 } else {
-    & $MaestroPath test $Flow
+    & $MaestroPath test $Flow $TagArgs
     $TestExitCode = $LASTEXITCODE
 }
 

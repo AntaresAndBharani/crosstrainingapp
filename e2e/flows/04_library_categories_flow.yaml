@@ -1,4 +1,7 @@
 appId: com.fractanomics.crosstraining
+tags:
+  - library
+  - core
 ---
 - launchApp
 - extendedWaitUntil:
