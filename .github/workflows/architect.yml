@@ -56,9 +56,9 @@ jobs:
           case ",$TYPES," in *,type:subtask,*) IS_SUBTASK=true;; esac
 
           if [ "$TRIGGER_LABEL" = "status:ready-for-architect" ] && [ "$IS_STORY" = "true" ]; then
-            MODE=full_decompose
+            MODE=full-decompose
           elif [ "$TRIGGER_LABEL" = "status:ready-for-architect" ] && [ "$IS_SUBTASK" = "true" ]; then
-            MODE=resume_after_po
+            MODE=resume-after-po
           elif [ "$TRIGGER_LABEL" = "status:needs-revision" ] && [ "$IS_SUBTASK" = "true" ]; then
             MODE=rework
           elif [ "$TRIGGER_LABEL" = "status:needs-clarification" ] && [ "$IS_SUBTASK" = "true" ]; then
@@ -116,7 +116,7 @@ jobs:
             exit 0
           fi
 
-          if [ "$MODE" = "full_decompose" ]; then
+          if [ "$MODE" = "full-decompose" ]; then
             # Create one type:subtask issue per proposed subtask, matching
             # this repo's real subtask.yml field structure.
             COUNT=$(jq '.subtasks | length' architect_output.json)
@@ -170,7 +170,7 @@ jobs:
 
             gh issue edit "$ISSUE_NUMBER" -R "$REPO" --remove-label "status:ready-for-architect"
           else
-            # resume_after_po, rework, or clarify (resolved) — update this
+            # resume-after-po, rework, or clarify (resolved) — update this
             # one subtask's body and send it back to Three Amigos.
             UPDATE_FILE=$(mktemp)
             {
