@@ -254,11 +254,39 @@ if ($CaptureArtifacts) {
 
         $FlowSummaries += $SummaryEntry
     }
-    # Validate parsed flow count against actual targeted flow files (when full suite is run)
+    # Validate parsed flow count against actual targeted flow files (adapting dynamically for tag filtering)
     $TargetFiles = if (Test-Path $Flow -PathType Leaf) { @(Get-Item $Flow) } else { Get-ChildItem -Path $Flow -Filter "*.yaml" -Recurse }
-    $TargetCount = @($TargetFiles).Count
-    if ($ActiveTags.Count -eq 0 -and $TargetCount -gt 0 -and $FlowSummaries.Count -ne $TargetCount) {
-        Write-Error "Parsed flow count ($($FlowSummaries.Count)) does not match targeted flow files ($TargetCount). Maestro output format may have changed."
+    
+    $ExpectedCount = 0
+    if ($ActiveTags.Count -gt 0) {
+        foreach ($file in $TargetFiles) {
+            $Content = Get-Content $file.FullName -Raw
+            $FileTags = @()
+            if ($Content -match '(?ms)^tags:\s*\r?\n(.*?)(?:^---|\Z)') {
+                $TagLines = $Matches[1] -split "\r?\n"
+                foreach ($line in $TagLines) {
+                    if ($line -match '^\s*-\s*([a-zA-Z0-9_-]+)') {
+                        $FileTags += $Matches[1].Trim()
+                    }
+                }
+            }
+            $MatchesActiveTag = $false
+            foreach ($tag in $ActiveTags) {
+                if ($FileTags -contains $tag) {
+                    $MatchesActiveTag = $true
+                    break
+                }
+            }
+            if ($MatchesActiveTag) {
+                $ExpectedCount++
+            }
+        }
+    } else {
+        $ExpectedCount = @($TargetFiles).Count
+    }
+
+    if ($ExpectedCount -gt 0 -and $FlowSummaries.Count -ne $ExpectedCount) {
+        Write-Error "Parsed flow count ($($FlowSummaries.Count)) does not match targeted flow files ($ExpectedCount). Maestro output format may have changed."
     }
 
     $FlowSummaries | ConvertTo-Json -Depth 2 | Set-Content $SummaryFile -Encoding utf8
