@@ -97,6 +97,13 @@ jobs:
       - name: Run Three Amigos (Gemini)
         if: steps.gate.outputs.is_subtask == 'true' && steps.rounds.outputs.count < env.ROUND_CAP
         uses: google-github-actions/run-gemini-cli@v0
+        env:
+          # Confirmed from a real failure: Gemini CLI refuses to operate in
+          # a directory it hasn't been told to trust, and a fresh checkout
+          # on an ephemeral runner is never pre-trusted. No interactive
+          # prompt is possible in CI, so this must be set explicitly rather
+          # than answered live. See geminicli.com/docs/cli/trusted-folders.
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           gemini_model: ${{ env.GEMINI_MODEL }}
