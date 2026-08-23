@@ -30,6 +30,12 @@ concurrency:
 permissions:
   contents: read
   issues: write
+  id-token: write  # preventive, not yet confirmed necessary for this action —
+                   # architect.yml's run failed without it (claude-code-action
+                   # requests a GitHub OIDC token internally regardless of
+                   # auth method); run-gemini-cli exposes GCP WIF-style inputs
+                   # too, so adding this defensively rather than waiting to
+                   # hit the same class of failure here.
 
 env:
   GEMINI_MODEL: gemini-3.7-flash

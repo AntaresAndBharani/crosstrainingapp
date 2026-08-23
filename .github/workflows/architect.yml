@@ -27,6 +27,10 @@ concurrency:
 permissions:
   contents: read
   issues: write
+  id-token: write  # claude-code-action@v1 requests a GitHub OIDC token
+                   # internally for its own token setup, regardless of the
+                   # Anthropic-side auth method — confirmed via a real
+                   # failed run (issue #55) without this, not assumed.
 
 jobs:
   architect:
