@@ -3,18 +3,29 @@ name: Architect
 # Headless entry point for the Architect node of the agentic SDLC pipeline.
 # Design: ws-setups/graph-engineering/docs/definition-node.md
 #
-# Four label conditions, on two issue types:
-#   status:ready-for-architect  on type:user-story  -> full refine + decompose
-#   status:ready-for-architect  on type:subtask     -> incorporate a PO answer
-#   status:needs-revision       on type:subtask     -> full rework of one subtask
-#   status:needs-clarification  on type:subtask     -> tier-1 clarification attempt
+# Batch model (2026-08-23 redesign): Architect only ever operates on
+# `type:user-story` issues now — never directly on subtasks. Three label
+# conditions:
+#   status:ready-for-architect  -> decompose mode: create subtasks if none
+#                                  exist yet, or incorporate a PO answer
+#                                  into the existing set if they do.
+#   status:needs-revision       -> restructure mode: split/merge/create/edit
+#                                  subtasks per Three Amigos' batch feedback.
+#   status:needs-clarification  -> answer_clarifications mode: resolve
+#                                  targeted questions across the batch.
+#
+# Which subtasks belong to a parent is determined by each subtask's own
+# "### Parent user story" self-reference (see
+# .github/workflows/scripts/filter_subtasks_by_parent.py), not by trusting
+# the parent's own checklist field to stay in sync — that field is NOT
+# programmatically maintained by this workflow (a deliberate simplification
+# to avoid fragile body-text surgery; the parent's comment thread shows the
+# current subtask list after every Architect pass instead).
 #
 # Security note: issue title/body/comments are untrusted input (this is a
 # public repo). Never interpolate them directly into `run:`/`with:` GitHub
 # Actions expressions. They're written to files by `gh` (safe) and read by
-# Claude via its own file tools, not interpolated into YAML/shell. The
-# mode-specific prompts live as static files in .github/workflows/prompts/,
-# not inline heredocs, to avoid YAML/shell indentation pitfalls.
+# Claude via its own file tools, not interpolated into YAML/shell.
 
 on:
   issues:
@@ -27,10 +38,6 @@ concurrency:
 permissions:
   contents: read
   issues: write
-  id-token: write  # claude-code-action@v1 requests a GitHub OIDC token
-                   # internally for its own token setup, regardless of the
-                   # Anthropic-side auth method — confirmed via a real
-                   # failed run (issue #55) without this, not assumed.
 
 jobs:
   architect:
@@ -52,67 +59,66 @@ jobs:
         id: mode
         run: |
           set -euo pipefail
-          TYPES=$(gh issue view "$ISSUE_NUMBER" -R "$REPO" --json labels -q '[.labels[].name] | join(",")')
-
           IS_STORY=false
-          IS_SUBTASK=false
+          TYPES=$(gh issue view "$ISSUE_NUMBER" -R "$REPO" --json labels -q '[.labels[].name] | join(",")')
           case ",$TYPES," in *,type:user-story,*) IS_STORY=true;; esac
-          case ",$TYPES," in *,type:subtask,*) IS_SUBTASK=true;; esac
 
-          if [ "$TRIGGER_LABEL" = "status:ready-for-architect" ] && [ "$IS_STORY" = "true" ]; then
-            MODE=full-decompose
-          elif [ "$TRIGGER_LABEL" = "status:ready-for-architect" ] && [ "$IS_SUBTASK" = "true" ]; then
-            MODE=resume-after-po
-          elif [ "$TRIGGER_LABEL" = "status:needs-revision" ] && [ "$IS_SUBTASK" = "true" ]; then
-            MODE=rework
-          elif [ "$TRIGGER_LABEL" = "status:needs-clarification" ] && [ "$IS_SUBTASK" = "true" ]; then
-            MODE=clarify
-          else
-            MODE=skip
+          if [ "$IS_STORY" != "true" ]; then
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          case "$TRIGGER_LABEL" in
+            status:ready-for-architect)  MODE=decompose ;;
+            status:needs-revision)       MODE=restructure ;;
+            status:needs-clarification)  MODE=answer_clarifications ;;
+            *)                           MODE=skip ;;
+          esac
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch issue + comments (safe — via gh/jq, not shell-interpolated)
+      - name: Fetch parent + existing subtasks
         if: steps.mode.outputs.mode != 'skip'
         run: |
           set -euo pipefail
           gh issue view "$ISSUE_NUMBER" -R "$REPO" \
             --json number,title,body,labels,comments > issue_context.json
 
+          gh issue list -R "$REPO" --label "type:subtask" --state open \
+            --json number,title,body,labels --limit 100 \
+            | python3 .github/workflows/scripts/filter_subtasks_by_parent.py "$ISSUE_NUMBER" \
+            > existing_subtasks.json
+
       - name: Select mode-specific prompt
         if: steps.mode.outputs.mode != 'skip'
         run: |
           set -euo pipefail
-          cp ".github/workflows/prompts/architect-${{ steps.mode.outputs.mode }}.md" architect_task.md
+          case "${{ steps.mode.outputs.mode }}" in
+            decompose)             FILE=architect-decompose.md ;;
+            restructure)           FILE=architect-restructure.md ;;
+            answer_clarifications) FILE=architect-answer-clarifications.md ;;
+          esac
+          cp ".github/workflows/prompts/$FILE" architect_task.md
 
       - name: Run Architect (Claude Opus)
         if: steps.mode.outputs.mode != 'skip'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # --model: confirmed run #2 silently defaulted to claude-sonnet-5,
-          # never Opus, since no model was specified.
-          # --permission-mode dontAsk + --allowedTools: confirmed run #3
-          # completed 9 turns / $0.25 but never wrote architect_output.json —
-          # "permission_denials_count": 2 in the run's own JSON summary.
-          # claude-code-action's headless "agent" mode runs in Claude Code's
-          # default (Manual) permission mode, which only auto-approves reads,
-          # and there's no human to approve the Write. dontAsk pre-approves
-          # exactly the tools this node needs (read the repo, write one
-          # output file) and denies everything else outright — a locked-down
-          # allowlist, not a blanket bypass, matching Claude Code's own
-          # documented recommendation for CI ("Locked-down CI and scripts").
+          # See prior commits on this file for why both flags are needed:
+          # no model specified silently defaults to Sonnet, and
+          # claude-code-action's headless mode has no human to approve the
+          # Write tool call otherwise.
           claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
           prompt: |
             Follow the instructions in the file architect_task.md at the
-            repository root exactly. Read issue_context.json for the real
-            issue content before doing anything else.
+            repository root exactly. Read issue_context.json and, if
+            present and non-empty, existing_subtasks.json before doing
+            anything else.
 
       - name: Apply Architect's decision
         if: steps.mode.outputs.mode != 'skip'
         run: |
           set -euo pipefail
-          MODE="${{ steps.mode.outputs.mode }}"
 
           if [ ! -f architect_output.json ]; then
             echo "::error::architect_output.json was not produced — failing rather than guessing at outcome."
@@ -133,92 +139,89 @@ jobs:
             exit 0
           fi
 
-          if [ "$MODE" = "full-decompose" ]; then
-            # Create one type:subtask issue per proposed subtask, matching
-            # this repo's real subtask.yml field structure.
-            COUNT=$(jq '.subtasks | length' architect_output.json)
-            NEW_NUMBERS=""
-            for i in $(seq 0 $((COUNT - 1))); do
-              TITLE=$(jq -r ".subtasks[$i].title" architect_output.json)
-              BODY_FILE=$(mktemp)
-              {
-                echo "### Parent user story"
-                echo "#${ISSUE_NUMBER}"
-                echo
-                echo "### Target repository"
-                echo "crosstrainingapp"
-                echo
-                echo "### Task description"
-                jq -r ".subtasks[$i].task_description" architect_output.json
-                echo
-                echo "### Files / entry points"
-                jq -r ".subtasks[$i].entry_points" architect_output.json
-                echo
-                echo "### Acceptance criteria"
-                jq -r ".subtasks[$i].acceptance_criteria[] | \"- [ ] \" + ." architect_output.json
-                echo
-                echo "### How to verify"
-                jq -r ".subtasks[$i].verification" architect_output.json
-                echo
-                echo "### Size"
-                jq -r ".subtasks[$i].size" architect_output.json
-                echo
-                echo "### Complexity"
-                jq -r ".subtasks[$i].complexity" architect_output.json
-                echo
-                echo "### Blocked by"
-                jq -r ".subtasks[$i].blocked_by" architect_output.json
-              } > "$BODY_FILE"
-
-              NEW_URL=$(gh issue create -R "$REPO" \
-                --title "[Subtask]: $TITLE" \
-                --body-file "$BODY_FILE" \
-                --label "type:subtask,status:review")
-              NEW_NUM=$(basename "$NEW_URL")
-              NEW_NUMBERS="$NEW_NUMBERS #$NEW_NUM"
-              rm -f "$BODY_FILE"
-            done
-
+          # PROCEED: apply create / update / close.
+          render_body() {
+            # $1 = jq path into architect_output.json for one subtask object
+            jq -r "$1.task_description" architect_output.json > /tmp/body.md
             {
-              echo "**Architect finished decomposition.** Created subtasks:$NEW_NUMBERS"
+              echo "### Parent user story"
+              echo "#${ISSUE_NUMBER}"
               echo
-              echo "Each is labeled \`status:review\` and will be evaluated by Three Amigos."
-            } | gh issue comment "$ISSUE_NUMBER" -R "$REPO" --body-file -
-
-            gh issue edit "$ISSUE_NUMBER" -R "$REPO" --remove-label "status:ready-for-architect"
-          else
-            # resume-after-po, rework, or clarify (resolved) — update this
-            # one subtask's body and send it back to Three Amigos.
-            UPDATE_FILE=$(mktemp)
-            {
+              echo "### Target repository"
+              echo "crosstrainingapp"
+              echo
               echo "### Task description"
-              jq -r '.updated_subtask.task_description' architect_output.json
+              cat /tmp/body.md
               echo
               echo "### Files / entry points"
-              jq -r '.updated_subtask.entry_points' architect_output.json
+              jq -r "$1.entry_points" architect_output.json
               echo
               echo "### Acceptance criteria"
-              jq -r '.updated_subtask.acceptance_criteria[] | "- [ ] " + .' architect_output.json
+              jq -r "$1.acceptance_criteria[] | \"- [ ] \" + ." architect_output.json
               echo
               echo "### How to verify"
-              jq -r '.updated_subtask.verification' architect_output.json
+              jq -r "$1.verification" architect_output.json
               echo
               echo "### Size"
-              jq -r '.updated_subtask.size' architect_output.json
+              jq -r "$1.size" architect_output.json
               echo
               echo "### Complexity"
-              jq -r '.updated_subtask.complexity' architect_output.json
+              jq -r "$1.complexity" architect_output.json
               echo
               echo "### Blocked by"
-              jq -r '.updated_subtask.blocked_by' architect_output.json
-            } > "$UPDATE_FILE"
+              jq -r "$1.blocked_by" architect_output.json
+            }
+          }
 
-            gh issue edit "$ISSUE_NUMBER" -R "$REPO" --body-file "$UPDATE_FILE"
-            rm -f "$UPDATE_FILE"
+          CREATED=""
+          UPDATED=""
+          CLOSED=""
 
-            gh issue edit "$ISSUE_NUMBER" -R "$REPO" \
-              --remove-label "$TRIGGER_LABEL" --add-label "status:review"
+          CREATE_COUNT=$(jq '.subtasks.create | length' architect_output.json)
+          for i in $(seq 0 $((CREATE_COUNT - 1))); do
+            TITLE=$(jq -r ".subtasks.create[$i].title" architect_output.json)
+            BODY_FILE=$(mktemp)
+            render_body ".subtasks.create[$i]" > "$BODY_FILE"
+            NEW_URL=$(gh issue create -R "$REPO" \
+              --title "[Subtask]: $TITLE" \
+              --body-file "$BODY_FILE" \
+              --label "type:subtask,status:pending-review")
+            NEW_NUM=$(basename "$NEW_URL")
+            CREATED="$CREATED #$NEW_NUM"
+            rm -f "$BODY_FILE"
+          done
 
-            echo "Architect updated this subtask (mode: $MODE) and sent it back to Three Amigos." | \
-              gh issue comment "$ISSUE_NUMBER" -R "$REPO" --body-file -
-          fi
+          UPDATE_COUNT=$(jq '.subtasks.update | length' architect_output.json)
+          for i in $(seq 0 $((UPDATE_COUNT - 1))); do
+            SUBTASK_NUM=$(jq -r ".subtasks.update[$i].subtask_number" architect_output.json)
+            BODY_FILE=$(mktemp)
+            render_body ".subtasks.update[$i]" > "$BODY_FILE"
+            gh issue edit "$SUBTASK_NUM" -R "$REPO" --body-file "$BODY_FILE"
+            UPDATED="$UPDATED #$SUBTASK_NUM"
+            rm -f "$BODY_FILE"
+          done
+
+          CLOSE_COUNT=$(jq '.subtasks.close | length' architect_output.json)
+          for i in $(seq 0 $((CLOSE_COUNT - 1))); do
+            SUBTASK_NUM=$(jq -r ".subtasks.close[$i].subtask_number" architect_output.json)
+            REASON=$(jq -r ".subtasks.close[$i].reason" architect_output.json)
+            gh issue close "$SUBTASK_NUM" -R "$REPO" --comment "Closed by Architect: $REASON"
+            CLOSED="$CLOSED #$SUBTASK_NUM"
+          done
+
+          {
+            echo "**Architect finished (mode: ${{ steps.mode.outputs.mode }}).**"
+            echo
+            [ -n "$CREATED" ] && echo "Created:$CREATED"
+            [ -n "$UPDATED" ] && echo "Updated:$UPDATED"
+            [ -n "$CLOSED" ] && echo "Closed:$CLOSED"
+            echo
+            echo "Sending the current subtask set to Three Amigos for batch review."
+          } | gh issue comment "$ISSUE_NUMBER" -R "$REPO" --body-file -
+
+          # Newly created subtasks start at status:pending-review (informational
+          # only, nothing triggers on it) rather than status:review, since
+          # review now happens once for the whole batch, triggered by the
+          # PARENT'S relabel below — not per-subtask.
+          gh issue edit "$ISSUE_NUMBER" -R "$REPO" \
+            --remove-label "$TRIGGER_LABEL" --add-label "status:review"
