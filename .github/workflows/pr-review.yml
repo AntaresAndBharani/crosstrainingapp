@@ -28,6 +28,7 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+  id-token: write
 
 env:
   ROUND_CAP: 3
