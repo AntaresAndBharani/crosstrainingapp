@@ -97,6 +97,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          show_full_output: true  # temporary — diagnosing permission_denials_count:1 with no visible cause
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/pr-review.md exactly. Read
@@ -115,6 +116,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          show_full_output: true  # temporary — diagnosing permission_denials_count:1 with no visible cause
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/pr-review.md exactly. Read
@@ -139,6 +141,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          show_full_output: true  # temporary — diagnosing permission_denials_count:1 with no visible cause
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/pr-review.md exactly. Read
