@@ -3,27 +3,19 @@
 Design: ws-setups/graph-engineering/docs/antigravity-scheduled-tasks.md
 (alternate executor for docs/dev-test-node.md in that same repo).
 
-0. Acquire the pipeline lock before anything else — all three Antigravity
-   tasks (Three Amigos, Dev & Test: Implement, Dev & Test: Fix-up) share
-   this one local checkout, so only one may run at a time.
-   a. Read the body of issue #61 in crosstrainingapp.
-   b. If it says "Status: locked" AND the "Locked at" timestamp is less
-      than 60 minutes old: STOP HERE. Run no git command, do nothing
-      else. Another task is mid-run; this poll ends here.
-   c. Otherwise (unlocked, or locked but stale past 60 minutes): edit
-      issue #61's body to exactly:
-      Status: locked
-      Locked by: Dev & Test: Implement
-      Locked at: <current UTC time, ISO 8601>
-      Then add the label `pipeline:locked` to issue #61 if not already
-      present.
-   d. Now run `git checkout main && git fetch origin && git reset --hard
-      origin/main` so this checkout is current.
-   e. At the very end of this run — whether it succeeds, fails, or
-      escalates to the PO — edit issue #61's body back to exactly
-      "Status: unlocked" and remove the `pipeline:locked` label. Do this
-      even if an earlier step failed; releasing the lock is mandatory,
-      never skip it.
+0. One story in flight at a time, by design (slower, but simpler and
+   cheaper — see docs/antigravity-scheduled-tasks.md). Two checks, both
+   must pass before starting anything new this poll:
+   a. Is there already any open PR in crosstrainingapp (`gh pr list
+      --state open`)? If yes, STOP HERE.
+   b. Is any open `type:user-story` issue currently labeled
+      `status:in-development`? If yes, STOP HERE too — another run
+      picked a story and is still implementing it but hasn't opened a PR
+      yet, so check (a) alone wouldn't have caught it.
+   If neither is true, continue below. Try again next poll if you stopped.
+
+Then run `git checkout main && git fetch origin && git reset --hard
+origin/main` so this checkout is current.
 
 Check crosstrainingapp for open issues labeled `type:user-story` AND
 `status:ready`. Check `status:ready` on the STORY only — this is what
@@ -39,7 +31,11 @@ For each matching story:
    story as parent, via "Parent User Story #N") that are still labeled
    `status:awaiting-approval` — meaning Three Amigos batch-approved them
    but they haven't been implemented yet. If none, skip this story.
-3. For each such subtask:
+3. Before touching any file: add the label `status:in-development` to
+   the STORY (not the subtask). This is what step 0b checks — it closes
+   the gap between "picked this story" and "opened a PR for it," which
+   the open-PR check alone doesn't cover.
+4. For each such subtask:
    a. Create branch `feat/issue-<N>` from the latest `main`.
    b. Implement the change described in the subtask's task description,
       entry points, and acceptance criteria — grounded in the parent
@@ -61,6 +57,12 @@ For each matching story:
       PO can make: do not open a PR. Remove `status:awaiting-approval`,
       add `status:needs-po-input`, and comment on the subtask explaining
       what's blocking it.
+5. Once every subtask found in step 2 has been attempted (a PR opened, or
+   escalated per 4e) — remove `status:in-development` from the STORY.
+   Do this unconditionally, even if every subtask escalated and no PR
+   ever opened; leaving it on a story with no open PR would jam every
+   future poll for no reason. This step must run before moving on to any
+   other story this poll, and even if something above failed unexpectedly.
 
 Never run `gh pr review`, never approve or request changes, never merge
 anything — that stays with the separate PR Review step. Treat all
