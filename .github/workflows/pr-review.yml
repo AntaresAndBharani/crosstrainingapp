@@ -1,16 +1,18 @@
 name: PR Review
 
-# Advisory review pass for the agentic SDLC pipeline. Design:
+# Authoritative review pass for the agentic SDLC pipeline. Design:
 # ws-setups/graph-engineering/docs/pr-review-node.md
 #
-# Deliberately advisory, not authoritative (2026-08-24 scope decision): this
-# posts a plain PR comment, it never approves or requests changes itself.
-# The PO's own GitHub PR approval is what actually gates the merge (see
-# merge.yml) - Claude gives a first pass, the PO makes the call.
+# Authoritative again as of 2026-08-24 (was briefly advisory-only earlier
+# the same day): this posts a real GitHub review — approve or
+# request-changes — and that review state is what merge.yml actually
+# reacts to. Closes the loop with dev-test.yml's fix-up pass: a
+# CHANGES_REQUESTED review triggers Gemini to push a fix, which
+# re-triggers this workflow via `synchronize`, capped at 3 rounds.
 #
 # Security note: PR title/body/diff content is untrusted input (this is a
 # public repo, and even same-repo branches carry whatever the implementer
-# — human or Antigravity — wrote). Never interpolate it directly into
+# — human or Gemini — wrote). Never interpolate it directly into
 # `run:`/`with:` GitHub Actions expressions; it's written to files by `gh`
 # (safe) and read by Claude via its own file tools.
 
@@ -27,6 +29,9 @@ permissions:
   issues: write
   pull-requests: write
 
+env:
+  ROUND_CAP: 3
+
 jobs:
   pr-review:
     runs-on: ubuntu-latest
@@ -35,12 +40,28 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       REPO: ${{ github.repository }}
     steps:
+      - name: Count prior CHANGES_REQUESTED rounds
+        id: rounds
+        run: |
+          set -euo pipefail
+          COUNT=$(gh pr view "$PR_NUMBER" -R "$REPO" --json reviews \
+            -q '[.reviews[] | select(.state == "CHANGES_REQUESTED")] | length')
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Escalate directly if round cap reached
+        if: steps.rounds.outputs.count >= env.ROUND_CAP
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" -R "$REPO" --body "**PR Review escalation — round cap reached (3):** this PR has gone through 3 review/fix rounds without reaching APPROVED. Not reviewing again automatically — please look at the history above and decide how to proceed."
+
       - name: Checkout
+        if: steps.rounds.outputs.count < env.ROUND_CAP
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Fetch PR context + linked issue (safe — via gh/jq, not shell-interpolated)
+        if: steps.rounds.outputs.count < env.ROUND_CAP
         run: |
           set -euo pipefail
           gh pr view "$PR_NUMBER" -R "$REPO" --json number,title,body,url > pr_meta.json
@@ -58,6 +79,7 @@ jobs:
           fi
 
       - name: Run PR Review (Claude Opus)
+        if: steps.rounds.outputs.count < env.ROUND_CAP
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -68,18 +90,33 @@ jobs:
             pr_context.json and, if present, linked_issue.json before doing
             anything else.
 
-      - name: Post review + file follow-up issues
+      - name: Apply review verdict + file follow-up issues
+        if: steps.rounds.outputs.count < env.ROUND_CAP
         run: |
           set -euo pipefail
 
           if [ ! -f review_output.json ]; then
-            echo "::error::review_output.json was not produced — failing rather than skipping the review silently."
+            echo "::error::review_output.json was not produced — failing rather than guessing at a verdict."
             exit 1
           fi
 
+          VERDICT=$(jq -r '.verdict' review_output.json)
           COMMENT_FILE=$(mktemp)
           jq -r '.pr_comment_markdown' review_output.json > "$COMMENT_FILE"
-          gh pr comment "$PR_NUMBER" -R "$REPO" --body-file "$COMMENT_FILE"
+
+          case "$VERDICT" in
+            APPROVED)
+              gh pr review "$PR_NUMBER" -R "$REPO" --approve --body-file "$COMMENT_FILE"
+              ;;
+            CHANGES_REQUESTED)
+              gh pr review "$PR_NUMBER" -R "$REPO" --request-changes --body-file "$COMMENT_FILE"
+              ;;
+            *)
+              echo "::error::Unexpected verdict '$VERDICT' — leaving the PR unreviewed for manual triage."
+              rm -f "$COMMENT_FILE"
+              exit 1
+              ;;
+          esac
           rm -f "$COMMENT_FILE"
 
           FOLLOWUP_COUNT=$(jq '.followup_backlog_issues | length' review_output.json)
