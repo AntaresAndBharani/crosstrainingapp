@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
 
 ### Added
+- **Release Unit Test Report Artifacts**: Added step in `.github/workflows/release.yml` to preserve unit test HTML reports and JUnit XML results as a 14-day artifact (`unit-test-report-${{ env.RELEASE_TAG }}`) on merge to main, even on test failures.
 - **Delta E2E Testing**: Added `-Delta` mode to `run-e2e-tests.ps1` powered by declarative `e2e/flow-mapping.json` rules and Maestro flow tags (`auth`, `logging`, `history`, `library`, `settings`, `theme`, `coach`, `core`). Enables sub-minute local feedback during active development while preserving the full 6-flow suite safety net for pre-PR verification.
 - **Auto-capture E2E Failure Screenshots**: Enhanced the E2E test runner to automatically extract Maestro failure screenshots via `--debug-output`, archive them to release artifacts, and embed direct screenshot links in PR evidence summaries.
 - **E2E Evidence on PRs**: Added automated scripts to generate per-flow pass/fail summaries and post E2E execution evidence directly as comments on pull requests.
