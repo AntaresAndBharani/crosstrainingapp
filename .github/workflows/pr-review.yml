@@ -147,6 +147,20 @@ jobs:
 
       - name: Apply review verdict + file follow-up issues
         if: steps.rounds.outputs.count < env.ROUND_CAP
+        env:
+          # GitHub refuses "gh pr review --approve/--request-changes" from
+          # the same identity that opened the PR ("Can not request changes
+          # on your own pull request") - ORCHESTRATION_PAT is that same
+          # identity, since dev-test.yml uses it to open PRs too. Found via
+          # a real failure on PR #62/#59/#60 the first time this code path
+          # ever actually ran end-to-end (the review-submission logic was
+          # only ever exercised in advisory/comment-only mode before
+          # today's authority reversal). Fix: submit the review as Claude's
+          # own GitHub App identity instead - claude-code-action exposes
+          # its installation token via `outputs.github_token` for exactly
+          # this reuse. Only one of the three attempts actually ran, so
+          # fall back through all three to find whichever one has it.
+          CLAUDE_APP_TOKEN: ${{ steps.review_attempt_3.outputs.github_token || steps.review_attempt_2.outputs.github_token || steps.review_attempt_1.outputs.github_token }}
         run: |
           set -euo pipefail
 
@@ -162,10 +176,10 @@ jobs:
 
           case "$VERDICT" in
             APPROVED)
-              gh pr review "$PR_NUMBER" -R "$REPO" --approve --body-file "$COMMENT_FILE"
+              GH_TOKEN="$CLAUDE_APP_TOKEN" gh pr review "$PR_NUMBER" -R "$REPO" --approve --body-file "$COMMENT_FILE"
               ;;
             CHANGES_REQUESTED)
-              gh pr review "$PR_NUMBER" -R "$REPO" --request-changes --body-file "$COMMENT_FILE"
+              GH_TOKEN="$CLAUDE_APP_TOKEN" gh pr review "$PR_NUMBER" -R "$REPO" --request-changes --body-file "$COMMENT_FILE"
               ;;
             *)
               echo "::error::Unexpected verdict '$VERDICT' — leaving the PR unreviewed for manual triage."
