@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.RedTest" tests="3" skipped="1" failures="1" errors="0" timestamp="2026-08-24T12:00:00" hostname="MSI" time="0.089">
+  <properties/>
+  <testcase name="testPassingMethod" classname="com.example.RedTest" time="0.010"/>
+  <testcase name="testFailingMethod" classname="com.example.RedTest" time="0.075">
+    <failure message="expected:&lt;1&gt; but was:&lt;2&gt;" type="java.lang.AssertionError">java.lang.AssertionError: expected:&lt;1&gt; but was:&lt;2&gt;
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:647)
+	at /home/runner/work/crosstrainingapp/crosstrainingapp/app/src/test/java/com/example/RedTest.kt:42
+	at org.junit.runners.model.FrameworkMethod$1.runReflectiveCall(FrameworkMethod.java:59)
+    </failure>
+  </testcase>
+  <testcase name="testSkippedMethod" classname="com.example.RedTest" time="0.004">
+    <skipped/>
+  </testcase>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
