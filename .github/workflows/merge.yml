@@ -1,0 +1,33 @@
+name: Merge & Backlog
+
+# Deterministic, no model - design: ws-setups/graph-engineering/docs/merge-node.md
+#
+# Triggered by the PO's own GitHub PR approval, not by Claude's PR Review
+# verdict (2026-08-24 scope decision - PR Review is advisory only). Once
+# the PO approves, this clicks merge on their behalf; this repo's existing
+# release.yml (triggered on push to main) already handles tagging and
+# publishing the release, so there's nothing else for this workflow to do.
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    if: github.event.review.state == 'approved'
+    env:
+      GH_TOKEN: ${{ secrets.ORCHESTRATION_PAT }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Merge the approved PR
+        run: |
+          set -euo pipefail
+          # --auto waits for required checks (build.yml) to go green rather
+          # than failing immediately if approval landed before CI finished.
+          gh pr merge "$PR_NUMBER" -R "$REPO" --auto --squash --delete-branch

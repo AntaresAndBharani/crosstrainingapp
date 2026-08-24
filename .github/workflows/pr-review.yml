@@ -1,0 +1,97 @@
+name: PR Review
+
+# Advisory review pass for the agentic SDLC pipeline. Design:
+# ws-setups/graph-engineering/docs/pr-review-node.md
+#
+# Deliberately advisory, not authoritative (2026-08-24 scope decision): this
+# posts a plain PR comment, it never approves or requests changes itself.
+# The PO's own GitHub PR approval is what actually gates the merge (see
+# merge.yml) - Claude gives a first pass, the PO makes the call.
+#
+# Security note: PR title/body/diff content is untrusted input (this is a
+# public repo, and even same-repo branches carry whatever the implementer
+# — human or Antigravity — wrote). Never interpolate it directly into
+# `run:`/`with:` GitHub Actions expressions; it's written to files by `gh`
+# (safe) and read by Claude via its own file tools.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  pr-review:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ORCHESTRATION_PAT }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch PR context + linked issue (safe — via gh/jq, not shell-interpolated)
+        run: |
+          set -euo pipefail
+          gh pr view "$PR_NUMBER" -R "$REPO" --json number,title,body,url > pr_meta.json
+          gh pr diff "$PR_NUMBER" -R "$REPO" > pr_diff.txt
+
+          jq -n --slurpfile meta pr_meta.json --rawfile diff pr_diff.txt \
+            '{number: $meta[0].number, title: $meta[0].title, body: $meta[0].body, url: $meta[0].url, diff: $diff}' \
+            > pr_context.json
+
+          # "Closes #N" / "Fixes #N" / "Resolves #N" is the standard GitHub
+          # convention for linking a PR to the issue it addresses.
+          LINKED=$(jq -r '.body' pr_meta.json | grep -oiP '(close[sd]?|fixe?[sd]?|resolve[sd]?)\s*:?\s*#\K[0-9]+' | head -1 || true)
+          if [ -n "${LINKED:-}" ]; then
+            gh issue view "$LINKED" -R "$REPO" --json number,title,body > linked_issue.json || true
+          fi
+
+      - name: Run PR Review (Claude Opus)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          prompt: |
+            Follow the instructions in the file
+            .github/workflows/prompts/pr-review.md exactly. Read
+            pr_context.json and, if present, linked_issue.json before doing
+            anything else.
+
+      - name: Post review + file follow-up issues
+        run: |
+          set -euo pipefail
+
+          if [ ! -f review_output.json ]; then
+            echo "::error::review_output.json was not produced — failing rather than skipping the review silently."
+            exit 1
+          fi
+
+          COMMENT_FILE=$(mktemp)
+          jq -r '.pr_comment_markdown' review_output.json > "$COMMENT_FILE"
+          gh pr comment "$PR_NUMBER" -R "$REPO" --body-file "$COMMENT_FILE"
+          rm -f "$COMMENT_FILE"
+
+          FOLLOWUP_COUNT=$(jq '.followup_backlog_issues | length' review_output.json)
+          for i in $(seq 0 $((FOLLOWUP_COUNT - 1))); do
+            TITLE=$(jq -r ".followup_backlog_issues[$i].title" review_output.json)
+            BODY_FILE=$(mktemp)
+            {
+              jq -r ".followup_backlog_issues[$i].body" review_output.json
+              echo
+              echo "_Flagged during review of #${PR_NUMBER}, deliberately not blocking it._"
+            } > "$BODY_FILE"
+            LABELS=$(jq -r ".followup_backlog_issues[$i].labels | join(\",\")" review_output.json)
+            gh issue create -R "$REPO" --title "$TITLE" --body-file "$BODY_FILE" --label "$LABELS" || true
+            rm -f "$BODY_FILE"
+          done

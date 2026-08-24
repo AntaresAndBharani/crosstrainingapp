@@ -182,9 +182,15 @@ jobs:
               SUBTASK_COUNT=$(jq 'length' subtasks_context.json)
               for i in $(seq 0 $((SUBTASK_COUNT - 1))); do
                 NUM=$(jq -r ".[$i].number" subtasks_context.json)
-                gh issue edit "$NUM" -R "$REPO" \
-                  --remove-label "status:pending-review" --add-label "status:awaiting-approval" || \
-                  gh issue edit "$NUM" -R "$REPO" --add-label "status:awaiting-approval"
+                # A subtask can reach READY from any prior status (fresh
+                # status:pending-review, or status:review left over from a
+                # restructure pass) - remove every possibility rather than
+                # guessing one and silently leaving a stray label behind if
+                # it guessed wrong (real bug, seen on #56/#58 in testing).
+                for OLD_LABEL in status:pending-review status:review status:needs-revision status:needs-clarification; do
+                  gh issue edit "$NUM" -R "$REPO" --remove-label "$OLD_LABEL" 2>/dev/null || true
+                done
+                gh issue edit "$NUM" -R "$REPO" --add-label "status:awaiting-approval"
               done
               gh issue edit "$ISSUE_NUMBER" -R "$REPO" --remove-label "status:review"
               ;;
