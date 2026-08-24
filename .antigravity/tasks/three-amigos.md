@@ -3,9 +3,9 @@
 Design: ws-setups/graph-engineering/docs/antigravity-scheduled-tasks.md
 (alternate executor for docs/three-amigos-node.md in that same repo).
 
-0. First, run `git checkout main && git fetch origin && git reset --hard
-   origin/main` so this checkout is current. Do this before anything else,
-   every time — never rely on this checkout already being up to date.
+This task only ever reads and comments/labels GitHub issues via `gh` — it
+never edits files, runs git, or touches the local working tree, so it
+doesn't need to sync or coordinate with the other two tasks.
 
 Check crosstrainingapp for open issues labeled `type:user-story` AND
 `status:review`. This is always the starting point — never query
