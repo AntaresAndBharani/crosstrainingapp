@@ -1,0 +1,246 @@
+name: Dev & Test
+
+# Automated implementation node for the agentic SDLC pipeline. Design:
+# ws-setups/graph-engineering/docs/dev-test-node.md
+#
+# Automated as of 2026-08-24 (previously manual, by the PO's earlier
+# choice — reversed the same day so the Opus<->Gemini PR review/fix loop
+# can run without a human in it). Two triggers, one workflow:
+#   status:ready on type:subtask       -> implement mode (first pass)
+#   pull_request_review CHANGES_REQUESTED -> fixup mode (address feedback)
+#
+# Gemini runs its own implement/test/fix loop internally (up to 3 attempts,
+# enforced by the prompt, not by this workflow re-invoking the CLI) rather
+# than this workflow orchestrating retries itself - it already has full
+# bash/write access by default ("YOLO mode", observed unprompted in a
+# prior run's logs - see the top-level README's "Implementation lessons"),
+# so one rich session with internal iteration is simpler and more natural
+# than restarting a fresh CLI invocation per attempt.
+#
+# This is the first node that does a raw `git push`, not just `gh` API
+# calls - actions/checkout is given the PAT explicitly so the local git
+# remote is configured to push with it (the same retrigger reasoning as
+# everywhere else in this pipeline: a push authenticated as the default
+# GITHUB_TOKEN would not fire the pull_request event pr-review.yml needs).
+#
+# Security note: issue/PR/review content is untrusted input (public repo).
+# Never interpolate it directly into `run:`/`with:` expressions - written
+# to files by `gh` (safe), read by Gemini via its own file tools.
+
+on:
+  issues:
+    types: [labeled]
+  pull_request_review:
+    types: [submitted]
+
+concurrency:
+  group: dev-test-${{ github.event_name == 'issues' && github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  dev-test:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'issues' && github.event.label.name == 'status:ready') ||
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested')
+    env:
+      GH_TOKEN: ${{ secrets.ORCHESTRATION_PAT }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Determine mode
+        id: mode
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "issues" ]; then
+            echo "mode=implement" >> "$GITHUB_OUTPUT"
+            echo "issue_number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=fixup" >> "$GITHUB_OUTPUT"
+            echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            # Known up front from the event context, no checkout needed yet -
+            # set now so both modes push via the same explicit-refspec form
+            # later regardless of actions/checkout's exact local-branch/
+            # detached-HEAD behavior for an existing remote ref.
+            echo "BRANCH_NAME=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout (main, for a fresh branch)
+        if: steps.mode.outputs.mode == 'implement'
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ORCHESTRATION_PAT }}
+
+      - name: Checkout (PR head branch, for a fix-up)
+        if: steps.mode.outputs.mode == 'fixup'
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ORCHESTRATION_PAT }}
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "gemini-dev[bot]"
+          git config user.email "gemini-dev@users.noreply.github.com"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Ensure debug keystore
+        run: |
+          if [ ! -f app/debug.keystore ]; then
+            keytool -genkey -v -keystore app/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Create branch
+        if: steps.mode.outputs.mode == 'implement'
+        run: |
+          set -euo pipefail
+          BRANCH="feat/issue-${{ steps.mode.outputs.issue_number }}"
+          git checkout -b "$BRANCH"
+          echo "BRANCH_NAME=$BRANCH" >> "$GITHUB_ENV"
+
+      - name: Fetch subtask context (safe — via gh/jq, not shell-interpolated)
+        if: steps.mode.outputs.mode == 'implement'
+        run: |
+          set -euo pipefail
+          gh issue view "${{ steps.mode.outputs.issue_number }}" -R "$REPO" \
+            --json number,title,body,labels > issue_context.json
+
+      - name: Fetch PR + review context (safe — via gh/jq, not shell-interpolated)
+        if: steps.mode.outputs.mode == 'fixup'
+        run: |
+          set -euo pipefail
+          gh pr view "${{ steps.mode.outputs.pr_number }}" -R "$REPO" \
+            --json number,title,body,url > pr_context.json
+          gh pr view "${{ steps.mode.outputs.pr_number }}" -R "$REPO" \
+            --json reviews -q '[.reviews[] | select(.state == "CHANGES_REQUESTED")] | last' \
+            > latest_review.json
+          # blocking_issues live inside PR Review's structured JSON, which
+          # isn't itself in the review body (that's pr_comment_markdown) -
+          # this reconstructs it from the review body text Claude wrote,
+          # since that's the only place blocking detail is human-readable
+          # and persisted. Good enough for Gemini to act on; not meant to
+          # round-trip the exact original JSON.
+          jq -n --slurpfile r latest_review.json '{blocking_issues_text: $r[0].body}' > review_context.json
+
+      - name: Select mode-specific prompt
+        run: |
+          set -euo pipefail
+          case "${{ steps.mode.outputs.mode }}" in
+            implement) FILE=dev-test-implement.md ;;
+            fixup)     FILE=dev-test-fixup.md ;;
+          esac
+          cp ".github/workflows/prompts/$FILE" dev_task.md
+
+      - name: Run Dev & Test (Gemini)
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
+        uses: google-github-actions/run-gemini-cli@v0
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: gemini-3.7-flash
+          prompt: |
+            Follow the instructions in the file dev_task.md at the
+            repository root exactly. Read issue_context.json (implement
+            mode) or pr_context.json + review_context.json (fixup mode) —
+            whichever exist — before doing anything else.
+
+      - name: Apply outcome
+        run: |
+          set -euo pipefail
+          MODE="${{ steps.mode.outputs.mode }}"
+
+          if [ ! -f dev_output.json ]; then
+            echo "::error::dev_output.json was not produced — failing rather than guessing at outcome."
+            exit 1
+          fi
+
+          OUTCOME=$(jq -r '.outcome' dev_output.json)
+          SUMMARY=$(jq -r '.summary' dev_output.json)
+          TEST_RESULT=$(jq -r '.test_result_summary' dev_output.json)
+
+          if [ "$MODE" = "implement" ]; then
+            ISSUE="${{ steps.mode.outputs.issue_number }}"
+
+            if [ "$OUTCOME" = "PO_ESCALATION" ] || [ "$OUTCOME" = "FAILED" ]; then
+              CONFLICT=$(jq -r '.conflict // empty' dev_output.json)
+              gh issue edit "$ISSUE" -R "$REPO" \
+                --remove-label "status:ready" --add-label "status:needs-po-input"
+              {
+                echo "**Dev & Test could not complete this ($OUTCOME):**"
+                echo
+                [ -n "$CONFLICT" ] && echo "$CONFLICT"
+                echo
+                echo "$TEST_RESULT"
+              } | gh issue comment "$ISSUE" -R "$REPO" --body-file -
+              exit 0
+            fi
+
+            git add -A
+            git commit -m "feat: implement #${ISSUE}" -m "${SUMMARY}" -m "Closes #${ISSUE}"
+            git push origin "HEAD:refs/heads/$BRANCH_NAME"
+
+            BODY_FILE=$(mktemp)
+            {
+              echo "## What changed"
+              echo "$SUMMARY"
+              echo
+              echo "## Test results"
+              echo '```'
+              echo "$TEST_RESULT"
+              echo '```'
+              echo
+              echo "Closes #${ISSUE}"
+            } > "$BODY_FILE"
+            gh pr create -R "$REPO" \
+              --title "$(jq -r '.title' issue_context.json | sed 's/^\[Subtask\]: //')" \
+              --body-file "$BODY_FILE" --base main --head "$BRANCH_NAME"
+            rm -f "$BODY_FILE"
+
+            gh issue edit "$ISSUE" -R "$REPO" \
+              --remove-label "status:ready" --add-label "status:in-progress"
+          else
+            PR="${{ steps.mode.outputs.pr_number }}"
+
+            if [ "$OUTCOME" = "PO_ESCALATION" ] || [ "$OUTCOME" = "FAILED" ]; then
+              CONFLICT=$(jq -r '.conflict // empty' dev_output.json)
+              {
+                echo "**Dev & Test could not address the review feedback ($OUTCOME):**"
+                echo
+                [ -n "$CONFLICT" ] && echo "$CONFLICT"
+                echo
+                echo "$TEST_RESULT"
+              } | gh pr comment "$PR" -R "$REPO" --body-file -
+              exit 0
+            fi
+
+            git add -A
+            git commit -m "fix: address PR review feedback" -m "${SUMMARY}"
+            git push origin "HEAD:refs/heads/$BRANCH_NAME"
+
+            {
+              echo "**Addressed the review feedback:**"
+              echo
+              echo "$SUMMARY"
+              echo
+              echo "## Test results"
+              echo '```'
+              echo "$TEST_RESULT"
+              echo '```'
+            } | gh pr comment "$PR" -R "$REPO" --body-file -
+          fi
