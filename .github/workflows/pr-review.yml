@@ -85,12 +85,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
-          show_full_output: true  # temporary — diagnosing an is_error:true
-                                   # result with no visible cause; remove
-                                   # once root-caused (untrusted PR content
-                                   # is still never interpolated into this
-                                   # workflow itself, so no new injection
-                                   # surface from turning this on)
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/pr-review.md exactly. Read
