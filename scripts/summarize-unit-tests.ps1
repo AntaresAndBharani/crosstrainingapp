@@ -5,7 +5,7 @@ param (
 
 $ErrorActionPreference = "Stop"
 
-function Sanitize-StackTrace ([string]$trace) {
+function Format-StackTrace ([string]$trace) {
     if (-not $trace) { return "" }
     
     # Strip known absolute path prefixes
@@ -34,19 +34,36 @@ function Sanitize-StackTrace ([string]$trace) {
     return $trace.Trim()
 }
 
+function Write-SummaryOutput ([string]$content) {
+    if (-not [string]::IsNullOrWhiteSpace($OutFile)) {
+        try {
+            $outDir = [System.IO.Path]::GetDirectoryName($OutFile)
+            if (-not [string]::IsNullOrWhiteSpace($outDir) -and -not (Test-Path -Path $outDir)) {
+                [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
+            }
+            [System.IO.File]::WriteAllText($OutFile, $content, (New-Object System.Text.UTF8Encoding $false))
+        } catch {
+            Write-Warning "Failed to write summary to '$OutFile': $_"
+        }
+    }
+
+    if ($env:GITHUB_STEP_SUMMARY) {
+        try {
+            [System.IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, "`n" + $content + "`n", (New-Object System.Text.UTF8Encoding $false))
+        } catch {
+            Write-Warning "Failed to append summary to GITHUB_STEP_SUMMARY: $_"
+        }
+    }
+}
+
 $xmlFiles = @()
-if (Test-Path -Path $ResultsDir) {
+if (-not [string]::IsNullOrWhiteSpace($ResultsDir) -and (Test-Path -Path $ResultsDir)) {
     $xmlFiles = @(Get-ChildItem -Path $ResultsDir -Filter "TEST-*.xml" -File -ErrorAction SilentlyContinue)
 }
 
 if ($xmlFiles.Count -eq 0) {
     $NoResultsBody = "<!-- unit-test-evidence -->`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
-    [System.IO.File]::WriteAllText($OutFile, $NoResultsBody, (New-Object System.Text.UTF8Encoding $false))
-    if ($env:GITHUB_STEP_SUMMARY) {
-        try {
-            [System.IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, "`n" + $NoResultsBody + "`n", (New-Object System.Text.UTF8Encoding $false))
-        } catch {}
-    }
+    Write-SummaryOutput -content $NoResultsBody
     exit 0
 }
 
@@ -65,11 +82,7 @@ foreach ($file in $xmlFiles) {
 
     $suites = $xml.SelectNodes("//testsuite")
     if ($null -eq $suites -or $suites.Count -eq 0) {
-        if ($xml.testsuite) {
-            $suites = @($xml.testsuite)
-        } else {
-            continue
-        }
+        continue
     }
 
     foreach ($suite in $suites) {
@@ -99,13 +112,13 @@ foreach ($file in $xmlFiles) {
                     $methodName = if ($tc.Attributes["name"]) { $tc.Attributes["name"].Value } else { "" }
                     $message = if ($failNode.Attributes["message"]) { $failNode.Attributes["message"].Value } else { "" }
                     $rawTrace = $failNode.InnerText
-                    $sanitizedTrace = Sanitize-StackTrace -trace $rawTrace
+                    $formattedTrace = Format-StackTrace -trace $rawTrace
 
-                    $FailuresList.Add([PSCustomObject]@{
+                    $FailuresList.Add([PSObject]@{
                         ClassName = $className
                         MethodName = $methodName
                         Message = $message
-                        StackTrace = $sanitizedTrace
+                        StackTrace = $formattedTrace
                     })
                 }
             }
@@ -128,11 +141,12 @@ if ($FailuresList.Count -gt 0) {
     
     $truncated = $false
     foreach ($failure in $FailuresList) {
-        $failureBlock = "- **$($failure.ClassName) > $($failure.MethodName)**`n"
+        $failureBlock = "**$($failure.ClassName) > $($failure.MethodName)**`n`n"
         if ($failure.Message) {
-            $failureBlock += "  - **Message:** $($failure.Message)`n"
+            $escapedMsg = $failure.Message -replace '`', '``'
+            $failureBlock += "**Message:** ``$escapedMsg```n`n"
         }
-        $failureBlock += "  <details>`n  <summary>Stack Trace</summary>`n`n  ```````n$($failure.StackTrace)`n  ```````n  </details>`n`n"
+        $failureBlock += "<details>`n<summary>Stack Trace</summary>`n`n```````n$($failure.StackTrace)`n```````n`n</details>`n`n"
         
         if (($Body.Length + $failureBlock.Length) -gt 59000) {
             $truncated = $true
@@ -146,12 +160,6 @@ if ($FailuresList.Count -gt 0) {
     }
 }
 
-[System.IO.File]::WriteAllText($OutFile, $Body, (New-Object System.Text.UTF8Encoding $false))
-
-if ($env:GITHUB_STEP_SUMMARY) {
-    try {
-        [System.IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, "`n" + $Body + "`n", (New-Object System.Text.UTF8Encoding $false))
-    } catch {}
-}
+Write-SummaryOutput -content $Body
 
 exit 0
