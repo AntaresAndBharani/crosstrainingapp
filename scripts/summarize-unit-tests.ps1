@@ -5,22 +5,30 @@ param (
 
 $ErrorActionPreference = "Stop"
 
-function Format-StackTrace ([string]$trace) {
-    if (-not $trace) { return "" }
+function Sanitize-Paths ([string]$text) {
+    if (-not $text) { return "" }
     
     # Strip known absolute path prefixes
     if ($env:GITHUB_WORKSPACE) {
-        $trace = $trace.Replace($env:GITHUB_WORKSPACE + "/", "").Replace($env:GITHUB_WORKSPACE + "\", "").Replace($env:GITHUB_WORKSPACE, "")
+        $text = $text.Replace($env:GITHUB_WORKSPACE + "/", "").Replace($env:GITHUB_WORKSPACE + "\", "").Replace($env:GITHUB_WORKSPACE, "")
     }
     
     # Strip Linux CI runner paths (/home/runner/work/repo/repo/...)
-    $trace = [regex]::Replace($trace, '(?i)/home/runner/work/[^/\r\n]+/[^/\r\n]+/', '')
+    $text = [regex]::Replace($text, '(?i)/home/runner/work/[^/\r\n]+/[^/\r\n]+/', '')
     
     # Strip Windows CI runner paths (D:\a\repo\repo\...)
-    $trace = [regex]::Replace($trace, '(?i)[a-zA-Z]:[\\/]a[\\/][^\\/\r\n]+[\\/][^\\/\r\n]+[\\/]', '')
+    $text = [regex]::Replace($text, '(?i)[a-zA-Z]:[\\/]a[\\/][^\\/\r\n]+[\\/][^\\/\r\n]+[\\/]', '')
     
     # Strip local workspace paths
-    $trace = [regex]::Replace($trace, '(?i)[a-zA-Z]:[\\/](?:[^\\/\r\n]+[\\/])+crosstrainingapp[\\/]', '')
+    $text = [regex]::Replace($text, '(?i)[a-zA-Z]:[\\/](?:[^\\/\r\n]+[\\/])+crosstrainingapp[\\/]', '')
+    
+    return $text
+}
+
+function Format-StackTrace ([string]$trace) {
+    if (-not $trace) { return "" }
+    
+    $trace = Sanitize-Paths -text $trace
     
     # Cap trace at 40 lines
     $lines = $trace -split '\r?\n'
@@ -72,11 +80,18 @@ $TotalFailures = 0
 $TotalSkipped = 0
 $TotalTime = 0.0
 $FailuresList = [System.Collections.Generic.List[PSObject]]::new()
+$SuitesProcessed = 0
 
 foreach ($file in $xmlFiles) {
     try {
-        [xml]$xml = Get-Content -Path $file.FullName -Raw
+        $rawXml = Get-Content -Path $file.FullName -Raw
+        if ([string]::IsNullOrWhiteSpace($rawXml)) { continue }
+        [xml]$xml = $rawXml
     } catch {
+        continue
+    }
+
+    if ($null -eq $xml) {
         continue
     }
 
@@ -84,6 +99,8 @@ foreach ($file in $xmlFiles) {
     if ($null -eq $suites -or $suites.Count -eq 0) {
         continue
     }
+
+    $SuitesProcessed += $suites.Count
 
     foreach ($suite in $suites) {
         $suiteTests = 0
@@ -110,7 +127,8 @@ foreach ($file in $xmlFiles) {
                 if ($null -ne $failNode) {
                     $className = if ($tc.Attributes["classname"]) { $tc.Attributes["classname"].Value } else { "" }
                     $methodName = if ($tc.Attributes["name"]) { $tc.Attributes["name"].Value } else { "" }
-                    $message = if ($failNode.Attributes["message"]) { $failNode.Attributes["message"].Value } else { "" }
+                    $rawMessage = if ($failNode.Attributes["message"]) { $failNode.Attributes["message"].Value } else { "" }
+                    $message = Sanitize-Paths -text $rawMessage
                     $rawTrace = $failNode.InnerText
                     $formattedTrace = Format-StackTrace -trace $rawTrace
 
@@ -124,6 +142,12 @@ foreach ($file in $xmlFiles) {
             }
         }
     }
+}
+
+if ($SuitesProcessed -eq 0) {
+    $NoResultsBody = "<!-- unit-test-evidence -->`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
+    Write-SummaryOutput -content $NoResultsBody
+    exit 0
 }
 
 $TotalPassed = $TotalTests - $TotalFailures - $TotalSkipped
@@ -143,8 +167,14 @@ if ($FailuresList.Count -gt 0) {
     foreach ($failure in $FailuresList) {
         $failureBlock = "**$($failure.ClassName) > $($failure.MethodName)**`n`n"
         if ($failure.Message) {
-            $escapedMsg = $failure.Message -replace '`', '``'
-            $failureBlock += "**Message:** ``$escapedMsg```n`n"
+            $msg = $failure.Message
+            if ($msg -match '\r?\n') {
+                $failureBlock += "**Message:**`n```````n$msg`n```````n`n"
+            } elseif ($msg -match '`') {
+                $failureBlock += "**Message:** ```` $msg ````" + "`n`n"
+            } else {
+                $failureBlock += "**Message:** ``$msg```n`n"
+            }
         }
         $failureBlock += "<details>`n<summary>Stack Trace</summary>`n`n```````n$($failure.StackTrace)`n```````n`n</details>`n`n"
         
