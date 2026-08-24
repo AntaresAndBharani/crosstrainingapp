@@ -3,9 +3,27 @@
 Design: ws-setups/graph-engineering/docs/antigravity-scheduled-tasks.md
 (alternate executor for docs/dev-test-node.md in that same repo).
 
-0. First, run `git checkout main && git fetch origin && git reset --hard
-   origin/main` so this checkout is current. Do this before anything else,
-   every time — never rely on this checkout already being up to date.
+0. Acquire the pipeline lock before anything else — all three Antigravity
+   tasks (Three Amigos, Dev & Test: Implement, Dev & Test: Fix-up) share
+   this one local checkout, so only one may run at a time.
+   a. Read the body of issue #61 in crosstrainingapp.
+   b. If it says "Status: locked" AND the "Locked at" timestamp is less
+      than 60 minutes old: STOP HERE. Run no git command, do nothing
+      else. Another task is mid-run; this poll ends here.
+   c. Otherwise (unlocked, or locked but stale past 60 minutes): edit
+      issue #61's body to exactly:
+      Status: locked
+      Locked by: Dev & Test: Implement
+      Locked at: <current UTC time, ISO 8601>
+      Then add the label `pipeline:locked` to issue #61 if not already
+      present.
+   d. Now run `git checkout main && git fetch origin && git reset --hard
+      origin/main` so this checkout is current.
+   e. At the very end of this run — whether it succeeds, fails, or
+      escalates to the PO — edit issue #61's body back to exactly
+      "Status: unlocked" and remove the `pipeline:locked` label. Do this
+      even if an earlier step failed; releasing the lock is mandatory,
+      never skip it.
 
 Check crosstrainingapp for open issues labeled `type:user-story` AND
 `status:ready`. Check `status:ready` on the STORY only — this is what
