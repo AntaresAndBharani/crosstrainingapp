@@ -35,20 +35,6 @@ jobs:
             keytool -genkey -v -keystore app/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-      - name: Run Unit Tests
-        run: ./gradlew testDebugUnitTest --stacktrace
-
-      - name: Upload unit test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-report-${{ env.RELEASE_TAG }}
-          path: |
-            app/build/reports/tests/testDebugUnitTest/
-            app/build/test-results/testDebugUnitTest/
-          retention-days: 14
-          if-no-files-found: warn
-
       - name: Resolve Release Version & Tag
         run: |
           BASE_VERSION=$(grep -o 'versionName = "[^"]*"' app/build.gradle.kts | cut -d'"' -f2)
@@ -72,6 +58,20 @@ jobs:
           
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
           echo "Resolved release tag: $TAG"
+
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Upload unit test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report-${{ env.RELEASE_TAG }}
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Build release APK
         run: ./gradlew assembleDebug --stacktrace
