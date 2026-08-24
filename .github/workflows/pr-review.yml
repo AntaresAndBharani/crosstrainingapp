@@ -15,6 +15,15 @@ name: PR Review
 # — human or Gemini — wrote). Never interpolate it directly into
 # `run:`/`with:` GitHub Actions expressions; it's written to files by `gh`
 # (safe) and read by Claude via its own file tools.
+#
+# Retry-on-overload (2026-08-24): the "Run PR Review" step now attempts up
+# to 3 times with a 5-minute wait between, before giving up. Real PR #62
+# failure: Anthropic's API returned 529 Overloaded, and claude-code-action's
+# own internal retry (10 attempts, exponential backoff, ~3 min total) wasn't
+# enough — a second manual rerun ~5 min later hit the exact same wall. This
+# adds a longer-timescale retry on top of that short one, not instead of
+# it. If all 3 attempts still fail, the PR gets a comment explaining why
+# rather than silently sitting unreviewed.
 
 on:
   pull_request:
@@ -32,6 +41,7 @@ permissions:
 
 env:
   ROUND_CAP: 3
+  OVERLOAD_RETRY_DELAY_SECONDS: 300
 
 jobs:
   pr-review:
@@ -79,8 +89,52 @@ jobs:
             gh issue view "$LINKED" -R "$REPO" --json number,title,body > linked_issue.json || true
           fi
 
-      - name: Run PR Review (Claude Opus)
+      - name: Run PR Review (Claude Opus) — attempt 1
+        id: review_attempt_1
         if: steps.rounds.outputs.count < env.ROUND_CAP
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          prompt: |
+            Follow the instructions in the file
+            .github/workflows/prompts/pr-review.md exactly. Read
+            pr_context.json and, if present, linked_issue.json before doing
+            anything else.
+
+      - name: Wait before retry 2 (Anthropic overload backoff)
+        if: steps.rounds.outputs.count < env.ROUND_CAP && steps.review_attempt_1.outcome == 'failure'
+        run: sleep "$OVERLOAD_RETRY_DELAY_SECONDS"
+
+      - name: Run PR Review (Claude Opus) — attempt 2
+        id: review_attempt_2
+        if: steps.rounds.outputs.count < env.ROUND_CAP && steps.review_attempt_1.outcome == 'failure'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          prompt: |
+            Follow the instructions in the file
+            .github/workflows/prompts/pr-review.md exactly. Read
+            pr_context.json and, if present, linked_issue.json before doing
+            anything else.
+
+      - name: Wait before retry 3 (Anthropic overload backoff)
+        if: >
+          steps.rounds.outputs.count < env.ROUND_CAP &&
+          steps.review_attempt_1.outcome == 'failure' &&
+          steps.review_attempt_2.outcome == 'failure'
+        run: sleep "$OVERLOAD_RETRY_DELAY_SECONDS"
+
+      - name: Run PR Review (Claude Opus) — attempt 3
+        id: review_attempt_3
+        if: >
+          steps.rounds.outputs.count < env.ROUND_CAP &&
+          steps.review_attempt_1.outcome == 'failure' &&
+          steps.review_attempt_2.outcome == 'failure'
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -97,7 +151,8 @@ jobs:
           set -euo pipefail
 
           if [ ! -f review_output.json ]; then
-            echo "::error::review_output.json was not produced — failing rather than guessing at a verdict."
+            gh pr comment "$PR_NUMBER" -R "$REPO" --body "**PR Review couldn't complete after 3 attempts (~10 minutes apart):** Anthropic's API returned a server-side overload error each time — not a bug in this pipeline. Check https://status.claude.com; once it clears, either push a new commit to retrigger this automatically, or re-run this workflow manually."
+            echo "::error::review_output.json was not produced after 3 attempts — likely sustained Anthropic API overload, see PR comment."
             exit 1
           fi
 
