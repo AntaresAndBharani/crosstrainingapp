@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.GreenTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-24T12:00:00" hostname="MSI" time="0.045">
+  <properties/>
+  <testcase name="testAddition" classname="com.example.GreenTest" time="0.015"/>
+  <testcase name="testSubtraction" classname="com.example.GreenTest" time="0.018"/>
+  <testcase name="testMultiplication" classname="com.example.GreenTest" time="0.012"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

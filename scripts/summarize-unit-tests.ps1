@@ -1,0 +1,157 @@
+param (
+    [string]$ResultsDir = "app/build/test-results/testDebugUnitTest",
+    [string]$OutFile = "unit-test-summary.md"
+)
+
+$ErrorActionPreference = "Stop"
+
+function Sanitize-StackTrace ([string]$trace) {
+    if (-not $trace) { return "" }
+    
+    # Strip known absolute path prefixes
+    if ($env:GITHUB_WORKSPACE) {
+        $trace = $trace.Replace($env:GITHUB_WORKSPACE + "/", "").Replace($env:GITHUB_WORKSPACE + "\", "").Replace($env:GITHUB_WORKSPACE, "")
+    }
+    
+    # Strip Linux CI runner paths (/home/runner/work/repo/repo/...)
+    $trace = [regex]::Replace($trace, '(?i)/home/runner/work/[^/\r\n]+/[^/\r\n]+/', '')
+    
+    # Strip Windows CI runner paths (D:\a\repo\repo\...)
+    $trace = [regex]::Replace($trace, '(?i)[a-zA-Z]:[\\/]a[\\/][^\\/\r\n]+[\\/][^\\/\r\n]+[\\/]', '')
+    
+    # Strip local workspace paths
+    $trace = [regex]::Replace($trace, '(?i)[a-zA-Z]:[\\/](?:[^\\/\r\n]+[\\/])+crosstrainingapp[\\/]', '')
+    
+    # Cap trace at 40 lines
+    $lines = $trace -split '\r?\n'
+    if ($lines.Count -gt 40) {
+        $truncatedLines = $lines[0..39]
+        $trace = ($truncatedLines -join "`n") + "`n... (truncated)"
+    } else {
+        $trace = $lines -join "`n"
+    }
+    
+    return $trace.Trim()
+}
+
+$xmlFiles = @()
+if (Test-Path -Path $ResultsDir) {
+    $xmlFiles = @(Get-ChildItem -Path $ResultsDir -Filter "TEST-*.xml" -File -ErrorAction SilentlyContinue)
+}
+
+if ($xmlFiles.Count -eq 0) {
+    $NoResultsBody = "<!-- unit-test-evidence -->`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
+    [System.IO.File]::WriteAllText($OutFile, $NoResultsBody, (New-Object System.Text.UTF8Encoding $false))
+    if ($env:GITHUB_STEP_SUMMARY) {
+        try {
+            [System.IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, "`n" + $NoResultsBody + "`n", (New-Object System.Text.UTF8Encoding $false))
+        } catch {}
+    }
+    exit 0
+}
+
+$TotalTests = 0
+$TotalFailures = 0
+$TotalSkipped = 0
+$TotalTime = 0.0
+$FailuresList = [System.Collections.Generic.List[PSObject]]::new()
+
+foreach ($file in $xmlFiles) {
+    try {
+        [xml]$xml = Get-Content -Path $file.FullName -Raw
+    } catch {
+        continue
+    }
+
+    $suites = $xml.SelectNodes("//testsuite")
+    if ($null -eq $suites -or $suites.Count -eq 0) {
+        if ($xml.testsuite) {
+            $suites = @($xml.testsuite)
+        } else {
+            continue
+        }
+    }
+
+    foreach ($suite in $suites) {
+        $suiteTests = 0
+        $suiteFailures = 0
+        $suiteErrors = 0
+        $suiteSkipped = 0
+        $suiteTime = 0.0
+
+        if ($suite.Attributes["tests"]) { [int]::TryParse($suite.Attributes["tests"].Value, [ref]$suiteTests) | Out-Null }
+        if ($suite.Attributes["failures"]) { [int]::TryParse($suite.Attributes["failures"].Value, [ref]$suiteFailures) | Out-Null }
+        if ($suite.Attributes["errors"]) { [int]::TryParse($suite.Attributes["errors"].Value, [ref]$suiteErrors) | Out-Null }
+        if ($suite.Attributes["skipped"]) { [int]::TryParse($suite.Attributes["skipped"].Value, [ref]$suiteSkipped) | Out-Null }
+        if ($suite.Attributes["time"]) { [double]::TryParse($suite.Attributes["time"].Value, [System.Globalization.NumberStyles]::Any, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$suiteTime) | Out-Null }
+
+        $TotalTests += $suiteTests
+        $TotalFailures += ($suiteFailures + $suiteErrors)
+        $TotalSkipped += $suiteSkipped
+        $TotalTime += $suiteTime
+
+        $testcases = $suite.SelectNodes(".//testcase")
+        if ($null -ne $testcases) {
+            foreach ($tc in $testcases) {
+                $failNode = $tc.SelectSingleNode("failure | error")
+                if ($null -ne $failNode) {
+                    $className = if ($tc.Attributes["classname"]) { $tc.Attributes["classname"].Value } else { "" }
+                    $methodName = if ($tc.Attributes["name"]) { $tc.Attributes["name"].Value } else { "" }
+                    $message = if ($failNode.Attributes["message"]) { $failNode.Attributes["message"].Value } else { "" }
+                    $rawTrace = $failNode.InnerText
+                    $sanitizedTrace = Sanitize-StackTrace -trace $rawTrace
+
+                    $FailuresList.Add([PSCustomObject]@{
+                        ClassName = $className
+                        MethodName = $methodName
+                        Message = $message
+                        StackTrace = $sanitizedTrace
+                    })
+                }
+            }
+        }
+    }
+}
+
+$TotalPassed = $TotalTests - $TotalFailures - $TotalSkipped
+if ($TotalPassed -lt 0) { $TotalPassed = 0 }
+
+$ElapsedFormatted = "$($TotalTime.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture))s"
+
+$Body = "<!-- unit-test-evidence -->`n### :test_tube: Unit Test Results`n`n"
+$Body += "| Total | Passed | Failed | Skipped | Elapsed |`n"
+$Body += "|---|---|---|---|---|`n"
+$Body += "| $TotalTests | $TotalPassed | $TotalFailures | $TotalSkipped | $ElapsedFormatted |`n"
+
+if ($FailuresList.Count -gt 0) {
+    $Body += "`n#### Failures`n`n"
+    
+    $truncated = $false
+    foreach ($failure in $FailuresList) {
+        $failureBlock = "- **$($failure.ClassName) > $($failure.MethodName)**`n"
+        if ($failure.Message) {
+            $failureBlock += "  - **Message:** $($failure.Message)`n"
+        }
+        $failureBlock += "  <details>`n  <summary>Stack Trace</summary>`n`n  ```````n$($failure.StackTrace)`n  ```````n  </details>`n`n"
+        
+        if (($Body.Length + $failureBlock.Length) -gt 59000) {
+            $truncated = $true
+            break
+        }
+        $Body += $failureBlock
+    }
+
+    if ($truncated) {
+        $Body += "`n> [!NOTE]`n> Additional failures truncated. See full test report in the unit test report artifact.`n"
+    }
+}
+
+[System.IO.File]::WriteAllText($OutFile, $Body, (New-Object System.Text.UTF8Encoding $false))
+
+if ($env:GITHUB_STEP_SUMMARY) {
+    try {
+        [System.IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, "`n" + $Body + "`n", (New-Object System.Text.UTF8Encoding $false))
+    } catch {}
+}
+
+exit 0
