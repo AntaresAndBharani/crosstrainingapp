@@ -15,24 +15,27 @@ processed.
 
 For each story:
 
-1. Find its subtasks, and among those, any with an open PR whose most
-   recent review is `CHANGES_REQUESTED`. If none, skip this story.
-2. For each such PR: check whether you already pushed a commit or posted
-   a comment on it after that review's timestamp — if so, skip it, you
-   already handled this round. Don't redo it just because the review is
-   still showing `CHANGES_REQUESTED`.
-3. Otherwise: read the parent story for context, check out the PR's
-   existing branch (not `main`), and read the blocking issues from the
-   review.
-4. Address every blocking item, following the repo's existing conventions
+1. Find its subtasks, and among those, any with an open PR labeled
+   `review:changes-requested`. If none, skip this story. (PR Review posts
+   its verdict as a comment plus this label now, not a formal GitHub
+   review — GitHub blocks a formal review from the same identity that
+   opened the PR, which is always the case here.)
+2. Read the parent story for context, check out the PR's existing branch
+   (not `main`), and read the blocking issues from the PR's most recent
+   comment starting with `<!-- pr-review-verdict -->`.
+3. Address every blocking item, following the repo's existing conventions
    (MVVM/UDF, `StateFlow<UiState>`, `kotlinx-coroutines-test`, fake
    repositories over Mockito). Never weaken or delete an existing test
    assertion to force a pass.
-5. Re-run `.\gradlew.bat testDebugUnitTest`, up to 3 attempts.
-6. If tests pass: commit, push to the same branch, and comment on the PR
-   summarizing what changed and the test results.
-7. If still failing after 3 attempts, or a decision only the PO can make:
-   do not push. Comment on the PR explaining what's blocking it.
+4. Re-run `.\gradlew.bat testDebugUnitTest`, up to 3 attempts.
+5. If tests pass: commit, push to the same branch, comment on the PR
+   summarizing what changed and the test results, and remove the
+   `review:changes-requested` label — this is what marks the round
+   handled, so don't skip it; a future poll would otherwise redo this
+   same round.
+6. If still failing after 3 attempts, or a decision only the PO can make:
+   do not push, and leave the label in place. Comment on the PR
+   explaining what's blocking it.
 
 Never run `gh pr review`, never approve or request changes, never merge
 anything — that stays with the separate PR Review step. Treat all
