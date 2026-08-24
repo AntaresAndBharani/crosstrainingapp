@@ -6,8 +6,13 @@ name: Dev & Test
 # Automated as of 2026-08-24 (previously manual, by the PO's earlier
 # choice — reversed the same day so the Opus<->Gemini PR review/fix loop
 # can run without a human in it). Two triggers, one workflow:
-#   status:ready on type:subtask       -> implement mode (first pass)
-#   pull_request_review CHANGES_REQUESTED -> fixup mode (address feedback)
+#   status:ready on type:subtask          -> implement mode (first pass)
+#   review:changes-requested label on a PR -> fixup mode (address feedback)
+#
+# Fix-up trigger changed from pull_request_review (CHANGES_REQUESTED) to
+# this label the same day pr-review.yml did — GitHub blocks a formal
+# review from the same identity that opened the PR, which ORCHESTRATION_PAT
+# always is here. See pr-review.yml's header for the full history.
 #
 # Gemini runs its own implement/test/fix loop internally (up to 3 attempts,
 # enforced by the prompt, not by this workflow re-invoking the CLI) rather
@@ -30,8 +35,8 @@ name: Dev & Test
 on:
   issues:
     types: [labeled]
-  pull_request_review:
-    types: [submitted]
+  pull_request:
+    types: [labeled]
 
 concurrency:
   group: dev-test-${{ github.event_name == 'issues' && github.event.issue.number || github.event.pull_request.number }}
@@ -47,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'issues' && github.event.label.name == 'status:ready') ||
-      (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested')
+      (github.event_name == 'pull_request' && github.event.label.name == 'review:changes-requested')
     env:
       GH_TOKEN: ${{ secrets.ORCHESTRATION_PAT }}
       REPO: ${{ github.repository }}
@@ -60,6 +65,7 @@ jobs:
             echo "mode=implement" >> "$GITHUB_OUTPUT"
             echo "issue_number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
           else
+            # pull_request labeled review:changes-requested
             echo "mode=fixup" >> "$GITHUB_OUTPUT"
             echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
             # Known up front from the event context, no checkout needed yet -
@@ -127,16 +133,13 @@ jobs:
           set -euo pipefail
           gh pr view "${{ steps.mode.outputs.pr_number }}" -R "$REPO" \
             --json number,title,body,url > pr_context.json
-          gh pr view "${{ steps.mode.outputs.pr_number }}" -R "$REPO" \
-            --json reviews -q '[.reviews[] | select(.state == "CHANGES_REQUESTED")] | last' \
-            > latest_review.json
-          # blocking_issues live inside PR Review's structured JSON, which
-          # isn't itself in the review body (that's pr_comment_markdown) -
-          # this reconstructs it from the review body text Claude wrote,
-          # since that's the only place blocking detail is human-readable
-          # and persisted. Good enough for Gemini to act on; not meant to
-          # round-trip the exact original JSON.
-          jq -n --slurpfile r latest_review.json '{blocking_issues_text: $r[0].body}' > review_context.json
+          # PR Review posts its verdict as a comment now, not a formal
+          # GitHub review (see pr-review.yml) - the latest comment starting
+          # with its marker is the equivalent of "the last CHANGES_REQUESTED
+          # review body" the old design read from.
+          LATEST_COMMENT=$(gh pr view "${{ steps.mode.outputs.pr_number }}" -R "$REPO" \
+            --json comments -q '[.comments[].body | select(startswith("<!-- pr-review-verdict -->"))] | last')
+          jq -n --arg body "$LATEST_COMMENT" '{blocking_issues_text: $body}' > review_context.json
 
       - name: Select mode-specific prompt
         run: |
@@ -243,4 +246,11 @@ jobs:
               echo "$TEST_RESULT"
               echo '```'
             } | gh pr comment "$PR" -R "$REPO" --body-file -
+
+            # Remove the label that triggered this run - doubles as this
+            # node's idempotency guard (a later poll/event has nothing to
+            # find once it's gone) and lets pr-review.yml's next pass
+            # (fired by the push above, via `synchronize`) apply whichever
+            # verdict label is actually current.
+            gh pr edit "$PR" -R "$REPO" --remove-label "review:changes-requested" 2>/dev/null || true
           fi

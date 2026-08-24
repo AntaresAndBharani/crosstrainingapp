@@ -3,12 +3,23 @@ name: PR Review
 # Authoritative review pass for the agentic SDLC pipeline. Design:
 # ws-setups/graph-engineering/docs/pr-review-node.md
 #
-# Authoritative again as of 2026-08-24 (was briefly advisory-only earlier
-# the same day): this posts a real GitHub review — approve or
-# request-changes — and that review state is what merge.yml actually
-# reacts to. Closes the loop with dev-test.yml's fix-up pass: a
-# CHANGES_REQUESTED review triggers Gemini to push a fix, which
-# re-triggers this workflow via `synchronize`, capped at 3 rounds.
+# Comment + label, not a formal GitHub review (2026-08-24 — third design
+# for this node in one day). `gh pr review --approve`/`--request-changes`
+# is blocked by GitHub itself whenever the reviewing identity is the same
+# one that opened the PR ("Can not request changes on your own pull
+# request") — and ORCHESTRATION_PAT always is that identity, since
+# dev-test.yml uses it to open every PR too. Not a permissions problem —
+# admin rights on the same account don't bypass it. A follow-up attempt to
+# reuse claude-code-action's own installation token (a genuinely different
+# identity) also failed: the action revokes that token as part of its own
+# step's cleanup before a later step can reuse it (confirmed via HTTP 401).
+# Rather than add Bash to Claude's allowedTools (broadens what it can
+# execute against untrusted PR content) or stand up a whole separate bot
+# identity, this drops formal GitHub review state entirely: a plain
+# `gh pr comment` (no identity restriction at all) carries the verdict,
+# and a label (`review:approved` / `review:changes-requested`) is what
+# merge.yml and dev-test.yml's fix-up trigger actually key off — same
+# pattern every other node in this pipeline already uses.
 #
 # Security note: PR title/body/diff content is untrusted input (this is a
 # public repo, and even same-repo branches carry whatever the implementer
@@ -16,8 +27,8 @@ name: PR Review
 # `run:`/`with:` GitHub Actions expressions; it's written to files by `gh`
 # (safe) and read by Claude via its own file tools.
 #
-# Retry-on-overload (2026-08-24): the "Run PR Review" step now attempts up
-# to 3 times with a 5-minute wait between, before giving up. Real PR #62
+# Retry-on-overload (2026-08-24): the "Run PR Review" step attempts up to
+# 3 times with a 5-minute wait between, before giving up. Real PR #62
 # failure: Anthropic's API returned 529 Overloaded, and claude-code-action's
 # own internal retry (10 attempts, exponential backoff, ~3 min total) wasn't
 # enough — a second manual rerun ~5 min later hit the exact same wall. This
@@ -42,6 +53,7 @@ permissions:
 env:
   ROUND_CAP: 3
   OVERLOAD_RETRY_DELAY_SECONDS: 300
+  VERDICT_MARKER: "<!-- pr-review-verdict -->"
 
 jobs:
   pr-review:
@@ -55,8 +67,8 @@ jobs:
         id: rounds
         run: |
           set -euo pipefail
-          COUNT=$(gh pr view "$PR_NUMBER" -R "$REPO" --json reviews \
-            -q '[.reviews[] | select(.state == "CHANGES_REQUESTED")] | length')
+          COUNT=$(gh pr view "$PR_NUMBER" -R "$REPO" --json comments \
+            -q "[.comments[].body | select(startswith(\"$VERDICT_MARKER\")) | select(contains(\"CHANGES_REQUESTED\"))] | length")
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Escalate directly if round cap reached
@@ -97,7 +109,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
-          show_full_output: true  # temporary — diagnosing permission_denials_count:1 with no visible cause
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/pr-review.md exactly. Read
@@ -116,7 +127,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
-          show_full_output: true  # temporary — diagnosing permission_denials_count:1 with no visible cause
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/pr-review.md exactly. Read
@@ -141,7 +151,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
-          show_full_output: true  # temporary — diagnosing permission_denials_count:1 with no visible cause
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/pr-review.md exactly. Read
@@ -150,20 +159,6 @@ jobs:
 
       - name: Apply review verdict + file follow-up issues
         if: steps.rounds.outputs.count < env.ROUND_CAP
-        env:
-          # GitHub refuses "gh pr review --approve/--request-changes" from
-          # the same identity that opened the PR ("Can not request changes
-          # on your own pull request") - ORCHESTRATION_PAT is that same
-          # identity, since dev-test.yml uses it to open PRs too. Found via
-          # a real failure on PR #62/#59/#60 the first time this code path
-          # ever actually ran end-to-end (the review-submission logic was
-          # only ever exercised in advisory/comment-only mode before
-          # today's authority reversal). Fix: submit the review as Claude's
-          # own GitHub App identity instead - claude-code-action exposes
-          # its installation token via `outputs.github_token` for exactly
-          # this reuse. Only one of the three attempts actually ran, so
-          # fall back through all three to find whichever one has it.
-          CLAUDE_APP_TOKEN: ${{ steps.review_attempt_3.outputs.github_token || steps.review_attempt_2.outputs.github_token || steps.review_attempt_1.outputs.github_token }}
         run: |
           set -euo pipefail
 
@@ -175,14 +170,28 @@ jobs:
 
           VERDICT=$(jq -r '.verdict' review_output.json)
           COMMENT_FILE=$(mktemp)
-          jq -r '.pr_comment_markdown' review_output.json > "$COMMENT_FILE"
+          {
+            echo "$VERDICT_MARKER"
+            echo "**Verdict: $VERDICT**"
+            echo
+            jq -r '.pr_comment_markdown' review_output.json
+          } > "$COMMENT_FILE"
 
           case "$VERDICT" in
-            APPROVED)
-              GH_TOKEN="$CLAUDE_APP_TOKEN" gh pr review "$PR_NUMBER" -R "$REPO" --approve --body-file "$COMMENT_FILE"
-              ;;
-            CHANGES_REQUESTED)
-              GH_TOKEN="$CLAUDE_APP_TOKEN" gh pr review "$PR_NUMBER" -R "$REPO" --request-changes --body-file "$COMMENT_FILE"
+            APPROVED|CHANGES_REQUESTED)
+              # A subtask's own subsequent Dev & Test push, or a re-review
+              # after one, can leave the other verdict label stuck from a
+              # prior round — remove both possibilities before adding the
+              # new one, not just the one we expect (same bug class as the
+              # status:awaiting-approval promotion fix earlier today).
+              gh pr edit "$PR_NUMBER" -R "$REPO" --remove-label "review:approved" 2>/dev/null || true
+              gh pr edit "$PR_NUMBER" -R "$REPO" --remove-label "review:changes-requested" 2>/dev/null || true
+              gh pr comment "$PR_NUMBER" -R "$REPO" --body-file "$COMMENT_FILE"
+              if [ "$VERDICT" = "APPROVED" ]; then
+                gh pr edit "$PR_NUMBER" -R "$REPO" --add-label "review:approved"
+              else
+                gh pr edit "$PR_NUMBER" -R "$REPO" --add-label "review:changes-requested"
+              fi
               ;;
             *)
               echo "::error::Unexpected verdict '$VERDICT' — leaving the PR unreviewed for manual triage."
