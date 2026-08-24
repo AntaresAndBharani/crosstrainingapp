@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Auto-capture E2E Failure Screenshots**: Enhanced the E2E test runner to automatically extract Maestro failure screenshots via `--debug-output`, archive them to release artifacts, and embed direct screenshot links in PR evidence summaries.
 - **E2E Evidence on PRs**: Added automated scripts to generate per-flow pass/fail summaries and post E2E execution evidence directly as comments on pull requests.
 - **Stable QA Releases**: Synced QA artifacts now use PR-specific tags on `virgymia-qa` GitHub Releases for stable test report URLs.
+- **CI PR Unit Test Report Artifacts**: Upload Gradle unit test HTML reports and JUnit XML results in `build.yml` with a 7-day retention period (`unit-test-report-pr-<short-sha>`), using `if: always()` to retain diagnostics across both passing and failing test runs.
 
 ---
 
