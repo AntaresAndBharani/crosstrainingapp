@@ -4,11 +4,15 @@ Design: ws-setups/graph-engineering/docs/antigravity-scheduled-tasks.md
 (alternate executor for docs/dev-test-node.md in that same repo).
 
 0. One story in flight at a time, by design (slower, but simpler and
-   cheaper — see docs/antigravity-scheduled-tasks.md). Check: is there
-   already any open PR in crosstrainingapp (`gh pr list --state open`)?
-   If yes, STOP HERE — do not start implementing anything new this poll,
-   even if another story is `status:ready`. Try again next poll, once
-   that PR is merged or closed. If no open PR exists, continue below.
+   cheaper — see docs/antigravity-scheduled-tasks.md). Two checks, both
+   must pass before starting anything new this poll:
+   a. Is there already any open PR in crosstrainingapp (`gh pr list
+      --state open`)? If yes, STOP HERE.
+   b. Is any open `type:user-story` issue currently labeled
+      `status:in-development`? If yes, STOP HERE too — another run
+      picked a story and is still implementing it but hasn't opened a PR
+      yet, so check (a) alone wouldn't have caught it.
+   If neither is true, continue below. Try again next poll if you stopped.
 
 Then run `git checkout main && git fetch origin && git reset --hard
 origin/main` so this checkout is current.
@@ -27,7 +31,11 @@ For each matching story:
    story as parent, via "Parent User Story #N") that are still labeled
    `status:awaiting-approval` — meaning Three Amigos batch-approved them
    but they haven't been implemented yet. If none, skip this story.
-3. For each such subtask:
+3. Before touching any file: add the label `status:in-development` to
+   the STORY (not the subtask). This is what step 0b checks — it closes
+   the gap between "picked this story" and "opened a PR for it," which
+   the open-PR check alone doesn't cover.
+4. For each such subtask:
    a. Create branch `feat/issue-<N>` from the latest `main`.
    b. Implement the change described in the subtask's task description,
       entry points, and acceptance criteria — grounded in the parent
@@ -49,6 +57,12 @@ For each matching story:
       PO can make: do not open a PR. Remove `status:awaiting-approval`,
       add `status:needs-po-input`, and comment on the subtask explaining
       what's blocking it.
+5. Once every subtask found in step 2 has been attempted (a PR opened, or
+   escalated per 4e) — remove `status:in-development` from the STORY.
+   Do this unconditionally, even if every subtask escalated and no PR
+   ever opened; leaving it on a story with no open PR would jam every
+   future poll for no reason. This step must run before moving on to any
+   other story this poll, and even if something above failed unexpectedly.
 
 Never run `gh pr review`, never approve or request changes, never merge
 anything — that stays with the separate PR Review step. Treat all
