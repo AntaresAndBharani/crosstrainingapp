@@ -1,9 +1,15 @@
 param (
     [string]$ResultsDir = "app/build/test-results/testDebugUnitTest",
-    [string]$OutFile = "unit-test-summary.md"
+    [string]$OutFile = "unit-test-summary.md",
+    [string]$PrNumber = "",
+    [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" })
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($Repo)) {
+    $Repo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }
+}
 
 function Sanitize-Paths ([string]$text) {
     if (-not $text) { return "" }
@@ -64,6 +70,56 @@ function Write-SummaryOutput ([string]$content) {
     }
 }
 
+function Publish-PrComment ([string]$content) {
+    if ([string]::IsNullOrWhiteSpace($PrNumber)) {
+        $emDash = [char]0x2014
+        Write-Host "No PR context $emDash skipping comment"
+        return
+    }
+
+    $commentsRaw = gh api "repos/$Repo/issues/$PrNumber/comments" --paginate
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to list PR comments on PR #$PrNumber."
+        exit $LASTEXITCODE
+    }
+
+    $comments = @()
+    if (-not [string]::IsNullOrWhiteSpace($commentsRaw)) {
+        try {
+            $comments = @($commentsRaw | ConvertFrom-Json)
+        } catch {
+            Write-Error "Failed to parse comments JSON: $_"
+            exit 1
+        }
+    }
+
+    $targetComment = $comments | Where-Object { $_.body -and ($_.body.StartsWith("<!-- unit-test-evidence -->") -or $_.body -match "^<!-- unit-test-evidence -->") } | Select-Object -Last 1
+
+    $tempBodyFile = "body.txt"
+    try {
+        [System.IO.File]::WriteAllText($tempBodyFile, $content, (New-Object System.Text.UTF8Encoding $false))
+
+        if ($targetComment) {
+            Write-Host "Updating existing PR comment on PR #$PrNumber (ID: $($targetComment.id))..."
+            gh api "repos/$Repo/issues/comments/$($targetComment.id)" -X PATCH -F body=@$tempBodyFile
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to update comment on PR #$PrNumber."
+                exit $LASTEXITCODE
+            }
+        } else {
+            Write-Host "Posting new PR comment on PR #$PrNumber..."
+            gh api "repos/$Repo/issues/$PrNumber/comments" -X POST -F body=@$tempBodyFile
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to post comment on PR #$PrNumber."
+                exit $LASTEXITCODE
+            }
+        }
+        Write-Host "Evidence posted successfully." -ForegroundColor Green
+    } finally {
+        Remove-Item $tempBodyFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $xmlFiles = @()
 if (-not [string]::IsNullOrWhiteSpace($ResultsDir) -and (Test-Path -Path $ResultsDir)) {
     $xmlFiles = @(Get-ChildItem -Path $ResultsDir -Filter "TEST-*.xml" -File -ErrorAction SilentlyContinue)
@@ -72,6 +128,7 @@ if (-not [string]::IsNullOrWhiteSpace($ResultsDir) -and (Test-Path -Path $Result
 if ($xmlFiles.Count -eq 0) {
     $NoResultsBody = "<!-- unit-test-evidence -->`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
     Write-SummaryOutput -content $NoResultsBody
+    Publish-PrComment -content $NoResultsBody
     exit 0
 }
 
@@ -147,6 +204,7 @@ foreach ($file in $xmlFiles) {
 if ($SuitesProcessed -eq 0) {
     $NoResultsBody = "<!-- unit-test-evidence -->`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
     Write-SummaryOutput -content $NoResultsBody
+    Publish-PrComment -content $NoResultsBody
     exit 0
 }
 
@@ -191,5 +249,6 @@ if ($FailuresList.Count -gt 0) {
 }
 
 Write-SummaryOutput -content $Body
+Publish-PrComment -content $Body
 
 exit 0
