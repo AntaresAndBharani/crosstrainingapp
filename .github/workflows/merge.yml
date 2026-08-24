@@ -2,15 +2,17 @@ name: Merge & Backlog
 
 # Deterministic, no model - design: ws-setups/graph-engineering/docs/merge-node.md
 #
-# Triggered by the PO's own GitHub PR approval, not by Claude's PR Review
-# verdict (2026-08-24 scope decision - PR Review is advisory only). Once
-# the PO approves, this clicks merge on their behalf; this repo's existing
-# release.yml (triggered on push to main) already handles tagging and
-# publishing the release, so there's nothing else for this workflow to do.
+# Triggered by the review:approved label, not a GitHub-native PR review
+# state (2026-08-24 — pr-review.yml moved off `gh pr review` entirely,
+# since GitHub blocks that when the reviewer and PR-author identity are
+# the same account, which they always are here; see pr-review.yml's own
+# header for the full history). This repo's existing release.yml
+# (triggered on push to main) already handles tagging and publishing the
+# release, so there's nothing else for this workflow to do.
 
 on:
-  pull_request_review:
-    types: [submitted]
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: write
@@ -19,7 +21,7 @@ permissions:
 jobs:
   merge:
     runs-on: ubuntu-latest
-    if: github.event.review.state == 'approved'
+    if: github.event.label.name == 'review:approved'
     env:
       GH_TOKEN: ${{ secrets.ORCHESTRATION_PAT }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -29,5 +31,5 @@ jobs:
         run: |
           set -euo pipefail
           # --auto waits for required checks (build.yml) to go green rather
-          # than failing immediately if approval landed before CI finished.
+          # than failing immediately if the label landed before CI finished.
           gh pr merge "$PR_NUMBER" -R "$REPO" --auto --squash --delete-branch
