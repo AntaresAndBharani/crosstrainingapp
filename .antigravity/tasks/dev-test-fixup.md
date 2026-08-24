@@ -3,9 +3,11 @@
 Design: ws-setups/graph-engineering/docs/antigravity-scheduled-tasks.md
 (alternate executor for docs/dev-test-node.md in that same repo).
 
-0. First, run `git checkout main && git fetch origin && git reset --hard
-   origin/main` so this checkout is current. Do this before anything else,
-   every time — never rely on this checkout already being up to date.
+First run `git checkout main && git fetch origin && git reset --hard
+origin/main` so this checkout is current. This task only ever touches an
+already-open PR, and Dev & Test: Implement refuses to start new work
+while any PR is open (see its own instructions) — so the two never
+contend for the working tree in practice; no separate lock needed here.
 
 Check crosstrainingapp's open `type:user-story` issues. Never query
 subtasks or PRs directly — only reach one as a child of the story being
