@@ -102,12 +102,10 @@ jobs:
 
       # Rolling pre-release so the snapshot can be downloaded directly
       # to a phone from the Releases page (Releases -> "Snapshot").
-      - name: Delete previous snapshot release and tag
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release delete snapshot --yes --cleanup-tag || true
-
+      # Updated in-place via softprops/action-gh-release (no delete-and-recreate step)
+      # to prevent leaving the Releases page without a snapshot if a run is cancelled.
+      # Note: The 'snapshot' git tag remains pinned to its initial commit; the release body
+      # carries the authoritative record of the PR, branch, and commit for each build.
       - name: Publish rolling snapshot pre-release
         uses: softprops/action-gh-release@v2
         with:
