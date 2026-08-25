@@ -40,3 +40,8 @@ Assert-True -Condition ($markerDefinitions.Count -eq 1) `
 # The marker value itself contains the expected string
 Assert-True -Condition ($ScriptText.Contains('<!-- unit-test-evidence -->')) `
             -TestName "static: EvidenceMarker contains '<!-- unit-test-evidence -->'"
+
+# No assignment to automatic variable $matches
+Assert-True -Condition (-not ($ScriptText -match '\$matches\s*=')) `
+            -TestName "static: no `$matches assignment (PSAvoidAssignmentToAutomaticVariable)"
+

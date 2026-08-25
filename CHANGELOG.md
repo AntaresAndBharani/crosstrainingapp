@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Unit Test Summary Variable Hygiene & Static Analysis**: Renamed local regex match variables from `$matches` to `$backtickMatches` in `Get-BacktickFence` and `Format-FailureMessage` to resolve `PSAvoidAssignmentToAutomaticVariable`, added `PSAvoidUsingWriteHost` suppression attribute for CI console output, and cleaned up trailing whitespace in `scripts/summarize-unit-tests.ps1` (#160).
 - **Unit Test Failure Message Capping & Path Sanitization**: Extracted shared `Limit-TextLines` helper to cap multi-line failure messages at 40 lines matching stack trace truncation in `scripts/summarize-unit-tests.ps1`, preventing GitHub PR comment size exhaustion on large assertion diffs, and eliminated redundant extraction-site `ConvertTo-RelativePath` call (#159).
 - **Guest Mode Demo Data**: Clicking "Continue as Guest" now automatically populates and enables Demo Mode. This intentional product decision ensures new guest users have immediately populated History, Library, and Cycles screens to explore, rather than landing in a completely empty app state.
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
