@@ -38,7 +38,7 @@ Assert-Equal  -Actual $failResult.ExitCode -Expected 0 `
 
 $baselinePath = Join-Path $ExpectedDir "fail-summary.md"
 if (Test-Path $baselinePath) {
-    $baseline = [System.IO.File]::ReadAllText($baselinePath, [System.Text.Encoding]::UTF8).Replace("`r`n", "`n")
+    $baseline = ConvertTo-LfLineEnding ([System.IO.File]::ReadAllText($baselinePath, [System.Text.Encoding]::UTF8))
     Assert-Equal -Actual $failResult.Output -Expected $baseline `
                  -TestName "fail: output matches committed baseline (fail-summary.md)"
 } else {
