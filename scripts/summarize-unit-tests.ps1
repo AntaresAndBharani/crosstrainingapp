@@ -32,19 +32,22 @@ function ConvertTo-RelativePath ([string]$text) {
     return $text
 }
 
+function Limit-TextLines ([string]$text, [int]$maxLines = 40) {
+    if (-not $text) { return "" }
+    
+    $lines = $text -split '\r?\n'
+    if ($lines.Count -gt $maxLines) {
+        $truncatedLines = $lines[0..($maxLines - 1)]
+        return ($truncatedLines -join "`n") + "`n... (truncated)"
+    }
+    return $lines -join "`n"
+}
+
 function Format-StackTrace ([string]$trace) {
     if (-not $trace) { return "" }
     
     $trace = ConvertTo-RelativePath -text $trace
-    
-    # Cap trace at 40 lines
-    $lines = $trace -split '\r?\n'
-    if ($lines.Count -gt 40) {
-        $truncatedLines = $lines[0..39]
-        $trace = ($truncatedLines -join "`n") + "`n... (truncated)"
-    } else {
-        $trace = $lines -join "`n"
-    }
+    $trace = Limit-TextLines -text $trace -maxLines 40
     
     return $trace.Trim()
 }
@@ -64,6 +67,7 @@ function Format-FailureMessage ([string]$message) {
     if (-not $message) { return "" }
     
     $message = ConvertTo-RelativePath -text $message
+    $message = Limit-TextLines -text $message -maxLines 40
     
     $matches = [regex]::Matches($message, '`+')
     $maxRun = 0
@@ -225,7 +229,7 @@ foreach ($file in $xmlFiles) {
                     $className = if ($tc.Attributes["classname"]) { $tc.Attributes["classname"].Value } else { "" }
                     $methodName = if ($tc.Attributes["name"]) { $tc.Attributes["name"].Value } else { "" }
                     $rawMessage = if ($failNode.Attributes["message"]) { $failNode.Attributes["message"].Value } else { "" }
-                    $message = ConvertTo-RelativePath -text $rawMessage
+                    $message = $rawMessage
                     $rawTrace = $failNode.InnerText
                     $formattedTrace = Format-StackTrace -trace $rawTrace
 
