@@ -98,6 +98,13 @@ try {
     Assert-True  -Condition ($namedRes.Output.Contains('> Additional failures truncated. See full test report in the `unit-test-report-pr-abc1234` artifact.')) `
                  -TestName "cli: -ArtifactName named contains backticked artifact name"
 
+    # Named explicitly matching fallback string
+    $explicitFallbackRes = Invoke-SummarizerScript -ResultsDir $truncDir -ArtifactName "unit test report"
+    Assert-Equal -Actual $explicitFallbackRes.ExitCode -Expected 0 `
+                 -TestName "cli: -ArtifactName equal to fallback string exits 0"
+    Assert-True  -Condition ($explicitFallbackRes.Output.Contains('> Additional failures truncated. See full test report in the `unit test report` artifact.')) `
+                 -TestName "cli: -ArtifactName equal to fallback string contains backticked artifact name"
+
     # Named with embedded backtick
     $btRes = Invoke-SummarizerScript -ResultsDir $truncDir -ArtifactName 'unit-test-report-pr-abc`1234'
     Assert-Equal -Actual $btRes.ExitCode -Expected 0 `
