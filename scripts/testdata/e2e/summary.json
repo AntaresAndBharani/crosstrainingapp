@@ -1,0 +1,11 @@
+[
+  {
+    "flow": "LoginFlow",
+    "passed": true
+  },
+  {
+    "flow": "WorkoutTrackingFlow",
+    "passed": false,
+    "screenshot": "workout_failure.png"
+  }
+]
