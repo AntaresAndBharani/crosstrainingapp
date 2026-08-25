@@ -19,7 +19,7 @@ function ConvertTo-LfLineEnding ([string]$text) {
 function Invoke-Summarizer {
     param (
         [string]$ResultsDir,
-        [string]$ArtifactName = "unit test report",
+        [string]$ArtifactName = "",
         [string]$PrNumber = ""
     )
 
@@ -198,6 +198,44 @@ Assert-True -Condition (-not ($result5.Output.Contains("/home/runner/work/"))) `
 Assert-True -Condition ($result5.Output.Contains("app/src/test/java/com/example/RedTest.kt:42")) `
     -ScenarioName "Fail fixture output contains sanitized relative path" `
     -FailureMessage "Output did not contain sanitized relative path app/src/test/java/com/example/RedTest.kt:42"
+
+# Scenario 7: Truncation note with and without -ArtifactName
+Write-Host "`nScenario 7: Truncation note with and without -ArtifactName"
+$truncDir = Join-Path ([System.IO.Path]::GetTempPath()) "trunc-tests-$([guid]::NewGuid())"
+[System.IO.Directory]::CreateDirectory($truncDir) | Out-Null
+try {
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.Append('<?xml version="1.0" encoding="UTF-8"?><testsuite name="com.example.TruncTest" tests="200" failures="200" errors="0" skipped="0" time="5.0">')
+    for ($i = 0; $i -lt 200; $i++) {
+        [void]$sb.Append("<testcase name=`"test$i`" classname=`"com.example.TruncTest`" time=`"0.01`"><failure message=`"failure message $i`" type=`"java.lang.AssertionError`">")
+        [void]$sb.Append(([string]::new('x', 350)))
+        [void]$sb.Append("`nat com.example.TruncTest.test$i(TruncTest.kt:10)`n</failure></testcase>")
+    }
+    [void]$sb.Append('</testsuite>')
+    [System.IO.File]::WriteAllText((Join-Path $truncDir "TEST-com.example.TruncTest.xml"), $sb.ToString(), [System.Text.Encoding]::UTF8)
+
+    $resultNamed = Invoke-Summarizer -ResultsDir $truncDir -ArtifactName "unit-test-report-pr-abc1234"
+    Assert-Equal -Actual $resultNamed.ExitCode -Expected 0 -ScenarioName "Truncation (named) exits with 0"
+    Assert-True -Condition ($resultNamed.Output.Contains('> Additional failures truncated. See full test report in the `unit-test-report-pr-abc1234` artifact.')) `
+        -ScenarioName "Truncation (named) contains backticked artifact name" `
+        -FailureMessage "Output did not contain expected named truncation note"
+
+    $resultDefault = Invoke-Summarizer -ResultsDir $truncDir
+    Assert-Equal -Actual $resultDefault.ExitCode -Expected 0 -ScenarioName "Truncation (default) exits with 0"
+    Assert-True -Condition ($resultDefault.Output.Contains('> Additional failures truncated. See full test report in the unit test report artifact.')) `
+        -ScenarioName "Truncation (default) contains generic fallback note" `
+        -FailureMessage "Output did not contain expected default truncation note"
+
+    $resultWs = Invoke-Summarizer -ResultsDir $truncDir -ArtifactName "   "
+    Assert-Equal -Actual $resultWs.ExitCode -Expected 0 -ScenarioName "Truncation (whitespace) exits with 0"
+    Assert-True -Condition ($resultWs.Output.Contains('> Additional failures truncated. See full test report in the unit test report artifact.')) `
+        -ScenarioName "Truncation (whitespace) contains generic fallback note" `
+        -FailureMessage "Output did not contain expected default truncation note for whitespace argument"
+} finally {
+    if (Test-Path -Path $truncDir) {
+        Remove-Item $truncDir -Force -Recurse -ErrorAction SilentlyContinue
+    }
+}
 
 # Summary
 Write-Host "`nTest Summary: $($script:PassCount) passed, $($script:FailCount) failed." -ForegroundColor $(if ($script:FailCount -eq 0) { "Green" } else { "Red" })
