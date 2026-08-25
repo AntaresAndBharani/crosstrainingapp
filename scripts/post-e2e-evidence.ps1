@@ -1,8 +1,11 @@
 param (
     [string]$SummaryPath,
     [string]$PrNumber = "",
-    [string]$Version = ""
+    [string]$Version = "",
+    [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" })
 )
+
+. (Join-Path $PSScriptRoot 'lib/PrComment.ps1')
 
 if ($PrNumber) {
     if ($PrNumber -notmatch '^\d+$') {
@@ -88,46 +91,5 @@ if ($AnyFailed) {
 $link = [char]::ConvertFromUtf32(0x1F517)
 $CommentBody += "`n[$($link) View Full HTML Report & Screenshots](https://github.com/AntaresAndBharani/virgymia-qa/releases/download/$Version/report.html)`n"
 
-$tempBodyFile = Join-Path ([System.IO.Path]::GetTempPath()) "e2e-evidence-body-$([guid]::NewGuid()).md"
-try {
-    [System.IO.File]::WriteAllText($tempBodyFile, $CommentBody, (New-Object System.Text.UTF8Encoding $false))
-
-    $RestCommentsRaw = gh api "repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments" --paginate 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Failed to list comments on PR #$PrNumber."
-        exit 0
-    }
-
-    $RestComments = @()
-    if (-not [string]::IsNullOrWhiteSpace($RestCommentsRaw)) {
-        try {
-            $RestComments = @($RestCommentsRaw | ConvertFrom-Json)
-        } catch {
-            Write-Warning "Failed to parse comments JSON: $_"
-            exit 0
-        }
-    }
-
-    $CurrentUser = gh api user --jq .login 2>$null
-    $RestComment = $RestComments | Where-Object { ($null -eq $CurrentUser -or $_.user.login -eq $CurrentUser) -and $_.body -match "^<!-- e2e-evidence -->" } | Select-Object -Last 1
-
-    if ($RestComment) {
-        Write-Host "Updating existing PR comment on PR #$PrNumber (ID: $($RestComment.id))..."
-        gh api "repos/AntaresAndBharani/crosstrainingapp/issues/comments/$($RestComment.id)" -X PATCH --silent -F body=@$tempBodyFile
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Failed to update comment on PR #$PrNumber."
-            exit 0
-        }
-    } else {
-        Write-Host "Posting new PR comment on PR #$PrNumber..."
-        gh api "repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments" -X POST --silent -F body=@$tempBodyFile
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Failed to post comment on PR #$PrNumber."
-            exit 0
-        }
-    }
-
-    Write-Host "Evidence posted successfully." -ForegroundColor Green
-} finally {
-    Remove-Item -LiteralPath $tempBodyFile -Force -ErrorAction SilentlyContinue
-}
+Publish-PrComment -Repo $Repo -PrNumber $PrNumber -Marker '<!-- e2e-evidence -->' -Body $CommentBody -TempFilePrefix 'e2e-evidence-body'
+exit 0
