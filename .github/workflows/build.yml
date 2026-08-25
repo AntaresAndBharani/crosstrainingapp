@@ -124,8 +124,13 @@ jobs:
       # to prevent leaving the Releases page without a snapshot if a run is cancelled.
       # Note: The 'snapshot' git tag remains pinned to its initial commit; the release body
       # carries the authoritative record of the PR, branch, and commit for each build.
+      # Requires workflow-level 'contents: write' permission (declared at top of file).
+      # Note: GitHub Actions issues a read-only GITHUB_TOKEN for pull_request events triggered
+      # from forked repositories, so snapshot release publishing is expected to fail on fork PRs.
       - name: Publish rolling snapshot pre-release
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: snapshot
           name: Snapshot (latest dev build)
