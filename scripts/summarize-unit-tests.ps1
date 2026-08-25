@@ -59,14 +59,15 @@ function Format-StackTrace ([string]$trace) {
     return $trace.Trim()
 }
 
-function Get-BacktickFence ([string]$text) {
-    if (-not $text) { return '```' }
+function Get-BacktickFence ([string]$text, [int]$MinLength = 3) {
+    $minFence = '`' * [Math]::Max(1, $MinLength)
+    if (-not $text) { return $minFence }
     $backtickMatches = [regex]::Matches($text, '`+')
     $maxRun = 0
     if ($backtickMatches.Count -gt 0) {
         $maxRun = ($backtickMatches | Measure-Object -Property Length -Maximum).Maximum
     }
-    $fenceLen = [Math]::Max(3, $maxRun + 1)
+    $fenceLen = [Math]::Max($MinLength, $maxRun + 1)
     return ('`' * $fenceLen)
 }
 
@@ -76,19 +77,11 @@ function Format-FailureMessage ([string]$message) {
     $message = ConvertTo-RelativePath -text $message
     $message = Limit-TextLines -text $message -maxLines 40
 
-    $backtickMatches = [regex]::Matches($message, '`+')
-    $maxRun = 0
-    if ($backtickMatches.Count -gt 0) {
-        $maxRun = ($backtickMatches | Measure-Object -Property Length -Maximum).Maximum
-    }
-
     if ($message -match '\r?\n') {
-        $fenceLen = [Math]::Max(3, $maxRun + 1)
-        $fence = '`' * $fenceLen
+        $fence = Get-BacktickFence -text $message
         return "**Message:**`n$fence`n$message`n$fence`n`n"
     } else {
-        $delimLen = [Math]::Max(1, $maxRun + 1)
-        $delim = '`' * $delimLen
+        $delim = Get-BacktickFence -text $message -MinLength 1
         if ($message.StartsWith('`') -or $message.EndsWith('`')) {
             $content = " $message "
         } else {
