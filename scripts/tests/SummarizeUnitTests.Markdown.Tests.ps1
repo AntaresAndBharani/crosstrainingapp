@@ -121,6 +121,17 @@ Assert-True   -Condition ($longResult.Output.Contains("#### Failures")) `
               -TestName "longmessage: contains Failures section"
 Assert-True   -Condition ($longResult.Output.Contains("... (truncated)")) `
               -TestName "longmessage: truncation indicator present"
+
+if ($longResult.Output -match '(?s)\*\*Message:\*\*\s*\n`{3,}\n(.*?)\n\.\.\. \(truncated\)') {
+    $truncatedLines = $Matches[1] -split "`n"
+    Assert-Equal -Actual $truncatedLines.Count -Expected 40 `
+                 -TestName "longmessage: truncated message contains exactly 40 lines"
+} else {
+    Assert-True -Condition $false `
+                -TestName "longmessage: truncated message contains exactly 40 lines" `
+                -FailureMessage "Could not extract message block between opening fence and truncation marker"
+}
+
 Assert-NotMatch -Value $longResult.Output -Pattern '(?i)/home/runner/work|[a-z]:\\a\\' `
                 -TestName "longmessage: no runner path prefixes"
 Assert-True   -Condition ($longResult.Output.Contains("app/src/test/java/com/example/LongMessageTest.kt:10")) `
