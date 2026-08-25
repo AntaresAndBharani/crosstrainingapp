@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
 
 ### Added
+- **Unit Test Summary 40-Line Truncation Assertion**: Added an exact boundary regression assertion to `scripts/tests/SummarizeUnitTests.Markdown.Tests.ps1` verifying that failure message capping extracts exactly 40 lines before the truncation marker (#208, #221).
 - **Unit Test Summary Status Line Regression Assertions**: Extended `scripts/tests/SummarizeUnitTests.Markdown.Tests.ps1` with status line assertions covering checkmark pass formatting, singular/plural failure wording, and relative positioning before failure detail sections (#208, #219).
 - **Script Test Harness Line-Ending Helper**: Added `ConvertTo-LfLineEnding` function in `scripts/tests/TestHelpers.ps1` and refactored child-process output capture, assertion equality comparisons, and baseline-file reads to standardize CRLF-to-LF normalization (#181, #182, #183, #184, #208, #215).
 - **Single-Sourced Unit Test Artifact Name in CI**: Exported `UNIT_TEST_ARTIFACT` once from `Compute build metadata` in `.github/workflows/build.yml` and consumed it across `Publish unit test summary` and `Upload unit test report` steps, eliminating duplicate literal string definitions (#150, #157, #168).
@@ -43,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Evidence on PRs**: Added automated scripts to generate per-flow pass/fail summaries and post E2E execution evidence directly as comments on pull requests.
 - **Stable QA Releases**: Synced QA artifacts now use PR-specific tags on `virgymia-qa` GitHub Releases for stable test report URLs.
 - **CI PR Unit Test Report Artifacts**: Upload Gradle unit test HTML reports and JUnit XML results in `.github/workflows/build.yml` with a 7-day retention period (`unit-test-report-pr-<short-sha>`) and `overwrite: true` for collision-free re-runs, using `if: ${{ !cancelled() }}` to retain diagnostics across non-cancelled test runs.
+
+### Removed
+- **Orphaned Script Test Runner**: Deleted superseded legacy script `scripts/test-summarize-unit-tests.ps1` in favor of modular test harness under `scripts/tests/` (#208, #221).
 
 ### Changed
 - **Shared PR Comment Helper Adoption & Workspace Cleanup**: Refactored both `scripts/summarize-unit-tests.ps1` and `scripts/post-e2e-evidence.ps1` to dot-source `scripts/lib/PrComment.ps1` and delegate sticky PR comment publishing to `Publish-PrComment`. Hardened PR evidence comment publishing with isolated BOM-free UTF-8 temporary files under `[System.IO.Path]::GetTempPath()`, guaranteed cleanup in `finally` blocks, `--paginate` comment lookup, ordinal marker matching, `gh` CLI presence checks, and non-fatal warning logging on publishing failures. Retired workspace-relative `body.txt` generation and removed the obsolete `body.txt` entry from `.gitignore` (#129, #130, #131, #140, #141, #153, #154, #156, #164, #165, #166).
