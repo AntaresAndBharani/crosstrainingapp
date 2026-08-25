@@ -133,6 +133,8 @@ jobs:
         if: always()
         run: rm -f "${{ runner.temp }}/release.keystore"
 
+      # Package the release variant APK signed with the production release keystore (contrasting with the
+      # debug variant signed via the earlier 'Ensure debug keystore' step used during testing).
       - name: Package release-signed APK as release distribution artifact
         run: |
           mkdir -p dist
