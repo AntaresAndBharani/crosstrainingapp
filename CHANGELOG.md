@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
 
 ### Added
+- **Script Test Runner Failure Exit Code Self-Test**: Added optional `-TestDir` parameter to `scripts/tests/Invoke-ScriptTests.ps1` and created `scripts/tests/InvokeScriptTests.Selftest.Tests.ps1` proving non-zero exit code propagation on failing fixtures/exceptions and exit code 0 on passing suites (#220).
 - **Multi-Platform CI Script Tests Matrix**: Expanded the `script-tests` job in `.github/workflows/build.yml` to a matrix across `[ubuntu-latest, windows-latest]`, ensuring PowerShell regression test suites run on both Linux and Windows on every pull request (#217).
 - **PR Comment Helper Test Suite**: Added `scripts/tests/PrComment.Tests.ps1` with isolated Pester tests validating `Publish-PrComment` CLI guards, parameter validation, pagination, literal marker matching, update vs create branch selection, error resilience, and temporary file lifecycle cleanup (#163).
 - **Shared PR Comment Publishing Helper**: Created `scripts/lib/PrComment.ps1` exposing dot-sourceable, exception-safe `Publish-PrComment` function with CLI presence guards, `--paginate` comment lookup, ordinal marker matching, BOM-free UTF-8 temp file creation under `GetTempPath()`, guaranteed `finally` cleanup, and non-fatal warning logging (#162).
