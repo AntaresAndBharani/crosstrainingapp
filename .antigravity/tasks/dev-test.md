@@ -18,13 +18,59 @@ Check crosstrainingapp's open `type:user-story` issues. Never query
 subtasks or PRs directly — only reach one as a child of the story being
 processed.
 
-## Step 1 — fix-up work takes priority
+## Step 1 — resolve approved-but-conflicting PRs (highest priority)
+
+For each story: find its subtasks via `gh api
+repos/<repo>/issues/<story>/sub_issues`, and among those, any with an open
+PR labeled `review:approved` where `gh pr view --json mergeable -q
+.mergeable` returns `CONFLICTING`. If one exists anywhere, handle it and
+stop — do not fall through to Step 2 this poll. Higher priority than
+fix-up: an approved PR is closer to done than one still needing review
+feedback addressed, and unblocking it clears every other story queued
+behind it (Step 3's "any PR open" check stops all new work while even one
+PR sits stuck).
+
+Found live 2026-08-25: PR #148 sat `review:approved` but fell behind
+`main` (many other subtask PRs merged while it waited) and developed a
+real conflict. Nothing detected or escalated it — it silently jammed 11
+other `status:ready` stories with no visible error anywhere, until the PO
+noticed and asked why. This step exists so that doesn't require a human
+to notice next time.
+
+1. Check out the PR's existing branch (not `main`).
+2. `git fetch origin && git rebase origin/main`.
+3. **Clean rebase:** re-run `.\gradlew.bat testDebugUnitTest` — rebasing
+   onto new history isn't guaranteed safe even without textual conflicts
+   (e.g. `main` could have removed something this branch's tests still
+   reference). If tests pass: `git fetch origin` again, read the
+   confirmed current remote SHA for this branch, then push with a
+   SHA-qualified lease — `git push --force-with-lease="<branch>:<sha>"`,
+   **not** a bare `--force-with-lease`. (Found live today: the bare form
+   spuriously rejected a push against an unchanged remote — a local
+   staleness quirk in how the lease is tracked, not a real conflict. The
+   SHA-qualified form, checked against the actual remote tip, is
+   unambiguous.) Pushing re-triggers PR Review via `synchronize` on its
+   own — nothing further to do this poll. If that produces a fresh
+   `review:changes-requested`, Step 2 below picks it up next poll like any
+   other fix-up round.
+4. **Conflicting rebase:** only resolve a hunk when it's unambiguously
+   additive on both sides — e.g. two concurrent PRs each appending a
+   distinct `CHANGELOG.md` entry under the same section: keep both, don't
+   drop either. For anything that requires judging which side's actual
+   logic should win — a real code conflict, not just adjacent additions —
+   do not guess: `git rebase --abort`, comment on the PR explaining the
+   conflict needs a human decision, and add `status:needs-po-input` to the
+   underlying subtask.
+
+## Step 2 — fix-up work takes priority over new implementation
+
+Only reached if Step 1 found no approved-and-conflicting PR anywhere.
 
 For each story: find its subtasks via `gh api
 repos/<repo>/issues/<story>/sub_issues` (the real GitHub Sub-issues
 relationship), and among those, any with an open PR labeled
 `review:changes-requested`. If one exists anywhere, handle it and stop —
-do not fall through to Step 2 this poll:
+do not fall through to Step 3 this poll:
 
 1. Read the parent story for context, check out the PR's existing branch
    (not `main`), and read the blocking issues from the PR's most recent
@@ -43,9 +89,9 @@ do not fall through to Step 2 this poll:
    do not push, and leave the label in place. Comment on the PR
    explaining what's blocking it.
 
-## Step 2 — otherwise, is anything else already in flight?
+## Step 3 — otherwise, is anything else already in flight?
 
-Only reached if Step 1 found no `review:changes-requested` PR anywhere.
+Only reached if Steps 1 and 2 found nothing to do.
 
 a. Is there already any open PR in crosstrainingapp (`gh pr list
    --state open`)? If yes, STOP HERE — it's mid-review or approved-pending-
@@ -54,9 +100,9 @@ b. Is any open `type:user-story` issue currently labeled
    `status:in-development`? If yes, STOP HERE too — a previous run picked
    a story and is still implementing it but hasn't opened a PR yet.
 
-If neither is true, continue to Step 3. Try again next poll if you stopped.
+If neither is true, continue to Step 4. Try again next poll if you stopped.
 
-## Step 3 — new implementation work
+## Step 4 — new implementation work
 
 Check crosstrainingapp for open issues labeled `type:user-story` AND
 `status:ready`. Check `status:ready` on the STORY only — this is what
@@ -72,7 +118,7 @@ For each matching story:
    labeled `status:awaiting-approval` — meaning Three Amigos batch-approved
    them but they haven't been implemented yet. If none, skip this story.
 3. Before touching any file: add the label `status:in-development` to
-   the STORY (not the subtask). This is what Step 2b checks — it closes
+   the STORY (not the subtask). This is what Step 3b checks — it closes
    the gap between "picked this story" and "opened a PR for it," which
    the open-PR check alone doesn't cover.
 4. For each such subtask:
