@@ -58,14 +58,16 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-            echo "SHORT_SHA=${HEAD_SHA:0:7}" >> "$GITHUB_ENV"
+            SHORT_SHA="${HEAD_SHA:0:7}"
             echo "BRANCH_NAME=$HEAD_REF" >> "$GITHUB_ENV"
             echo "PR_LABEL=PR #${{ github.event.pull_request.number }}" >> "$GITHUB_ENV"
           else
-            echo "SHORT_SHA=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+            SHORT_SHA="${GITHUB_SHA:0:7}"
             echo "BRANCH_NAME=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
             echo "PR_LABEL=Manual Build" >> "$GITHUB_ENV"
           fi
+          echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
+          echo "UNIT_TEST_ARTIFACT=unit-test-report-pr-$SHORT_SHA" >> "$GITHUB_ENV"
 
       - name: Ensure debug keystore
         run: |
@@ -86,13 +88,13 @@ jobs:
             -ResultsDir app/build/test-results/testDebugUnitTest `
             -PrNumber "${{ github.event.pull_request.number }}" `
             -Repo "${{ github.repository }}" `
-            -ArtifactName "unit-test-report-pr-${{ env.SHORT_SHA }}"
+            -ArtifactName "${{ env.UNIT_TEST_ARTIFACT }}"
 
       - name: Upload unit test report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: unit-test-report-pr-${{ env.SHORT_SHA }}
+          name: ${{ env.UNIT_TEST_ARTIFACT }}
           path: |
             app/build/reports/tests/testDebugUnitTest/
             app/build/test-results/testDebugUnitTest/
