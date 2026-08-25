@@ -19,6 +19,21 @@ android {
         vectorDrawables { useSupportLibrary = true }
     }
 
+    val releaseStoreFile = providers.gradleProperty("RELEASE_STORE_FILE").orNull?.ifBlank { null }
+        ?: System.getenv("RELEASE_STORE_FILE")?.ifBlank { null }
+    val releaseStorePassword = providers.gradleProperty("RELEASE_STORE_PASSWORD").orNull?.ifBlank { null }
+        ?: System.getenv("RELEASE_STORE_PASSWORD")?.ifBlank { null }
+    val releaseKeyAlias = providers.gradleProperty("RELEASE_KEY_ALIAS").orNull?.ifBlank { null }
+        ?: System.getenv("RELEASE_KEY_ALIAS")?.ifBlank { null }
+    val releaseKeyPassword = providers.gradleProperty("RELEASE_KEY_PASSWORD").orNull?.ifBlank { null }
+        ?: System.getenv("RELEASE_KEY_PASSWORD")?.ifBlank { null }
+
+    val hasReleaseSigningConfig = !releaseStoreFile.isNullOrBlank() &&
+        !releaseStorePassword.isNullOrBlank() &&
+        !releaseKeyAlias.isNullOrBlank() &&
+        !releaseKeyPassword.isNullOrBlank() &&
+        file(releaseStoreFile).exists()
+
     signingConfigs {
         getByName("debug") {
             storeFile = file("debug.keystore")
@@ -26,12 +41,26 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        if (hasReleaseSigningConfig) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            if (hasReleaseSigningConfig) {
+                signingConfig = signingConfigs.getByName("release")
+                logger.lifecycle("Release signing: release keystore")
+            } else {
+                signingConfig = signingConfigs.getByName("debug")
+                logger.lifecycle("Release signing: debug fallback (RELEASE_* not configured)")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
