@@ -8,6 +8,89 @@
 BeforeAll {
     Import-Module Pester -ErrorAction SilentlyContinue
     . (Join-Path (Join-Path $PSScriptRoot "..") "lib\PrComment.ps1")
+
+    function Set-GhAvailable {
+        param([bool]$Available = $true)
+        if ($Available) {
+            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
+        } else {
+            Mock -CommandName Get-Command -MockWith { return $null } -ParameterFilter { $Name -eq 'gh' }
+        }
+    }
+
+    function New-GhApiMock {
+        [CmdletBinding()]
+        param(
+            [Parameter()]
+            $Comments = '[]',
+
+            [string]$CurrentUser = 'bot-user',
+
+            [scriptblock]$OnPost = $null,
+
+            [scriptblock]$OnPatch = $null,
+
+            [scriptblock]$OnList = $null,
+
+            [int]$ExitCode = 0,
+
+            [string]$ThrowException = $null
+        )
+
+        $commentsString = if ($Comments -is [string]) {
+            $Comments
+        } elseif ($null -ne $Comments) {
+            $Comments | ConvertTo-Json -Compress
+        } else {
+            '[]'
+        }
+
+        $mockScript = {
+            param()
+            if ($ThrowException) {
+                throw $ThrowException
+            }
+
+            $exitCodeVal = if ($null -ne $ExitCode) { $ExitCode } else { 0 }
+            $global:LASTEXITCODE = $exitCodeVal
+            if ($exitCodeVal -ne 0) {
+                return ''
+            }
+
+            $argsList = $args -join ' '
+
+            if ($argsList -match 'api repos/.+/issues/\d+/comments' -and $argsList -notmatch 'POST' -and $argsList -notmatch 'PATCH') {
+                if ($OnList) {
+                    & $OnList $argsList $args
+                }
+                return $commentsString
+            }
+
+            if ($argsList -match 'api user') {
+                return $CurrentUser
+            }
+
+            if ($argsList -match 'PATCH') {
+                $commentId = if ($argsList -match 'comments/(\d+)') { [int]$Matches[1] } else { $null }
+                if ($OnPatch) {
+                    & $OnPatch $commentId $argsList $args
+                }
+                $retId = if ($null -ne $commentId) { $commentId } else { 1 }
+                return "{`"id`":$retId}"
+            }
+
+            if ($argsList -match 'POST') {
+                if ($OnPost) {
+                    & $OnPost $argsList $args
+                }
+                return '{"id":999}'
+            }
+
+            return ''
+        }.GetNewClosure()
+
+        Mock -CommandName gh -MockWith $mockScript
+    }
 }
 
 Describe 'Publish-PrComment' {
@@ -54,21 +137,12 @@ Describe 'Publish-PrComment' {
         It 'includes --paginate when querying comments' {
             $script:PaginateCalled = $false
 
-            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-            Mock -CommandName gh -MockWith {
-                param()
-                $global:LASTEXITCODE = 0
-                $argsList = $args -join ' '
-                if ($argsList -match 'api repos/.+/issues/123/comments' -and $argsList -notmatch 'POST') {
-                    if ($argsList -match '--paginate') {
-                        $script:PaginateCalled = $true
-                    }
-                    return '[]'
+            Set-GhAvailable -Available $true
+            New-GhApiMock -OnList {
+                param($argsList)
+                if ($argsList -match '--paginate') {
+                    $script:PaginateCalled = $true
                 }
-                if ($argsList -match 'api user') {
-                    return 'bot-user'
-                }
-                return ''
             }
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "Test"
