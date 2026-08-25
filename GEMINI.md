@@ -47,8 +47,15 @@ using it here, not a copy of that design.
   - `status:needs-revision` / `status:needs-clarification` — Three Amigos
     bounced it back to Architect; no action needed from you unless it
     escalates to `status:needs-po-input`
-  - `status:awaiting-approval` — Three Amigos passed it; nothing happens
-    until you relabel `status:ready`
-- **Nothing gets implemented automatically.** The final `status:ready`
-  relabel is always yours, and only then does the existing interactive
-  `@Developer`/`@Tester` (Antigravity) workflow pick it up.
+  - `status:awaiting-approval` — Three Amigos' own internal marker on a
+    subtask it's cleared for pickup; not something you act on
+  - `status:ready` — Three Amigos sets this on the story automatically on
+    a READY batch verdict (as of 2026-08-25 — no PO relabel step anymore).
+    Dev & Test picks it up from here on its own.
+  - `status:done` — set automatically once every subtask under a story is
+    closed; the story itself is also closed at that point
+- **Nothing gets implemented until Three Amigos clears the batch.** Past
+  that point the whole loop — Dev & Test's implementation, PR Review,
+  fix-up rounds, and Merge — runs without you. You still get pulled in for
+  `status:needs-po-input` escalations (Architect conflicts, round-cap
+  hits) at any stage.

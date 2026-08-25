@@ -14,13 +14,15 @@ name: Architect
 #   status:needs-clarification  -> answer_clarifications mode: resolve
 #                                  targeted questions across the batch.
 #
-# Which subtasks belong to a parent is determined by each subtask's own
-# "### Parent user story" self-reference (see
-# .github/workflows/scripts/filter_subtasks_by_parent.py), not by trusting
-# the parent's own checklist field to stay in sync — that field is NOT
-# programmatically maintained by this workflow (a deliberate simplification
-# to avoid fragile body-text surgery; the parent's comment thread shows the
-# current subtask list after every Architect pass instead).
+# Which subtasks belong to a parent is the real GitHub Sub-issues
+# relationship (2026-08-25) — queried directly via `gh api .../sub_issues`
+# and linked via the same endpoint's POST right after each `gh issue
+# create`. Subtask bodies still carry a "### Parent user story"
+# self-reference too (harmless, human-readable), but nothing parses it
+# anymore — that was the old mechanism, replaced because GitHub's own
+# relationship is authoritative and renders as a real progress checklist
+# on the parent, instead of free text a script had to regex out of up to
+# 100 issues per lookup.
 #
 # Security note: issue title/body/comments are untrusted input (this is a
 # public repo). Never interpolate them directly into `run:`/`with:` GitHub
@@ -102,10 +104,14 @@ jobs:
           gh issue view "$ISSUE_NUMBER" -R "$REPO" \
             --json number,title,body,labels,comments > issue_context.json
 
-          gh issue list -R "$REPO" --label "type:subtask" --state open \
-            --json number,title,body,labels --limit 100 \
-            | python3 .github/workflows/scripts/filter_subtasks_by_parent.py "$ISSUE_NUMBER" \
-            > existing_subtasks.json
+          SUBTASK_NUMS=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/sub_issues" -q '.[].number')
+          if [ -z "$SUBTASK_NUMS" ]; then
+            echo "[]" > existing_subtasks.json
+          else
+            echo "$SUBTASK_NUMS" | while read -r N; do
+              gh issue view "$N" -R "$REPO" --json number,title,body,labels
+            done | jq -s '.' > existing_subtasks.json
+          fi
 
       - name: Select mode-specific prompt
         if: steps.mode.outputs.mode != 'skip'
@@ -242,6 +248,12 @@ jobs:
           CLOSED=""
 
           CREATE_COUNT=$(jq '.subtasks.create | length' architect_output.json)
+          if [ "$CREATE_COUNT" -gt 0 ]; then
+            # Integer database id, NOT the GraphQL node id `gh issue view
+            # --json id` returns — the sub_issues endpoint 422s on that.
+            # Confirmed live before wiring this in (see PR/commit history).
+            PARENT_ID=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER" -q .id)
+          fi
           for i in $(seq 0 $((CREATE_COUNT - 1))); do
             TITLE=$(jq -r ".subtasks.create[$i].title" architect_output.json)
             BODY_FILE=$(mktemp)
@@ -251,6 +263,8 @@ jobs:
               --body-file "$BODY_FILE" \
               --label "type:subtask,status:pending-review")
             NEW_NUM=$(basename "$NEW_URL")
+            NEW_ID=$(gh api "repos/$REPO/issues/$NEW_NUM" -q .id)
+            gh api "repos/$REPO/issues/$ISSUE_NUMBER/sub_issues" -F sub_issue_id="$NEW_ID" > /dev/null
             CREATED="$CREATED #$NEW_NUM"
             rm -f "$BODY_FILE"
           done

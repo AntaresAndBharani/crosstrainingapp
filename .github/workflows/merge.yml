@@ -18,9 +18,11 @@ name: Merge & Backlog
 # the pipeline reasons about the parent story explicitly (Three Amigos'
 # batch review, Dev & Test's story-level status:ready gate); this node was
 # the one place that only ever looked at the single subtask/PR in front
-# of it. Reuses filter_subtasks_by_parent.py (already proven in
-# architect.yml/three-amigos.yml) rather than re-deriving the parent-match
-# regex a third time.
+# of it. Uses the real GitHub Sub-issues API (.../parent, .../sub_issues)
+# as of 2026-08-25 — previously a Python regex script, replaced once the
+# whole pipeline moved off text-based parent references. Also relabels
+# the story status:ready -> status:done at close time (2026-08-25), so a
+# finished story is queryable/visually distinct, not just closed state.
 
 on:
   pull_request:
@@ -63,22 +65,23 @@ jobs:
             exit 0
           fi
 
-          SUBTASK_BODY=$(gh issue view "$SUBTASK" -R "$REPO" --json body -q '.body' 2>/dev/null || true)
-          STORY=$(echo "$SUBTASK_BODY" | python3 .github/workflows/scripts/find_parent_story.py)
+          STORY=$(gh api "repos/$REPO/issues/$SUBTASK/parent" -q .number 2>/dev/null || true)
           if [ -z "${STORY:-}" ]; then
             echo "Subtask #$SUBTASK has no parent story reference — nothing to check."
             exit 0
           fi
 
-          OPEN_SIBLINGS=$(gh issue list -R "$REPO" --label "type:subtask" --state open \
-            --json number,title,body,labels --limit 100 \
-            | python3 .github/workflows/scripts/filter_subtasks_by_parent.py "$STORY" \
-            | jq 'length')
+          OPEN_SIBLINGS=$(gh api "repos/$REPO/issues/$STORY/sub_issues" \
+            -q '[.[] | select(.state=="open")] | length')
 
           if [ "$OPEN_SIBLINGS" -gt 0 ]; then
             echo "Story #$STORY still has $OPEN_SIBLINGS open subtask(s) — not closing yet."
             exit 0
           fi
 
-          gh issue comment "$STORY" -R "$REPO" --body "**All subtasks complete.** Every \`type:subtask\` issue linked to this story is now closed — the last one was #${SUBTASK}, merged via #${PR_NUMBER}. Closing this story."
+          gh issue comment "$STORY" -R "$REPO" --body "**All subtasks complete.** Every sub-issue linked to this story is now closed — the last one was #${SUBTASK}, merged via #${PR_NUMBER}. Closing this story."
+          # Leave the story queryably distinct from one still in flight,
+          # not just relying on issue state (open/closed) to carry that.
+          gh issue edit "$STORY" -R "$REPO" --remove-label "status:ready" 2>/dev/null || true
+          gh issue edit "$STORY" -R "$REPO" --add-label "status:done"
           gh issue close "$STORY" -R "$REPO"

@@ -20,9 +20,11 @@ processed.
 
 ## Step 1 — fix-up work takes priority
 
-For each story: find its subtasks, and among those, any with an open PR
-labeled `review:changes-requested`. If one exists anywhere, handle it and
-stop — do not fall through to Step 2 this poll:
+For each story: find its subtasks via `gh api
+repos/<repo>/issues/<story>/sub_issues` (the real GitHub Sub-issues
+relationship), and among those, any with an open PR labeled
+`review:changes-requested`. If one exists anywhere, handle it and stop —
+do not fall through to Step 2 this poll:
 
 1. Read the parent story for context, check out the PR's existing branch
    (not `main`), and read the blocking issues from the PR's most recent
@@ -65,10 +67,10 @@ For each matching story:
 
 1. Read the story's full title, body, and acceptance criteria for context
    (overall business intent, definition of done).
-2. Find its subtasks (`type:subtask` issues whose body references this
-   story as parent, via "Parent User Story #N") that are still labeled
-   `status:awaiting-approval` — meaning Three Amigos batch-approved them
-   but they haven't been implemented yet. If none, skip this story.
+2. Find its subtasks via `gh api repos/<repo>/issues/<story>/sub_issues`
+   (the real GitHub Sub-issues relationship), filtered to those still
+   labeled `status:awaiting-approval` — meaning Three Amigos batch-approved
+   them but they haven't been implemented yet. If none, skip this story.
 3. Before touching any file: add the label `status:in-development` to
    the STORY (not the subtask). This is what Step 2b checks — it closes
    the gap between "picked this story" and "opened a PR for it," which

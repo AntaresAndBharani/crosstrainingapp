@@ -94,10 +94,14 @@ jobs:
           gh issue view "$ISSUE_NUMBER" -R "$REPO" \
             --json number,title,body,labels,comments > issue_context.json
 
-          gh issue list -R "$REPO" --label "type:subtask" --state open \
-            --json number,title,body,labels,comments --limit 100 \
-            | python3 .github/workflows/scripts/filter_subtasks_by_parent.py "$ISSUE_NUMBER" \
-            > subtasks_context.json
+          SUBTASK_NUMS=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/sub_issues" -q '[.[] | select(.state=="open")] | .[].number')
+          if [ -z "$SUBTASK_NUMS" ]; then
+            echo "[]" > subtasks_context.json
+          else
+            echo "$SUBTASK_NUMS" | while read -r N; do
+              gh issue view "$N" -R "$REPO" --json number,title,body,labels,comments
+            done | jq -s '.' > subtasks_context.json
+          fi
 
           SUBTASK_COUNT=$(jq 'length' subtasks_context.json)
           if [ "$SUBTASK_COUNT" -eq 0 ]; then
@@ -177,8 +181,13 @@ jobs:
 
           case "$BATCH_VERDICT" in
             READY)
-              # Promote every subtask individually — PO approval and Dev
-              # handoff both still happen per-subtask, that part is unchanged.
+              # Promote every subtask individually. This flow's gate is
+              # subtask-level (dev-test.yml triggers off status:ready on an
+              # individual subtask, unlike the Antigravity flow's
+              # story-level gate — see docs/antigravity-scheduled-tasks.md).
+              # No PO relabel step anymore (removed 2026-08-25): straight to
+              # status:ready per subtask, same principle as the story-level
+              # flow's change, applied to this flow's own gate shape.
               SUBTASK_COUNT=$(jq 'length' subtasks_context.json)
               for i in $(seq 0 $((SUBTASK_COUNT - 1))); do
                 NUM=$(jq -r ".[$i].number" subtasks_context.json)
@@ -190,7 +199,7 @@ jobs:
                 for OLD_LABEL in status:pending-review status:review status:needs-revision status:needs-clarification; do
                   gh issue edit "$NUM" -R "$REPO" --remove-label "$OLD_LABEL" 2>/dev/null || true
                 done
-                gh issue edit "$NUM" -R "$REPO" --add-label "status:awaiting-approval"
+                gh issue edit "$NUM" -R "$REPO" --add-label "status:ready"
               done
               gh issue edit "$ISSUE_NUMBER" -R "$REPO" --remove-label "status:review"
               ;;
