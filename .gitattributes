@@ -17,3 +17,7 @@ gradlew text eol=lf
 # twice in one day - see graph-engineering's README "Implementation
 # lessons" and docs/dev-test-node.md.
 CHANGELOG.md merge=union
+
+# Baseline markdown for script test assertions — pin to LF so Windows checkouts
+# don't produce CRLF and break byte-exact comparisons in the test harness.
+scripts/testdata/unit-tests/expected/*.md text eol=lf
