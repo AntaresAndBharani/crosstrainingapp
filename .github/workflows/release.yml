@@ -5,6 +5,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# Serialise release runs per ref to prevent concurrent tag creation and release collisions.
+# cancel-in-progress is false so an in-flight release run is never interrupted mid-tag-push.
+# GitHub Actions keeps at most one pending run per concurrency group, meaning rapid successive
+# merges to main are coalesced into the newest queued run rather than each triggering a release.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
