@@ -95,7 +95,10 @@ jobs:
       - name: Build distributable APK (debug variant, debug-signed)
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Prepare APK distribution artifact
+      # Package the debug-signed build artifact (source: app/build/outputs/apk/debug/app-debug.apk)
+      # as the tagged distributable. This step renames the debug artifact for release publication
+      # without re-signing or rebuilding.
+      - name: Package debug-signed APK as release distribution artifact
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk "dist/crosstraining-${{ env.RELEASE_TAG }}.apk"
