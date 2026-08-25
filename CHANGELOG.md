@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Orphaned Script Test Runner**: Deleted superseded legacy script `scripts/test-summarize-unit-tests.ps1` in favor of modular test harness under `scripts/tests/` (#208, #221).
 
 ### Changed
+- **ArtifactName Fallback Tracking & Single-Sourced Default**: Consolidated `-ArtifactName` parameter default to `""` and introduced explicit boolean `$artifactNameFallbackApplied` in `scripts/summarize-unit-tests.ps1`, eliminating magic-string sentinel comparisons when formatting truncation notes (#224, #225, #231, #234).
 - **Snapshot Pre-Release Publish Permissions & Token Explicitness**: Configured explicit `env: GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` on the snapshot pre-release publish step in `.github/workflows/build.yml` and documented workflow permission requirements and fork-run token limitations (#199, #210, #213).
 - **Release Workflow Packaging Documentation Polish**: Added an explicit comment above the release APK packaging step in `.github/workflows/release.yml` cross-referencing the earlier 'Ensure debug keystore' step and clarifying variant distinctions (#192, #210, #212).
 - **ArtifactName Backtick Escaping in Truncation Note**: Hardened failure truncation note rendering in `scripts/summarize-unit-tests.ps1` to sanitize `-ArtifactName` using `Get-BacktickFence -MinLength 1` and leading/trailing whitespace padding, ensuring artifact names containing backticks render as valid inline code spans (#196, #209, #216).
