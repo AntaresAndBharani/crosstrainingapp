@@ -21,6 +21,9 @@ Assert-True   -Condition ($passResult.Output.StartsWith("<!-- unit-test-evidence
               -TestName "pass: starts with evidence marker"
 Assert-Match  -Value $passResult.Output -Pattern '(?m)^\| 3 \| 3 \| 0 \| 0 \| \d+\.\d{2}s \|$' `
               -TestName "pass: counts row 3/3/0/0"
+$check = [char]::ConvertFromUtf32(0x2705)
+Assert-True   -Condition ($passResult.Output.Contains("**Status:** $check All 3 tests passed.")) `
+              -TestName "pass: status line contains checkmark and 'All 3 tests passed.'"
 Assert-True   -Condition (-not ($passResult.Output.Contains("#### Failures"))) `
               -TestName "pass: no Failures section"
 Assert-NotMatch -Value $passResult.Output -Pattern '(?i)/home/runner/work|[a-z]:\\a\\' `
@@ -46,6 +49,13 @@ if (Test-Path $baselinePath) {
     $script:FailCount++
 }
 
+$cross = [char]::ConvertFromUtf32(0x274C)
+Assert-True   -Condition ($failResult.Output.Contains("**Status:** $cross 1 test failed.")) `
+              -TestName "fail: status line contains cross and singular '1 test failed.'"
+$statusIdx = $failResult.Output.IndexOf("**Status:** $cross 1 test failed.")
+$failHeadingIdx = $failResult.Output.IndexOf("#### Failures")
+Assert-True   -Condition ($statusIdx -ge 0 -and $failHeadingIdx -ge 0 -and $statusIdx -lt $failHeadingIdx) `
+              -TestName "fail: status line precedes Failures heading"
 Assert-True   -Condition ($failResult.Output.Contains("#### Failures")) `
               -TestName "fail: contains Failures section"
 Assert-True   -Condition ($failResult.Output.Contains('**Message:** `expected:<1> but was:<2>`')) `
@@ -74,6 +84,13 @@ Write-Host "--- messy fixture ---"
 $messyResult = Invoke-SummarizerScript -ResultsDir (Join-Path $FixtureRoot "messy")
 Assert-Equal  -Actual $messyResult.ExitCode -Expected 0 `
               -TestName "messy: exits 0"
+
+Assert-True   -Condition ($messyResult.Output.Contains("**Status:** $cross 5 tests failed.")) `
+              -TestName "messy: status line contains cross and plural '5 tests failed.'"
+$messyStatusIdx = $messyResult.Output.IndexOf("**Status:** $cross 5 tests failed.")
+$messyFailHeadingIdx = $messyResult.Output.IndexOf("#### Failures")
+Assert-True   -Condition ($messyStatusIdx -ge 0 -and $messyFailHeadingIdx -ge 0 -and $messyStatusIdx -lt $messyFailHeadingIdx) `
+              -TestName "messy: status line precedes Failures heading"
 
 # Literal angle-bracket content must NOT be entity-escaped
 Assert-True   -Condition ($messyResult.Output.Contains("expected:<b> but was:<i>")) `
