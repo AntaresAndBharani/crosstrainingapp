@@ -66,7 +66,7 @@ function Invoke-SummarizerScript {
         '-OutFile',    (EscapeArg $tempOut),
         '-PrNumber',   (EscapeArg $PrNumber)
     )
-    if (-not [string]::IsNullOrEmpty($ArtifactName)) {
+    if ($null -ne $ArtifactName) {
         $argParts += @('-ArtifactName', (EscapeArg $ArtifactName))
     }
     $argString = $argParts -join ' '

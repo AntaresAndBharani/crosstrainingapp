@@ -45,3 +45,8 @@ Assert-True -Condition ($ScriptText.Contains('<!-- unit-test-evidence -->')) `
 Assert-True -Condition (-not ($ScriptText -match '\$matches\s*=')) `
             -TestName "static: no `$matches assignment (PSAvoidAssignmentToAutomaticVariable)"
 
+# ArtifactName fallback guard present
+Assert-True -Condition ($ScriptText -match '\[string\]::IsNullOrWhiteSpace\(\$ArtifactName\)') `
+            -TestName "static: ArtifactName IsNullOrWhiteSpace guard present"
+
+

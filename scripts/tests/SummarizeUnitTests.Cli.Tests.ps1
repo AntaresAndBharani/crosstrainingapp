@@ -73,3 +73,54 @@ Assert-Equal -Actual $prAlphaResult.ExitCode -Expected 0 `
              -TestName "cli: -PrNumber 'abc' exits 0"
 Assert-Match -Value $prAlphaResult.Output -Pattern '(?m)^\| 3 \| 3 \| 0 \| 0 \| \d+\.\d{2}s \|$' `
              -TestName "cli: -PrNumber 'abc' produces normal results table"
+
+# ---------------------------------------------------------------------------
+# -ArtifactName variations with truncating failure set
+# ---------------------------------------------------------------------------
+Write-Host "--- -ArtifactName variations (truncation) ---"
+$truncDir = Join-Path ([System.IO.Path]::GetTempPath()) "sut-trunc-$([guid]::NewGuid())"
+[System.IO.Directory]::CreateDirectory($truncDir) | Out-Null
+try {
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.Append('<?xml version="1.0" encoding="UTF-8"?><testsuite name="com.example.TruncTest" tests="200" failures="200" errors="0" skipped="0" time="5.0">')
+    for ($i = 0; $i -lt 200; $i++) {
+        [void]$sb.Append("<testcase name=`"test$i`" classname=`"com.example.TruncTest`" time=`"0.01`"><failure message=`"failure message $i`" type=`"java.lang.AssertionError`">")
+        [void]$sb.Append(([string]::new('x', 350)))
+        [void]$sb.Append("`nat com.example.TruncTest.test$i(TruncTest.kt:10)`n</failure></testcase>")
+    }
+    [void]$sb.Append('</testsuite>')
+    [System.IO.File]::WriteAllText((Join-Path $truncDir "TEST-com.example.TruncTest.xml"), $sb.ToString(), [System.Text.Encoding]::UTF8)
+
+    # Named
+    $namedRes = Invoke-SummarizerScript -ResultsDir $truncDir -ArtifactName "unit-test-report-pr-abc1234"
+    Assert-Equal -Actual $namedRes.ExitCode -Expected 0 `
+                 -TestName "cli: -ArtifactName named exits 0"
+    Assert-True  -Condition ($namedRes.Output.Contains('> Additional failures truncated. See full test report in the `unit-test-report-pr-abc1234` artifact.')) `
+                 -TestName "cli: -ArtifactName named contains backticked artifact name"
+
+    # Default (omitted)
+    $defRes = Invoke-SummarizerScript -ResultsDir $truncDir
+    Assert-Equal -Actual $defRes.ExitCode -Expected 0 `
+                 -TestName "cli: -ArtifactName omitted exits 0"
+    Assert-True  -Condition ($defRes.Output.Contains('> Additional failures truncated. See full test report in the unit test report artifact.')) `
+                 -TestName "cli: -ArtifactName omitted contains generic fallback note"
+
+    # Explicit empty string
+    $emptyArtRes = Invoke-SummarizerScript -ResultsDir $truncDir -ArtifactName ""
+    Assert-Equal -Actual $emptyArtRes.ExitCode -Expected 0 `
+                 -TestName "cli: -ArtifactName empty string exits 0"
+    Assert-True  -Condition ($emptyArtRes.Output.Contains('> Additional failures truncated. See full test report in the unit test report artifact.')) `
+                 -TestName "cli: -ArtifactName empty string contains generic fallback note"
+
+    # Whitespace
+    $wsArtRes = Invoke-SummarizerScript -ResultsDir $truncDir -ArtifactName "   "
+    Assert-Equal -Actual $wsArtRes.ExitCode -Expected 0 `
+                 -TestName "cli: -ArtifactName whitespace exits 0"
+    Assert-True  -Condition ($wsArtRes.Output.Contains('> Additional failures truncated. See full test report in the unit test report artifact.')) `
+                 -TestName "cli: -ArtifactName whitespace contains generic fallback note"
+} finally {
+    if (Test-Path -Path $truncDir) {
+        Remove-Item $truncDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
