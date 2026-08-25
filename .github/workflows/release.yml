@@ -37,6 +37,30 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
+      - name: 'Preflight: release signing secrets present'
+        run: |
+          if [ -z "${RELEASE_KEYSTORE_BASE64:-}" ]; then
+            echo "::error::RELEASE_KEYSTORE_BASE64 is not configured — refusing to publish a debug-signed release."
+            exit 1
+          fi
+          if [ -z "${RELEASE_STORE_PASSWORD:-}" ]; then
+            echo "::error::RELEASE_STORE_PASSWORD is not configured — refusing to publish a debug-signed release."
+            exit 1
+          fi
+          if [ -z "${RELEASE_KEY_ALIAS:-}" ]; then
+            echo "::error::RELEASE_KEY_ALIAS is not configured — refusing to publish a debug-signed release."
+            exit 1
+          fi
+          if [ -z "${RELEASE_KEY_PASSWORD:-}" ]; then
+            echo "::error::RELEASE_KEY_PASSWORD is not configured — refusing to publish a debug-signed release."
+            exit 1
+          fi
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
       - name: Ensure debug keystore
         run: |
           if [ ! -f app/debug.keystore ]; then
@@ -113,6 +137,23 @@ jobs:
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk "dist/crosstraining-${{ env.RELEASE_TAG }}.apk"
+
+      - name: Verify release signature
+        run: |
+          APKSIGNER=$(ls -1d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)/apksigner
+          if [ ! -x "$APKSIGNER" ]; then
+            echo "::error::apksigner tool not found under $ANDROID_HOME/build-tools/"
+            exit 1
+          fi
+
+          APK_PATH="dist/crosstraining-${{ env.RELEASE_TAG }}.apk"
+          CERT_OUTPUT=$("$APKSIGNER" verify --print-certs "$APK_PATH")
+          echo "$CERT_OUTPUT"
+
+          if echo "$CERT_OUTPUT" | grep -q "CN=Android Debug"; then
+            echo "::error::Packaged APK is signed with Android Debug certificate, not a release certificate."
+            exit 1
+          fi
 
       - name: Create Git Tag
         run: |
