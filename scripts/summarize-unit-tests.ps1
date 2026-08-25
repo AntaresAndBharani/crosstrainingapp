@@ -3,7 +3,7 @@ param (
     [string]$OutFile = "unit-test-summary.md",
     [string]$PrNumber = "",
     [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
-    [string]$ArtifactName = "unit test report"
+    [string]$ArtifactName = ""
 )
 
 if ([string]::IsNullOrWhiteSpace($Repo)) {
@@ -287,7 +287,8 @@ if ($FailuresList.Count -gt 0) {
     }
 
     if ($truncated) {
-        $Body += "`n> [!NOTE]`n> Additional failures truncated. See full test report in the $ArtifactName artifact.`n"
+        $artifactRef = if (-not [string]::IsNullOrWhiteSpace($ArtifactName)) { '`' + $ArtifactName + '`' } else { "unit test report" }
+        $Body += "`n> [!NOTE]`n> Additional failures truncated. See full test report in the $artifactRef artifact.`n"
     }
 }
 
