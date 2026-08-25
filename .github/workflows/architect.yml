@@ -97,6 +97,20 @@ jobs:
           esac
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
 
+          # Cost split (2026-08-25, PO's explicit call): Opus is the
+          # default (highest cost-of-error node — a PO-drafted story or
+          # the PO-escalation loop deserves it), but a story synthesized
+          # by Backlog Triage from already-well-specified tech-debt/
+          # enhancement issues (see docs/backlog-triage-node.md) is lower
+          # risk to decompose, so it runs on Sonnet instead. The label
+          # persists across every later Architect re-entry on the same
+          # story (restructure, answer_clarifications), so the model
+          # choice stays consistent with the story's actual origin, not
+          # just its first pass.
+          MODEL=claude-opus-5
+          case ",$TYPES," in *,origin:backlog-triage,*) MODEL=claude-sonnet-5;; esac
+          echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+
       - name: Fetch parent + existing subtasks
         if: steps.mode.outputs.mode != 'skip'
         run: |
@@ -124,18 +138,23 @@ jobs:
           esac
           cp ".github/workflows/prompts/$FILE" architect_task.md
 
-      - name: Run Architect (Claude Opus) — attempt 1
+      - name: Run Architect — attempt 1
         id: architect_attempt_1
         if: steps.mode.outputs.mode != 'skip'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # See prior commits on this file for why both flags are needed:
-          # no model specified silently defaults to Sonnet, and
-          # claude-code-action's headless mode has no human to approve the
-          # Write tool call otherwise.
-          claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          # See prior commits on this file for why --permission-mode/
+          # --allowedTools are needed: claude-code-action's headless mode
+          # has no human to approve the Write tool call otherwise. --model
+          # is always explicit (never omitted) precisely because the
+          # unspecified default is Sonnet — now that Sonnet is also a
+          # deliberate choice for some stories (see `Determine mode`
+          # above), staying explicit here is what keeps Opus vs. Sonnet an
+          # intentional per-story decision rather than an accident of
+          # whichever value `steps.mode.outputs.model` happens to hold.
+          claude_args: '--model ${{ steps.mode.outputs.model }} --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
           prompt: |
             Follow the instructions in the file architect_task.md at the
             repository root exactly. Read issue_context.json and, if
@@ -146,14 +165,14 @@ jobs:
         if: steps.mode.outputs.mode != 'skip' && steps.architect_attempt_1.outcome == 'failure'
         run: sleep "$OVERLOAD_RETRY_DELAY_SECONDS"
 
-      - name: Run Architect (Claude Opus) — attempt 2
+      - name: Run Architect — attempt 2
         id: architect_attempt_2
         if: steps.mode.outputs.mode != 'skip' && steps.architect_attempt_1.outcome == 'failure'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          claude_args: '--model ${{ steps.mode.outputs.model }} --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
           prompt: |
             Follow the instructions in the file architect_task.md at the
             repository root exactly. Read issue_context.json and, if
@@ -167,7 +186,7 @@ jobs:
           steps.architect_attempt_2.outcome == 'failure'
         run: sleep "$OVERLOAD_RETRY_DELAY_SECONDS"
 
-      - name: Run Architect (Claude Opus) — attempt 3
+      - name: Run Architect — attempt 3
         id: architect_attempt_3
         if: >
           steps.mode.outputs.mode != 'skip' &&
@@ -177,7 +196,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          claude_args: '--model ${{ steps.mode.outputs.model }} --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
           prompt: |
             Follow the instructions in the file architect_task.md at the
             repository root exactly. Read issue_context.json and, if

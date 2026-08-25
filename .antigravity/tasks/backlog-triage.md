@@ -66,11 +66,14 @@ For each label in turn:
      (`crosstrainingapp`), Definition of done, and a **Source issues**
      section listing every issue number this story absorbs (and which
      label they came from).
-   - Labels: `type:user-story,status:ready-for-architect` — directly, no
-     `status:definition` stop. This backlog is already well-specified
-     (each source issue came from a real PR Review pass with concrete
-     detail), so it doesn't need a PO definition pass before Architect
-     picks it up and decomposes it into subtasks.
+   - Labels: `type:user-story,status:ready-for-architect,origin:backlog-triage`
+     — directly, no `status:definition` stop. This backlog is already
+     well-specified (each source issue came from a real PR Review pass
+     with concrete detail), so it doesn't need a PO definition pass before
+     Architect picks it up and decomposes it into subtasks.
+     `origin:backlog-triage` is what tells Architect to use Sonnet instead
+     of Opus for this story (2026-08-25, cost decision) — don't skip it,
+     even for a single-issue solo-cluster story.
 
 4. For each issue absorbed into that story: comment on it with the same
    wording pattern as the PO's own manual precedent (issues #64, #66,
