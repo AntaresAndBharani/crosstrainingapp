@@ -38,3 +38,7 @@ google-services.json
 # Local Test Scripts and APKs
 local_test/
 
+# Generated test evidence
+unit-test-summary.md
+body.txt
+

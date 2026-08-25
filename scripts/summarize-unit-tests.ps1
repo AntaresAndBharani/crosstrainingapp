@@ -95,7 +95,7 @@ function Publish-PrComment ([string]$content) {
 
     $targetComment = $comments | Where-Object { $_.body -and ($_.body -match "^$EvidenceMarker") } | Select-Object -Last 1
 
-    $tempBodyFile = "body.txt"
+    $tempBodyFile = Join-Path ([System.IO.Path]::GetTempPath()) "unit-test-body-$([guid]::NewGuid()).md"
     try {
         [System.IO.File]::WriteAllText($tempBodyFile, $content, (New-Object System.Text.UTF8Encoding $false))
 
