@@ -4,15 +4,17 @@ param (
     [string]$OutFile = "unit-test-summary.md",
     [string]$PrNumber = "",
     [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
-    [string]$ArtifactName = "unit test report"
+    [string]$ArtifactName = ""
 )
 
 if ([string]::IsNullOrWhiteSpace($Repo)) {
     $Repo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }
 }
 
+$artifactNameFallbackApplied = $false
 if ([string]::IsNullOrWhiteSpace($ArtifactName)) {
     $ArtifactName = "unit test report"
+    $artifactNameFallbackApplied = $true
 }
 
 $EvidenceMarker = "<!-- unit-test-evidence -->"
@@ -241,12 +243,12 @@ if ($FailuresList.Count -gt 0) {
     }
 
     if ($truncated) {
-        $artifactRef = if ($ArtifactName -ne "unit test report" -and -not [string]::IsNullOrWhiteSpace($ArtifactName)) {
+        $artifactRef = if (-not $artifactNameFallbackApplied) {
             $delim = Get-BacktickFence -text $ArtifactName -MinLength 1
             $padded = if ($ArtifactName.StartsWith('`') -or $ArtifactName.EndsWith('`')) { " $ArtifactName " } else { $ArtifactName }
             "$delim$padded$delim"
         } else {
-            "unit test report"
+            $ArtifactName
         }
         $Body += "`n> [!NOTE]`n> Additional failures truncated. See full test report in the $artifactRef artifact.`n"
     }
