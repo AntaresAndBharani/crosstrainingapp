@@ -2,7 +2,8 @@ param (
     [string]$ResultsDir = "app/build/test-results/testDebugUnitTest",
     [string]$OutFile = "unit-test-summary.md",
     [string]$PrNumber = "",
-    [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" })
+    [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
+    [string]$ArtifactName = "unit test report"
 )
 
 if ([string]::IsNullOrWhiteSpace($Repo)) {
@@ -11,7 +12,7 @@ if ([string]::IsNullOrWhiteSpace($Repo)) {
 
 $EvidenceMarker = "<!-- unit-test-evidence -->"
 
-function Sanitize-Paths ([string]$text) {
+function ConvertTo-RelativePath ([string]$text) {
     if (-not $text) { return "" }
     
     # Strip known absolute path prefixes
@@ -34,7 +35,7 @@ function Sanitize-Paths ([string]$text) {
 function Format-StackTrace ([string]$trace) {
     if (-not $trace) { return "" }
     
-    $trace = Sanitize-Paths -text $trace
+    $trace = ConvertTo-RelativePath -text $trace
     
     # Cap trace at 40 lines
     $lines = $trace -split '\r?\n'
@@ -62,7 +63,7 @@ function Get-BacktickFence ([string]$text) {
 function Format-FailureMessage ([string]$message) {
     if (-not $message) { return "" }
     
-    $message = Sanitize-Paths -text $message
+    $message = ConvertTo-RelativePath -text $message
     
     $matches = [regex]::Matches($message, '`+')
     $maxRun = 0
@@ -175,7 +176,7 @@ $TotalTests = 0
 $TotalFailures = 0
 $TotalSkipped = 0
 $TotalTime = 0.0
-$FailuresList = [System.Collections.Generic.List[PSObject]]::new()
+$FailuresList = [System.Collections.Generic.List[PSCustomObject]]::new()
 $SuitesProcessed = 0
 
 foreach ($file in $xmlFiles) {
@@ -224,11 +225,11 @@ foreach ($file in $xmlFiles) {
                     $className = if ($tc.Attributes["classname"]) { $tc.Attributes["classname"].Value } else { "" }
                     $methodName = if ($tc.Attributes["name"]) { $tc.Attributes["name"].Value } else { "" }
                     $rawMessage = if ($failNode.Attributes["message"]) { $failNode.Attributes["message"].Value } else { "" }
-                    $message = Sanitize-Paths -text $rawMessage
+                    $message = ConvertTo-RelativePath -text $rawMessage
                     $rawTrace = $failNode.InnerText
                     $formattedTrace = Format-StackTrace -trace $rawTrace
 
-                    $FailuresList.Add([PSObject]@{
+                    $FailuresList.Add([PSCustomObject]@{
                         ClassName = $className
                         MethodName = $methodName
                         Message = $message
@@ -277,7 +278,7 @@ if ($FailuresList.Count -gt 0) {
     }
 
     if ($truncated) {
-        $Body += "`n> [!NOTE]`n> Additional failures truncated. See full test report in the unit test report artifact.`n"
+        $Body += "`n> [!NOTE]`n> Additional failures truncated. See full test report in the $ArtifactName artifact.`n"
     }
 }
 
