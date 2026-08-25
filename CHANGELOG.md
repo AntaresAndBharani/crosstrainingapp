@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
 
 ### Added
+- **CI Script Regression Tests Workflow Job**: Added a standalone `script-tests` job to `.github/workflows/build.yml` running `scripts/test-summarize-unit-tests.ps1` under `pwsh` on `ubuntu-latest` on pull requests to validate test summarizer regression scenarios in parallel without Android SDK overhead.
 - **Summarizer Test Harness Scenario Assertions**: Extended `scripts/test-summarize-unit-tests.ps1` with pass, fail, and runner path sanitization regression scenarios against committed JUnit XML fixtures, validating exit codes, table counts, elapsed time formatting, stack trace tab indentation, and absence of runner workspace path leaks.
 - **CI Unit Test Summary Workflow Step**: Integrated `scripts/summarize-unit-tests.ps1` into `.github/workflows/build.yml` to publish JUnit test results to the GitHub Actions Job Summary and sticky PR comments across PR and manual workflow runs.
 - **Sticky PR Comment for Unit Test Results**: Extended `scripts/summarize-unit-tests.ps1` to publish and update in-place a sticky PR comment with unit test summaries and failure stack traces using the `<!-- unit-test-evidence -->` marker.
