@@ -25,13 +25,13 @@ if (-not $PrNumber) {
     exit 1
 }
 
-if ([string]::IsNullOrWhiteSpace($SummaryPath) -or -not (Test-Path $SummaryPath)) {
+if ([string]::IsNullOrWhiteSpace($SummaryPath) -or -not (Test-Path -LiteralPath $SummaryPath -PathType Leaf)) {
     Write-Host "Summary file not found at $SummaryPath" -ForegroundColor Yellow
     exit 1
 }
 
 if (-not $Version) {
-    $Version = (Get-Item $SummaryPath).Directory.Name
+    $Version = (Get-Item -LiteralPath $SummaryPath).Directory.Name
 }
 
 # Check if release actually exists to avoid dead links
@@ -43,13 +43,25 @@ try {
     exit 1
 }
 
-$Summary = Get-Content $SummaryPath -Raw | ConvertFrom-Json
+$Summary = $null
+try {
+    $Summary = Get-Content -LiteralPath $SummaryPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+} catch {
+    Write-Host "Failed to read or parse summary JSON at ${SummaryPath}: $_" -ForegroundColor Yellow
+    exit 1
+}
+
+$Flows = @($Summary | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace($_.flow) })
+if ($Flows.Count -eq 0) {
+    Write-Host "Summary at $SummaryPath contained no flow results." -ForegroundColor Yellow
+    exit 1
+}
 
 $CommentBody = "<!-- e2e-evidence -->`n### :test_tube: E2E Test Evidence`n`n"
 $CommentBody += "| Flow | Status |`n|---|---|`n"
 
 $AnyFailed = $false
-foreach ($flow in $Summary) {
+foreach ($flow in $Flows) {
     $check = [char]::ConvertFromUtf32(0x2705)
     $cross = [char]::ConvertFromUtf32(0x274C)
     $StatusIcon = if ($flow.passed) { $check } else { $cross }
@@ -80,7 +92,7 @@ $tempBodyFile = Join-Path ([System.IO.Path]::GetTempPath()) "e2e-evidence-body-$
 try {
     [System.IO.File]::WriteAllText($tempBodyFile, $CommentBody, (New-Object System.Text.UTF8Encoding $false))
 
-    $RestCommentsRaw = gh api "repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments" 2>$null
+    $RestCommentsRaw = gh api "repos/AntaresAndBharani/crosstrainingapp/issues/$PrNumber/comments" --paginate 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "Failed to list comments on PR #$PrNumber."
         exit 0
@@ -117,5 +129,5 @@ try {
 
     Write-Host "Evidence posted successfully." -ForegroundColor Green
 } finally {
-    Remove-Item $tempBodyFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $tempBodyFile -Force -ErrorAction SilentlyContinue
 }
