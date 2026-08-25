@@ -7,6 +7,10 @@ param (
 
 . (Join-Path $PSScriptRoot 'lib/PrComment.ps1')
 
+if ([string]::IsNullOrWhiteSpace($Repo)) {
+    $Repo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }
+}
+
 if ($PrNumber) {
     if ($PrNumber -notmatch '^\d+$') {
         Write-Host "Invalid PR number '$PrNumber'. PR number must be numeric." -ForegroundColor Yellow
