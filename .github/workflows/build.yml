@@ -10,6 +10,16 @@ permissions:
   pull-requests: write
 
 jobs:
+  script-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run script test suite
+        shell: pwsh
+        run: ./scripts/test-summarize-unit-tests.ps1
+
   build:
     runs-on: ubuntu-latest
     steps:
