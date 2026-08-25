@@ -98,6 +98,24 @@ try {
     Assert-True  -Condition ($namedRes.Output.Contains('> Additional failures truncated. See full test report in the `unit-test-report-pr-abc1234` artifact.')) `
                  -TestName "cli: -ArtifactName named contains backticked artifact name"
 
+    # Named with embedded backtick
+    $btRes = Invoke-SummarizerScript -ResultsDir $truncDir -ArtifactName 'unit-test-report-pr-abc`1234'
+    Assert-Equal -Actual $btRes.ExitCode -Expected 0 `
+                 -TestName "cli: -ArtifactName with backtick exits 0"
+    Assert-True  -Condition ($btRes.Output.Contains('> Additional failures truncated. See full test report in the ``unit-test-report-pr-abc`1234`` artifact.')) `
+                 -TestName "cli: -ArtifactName with backtick contains double-backticked artifact name"
+    Assert-BalancedMarkdownDelimiters -Text $btRes.Output `
+                                      -TestName "cli: -ArtifactName with backtick has balanced markdown delimiters"
+
+    # Named with leading/trailing backticks
+    $leadBtRes = Invoke-SummarizerScript -ResultsDir $truncDir -ArtifactName '`unit-test-report-pr-abc1234`'
+    Assert-Equal -Actual $leadBtRes.ExitCode -Expected 0 `
+                 -TestName "cli: -ArtifactName with leading backticks exits 0"
+    Assert-True  -Condition ($leadBtRes.Output.Contains('> Additional failures truncated. See full test report in the `` `unit-test-report-pr-abc1234` `` artifact.')) `
+                 -TestName "cli: -ArtifactName with leading backticks contains padded backticked artifact name"
+    Assert-BalancedMarkdownDelimiters -Text $leadBtRes.Output `
+                                      -TestName "cli: -ArtifactName with leading backticks has balanced markdown delimiters"
+
     # Default (omitted)
     $defRes = Invoke-SummarizerScript -ResultsDir $truncDir
     Assert-Equal -Actual $defRes.ExitCode -Expected 0 `

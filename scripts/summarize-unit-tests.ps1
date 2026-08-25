@@ -241,7 +241,13 @@ if ($FailuresList.Count -gt 0) {
     }
 
     if ($truncated) {
-        $artifactRef = if ($ArtifactName -ne "unit test report" -and -not [string]::IsNullOrWhiteSpace($ArtifactName)) { '`' + $ArtifactName + '`' } else { "unit test report" }
+        $artifactRef = if ($ArtifactName -ne "unit test report" -and -not [string]::IsNullOrWhiteSpace($ArtifactName)) {
+            $delim = Get-BacktickFence -text $ArtifactName -MinLength 1
+            $padded = if ($ArtifactName.StartsWith('`') -or $ArtifactName.EndsWith('`')) { " $ArtifactName " } else { $ArtifactName }
+            "$delim$padded$delim"
+        } else {
+            "unit test report"
+        }
         $Body += "`n> [!NOTE]`n> Additional failures truncated. See full test report in the $artifactRef artifact.`n"
     }
 }
