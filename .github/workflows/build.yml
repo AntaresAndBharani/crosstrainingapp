@@ -5,6 +5,15 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# Concurrency configuration:
+# - A new push to the same PR branch supersedes the in-flight snapshot build (cancel-in-progress: true).
+# - Cancellation is safe because the rolling snapshot release is updated in place and never deleted.
+# - The rolling release is shared across open PRs (last-writer-wins); each workflow_dispatch run gets
+#   a unique group via github.run_id so manual builds never cancel each other.
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
   pull-requests: write

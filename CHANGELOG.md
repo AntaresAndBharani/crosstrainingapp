@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
 
 ### Added
+- **PR Snapshot Build Concurrency & Cancellation**: Configured top-level concurrency group `build-${{ github.workflow }}-${{ github.head_ref || github.run_id }}` with `cancel-in-progress: true` on `.github/workflows/build.yml`, automatically cancelling superseded snapshot builds on rapid pushes to the same branch while safely updating the shared rolling pre-release in place (#137).
 - **Unit Test Summary Status Line**: Added an at-a-glance `**Status:**` verdict line with Unicode pass/fail indicators (`0x2705` and `0x274C`) to `scripts/summarize-unit-tests.ps1` right after the summary table, providing instant status visibility before failure details (#80).
 - **Unit Test Summary Artifact Name Parameter**: Added `-ArtifactName` parameter to `scripts/summarize-unit-tests.ps1` and wired it in `.github/workflows/build.yml` (`unit-test-report-pr-${{ env.SHORT_SHA }}`) so failure truncation notes reference the exact artifact holding the full test report (#84).
 - **CI Script Regression Tests Workflow Job**: Added a standalone `script-tests` job to `.github/workflows/build.yml` running `scripts/test-summarize-unit-tests.ps1` under `pwsh` on `ubuntu-latest` on pull requests to validate test summarizer regression scenarios in parallel without Android SDK overhead.
