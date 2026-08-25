@@ -1,3 +1,4 @@
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Human-readable CI console output')]
 param (
     [string]$ResultsDir = "app/build/test-results/testDebugUnitTest",
     [string]$OutFile = "unit-test-summary.md",
@@ -14,27 +15,27 @@ $EvidenceMarker = "<!-- unit-test-evidence -->"
 
 function ConvertTo-RelativePath ([string]$text) {
     if (-not $text) { return "" }
-    
+
     # Strip known absolute path prefixes
     if ($env:GITHUB_WORKSPACE) {
         $text = $text.Replace($env:GITHUB_WORKSPACE + "/", "").Replace($env:GITHUB_WORKSPACE + "\", "").Replace($env:GITHUB_WORKSPACE, "")
     }
-    
+
     # Strip Linux CI runner paths (/home/runner/work/repo/repo/...)
     $text = [regex]::Replace($text, '(?i)/home/runner/work/[^/\r\n]+/[^/\r\n]+/', '')
-    
+
     # Strip Windows CI runner paths (D:\a\repo\repo\...)
     $text = [regex]::Replace($text, '(?i)[a-zA-Z]:[\\/]a[\\/][^\\/\r\n]+[\\/][^\\/\r\n]+[\\/]', '')
-    
+
     # Strip local workspace paths
     $text = [regex]::Replace($text, '(?i)[a-zA-Z]:[\\/](?:[^\\/\r\n]+[\\/])+crosstrainingapp[\\/]', '')
-    
+
     return $text
 }
 
 function Limit-TextLines ([string]$text, [int]$maxLines = 40) {
     if (-not $text) { return "" }
-    
+
     $lines = $text -split '\r?\n'
     if ($lines.Count -gt $maxLines) {
         $truncatedLines = $lines[0..($maxLines - 1)]
@@ -45,19 +46,19 @@ function Limit-TextLines ([string]$text, [int]$maxLines = 40) {
 
 function Format-StackTrace ([string]$trace) {
     if (-not $trace) { return "" }
-    
+
     $trace = ConvertTo-RelativePath -text $trace
     $trace = Limit-TextLines -text $trace -maxLines 40
-    
+
     return $trace.Trim()
 }
 
 function Get-BacktickFence ([string]$text) {
     if (-not $text) { return '```' }
-    $matches = [regex]::Matches($text, '`+')
+    $backtickMatches = [regex]::Matches($text, '`+')
     $maxRun = 0
-    if ($matches.Count -gt 0) {
-        $maxRun = ($matches | Measure-Object -Property Length -Maximum).Maximum
+    if ($backtickMatches.Count -gt 0) {
+        $maxRun = ($backtickMatches | Measure-Object -Property Length -Maximum).Maximum
     }
     $fenceLen = [Math]::Max(3, $maxRun + 1)
     return ('`' * $fenceLen)
@@ -65,16 +66,16 @@ function Get-BacktickFence ([string]$text) {
 
 function Format-FailureMessage ([string]$message) {
     if (-not $message) { return "" }
-    
+
     $message = ConvertTo-RelativePath -text $message
     $message = Limit-TextLines -text $message -maxLines 40
-    
-    $matches = [regex]::Matches($message, '`+')
+
+    $backtickMatches = [regex]::Matches($message, '`+')
     $maxRun = 0
-    if ($matches.Count -gt 0) {
-        $maxRun = ($matches | Measure-Object -Property Length -Maximum).Maximum
+    if ($backtickMatches.Count -gt 0) {
+        $maxRun = ($backtickMatches | Measure-Object -Property Length -Maximum).Maximum
     }
-    
+
     if ($message -match '\r?\n') {
         $fenceLen = [Math]::Max(3, $maxRun + 1)
         $fence = '`' * $fenceLen
@@ -273,7 +274,7 @@ if ($TotalFailures -eq 0) {
 
 if ($FailuresList.Count -gt 0) {
     $Body += "`n#### Failures`n`n"
-    
+
     $truncated = $false
     foreach ($failure in $FailuresList) {
         $failureBlock = "**$($failure.ClassName) > $($failure.MethodName)**`n`n"
@@ -282,7 +283,7 @@ if ($FailuresList.Count -gt 0) {
         }
         $traceFence = Get-BacktickFence -text $failure.StackTrace
         $failureBlock += "<details>`n<summary>Stack Trace</summary>`n`n$traceFence`n$($failure.StackTrace)`n$traceFence`n`n</details>`n`n"
-        
+
         if (($Body.Length + $failureBlock.Length) -gt 59000) {
             $truncated = $true
             break
