@@ -59,7 +59,8 @@ jobs:
           ./scripts/summarize-unit-tests.ps1 `
             -ResultsDir app/build/test-results/testDebugUnitTest `
             -PrNumber "${{ github.event.pull_request.number }}" `
-            -Repo "${{ github.repository }}"
+            -Repo "${{ github.repository }}" `
+            -ArtifactName "unit-test-report-pr-${{ env.SHORT_SHA }}"
 
       - name: Upload unit test report
         if: ${{ !cancelled() }}
