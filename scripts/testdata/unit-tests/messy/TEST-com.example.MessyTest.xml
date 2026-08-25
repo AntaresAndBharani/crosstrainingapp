@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.MessyTest" tests="5" skipped="0" failures="5" errors="0" timestamp="2026-08-25T10:00:00" hostname="MSI" time="0.123">
+  <properties/>
+  <testcase name="testAngleBrackets" classname="com.example.MessyTest" time="0.020">
+    <failure message="expected:&lt;b&gt; but was:&lt;i&gt;" type="java.lang.AssertionError">java.lang.AssertionError: expected:&lt;b&gt; but was:&lt;i&gt;
+	at org.junit.Assert.fail(Assert.java:89)
+	at /home/runner/work/crosstrainingapp/crosstrainingapp/app/src/test/java/com/example/MessyTest.kt:15
+    </failure>
+  </testcase>
+  <testcase name="testAsterisksAndUnderscores" classname="com.example.MessyTest" time="0.020">
+    <failure message="formatting *bold* _italic_ __underline__ **strong** &amp; &lt;symbols&gt;" type="java.lang.AssertionError">java.lang.AssertionError: formatting *bold* _italic_ __underline__ **strong** &amp; &lt;symbols&gt;
+	at org.junit.Assert.fail(Assert.java:89)
+	at /home/runner/work/crosstrainingapp/crosstrainingapp/app/src/test/java/com/example/MessyTest.kt:25
+    </failure>
+  </testcase>
+  <testcase name="testEmbeddedBackticks" classname="com.example.MessyTest" time="0.020">
+    <failure message="Contains ``` triple backticks and `single`" type="java.lang.AssertionError">java.lang.AssertionError: Contains ``` triple backticks and `single`
+	at org.junit.Assert.fail(Assert.java:89)
+	at /home/runner/work/crosstrainingapp/crosstrainingapp/app/src/test/java/com/example/MessyTest.kt:35
+    </failure>
+  </testcase>
+  <testcase name="testMultiLineMessage" classname="com.example.MessyTest" time="0.020">
+    <failure message="Line 1: first line&#10;Line 2: second line&#10;Line 3: third line with ```" type="java.lang.AssertionError">java.lang.AssertionError: Line 1: first line
+Line 2: second line
+Line 3: third line with ```
+	at org.junit.Assert.fail(Assert.java:89)
+	at /home/runner/work/crosstrainingapp/crosstrainingapp/app/src/test/java/com/example/MessyTest.kt:45
+    </failure>
+  </testcase>
+  <testcase name="testAbsolutePathInMessage" classname="com.example.MessyTest" time="0.020">
+    <failure message="Failed at /home/runner/work/crosstrainingapp/crosstrainingapp/app/src/test/java/com/example/MessyTest.kt:55" type="java.lang.AssertionError">java.lang.AssertionError: Failed at /home/runner/work/crosstrainingapp/crosstrainingapp/app/src/test/java/com/example/MessyTest.kt:55
+	at org.junit.Assert.fail(Assert.java:89)
+	at /home/runner/work/crosstrainingapp/crosstrainingapp/app/src/test/java/com/example/MessyTest.kt:55
+    </failure>
+  </testcase>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
