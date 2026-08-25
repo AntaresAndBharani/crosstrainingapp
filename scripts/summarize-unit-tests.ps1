@@ -2,7 +2,7 @@ param (
     [string]$ResultsDir = "app/build/test-results/testDebugUnitTest",
     [string]$OutFile = "unit-test-summary.md",
     [string]$PrNumber = "",
-    [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" })
+    [string]$Repo = "TEST-CONFLICT-MARKER-DO-NOT-MERGE"
 )
 
 $ErrorActionPreference = "Stop"
