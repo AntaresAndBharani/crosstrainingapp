@@ -50,6 +50,17 @@ jobs:
       - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest --stacktrace
 
+      - name: Publish unit test summary
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./scripts/summarize-unit-tests.ps1 `
+            -ResultsDir app/build/test-results/testDebugUnitTest `
+            -PrNumber "${{ github.event.pull_request.number }}" `
+            -Repo "${{ github.repository }}"
+
       - name: Upload unit test report
         if: always()
         uses: actions/upload-artifact@v4
