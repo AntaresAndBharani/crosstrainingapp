@@ -258,6 +258,15 @@ $Body += "| Total | Passed | Failed | Skipped | Elapsed |`n"
 $Body += "|---|---|---|---|---|`n"
 $Body += "| $TotalTests | $TotalPassed | $TotalFailures | $TotalSkipped | $ElapsedFormatted |`n"
 
+if ($TotalFailures -eq 0) {
+    $check = [char]::ConvertFromUtf32(0x2705)
+    $Body += "`n**Status:** $check All $TotalTests tests passed.`n"
+} else {
+    $cross = [char]::ConvertFromUtf32(0x274C)
+    $failWord = if ($TotalFailures -eq 1) { "test" } else { "tests" }
+    $Body += "`n**Status:** $cross $TotalFailures $failWord failed.`n"
+}
+
 if ($FailuresList.Count -gt 0) {
     $Body += "`n#### Failures`n`n"
     
