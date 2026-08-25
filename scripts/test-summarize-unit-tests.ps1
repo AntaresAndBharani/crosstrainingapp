@@ -11,7 +11,7 @@ if (-not (Test-Path -Path $ScriptPath)) {
     exit 1
 }
 
-function Normalize-LineEndings ([string]$text) {
+function ConvertTo-LfLineEnding ([string]$text) {
     if ($null -eq $text) { return "" }
     return $text.Replace("`r`n", "`n")
 }
@@ -37,7 +37,15 @@ function Invoke-Summarizer {
 
         $pwsh = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell" }
 
-        & $pwsh -NoProfile -File $ScriptPath -ResultsDir $ResultsDir -OutFile $tempOut -PrNumber '""' -ArtifactName $ArtifactName
+        $cmdArgs = @('-NoProfile', '-File', $ScriptPath, '-ResultsDir', $ResultsDir, '-OutFile', $tempOut)
+        if ($PrNumber) {
+            $cmdArgs += @('-PrNumber', $PrNumber)
+        }
+        if ($ArtifactName) {
+            $cmdArgs += @('-ArtifactName', $ArtifactName)
+        }
+
+        $null = & $pwsh @cmdArgs
         $exitCode = $LASTEXITCODE
 
         if (Test-Path -Path $tempOut) {
@@ -62,8 +70,8 @@ function Invoke-Summarizer {
     }
 
     return [PSCustomObject]@{
-        ExitCode = $exitCode
-        Output   = $output
+        ExitCode = [int]$exitCode
+        Output   = [string]$output
     }
 }
 
@@ -74,10 +82,16 @@ function Assert-Equal {
         [string]$ScenarioName
     )
 
-    $normActual = if ($Actual -is [string]) { Normalize-LineEndings $Actual } else { $Actual }
-    $normExpected = if ($Expected -is [string]) { Normalize-LineEndings $Expected } else { $Expected }
+    $normActual = if ($Actual -is [string]) { ConvertTo-LfLineEnding $Actual } else { $Actual }
+    $normExpected = if ($Expected -is [string]) { ConvertTo-LfLineEnding $Expected } else { $Expected }
 
-    if ($normActual -eq $normExpected) {
+    $isMatch = if ($normActual -is [string] -and $normExpected -is [string]) {
+        $normActual -ceq $normExpected
+    } else {
+        $normActual -eq $normExpected
+    }
+
+    if ($isMatch) {
         Write-Host "  [PASS] $ScenarioName" -ForegroundColor Green
         $script:PassCount++
     } else {
