@@ -5,11 +5,11 @@ param (
     [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" })
 )
 
-$ErrorActionPreference = "Stop"
-
 if ([string]::IsNullOrWhiteSpace($Repo)) {
     $Repo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }
 }
+
+$EvidenceMarker = "<!-- unit-test-evidence -->"
 
 function Sanitize-Paths ([string]$text) {
     if (-not $text) { return "" }
@@ -71,7 +71,7 @@ function Write-SummaryOutput ([string]$content) {
 }
 
 function Publish-PrComment ([string]$content) {
-    if ([string]::IsNullOrWhiteSpace($PrNumber)) {
+    if ([string]::IsNullOrWhiteSpace($PrNumber) -or $PrNumber -notmatch '^\d+$') {
         $emDash = [char]0x2014
         Write-Host "No PR context $emDash skipping comment"
         return
@@ -79,8 +79,8 @@ function Publish-PrComment ([string]$content) {
 
     $commentsRaw = gh api "repos/$Repo/issues/$PrNumber/comments" --paginate
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to list PR comments on PR #$PrNumber."
-        exit $LASTEXITCODE
+        Write-Warning "Failed to list PR comments on PR #$PrNumber."
+        return
     }
 
     $comments = @()
@@ -88,12 +88,12 @@ function Publish-PrComment ([string]$content) {
         try {
             $comments = @($commentsRaw | ConvertFrom-Json)
         } catch {
-            Write-Error "Failed to parse comments JSON: $_"
-            exit 1
+            Write-Warning "Failed to parse comments JSON: $_"
+            return
         }
     }
 
-    $targetComment = $comments | Where-Object { $_.body -and ($_.body.StartsWith("<!-- unit-test-evidence -->") -or $_.body -match "^<!-- unit-test-evidence -->") } | Select-Object -Last 1
+    $targetComment = $comments | Where-Object { $_.body -and ($_.body -match "^$EvidenceMarker") } | Select-Object -Last 1
 
     $tempBodyFile = "body.txt"
     try {
@@ -101,17 +101,17 @@ function Publish-PrComment ([string]$content) {
 
         if ($targetComment) {
             Write-Host "Updating existing PR comment on PR #$PrNumber (ID: $($targetComment.id))..."
-            gh api "repos/$Repo/issues/comments/$($targetComment.id)" -X PATCH -F body=@$tempBodyFile
+            gh api "repos/$Repo/issues/comments/$($targetComment.id)" -X PATCH --silent -F body=@$tempBodyFile
             if ($LASTEXITCODE -ne 0) {
-                Write-Error "Failed to update comment on PR #$PrNumber."
-                exit $LASTEXITCODE
+                Write-Warning "Failed to update comment on PR #$PrNumber."
+                return
             }
         } else {
             Write-Host "Posting new PR comment on PR #$PrNumber..."
-            gh api "repos/$Repo/issues/$PrNumber/comments" -X POST -F body=@$tempBodyFile
+            gh api "repos/$Repo/issues/$PrNumber/comments" -X POST --silent -F body=@$tempBodyFile
             if ($LASTEXITCODE -ne 0) {
-                Write-Error "Failed to post comment on PR #$PrNumber."
-                exit $LASTEXITCODE
+                Write-Warning "Failed to post comment on PR #$PrNumber."
+                return
             }
         }
         Write-Host "Evidence posted successfully." -ForegroundColor Green
@@ -126,7 +126,7 @@ if (-not [string]::IsNullOrWhiteSpace($ResultsDir) -and (Test-Path -Path $Result
 }
 
 if ($xmlFiles.Count -eq 0) {
-    $NoResultsBody = "<!-- unit-test-evidence -->`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
+    $NoResultsBody = "$EvidenceMarker`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
     Write-SummaryOutput -content $NoResultsBody
     Publish-PrComment -content $NoResultsBody
     exit 0
@@ -202,7 +202,7 @@ foreach ($file in $xmlFiles) {
 }
 
 if ($SuitesProcessed -eq 0) {
-    $NoResultsBody = "<!-- unit-test-evidence -->`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
+    $NoResultsBody = "$EvidenceMarker`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
     Write-SummaryOutput -content $NoResultsBody
     Publish-PrComment -content $NoResultsBody
     exit 0
@@ -213,7 +213,7 @@ if ($TotalPassed -lt 0) { $TotalPassed = 0 }
 
 $ElapsedFormatted = "$($TotalTime.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture))s"
 
-$Body = "<!-- unit-test-evidence -->`n### :test_tube: Unit Test Results`n`n"
+$Body = "$EvidenceMarker`n### :test_tube: Unit Test Results`n`n"
 $Body += "| Total | Passed | Failed | Skipped | Elapsed |`n"
 $Body += "|---|---|---|---|---|`n"
 $Body += "| $TotalTests | $TotalPassed | $TotalFailures | $TotalSkipped | $ElapsedFormatted |`n"
