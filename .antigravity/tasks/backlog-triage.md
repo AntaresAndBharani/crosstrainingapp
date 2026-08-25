@@ -7,10 +7,21 @@ generalized to also cover `enhancement` issues, not just `tech-debt` — same
 mechanism, one more label. Add a new label to the list below if a future
 category needs the same treatment; the steps don't otherwise change.
 
-This task only ever reads and writes GitHub issues via `gh` — it never
-edits files, runs git, or touches the local working tree, so it doesn't
-need to sync a checkout or coordinate with Dev & Test's git usage, same as
-Three Amigos.
+First run `git checkout main && git fetch origin && git reset --hard
+origin/main` so this checkout is current. This task's own actions never
+touch the working tree, but all Antigravity tasks share one local
+checkout, and this task's own instructions live in that same checkout —
+without this step, a stale checkout means stale instructions, not just
+stale code. Confirmed live (2026-08-25): right after this file was renamed
+from `tech-debt-triage.md`, a run executed the deleted file's old
+single-label logic instead of this one, because only Dev & Test (every 15
+min) was syncing the shared checkout — this task's 6-hour cadence gave it
+a wide window to run stale between syncs.
+
+This task's own actions never edit files, run git, or otherwise touch the
+local working tree beyond the sync above — no working-tree race with
+Dev & Test's own git usage, since the sync is idempotent and this task
+never leaves anything uncommitted behind.
 
 Run the same procedure independently for each of these labels, one at a
 time: `tech-debt`, `enhancement`. **Never mix issues from different labels

@@ -3,9 +3,22 @@
 Design: ws-setups/graph-engineering/docs/antigravity-scheduled-tasks.md
 (alternate executor for docs/three-amigos-node.md in that same repo).
 
-This task only ever reads and comments/labels GitHub issues via `gh` — it
-never edits files, runs git, or touches the local working tree, so it
-doesn't need to sync or coordinate with the other two tasks.
+First run `git checkout main && git fetch origin && git reset --hard
+origin/main` so this checkout is current — added 2026-08-25 after Backlog
+Triage was caught live executing a deleted file's stale logic because it
+skipped this step on the same reasoning this task originally used ("I
+never touch the working tree, so I don't need to sync"). That reasoning
+covers this task's own *actions*, but not the fact that its *instructions*
+live in the same shared checkout every Antigravity task reads from — only
+Dev & Test was syncing it (every 15 min), so any task polling less often
+than that can read stale instructions in the window right after a push.
+This task hasn't been caught by that yet, but there's no reason to leave
+the same latent gap open now that it's a confirmed, not just theoretical,
+failure mode in this exact project.
+
+This task's own actions never edit files, run git, or otherwise touch the
+local working tree beyond the sync above — it never needs to coordinate
+with the other two tasks' git usage.
 
 Check crosstrainingapp for open issues labeled `type:user-story` AND
 `status:review`. This is always the starting point — never query
