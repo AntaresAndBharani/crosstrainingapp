@@ -89,19 +89,30 @@ jobs:
           overwrite: true
           if-no-files-found: warn
 
-      # Build the distributable APK. The release build type currently falls back to debug signing
-      # via signingConfigs.getByName("debug") in app/build.gradle.kts; switch to assembleRelease
-      # once a production release keystore is configured (story #68).
-      - name: Build distributable APK (debug variant, debug-signed)
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Decode release keystore
+        run: |
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > "${{ runner.temp }}/release.keystore"
+          fi
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
 
-      # Package the debug-signed build artifact (source: app/build/outputs/apk/debug/app-debug.apk)
-      # as the tagged distributable. This step renames the debug artifact for release publication
-      # without re-signing or rebuilding.
-      - name: Package debug-signed APK as release distribution artifact
+      - name: Build distributable APK (release variant)
+        run: ./gradlew assembleRelease --stacktrace
+        env:
+          RELEASE_STORE_FILE: ${{ runner.temp }}/release.keystore
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+      - name: Clean up decoded release keystore
+        if: always()
+        run: rm -f "${{ runner.temp }}/release.keystore"
+
+      - name: Package release-signed APK as release distribution artifact
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk "dist/crosstraining-${{ env.RELEASE_TAG }}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/crosstraining-${{ env.RELEASE_TAG }}.apk"
 
       - name: Create Git Tag
         run: |
@@ -120,6 +131,9 @@ jobs:
           files: dist/crosstraining-${{ env.RELEASE_TAG }}.apk
           body: |
             Official release for **CrossTraining ${{ env.RELEASE_TAG }}**.
+
+            > **Important Note on Upgrades:**
+            > This release is signed with our official release keystore. If you currently have an earlier debug-signed build installed, please **uninstall the previous version first** before installing this release to avoid Android signature mismatch errors. Subsequent releases will upgrade in-place seamlessly.
 
             **Install on your phone:**
             1. Download `crosstraining-${{ env.RELEASE_TAG }}.apk` below.
