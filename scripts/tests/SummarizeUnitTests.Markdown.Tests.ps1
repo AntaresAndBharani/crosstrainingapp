@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Fixture-level markdown output assertions for summarize-unit-tests.ps1.
-    Covers: pass, fail, empty, messy fixtures.
+    Covers: pass, fail, empty, messy, longmessage fixtures.
     Dot-sourced by Invoke-ScriptTests.ps1.
 #>
 
@@ -92,3 +92,22 @@ Assert-NotMatch -Value $messyResult.Output -Pattern '(?i)/home/runner/work|[a-z]
 # Balanced delimiters (the messy fixture contains ``` triple and `single` backticks)
 Assert-BalancedMarkdownDelimiters -Text $messyResult.Output `
                                   -TestName "messy: balanced markdown delimiters"
+
+# ---------------------------------------------------------------------------
+# Long message fixture — message capped at 40 lines + truncation indicator
+# ---------------------------------------------------------------------------
+Write-Host "--- longmessage fixture ---"
+$longResult = Invoke-SummarizerScript -ResultsDir (Join-Path $FixtureRoot "longmessage")
+Assert-Equal  -Actual $longResult.ExitCode -Expected 0 `
+              -TestName "longmessage: exits 0"
+Assert-True   -Condition ($longResult.Output.Contains("#### Failures")) `
+              -TestName "longmessage: contains Failures section"
+Assert-True   -Condition ($longResult.Output.Contains("... (truncated)")) `
+              -TestName "longmessage: truncation indicator present"
+Assert-NotMatch -Value $longResult.Output -Pattern '(?i)/home/runner/work|[a-z]:\\a\\' `
+                -TestName "longmessage: no runner path prefixes"
+Assert-True   -Condition ($longResult.Output.Contains("app/src/test/java/com/example/LongMessageTest.kt:10")) `
+              -TestName "longmessage: sanitized relative path present in message"
+Assert-BalancedMarkdownDelimiters -Text $longResult.Output `
+                                  -TestName "longmessage: balanced markdown delimiters"
+
