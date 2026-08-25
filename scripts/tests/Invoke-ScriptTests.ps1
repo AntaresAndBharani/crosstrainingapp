@@ -4,7 +4,9 @@
     Usage: pwsh -NoProfile -File ./scripts/tests/Invoke-ScriptTests.ps1
     Exit code: 0 = all tests passed, 1 = one or more tests failed.
 #>
-param ()
+param (
+    [string]$TestDir = $PSScriptRoot
+)
 
 $script:PassCount = 0
 $script:FailCount = 0
@@ -12,12 +14,12 @@ $script:FailCount = 0
 # Dot-source shared helpers (makes assertion functions and Invoke-SummarizerScript available)
 . (Join-Path $PSScriptRoot "TestHelpers.ps1")
 
-# Discover test files in the same directory
-$testFiles = Get-ChildItem -Path $PSScriptRoot -Filter "*.Tests.ps1" -File |
+# Discover test files in the specified directory
+$testFiles = Get-ChildItem -Path $TestDir -Filter "*.Tests.ps1" -File |
     Sort-Object Name
 
 if ($testFiles.Count -eq 0) {
-    Write-Host "No *.Tests.ps1 files found in '$PSScriptRoot'." -ForegroundColor Yellow
+    Write-Host "No *.Tests.ps1 files found in '$TestDir'." -ForegroundColor Yellow
     exit 0
 }
 
