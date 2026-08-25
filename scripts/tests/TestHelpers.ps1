@@ -13,6 +13,18 @@ $SummarizerScript = Join-Path (Join-Path $PSScriptRoot "..") "summarize-unit-tes
     Resolve-Path | Select-Object -ExpandProperty Path
 
 # ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
+
+function ConvertTo-LfLineEnding {
+    param (
+        [string]$Text
+    )
+    if ($null -eq $Text) { return "" }
+    return $Text.Replace("`r`n", "`n")
+}
+
+# ---------------------------------------------------------------------------
 # Child-process wrapper
 # ---------------------------------------------------------------------------
 
@@ -81,7 +93,7 @@ function Invoke-SummarizerScript {
 
         if (Test-Path -Path $tempOut) {
             $rawOutput = [System.IO.File]::ReadAllText($tempOut, [System.Text.Encoding]::UTF8)
-            $output = $rawOutput.Replace("`r`n", "`n")
+            $output = ConvertTo-LfLineEnding $rawOutput
         }
     } finally {
         Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
@@ -129,8 +141,8 @@ function Assert-Equal {
         $Expected,
         [string]$TestName
     )
-    $normActual   = if ($Actual   -is [string]) { $Actual.Replace("`r`n", "`n")   } else { $Actual }
-    $normExpected = if ($Expected -is [string]) { $Expected.Replace("`r`n", "`n") } else { $Expected }
+    $normActual   = if ($Actual   -is [string]) { ConvertTo-LfLineEnding $Actual   } else { $Actual }
+    $normExpected = if ($Expected -is [string]) { ConvertTo-LfLineEnding $Expected } else { $Expected }
 
     $match = if ($normActual -is [string] -and $normExpected -is [string]) {
         $normActual -ceq $normExpected
