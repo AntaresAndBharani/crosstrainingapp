@@ -35,6 +35,12 @@ name: PR Review
 # adds a longer-timescale retry on top of that short one, not instead of
 # it. If all 3 attempts still fail, the PR gets a comment explaining why
 # rather than silently sitting unreviewed.
+#
+# Model: Claude Sonnet 5, not Opus (2026-08-25 — PO's explicit cost call,
+# flat across every review, no conditional). Architect kept Opus as its
+# default the same day but gained a conditional Sonnet path for
+# backlog-triage-originated stories specifically — the two nodes' cost
+# decisions aren't symmetric, don't assume this one generalizes there.
 
 on:
   pull_request:
@@ -101,14 +107,14 @@ jobs:
             gh issue view "$LINKED" -R "$REPO" --json number,title,body > linked_issue.json || true
           fi
 
-      - name: Run PR Review (Claude Opus) — attempt 1
+      - name: Run PR Review (Claude Sonnet) — attempt 1
         id: review_attempt_1
         if: steps.rounds.outputs.count < env.ROUND_CAP
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          claude_args: '--model claude-sonnet-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/pr-review.md exactly. Read
@@ -119,14 +125,14 @@ jobs:
         if: steps.rounds.outputs.count < env.ROUND_CAP && steps.review_attempt_1.outcome == 'failure'
         run: sleep "$OVERLOAD_RETRY_DELAY_SECONDS"
 
-      - name: Run PR Review (Claude Opus) — attempt 2
+      - name: Run PR Review (Claude Sonnet) — attempt 2
         id: review_attempt_2
         if: steps.rounds.outputs.count < env.ROUND_CAP && steps.review_attempt_1.outcome == 'failure'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          claude_args: '--model claude-sonnet-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/pr-review.md exactly. Read
@@ -140,7 +146,7 @@ jobs:
           steps.review_attempt_2.outcome == 'failure'
         run: sleep "$OVERLOAD_RETRY_DELAY_SECONDS"
 
-      - name: Run PR Review (Claude Opus) — attempt 3
+      - name: Run PR Review (Claude Sonnet) — attempt 3
         id: review_attempt_3
         if: >
           steps.rounds.outputs.count < env.ROUND_CAP &&
@@ -150,7 +156,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--model claude-opus-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
+          claude_args: '--model claude-sonnet-5 --permission-mode dontAsk --allowedTools "Read" "Grep" "Glob" "Write"'
           prompt: |
             Follow the instructions in the file
             .github/workflows/prompts/pr-review.md exactly. Read
