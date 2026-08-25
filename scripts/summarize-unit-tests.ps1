@@ -48,6 +48,45 @@ function Format-StackTrace ([string]$trace) {
     return $trace.Trim()
 }
 
+function Get-BacktickFence ([string]$text) {
+    if (-not $text) { return '```' }
+    $matches = [regex]::Matches($text, '`+')
+    $maxRun = 0
+    if ($matches.Count -gt 0) {
+        $maxRun = ($matches | Measure-Object -Property Length -Maximum).Maximum
+    }
+    $fenceLen = [Math]::Max(3, $maxRun + 1)
+    return ('`' * $fenceLen)
+}
+
+function Format-FailureMessage ([string]$message) {
+    if (-not $message) { return "" }
+    
+    $message = Sanitize-Paths -text $message
+    
+    $matches = [regex]::Matches($message, '`+')
+    $maxRun = 0
+    if ($matches.Count -gt 0) {
+        $maxRun = ($matches | Measure-Object -Property Length -Maximum).Maximum
+    }
+    
+    if ($message -match '\r?\n') {
+        $fenceLen = [Math]::Max(3, $maxRun + 1)
+        $fence = '`' * $fenceLen
+        return "**Message:**`n$fence`n$message`n$fence`n`n"
+    } else {
+        $delimLen = [Math]::Max(1, $maxRun + 1)
+        $delim = '`' * $delimLen
+        if ($message.StartsWith('`') -or $message.EndsWith('`')) {
+            $content = " $message "
+        } else {
+            $content = $message
+        }
+        return "**Message:** $delim$content$delim`n`n"
+    }
+}
+
+
 function Write-SummaryOutput ([string]$content) {
     if (-not [string]::IsNullOrWhiteSpace($OutFile)) {
         try {
@@ -225,16 +264,10 @@ if ($FailuresList.Count -gt 0) {
     foreach ($failure in $FailuresList) {
         $failureBlock = "**$($failure.ClassName) > $($failure.MethodName)**`n`n"
         if ($failure.Message) {
-            $msg = $failure.Message
-            if ($msg -match '\r?\n') {
-                $failureBlock += "**Message:**`n```````n$msg`n```````n`n"
-            } elseif ($msg -match '`') {
-                $failureBlock += "**Message:** ```` $msg ````" + "`n`n"
-            } else {
-                $failureBlock += "**Message:** ``$msg```n`n"
-            }
+            $failureBlock += Format-FailureMessage -message $failure.Message
         }
-        $failureBlock += "<details>`n<summary>Stack Trace</summary>`n`n```````n$($failure.StackTrace)`n```````n`n</details>`n`n"
+        $traceFence = Get-BacktickFence -text $failure.StackTrace
+        $failureBlock += "<details>`n<summary>Stack Trace</summary>`n`n$traceFence`n$($failure.StackTrace)`n$traceFence`n`n</details>`n`n"
         
         if (($Body.Length + $failureBlock.Length) -gt 59000) {
             $truncated = $true
