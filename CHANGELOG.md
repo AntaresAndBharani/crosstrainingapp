@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
 
 ### Added
+- **Post E2E Evidence Automated Pester Test Suite**: Added dedicated Pester test suite in `scripts/tests/PostE2EEvidence.Tests.ps1` covering PR number validation, release verification guards, flow parsing, markdown formatting, static hygiene, and delegation to `Publish-PrComment` (#232, #237).
 - **ArtifactName Fallback-Equivalence Regression Test**: Added test coverage in `scripts/tests/SummarizeUnitTests.Cli.Tests.ps1` asserting that explicitly passing `-ArtifactName "unit test report"` renders a backticked code span rather than unquoted generic fallback text (#225, #231, #235).
 - **Summarizer Static Hygiene Regression Guard for Throwaway Comments**: Added a static hygiene assertion to `scripts/tests/SummarizeUnitTests.Static.Tests.ps1` ensuring `scripts/summarize-unit-tests.ps1` contains no throwaway `# TEST:` comments (#178, #209, #218).
 - **Unit Test Summary 40-Line Truncation Assertion**: Added an exact boundary regression assertion to `scripts/tests/SummarizeUnitTests.Markdown.Tests.ps1` verifying that failure message capping extracts exactly 40 lines before the truncation marker (#208, #221).
