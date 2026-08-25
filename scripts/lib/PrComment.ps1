@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Shared helper for publishing sticky PR evidence comments to GitHub PRs.
 .DESCRIPTION
@@ -67,7 +67,14 @@ function Publish-PrComment {
         $comments = @()
         if (-not [string]::IsNullOrWhiteSpace($commentsRaw)) {
             try {
-                $comments = @($commentsRaw | ConvertFrom-Json)
+                $parsed = $commentsRaw | ConvertFrom-Json
+                if ($null -ne $parsed) {
+                    foreach ($item in $parsed) {
+                        if ($null -ne $item) {
+                            $comments += $item
+                        }
+                    }
+                }
             } catch {
                 Write-Warning "Failed to parse comments JSON: $_"
                 return $false
@@ -82,15 +89,16 @@ function Publish-PrComment {
         }
 
         $targetComment = $comments | Where-Object {
-            $null -ne $_.body -and $_.body.StartsWith($Marker, [System.StringComparison]::Ordinal) -and (
-                [string]::IsNullOrWhiteSpace($currentUser) -or ($null -ne $_.user -and $_.user.login -eq $currentUser)
-            )
+            ($null -ne $_.body) -and
+            ($_.body -is [string]) -and
+            ($_.body.StartsWith($Marker, [System.StringComparison]::Ordinal)) -and
+            ([string]::IsNullOrWhiteSpace($currentUser) -or (($null -ne $_.user) -and ($_.user.login -eq $currentUser)))
         } | Select-Object -Last 1
 
         if ($targetComment) {
             Write-Host "Updating existing PR comment on PR #$PrNumber (ID: $($targetComment.id))..."
             try {
-                gh api "repos/$Repo/issues/comments/$($targetComment.id)" -X PATCH --silent -F "body=@$tempBodyFile"
+                $null = gh api "repos/$Repo/issues/comments/$($targetComment.id)" -X PATCH --silent -F "body=@$tempBodyFile"
             } catch {
                 Write-Warning "Failed to update comment on PR #${PrNumber}: $_"
                 return $false
@@ -103,7 +111,7 @@ function Publish-PrComment {
         } else {
             Write-Host "Posting new PR comment on PR #$PrNumber..."
             try {
-                gh api "repos/$Repo/issues/$PrNumber/comments" -X POST --silent -F "body=@$tempBodyFile"
+                $null = gh api "repos/$Repo/issues/$PrNumber/comments" -X POST --silent -F "body=@$tempBodyFile"
             } catch {
                 Write-Warning "Failed to post comment on PR #${PrNumber}: $_"
                 return $false
