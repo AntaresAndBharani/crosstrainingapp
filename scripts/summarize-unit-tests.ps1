@@ -17,6 +17,8 @@ if ([string]::IsNullOrWhiteSpace($ArtifactName)) {
 
 $EvidenceMarker = "<!-- unit-test-evidence -->"
 
+. (Join-Path $PSScriptRoot 'lib/PrComment.ps1')
+
 function ConvertTo-RelativePath ([string]$text) {
     if (-not $text) { return "" }
 
@@ -119,56 +121,6 @@ function Write-SummaryOutput ([string]$content) {
     }
 }
 
-function Publish-PrComment ([string]$content) {
-    if ([string]::IsNullOrWhiteSpace($PrNumber) -or $PrNumber -notmatch '^\d+$') {
-        $emDash = [char]0x2014
-        Write-Host "No PR context $emDash skipping comment"
-        return
-    }
-
-    $commentsRaw = gh api "repos/$Repo/issues/$PrNumber/comments" --paginate
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Failed to list PR comments on PR #$PrNumber."
-        return
-    }
-
-    $comments = @()
-    if (-not [string]::IsNullOrWhiteSpace($commentsRaw)) {
-        try {
-            $comments = @($commentsRaw | ConvertFrom-Json)
-        } catch {
-            Write-Warning "Failed to parse comments JSON: $_"
-            return
-        }
-    }
-
-    $targetComment = $comments | Where-Object { $_.body -and ($_.body -match "^$EvidenceMarker") } | Select-Object -Last 1
-
-    $tempBodyFile = Join-Path ([System.IO.Path]::GetTempPath()) "unit-test-body-$([guid]::NewGuid()).md"
-    try {
-        [System.IO.File]::WriteAllText($tempBodyFile, $content, (New-Object System.Text.UTF8Encoding $false))
-
-        if ($targetComment) {
-            Write-Host "Updating existing PR comment on PR #$PrNumber (ID: $($targetComment.id))..."
-            gh api "repos/$Repo/issues/comments/$($targetComment.id)" -X PATCH --silent -F body=@$tempBodyFile
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warning "Failed to update comment on PR #$PrNumber."
-                return
-            }
-        } else {
-            Write-Host "Posting new PR comment on PR #$PrNumber..."
-            gh api "repos/$Repo/issues/$PrNumber/comments" -X POST --silent -F body=@$tempBodyFile
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warning "Failed to post comment on PR #$PrNumber."
-                return
-            }
-        }
-        Write-Host "Evidence posted successfully." -ForegroundColor Green
-    } finally {
-        Remove-Item $tempBodyFile -Force -ErrorAction SilentlyContinue
-    }
-}
-
 $xmlFiles = @()
 if (-not [string]::IsNullOrWhiteSpace($ResultsDir) -and (Test-Path -Path $ResultsDir)) {
     $xmlFiles = @(Get-ChildItem -Path $ResultsDir -Filter "TEST-*.xml" -File -ErrorAction SilentlyContinue)
@@ -177,7 +129,7 @@ if (-not [string]::IsNullOrWhiteSpace($ResultsDir) -and (Test-Path -Path $Result
 if ($xmlFiles.Count -eq 0) {
     $NoResultsBody = "$EvidenceMarker`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
     Write-SummaryOutput -content $NoResultsBody
-    Publish-PrComment -content $NoResultsBody
+    Publish-PrComment -Repo $Repo -PrNumber $PrNumber -Marker $EvidenceMarker -Body $NoResultsBody -TempFilePrefix 'unit-test-body'
     exit 0
 }
 
@@ -253,7 +205,7 @@ foreach ($file in $xmlFiles) {
 if ($SuitesProcessed -eq 0) {
     $NoResultsBody = "$EvidenceMarker`n### :test_tube: Unit Test Results`n`nNo unit test results found.`n"
     Write-SummaryOutput -content $NoResultsBody
-    Publish-PrComment -content $NoResultsBody
+    Publish-PrComment -Repo $Repo -PrNumber $PrNumber -Marker $EvidenceMarker -Body $NoResultsBody -TempFilePrefix 'unit-test-body'
     exit 0
 }
 
@@ -302,6 +254,6 @@ if ($FailuresList.Count -gt 0) {
 }
 
 Write-SummaryOutput -content $Body
-Publish-PrComment -content $Body
+Publish-PrComment -Repo $Repo -PrNumber $PrNumber -Marker $EvidenceMarker -Body $Body -TempFilePrefix 'unit-test-body'
 
 exit 0
