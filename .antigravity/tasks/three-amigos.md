@@ -21,9 +21,9 @@ For each matching story:
    rest of this process for that story.
 
 2. Read the story's full title, body, and acceptance criteria for context.
-   Then find every open `type:subtask` issue whose body references this
-   story as its parent (look for "Parent User Story" followed by this
-   issue's number). If none, skip this story.
+   Then find its subtasks via `gh api repos/<repo>/issues/<story>/sub_issues`
+   (the real GitHub Sub-issues relationship, not the subtask's own body
+   text) and filter to the open ones. If none, skip this story.
 
 3. Act as a Three Amigos panel (Product Owner + Developer + QA) and
    evaluate every subtask together in one batch, grounded in the story's
@@ -50,10 +50,14 @@ For each matching story:
    - **READY**: on every subtask, remove whichever of
      `status:pending-review`, `status:review`, `status:needs-revision`,
      `status:needs-clarification` is present, then add
-     `status:awaiting-approval`. Then, on the STORY itself, remove
-     `status:review` and add `status:awaiting-approval` too — this is the
-     label the PO flips to `status:ready` to authorize the whole batch of
-     subtasks at once. Never add `status:ready` yourself.
+     `status:awaiting-approval` (this is your own "reviewed and cleared"
+     marker Dev & Test looks for — unrelated to the story-level label
+     below). Then, on the STORY itself, remove `status:review` and add
+     `status:ready` directly — no PO relabel step anymore (removed
+     2026-08-25, PO's explicit call: Three Amigos and Dev & Test stay
+     separate nodes, but the manual approval checkpoint between them is
+     gone). Dev & Test's own gate check is unchanged; it already looks for
+     `status:ready` on the story, just previously only a human set it.
    - **NEEDS_REVISION**: remove `status:review` from the story, add
      `status:needs-revision`.
    - **NEEDS_CLARIFICATION**: remove `status:review` from the story, add
