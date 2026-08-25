@@ -4,11 +4,15 @@ param (
     [string]$OutFile = "unit-test-summary.md",
     [string]$PrNumber = "",
     [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
-    [string]$ArtifactName = ""
+    [string]$ArtifactName = "unit test report"
 )
 
 if ([string]::IsNullOrWhiteSpace($Repo)) {
     $Repo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }
+}
+
+if ([string]::IsNullOrWhiteSpace($ArtifactName)) {
+    $ArtifactName = "unit test report"
 }
 
 $EvidenceMarker = "<!-- unit-test-evidence -->"
@@ -292,7 +296,7 @@ if ($FailuresList.Count -gt 0) {
     }
 
     if ($truncated) {
-        $artifactRef = if (-not [string]::IsNullOrWhiteSpace($ArtifactName)) { '`' + $ArtifactName + '`' } else { "unit test report" }
+        $artifactRef = if ($ArtifactName -ne "unit test report" -and -not [string]::IsNullOrWhiteSpace($ArtifactName)) { '`' + $ArtifactName + '`' } else { "unit test report" }
         $Body += "`n> [!NOTE]`n> Additional failures truncated. See full test report in the $artifactRef artifact.`n"
     }
 }
