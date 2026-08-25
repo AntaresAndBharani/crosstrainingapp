@@ -89,7 +89,10 @@ jobs:
           overwrite: true
           if-no-files-found: warn
 
-      - name: Build release APK
+      # Build the distributable APK. The release build type currently falls back to debug signing
+      # via signingConfigs.getByName("debug") in app/build.gradle.kts; switch to assembleRelease
+      # once a production release keystore is configured (story #68).
+      - name: Build distributable APK (debug variant, debug-signed)
         run: ./gradlew assembleDebug --stacktrace
 
       - name: Prepare APK distribution artifact
