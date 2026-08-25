@@ -5,6 +5,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -59,11 +63,18 @@ jobs:
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
           echo "Resolved release tag: $TAG"
 
+      - name: Assert release tag resolved
+        run: |
+          if [ -z "${RELEASE_TAG:-}" ]; then
+            echo "::error::RELEASE_TAG is empty - refusing to publish mis-named artifacts"
+            exit 1
+          fi
+
       - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest --stacktrace
 
       - name: Upload unit test report
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-report-${{ env.RELEASE_TAG }}
@@ -71,6 +82,7 @@ jobs:
             app/build/reports/tests/testDebugUnitTest/
             app/build/test-results/testDebugUnitTest/
           retention-days: 14
+          overwrite: true
           if-no-files-found: warn
 
       - name: Build release APK
