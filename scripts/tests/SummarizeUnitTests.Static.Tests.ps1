@@ -49,4 +49,9 @@ Assert-True -Condition (-not ($ScriptText -match '\$matches\s*=')) `
 Assert-True -Condition ($ScriptText -match '\[string\]::IsNullOrWhiteSpace\(\$ArtifactName\)') `
             -TestName "static: ArtifactName IsNullOrWhiteSpace guard present"
 
+# No leftover throwaway test comments (#178)
+Assert-True -Condition (-not ($ScriptText -match '#\s*TEST:')) `
+            -TestName "static: no throwaway TEST comments"
+
+
 

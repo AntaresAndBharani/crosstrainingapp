@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
 
 ### Added
+- **Summarizer Static Hygiene Regression Guard for Throwaway Comments**: Added a static hygiene assertion to `scripts/tests/SummarizeUnitTests.Static.Tests.ps1` ensuring `scripts/summarize-unit-tests.ps1` contains no throwaway `# TEST:` comments (#178, #209, #218).
 - **Unit Test Summary 40-Line Truncation Assertion**: Added an exact boundary regression assertion to `scripts/tests/SummarizeUnitTests.Markdown.Tests.ps1` verifying that failure message capping extracts exactly 40 lines before the truncation marker (#208, #221).
 - **Unit Test Summary Status Line Regression Assertions**: Extended `scripts/tests/SummarizeUnitTests.Markdown.Tests.ps1` with status line assertions covering checkmark pass formatting, singular/plural failure wording, and relative positioning before failure detail sections (#208, #219).
 - **Script Test Harness Line-Ending Helper**: Added `ConvertTo-LfLineEnding` function in `scripts/tests/TestHelpers.ps1` and refactored child-process output capture, assertion equality comparisons, and baseline-file reads to standardize CRLF-to-LF normalization (#181, #182, #183, #184, #208, #215).
