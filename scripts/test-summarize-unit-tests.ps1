@@ -49,7 +49,8 @@ function Invoke-Summarizer {
         $exitCode = $LASTEXITCODE
 
         if (Test-Path -Path $tempOut) {
-            $output = [System.IO.File]::ReadAllText($tempOut, [System.Text.Encoding]::UTF8)
+            $rawOutput = [System.IO.File]::ReadAllText($tempOut, [System.Text.Encoding]::UTF8)
+            $output = ConvertTo-LfLineEnding $rawOutput
         }
     } finally {
         if (Test-Path -Path $tempOut) {
@@ -152,6 +153,51 @@ $emptyFixtureDir = Join-Path $PSScriptRoot "testdata/unit-tests/empty"
 $result3 = Invoke-Summarizer -ResultsDir $emptyFixtureDir
 Assert-Equal -Actual $result3.ExitCode -Expected 0 -ScenarioName "Zero-byte XML fixture exits with 0"
 Assert-Equal -Actual $result3.Output -Expected $ExpectedNoResults -ScenarioName "Zero-byte XML fixture produces standard no-results markdown"
+
+# Scenario 4: Passing unit test results fixture
+Write-Host "`nScenario 4: Passing unit test results fixture"
+$passFixtureDir = Join-Path $PSScriptRoot "testdata/unit-tests/pass"
+$result4 = Invoke-Summarizer -ResultsDir $passFixtureDir
+Assert-Equal -Actual $result4.ExitCode -Expected 0 -ScenarioName "Pass fixture exits with 0"
+Assert-True -Condition ($result4.Output.StartsWith("<!-- unit-test-evidence -->")) `
+    -ScenarioName "Pass fixture output starts with evidence marker" `
+    -FailureMessage "Output did not start with <!-- unit-test-evidence -->"
+Assert-True -Condition ($result4.Output -match '(?m)^\| 3 \| 3 \| 0 \| 0 \| \d+\.\d{2}s \|$') `
+    -ScenarioName "Pass fixture counts row matches | 3 | 3 | 0 | 0 | with formatted elapsed" `
+    -FailureMessage "Counts row with 3/3/0/0 and formatted elapsed time not found in output"
+Assert-True -Condition (-not ($result4.Output.Contains("#### Failures"))) `
+    -ScenarioName "Pass fixture has no failures section" `
+    -FailureMessage "Output unexpectedly contained '#### Failures'"
+
+# Scenario 5: Failing unit test results fixture
+Write-Host "`nScenario 5: Failing unit test results fixture"
+$failFixtureDir = Join-Path $PSScriptRoot "testdata/unit-tests/fail"
+$result5 = Invoke-Summarizer -ResultsDir $failFixtureDir
+Assert-Equal -Actual $result5.ExitCode -Expected 0 -ScenarioName "Fail fixture exits with 0"
+Assert-True -Condition ($result5.Output -match '(?m)^\| 3 \| 1 \| 1 \| 1 \| \d+\.\d{2}s \|$') `
+    -ScenarioName "Fail fixture counts row matches | 3 | 1 | 1 | 1 | with formatted elapsed" `
+    -FailureMessage "Counts row with 3/1/1/1 and formatted elapsed time not found in output"
+Assert-True -Condition ($result5.Output.Contains("#### Failures")) `
+    -ScenarioName "Fail fixture contains failures section header" `
+    -FailureMessage "Output did not contain '#### Failures'"
+Assert-True -Condition ($result5.Output.Contains("**com.example.RedTest > testFailingMethod**")) `
+    -ScenarioName "Fail fixture contains failing test name header" `
+    -FailureMessage "Output did not contain '**com.example.RedTest > testFailingMethod**'"
+Assert-True -Condition ($result5.Output.Contains('**Message:** `expected:<1> but was:<2>`')) `
+    -ScenarioName "Fail fixture contains failure assertion message" `
+    -FailureMessage "Output did not contain expected failure message"
+Assert-True -Condition ($result5.Output -match '(?s)<details>\s*<summary>Stack Trace</summary>\s*```.*?\tat org\.junit\.Assert\.fail\(Assert\.java:89\).*?```\s*</details>') `
+    -ScenarioName "Fail fixture stack trace details block preserves tab indentation" `
+    -FailureMessage "Stack trace details block with tab-indented stack frames not found"
+
+# Scenario 6: Path sanitization negative assertion
+Write-Host "`nScenario 6: Path-sanitization negative assertion"
+Assert-True -Condition (-not ($result5.Output.Contains("/home/runner/work/"))) `
+    -ScenarioName "Fail fixture output does not contain runner path /home/runner/work/" `
+    -FailureMessage "Output leaked runner path prefix /home/runner/work/"
+Assert-True -Condition ($result5.Output.Contains("app/src/test/java/com/example/RedTest.kt:42")) `
+    -ScenarioName "Fail fixture output contains sanitized relative path" `
+    -FailureMessage "Output did not contain sanitized relative path app/src/test/java/com/example/RedTest.kt:42"
 
 # Summary
 Write-Host "`nTest Summary: $($script:PassCount) passed, $($script:FailCount) failed." -ForegroundColor $(if ($script:FailCount -eq 0) { "Green" } else { "Red" })
