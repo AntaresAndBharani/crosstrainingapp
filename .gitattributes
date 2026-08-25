@@ -7,3 +7,13 @@ gradlew text eol=lf
 
 # Treat the Gradle wrapper jar as binary.
 *.jar binary
+
+# CHANGELOG.md is an append-only bulleted list under fixed section
+# headers - concurrent PRs each adding one entry to the same section
+# (e.g. "## [Unreleased]" -> "### Changed") collide on a pure line-based
+# 3-way merge even though both additions are independent and correct.
+# Union merge takes both sides instead of conflicting. Added 2026-08-25
+# after this exact collision jammed the whole pipeline behind a stuck PR
+# twice in one day - see graph-engineering's README "Implementation
+# lessons" and docs/dev-test-node.md.
+CHANGELOG.md merge=union
