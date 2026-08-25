@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI PR Unit Test Report Artifacts**: Upload Gradle unit test HTML reports and JUnit XML results in `build.yml` with a 7-day retention period (`unit-test-report-pr-<short-sha>`), using `if: always()` to retain diagnostics across both passing and failing test runs.
 
 ### Changed
+- **CI Build Workflow Hardening**: Configured `overwrite: true` on `Upload unit test report` and `Upload APK artifact` steps in `.github/workflows/build.yml` to prevent 409 conflict errors when re-running failed jobs on the same commit SHA. Updated test report upload condition from `if: always()` to `if: ${{ !cancelled() }}` to skip uploading partial reports on cancelled runs.
 - **CI Release Pipeline Hardening**: Added top-level concurrency group `release-${{ github.ref }}` with `cancel-in-progress: false` to `.github/workflows/release.yml` to prevent tag collisions on rapid merges to `main`. Added fail-fast assertion step `Assert release tag resolved` to prevent publishing invalid empty-tag artifacts. Hardened test report upload with `if: ${{ !cancelled() }}` to skip uploading on cancelled runs, and enabled `overwrite: true` to support collision-free re-runs.
 - **CI Release Tag Resolution**: Hoisted release tag resolution in `release.yml` before the unit test execution step to ensure prospective release tag metadata is always available to subsequent failure-handling and reporting steps.
 
