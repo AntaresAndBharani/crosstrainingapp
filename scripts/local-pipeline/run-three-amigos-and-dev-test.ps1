@@ -46,7 +46,12 @@ param(
     [string]$JudgeModel = "gemini-3.7-flash-high",
     [string]$AgenticModel = "gemini-3.7-flash-high",
     [string]$PromptTemplateDir = (Join-Path $PSScriptRoot "..\..\.claude\tasks"),
-    [string]$AntigravityTaskDir = (Join-Path $PSScriptRoot "..\..\.antigravity\tasks")
+    [string]$AntigravityTaskDir = (Join-Path $PSScriptRoot "..\..\.antigravity\tasks"),
+    # Manual-validation convenience, not used by the Task Scheduler cutover:
+    # run Step 1 (Three Amigos judgment) only, then exit before Steps 2-5
+    # can touch git or invoke a genuinely agentic session. Leave unset for
+    # normal unattended operation.
+    [switch]$OnlyThreeAmigos
 )
 
 $ErrorActionPreference = "Stop"
@@ -600,6 +605,11 @@ try {
     Push-Location $RepoRoot
     try {
         Invoke-ThreeAmigosStep
+
+        if ($OnlyThreeAmigos) {
+            Write-Log "===== Run complete (OnlyThreeAmigos: stopping before Steps 2-5) ====="
+            exit 0
+        }
 
         if (Invoke-ConflictResolutionStep) {
             Write-Log "===== Run complete (stopped after Step 2: conflict resolution) ====="
