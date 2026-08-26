@@ -61,7 +61,7 @@
 param(
     [string]$Repo = "AntaresAndBharani/crosstrainingapp",
     [string]$ClaudePath = "C:\Users\rogal\.local\bin\claude.exe",
-    [string]$DefaultModel = "claude-opus-5",
+    [string]$DefaultModel = "claude-sonnet-5",
     [string]$BacklogTriageModel = "claude-sonnet-5",
     [string]$PromptTemplateDir = (Join-Path $PSScriptRoot "..\..\.claude\tasks"),
     # Manual-validation convenience, not used by the Task Scheduler cutover:
@@ -413,7 +413,7 @@ function Invoke-ArchitectJudge {
         # `--tools "Read,Grep,Glob"` both blocks a real git/Bash call (the
         # model correctly reports no shell tool available) and still lets
         # Glob/Read/Grep function normally.
-        $result = Invoke-NativeProcess -FilePath $ClaudePath -ArgumentStrings @("--model", $Model, "--effort", "medium", "--output-format", "json", "--tools", "Read,Grep,Glob", "--print", $prompt) -WorkingDirectory $RepoRoot
+        $result = Invoke-NativeProcess -FilePath $ClaudePath -ArgumentStrings @("--model", $Model, "--effort", "high", "--output-format", "json", "--tools", "Read,Grep,Glob", "--print", $prompt) -WorkingDirectory $RepoRoot
     } catch {
         Write-Log "claude.exe invocation threw for issue #$($IssueContext.number): $_" "ERROR"
         return $null
