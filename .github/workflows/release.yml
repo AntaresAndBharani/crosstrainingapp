@@ -148,7 +148,18 @@ jobs:
 
       - name: Verify release signature
         run: |
-          APKSIGNER=$(ls -1d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)/apksigner
+          if [ -z "${ANDROID_HOME:-}" ] || [ ! -d "$ANDROID_HOME/build-tools" ]; then
+            echo "::error::ANDROID_HOME is unset or $ANDROID_HOME/build-tools directory does not exist."
+            exit 1
+          fi
+
+          BUILD_TOOLS_DIRS=$(ls -1d "$ANDROID_HOME"/build-tools/* 2>/dev/null || true)
+          if [ -z "$BUILD_TOOLS_DIRS" ]; then
+            echo "::error::No build-tools versions found under $ANDROID_HOME/build-tools/."
+            exit 1
+          fi
+
+          APKSIGNER=$(echo "$BUILD_TOOLS_DIRS" | sort -V | tail -n1)/apksigner
           if [ ! -x "$APKSIGNER" ]; then
             echo "::error::apksigner tool not found under $ANDROID_HOME/build-tools/"
             exit 1
