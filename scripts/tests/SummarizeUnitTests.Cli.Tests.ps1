@@ -165,10 +165,12 @@ try {
 
     $shContent = "#!/bin/sh`necho `"`$@`" >> `"`$GH_MOCK_LOG`"`nif [ `"`$1`" = `"user`" ]; then echo `"bot-user`"; exit 0; fi`nif [ `"`$1`" = `"api`" ]; then echo `"[]`"; exit 0; fi`nexit 0`n"
     $shFile = Join-Path $mockGhDir "gh"
-    [System.IO.File]::WriteAllText($shFile, $shContent, [System.Text.Encoding]::UTF8)
+    # Use BOM-free UTF-8 so the Linux kernel recognizes the shebang
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($shFile, $shContent, $utf8NoBom)
 
     if ($PSVersionTable.PSVersion.Major -ge 6 -and -not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
-        chmod +x $shFile 2>$null
+        & chmod +x $shFile
     }
 
     $pathSep = [System.IO.Path]::PathSeparator
