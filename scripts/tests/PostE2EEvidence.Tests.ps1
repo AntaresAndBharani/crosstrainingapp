@@ -430,10 +430,69 @@ Describe 'post-e2e-evidence.ps1' {
     }
 
     Context 'Static hygiene' {
-        It 'contains no raw gh api comment listing or posting calls' {
-            $content = Get-Content -LiteralPath $script:PostE2EScript -Raw
-            $content | Should -Not -Match 'gh api repos/.+/issues/\$PrNumber/comments'
-            $content | Should -Not -Match 'gh api repos/.+/issues/comments'
+        BeforeAll {
+            function script:Find-RawGhApiCommentCalls {
+                param (
+                    [System.Management.Automation.Language.Ast]$Ast
+                )
+                $commands = $Ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true)
+                $violations = @($commands | Where-Object {
+                    $cmdName = $_.GetCommandName()
+                    if ($cmdName -notin @('gh', 'gh.exe')) { return $false }
+                    $elements = @($_.CommandElements | Select-Object -Skip 1)
+                    $hasApi = $false
+                    foreach ($elem in $elements) {
+                        if (($elem -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $elem.Value -eq 'api') -or
+                            ($elem.Extent.Text.Trim("'`"") -eq 'api')) {
+                            $hasApi = $true
+                            break
+                        }
+                    }
+                    if (-not $hasApi) { return $false }
+                    foreach ($elem in $elements) {
+                        if ($elem.Extent.Text -match 'issues/.+/comments|issues/comments') {
+                            return $true
+                        }
+                    }
+                    return $false
+                })
+                return ,$violations
+            }
+        }
+
+        It 'contains no raw gh api comment listing, posting, or patching calls via AST' {
+            $tokens = $null
+            $errors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:PostE2EScript, [ref]$tokens, [ref]$errors)
+            $errors.Count | Should -Be 0
+            $violations = Find-RawGhApiCommentCalls -Ast $ast
+            $violations.Count | Should -Be 0
+        }
+
+        It 'detects raw gh api comment calls across formatting variants that regex checks miss' {
+            $oldRegex1 = 'gh api repos/.+/issues/\$PrNumber/comments'
+            $oldRegex2 = 'gh api repos/.+/issues/comments'
+
+            # A formatting variant that bypassed the old regex check
+            $evasiveSnippet = 'gh api "repos/$Repo/issues/$($Pr)/comments"'
+            $evasiveSnippet | Should -Not -Match $oldRegex1
+            $evasiveSnippet | Should -Not -Match $oldRegex2
+
+            $variantSnippets = @(
+                'gh api "repos/$Repo/issues/$($Pr)/comments"',
+                'gh api "repos/${Repo}/issues/${PrNumber}/comments"',
+                'gh api ("repos/" + $Repo + "/issues/" + $Pr + "/comments")',
+                'gh api repos/foo/issues/comments/456 -X PATCH',
+                'gh api "issues/$PrNumber/comments"'
+            )
+
+            foreach ($code in $variantSnippets) {
+                $tokens = $null
+                $errors = $null
+                $ast = [System.Management.Automation.Language.Parser]::ParseInput($code, [ref]$tokens, [ref]$errors)
+                $violations = Find-RawGhApiCommentCalls -Ast $ast
+                $violations.Count | Should -BeGreaterThan 0
+            }
         }
 
         It 'dot-sources lib/PrComment.ps1' {
