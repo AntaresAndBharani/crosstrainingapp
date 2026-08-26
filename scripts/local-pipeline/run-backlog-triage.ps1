@@ -32,7 +32,7 @@
 param(
     [string]$Repo = "AntaresAndBharani/crosstrainingapp",
     [string]$AgyPath = "C:\Users\rogal\AppData\Local\agy\bin\agy.exe",
-    [string]$Model = "gemini-3.7-flash-high",
+    [string]$Model = "gemini-3.7-flash-medium",
     [string[]]$Labels = @("tech-debt", "enhancement"),
     [string]$PromptTemplatePath = (Join-Path $PSScriptRoot "..\..\.antigravity\tasks\backlog-triage.md")
 )

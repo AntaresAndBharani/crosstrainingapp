@@ -43,8 +43,8 @@
 param(
     [string]$Repo = "AntaresAndBharani/crosstrainingapp",
     [string]$AgyPath = "C:\Users\rogal\AppData\Local\agy\bin\agy.exe",
-    [string]$JudgeModel = "gemini-3.7-flash-high",
-    [string]$AgenticModel = "gemini-3.7-flash-high",
+    [string]$JudgeModel = "gemini-3.7-flash-medium",
+    [string]$AgenticModel = "gemini-3.7-flash-medium",
     [string]$PromptTemplateDir = (Join-Path $PSScriptRoot "..\..\.claude\tasks"),
     [string]$AntigravityTaskDir = (Join-Path $PSScriptRoot "..\..\.antigravity\tasks"),
     # Manual-validation convenience, not used by the Task Scheduler cutover:
