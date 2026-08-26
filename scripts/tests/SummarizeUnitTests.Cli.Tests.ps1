@@ -217,3 +217,31 @@ try {
     }
 }
 
+# ---------------------------------------------------------------------------
+# -Environment restoration (unconditional restoration in finally block)
+# ---------------------------------------------------------------------------
+Write-Host "--- -Environment restoration ---"
+$testUnsetVar = "TEST_UNSET_VAR_$([guid]::NewGuid().ToString('N'))"
+[Environment]::SetEnvironmentVariable($testUnsetVar, $null)
+
+$testPresetVar = "TEST_PRESET_VAR_$([guid]::NewGuid().ToString('N'))"
+[Environment]::SetEnvironmentVariable($testPresetVar, "initial_value")
+
+try {
+    $envTestResult = Invoke-SummarizerScript -ResultsDir (Join-Path $FixtureRoot "pass") `
+        -Environment @{
+            $testUnsetVar  = 'temporary_unset_val'
+            $testPresetVar = 'overridden_val'
+        }
+    Assert-Equal -Actual $envTestResult.ExitCode -Expected 0 `
+                 -TestName "cli: -Environment restoration call exits 0"
+    Assert-Equal -Actual ([Environment]::GetEnvironmentVariable($testUnsetVar)) -Expected $null `
+                 -TestName "cli: originally-unset env var is restored to `$null after Invoke-SummarizerScript"
+    Assert-Equal -Actual ([Environment]::GetEnvironmentVariable($testPresetVar)) -Expected "initial_value" `
+                 -TestName "cli: pre-set env var is restored to initial value after Invoke-SummarizerScript"
+} finally {
+    [Environment]::SetEnvironmentVariable($testUnsetVar, $null)
+    [Environment]::SetEnvironmentVariable($testPresetVar, $null)
+}
+
+
