@@ -149,3 +149,71 @@ try {
     }
 }
 
+# ---------------------------------------------------------------------------
+# -Repo fallback behavior and pass-through to Publish-PrComment
+# ---------------------------------------------------------------------------
+Write-Host "--- -Repo fallback behavior (pass fixture with mock gh) ---"
+$mockGhDir = Join-Path ([System.IO.Path]::GetTempPath()) "sut-ghmock-$([guid]::NewGuid())"
+[System.IO.Directory]::CreateDirectory($mockGhDir) | Out-Null
+$mockGhLog = Join-Path ([System.IO.Path]::GetTempPath()) "sut-ghlog-$([guid]::NewGuid()).log"
+
+try {
+    # Create mock gh executable for Windows (.cmd) and Unix (sh)
+    $cmdContent = "@echo off`r`necho %* >> `"%GH_MOCK_LOG%`"`r`nif `"%~1`"==`"user`" (echo bot-user & exit /b 0)`r`nif `"%~1`"==`"api`" (echo [] & exit /b 0)`r`nexit /b 0`r`n"
+    [System.IO.File]::WriteAllText((Join-Path $mockGhDir "gh.cmd"), $cmdContent, [System.Text.Encoding]::ASCII)
+    [System.IO.File]::WriteAllText((Join-Path $mockGhDir "gh.bat"), $cmdContent, [System.Text.Encoding]::ASCII)
+
+    $shContent = "#!/bin/sh`necho `"`$@`" >> `"`$GH_MOCK_LOG`"`nif [ `"`$1`" = `"user`" ]; then echo `"bot-user`"; exit 0; fi`nif [ `"`$1`" = `"api`" ]; then echo `"[]`"; exit 0; fi`nexit 0`n"
+    $shFile = Join-Path $mockGhDir "gh"
+    [System.IO.File]::WriteAllText($shFile, $shContent, [System.Text.Encoding]::UTF8)
+
+    if ($PSVersionTable.PSVersion.Major -ge 6 -and -not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+        chmod +x $shFile 2>$null
+    }
+
+    $pathSep = [System.IO.Path]::PathSeparator
+    $baseEnv = @{
+        GH_MOCK_LOG = $mockGhLog
+        PATH        = "$mockGhDir$pathSep$($env:PATH)"
+    }
+
+    # Case 1: -Repo omitted and GITHUB_REPOSITORY unset -> AntaresAndBharani/crosstrainingapp
+    if (Test-Path $mockGhLog) { Remove-Item $mockGhLog -Force }
+    $res1 = Invoke-SummarizerScript -ResultsDir (Join-Path $FixtureRoot "pass") -PrNumber "123" -Environment $baseEnv
+    Assert-Equal -Actual $res1.ExitCode -Expected 0 `
+                 -TestName "cli: -Repo omitted with -PrNumber exits 0"
+    $log1 = if (Test-Path $mockGhLog) { [System.IO.File]::ReadAllText($mockGhLog) } else { "" }
+    Assert-True  -Condition ($log1.Contains('repos/AntaresAndBharani/crosstrainingapp/issues/123/comments')) `
+                 -TestName "cli: -Repo omitted falls back to AntaresAndBharani/crosstrainingapp"
+
+    # Case 2: -Repo empty string with GITHUB_REPOSITORY set -> GITHUB_REPOSITORY
+    if (Test-Path $mockGhLog) { Remove-Item $mockGhLog -Force }
+    $envWithRepo = @{
+        GH_MOCK_LOG       = $mockGhLog
+        PATH              = "$mockGhDir$pathSep$($env:PATH)"
+        GITHUB_REPOSITORY = "CustomOrg/custom-repo"
+    }
+    $res2 = Invoke-SummarizerScript -ResultsDir (Join-Path $FixtureRoot "pass") -PrNumber "123" -Repo "" -Environment $envWithRepo
+    Assert-Equal -Actual $res2.ExitCode -Expected 0 `
+                 -TestName "cli: -Repo empty with GITHUB_REPOSITORY exits 0"
+    $log2 = if (Test-Path $mockGhLog) { [System.IO.File]::ReadAllText($mockGhLog) } else { "" }
+    Assert-True  -Condition ($log2.Contains('repos/CustomOrg/custom-repo/issues/123/comments')) `
+                 -TestName "cli: -Repo empty falls back to GITHUB_REPOSITORY"
+
+    # Case 3: -Repo explicit -> passed through unchanged
+    if (Test-Path $mockGhLog) { Remove-Item $mockGhLog -Force }
+    $res3 = Invoke-SummarizerScript -ResultsDir (Join-Path $FixtureRoot "pass") -PrNumber "123" -Repo "ExplicitOrg/explicit-repo" -Environment $baseEnv
+    Assert-Equal -Actual $res3.ExitCode -Expected 0 `
+                 -TestName "cli: -Repo explicit exits 0"
+    $log3 = if (Test-Path $mockGhLog) { [System.IO.File]::ReadAllText($mockGhLog) } else { "" }
+    Assert-True  -Condition ($log3.Contains('repos/ExplicitOrg/explicit-repo/issues/123/comments')) `
+                 -TestName "cli: -Repo explicit passed through to gh api"
+} finally {
+    if (Test-Path $mockGhDir) {
+        Remove-Item $mockGhDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $mockGhLog) {
+        Remove-Item $mockGhLog -Force -ErrorAction SilentlyContinue
+    }
+}
+

@@ -11,6 +11,7 @@
 function Publish-PrComment {
     [CmdletBinding()]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Deliberate human-readable CI console output')]
+    # Publish-PrComment is the single source of truth for -Repo fallback and normalization. Callers should pass -Repo through directly.
     param(
         [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
         [string]$PrNumber,
