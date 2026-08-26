@@ -224,6 +224,8 @@ try {
 Write-Host "--- -Environment restoration ---"
 $testUnsetVar = "TEST_UNSET_VAR_$([guid]::NewGuid().ToString('N'))"
 [Environment]::SetEnvironmentVariable($testUnsetVar, $null)
+Assert-Equal -Actual ([Environment]::GetEnvironmentVariable($testUnsetVar)) -Expected $null `
+             -TestName "cli: test variable is confirmed `$null before Invoke-SummarizerScript"
 
 $testPresetVar = "TEST_PRESET_VAR_$([guid]::NewGuid().ToString('N'))"
 [Environment]::SetEnvironmentVariable($testPresetVar, "initial_value")
