@@ -8,6 +8,7 @@
 
 BeforeAll {
     Import-Module Pester -ErrorAction SilentlyContinue
+    . (Join-Path (Join-Path $PSScriptRoot "..") "lib/PrComment.ps1")
     $script:PostE2EScript = Join-Path (Join-Path $PSScriptRoot "..") "post-e2e-evidence.ps1"
 }
 
@@ -91,6 +92,38 @@ Describe 'post-e2e-evidence.ps1' {
                 & $script:PostE2EScript -PrNumber "123" -SummaryPath $summaryFile -Version "v1.0.0"
                 $LASTEXITCODE | Should -Be 1
                 Should -Invoke -CommandName gh -Times 0 -Exactly -ParameterFilter { ($args -join ' ') -match 'comments' }
+            } finally {
+                Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'invokes Publish-PrComment directly with expected marker and non-empty body' {
+            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "e2e-test-$([guid]::NewGuid())"
+            [System.IO.Directory]::CreateDirectory($tempDir) | Out-Null
+            $summaryFile = Join-Path $tempDir "summary.json"
+            @'
+[
+  {"flow": "01_login", "passed": true}
+]
+'@ | Set-Content -Path $summaryFile -Encoding UTF8
+
+            Mock -CommandName Publish-PrComment -MockWith { return $true }
+            Mock -CommandName gh -MockWith {
+                param()
+                $argsList = $args -join ' '
+                if ($argsList -match 'release view') {
+                    $global:LASTEXITCODE = 0
+                    return 'release exists'
+                }
+                return ''
+            }
+
+            try {
+                & $script:PostE2EScript -PrNumber "123" -SummaryPath $summaryFile -Version "v1.0.0"
+                $LASTEXITCODE | Should -Be 0
+                Should -Invoke -CommandName Publish-PrComment -Times 1 -Exactly -ParameterFilter {
+                    $Marker -eq '<!-- e2e-evidence -->' -and -not [string]::IsNullOrWhiteSpace($Body)
+                }
             } finally {
                 Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
             }
