@@ -79,3 +79,16 @@ An audit of `.github/workflows/release.yml` confirmed the canonical step names u
 
 The workflow file was audited and required no renaming. Stale references (such as `Build distributable APK (debug variant, debug-signed)` or `Package debug-signed APK as release distribution artifact`) originated in historical issue acceptance-criteria text (e.g. subtask #212), not in the workflow itself. Future stories and subtasks referencing release workflow steps should quote the verbatim step names above.
 
+---
+
+## 6. Branch Protection: Script-Tests Matrix Check Names
+
+For maintainers and contributors configuring required status checks in repository branch protection settings:
+
+An audit of `.github/workflows/build.yml` confirmed the canonical status-check context names emitted by the `script-tests` matrix job across runner operating systems (`matrix.os: [ubuntu-latest, windows-latest]`):
+- **Ubuntu Runner Check:** `script-tests (ubuntu-latest)`
+- **Windows Runner Check:** `script-tests (windows-latest)`
+
+These are the exact required-status-check context names to configure in GitHub branch protection rules for `main` (replacing any deprecated monolithic `script-tests` check name). Future stories and subtasks referencing branch protection status checks for script tests should quote the verbatim check names above.
+
+
