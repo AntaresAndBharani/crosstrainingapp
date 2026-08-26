@@ -107,6 +107,68 @@ function ConvertTo-JsonArray {
     return $json
 }
 
+function ConvertTo-EscapedArgument {
+    # Standard Win32/CommandLineToArgvW argument-quoting algorithm. Needed
+    # because PowerShell 5.1's own native-command argument marshaling
+    # (`& $exe --print $largeString`) mangles arguments containing embedded
+    # double quotes / backslash sequences -- both routine in real issue
+    # body text (paths, inline-code spans). ProcessStartInfo.ArgumentList
+    # isn't available on this system's .NET Framework, so build the
+    # pre-quoted command line by hand instead of relying on either.
+    param([string]$Arg)
+    if ($Arg -eq "") { return '""' }
+    if ($Arg -notmatch '[\s"]') { return $Arg }
+    $result = '"'
+    $backslashes = 0
+    foreach ($ch in $Arg.ToCharArray()) {
+        if ($ch -eq '\') {
+            $backslashes++
+        } elseif ($ch -eq '"') {
+            $result += ('\' * ($backslashes * 2 + 1))
+            $result += '"'
+            $backslashes = 0
+        } else {
+            if ($backslashes -gt 0) {
+                $result += ('\' * $backslashes)
+                $backslashes = 0
+            }
+            $result += $ch
+        }
+    }
+    if ($backslashes -gt 0) {
+        $result += ('\' * ($backslashes * 2))
+    }
+    $result += '"'
+    return $result
+}
+
+function Invoke-NativeProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentStrings
+    )
+
+    $argLine = ($ArgumentStrings | ForEach-Object { ConvertTo-EscapedArgument $_ }) -join ' '
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = $argLine
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $stderr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+
+    return [pscustomobject]@{
+        ExitCode = $proc.ExitCode
+        StdOut   = $stdout
+        StdErr   = $stderr
+    }
+}
+
 function Invoke-BacklogJudge {
     param(
         [string]$Label,
@@ -118,19 +180,19 @@ function Invoke-BacklogJudge {
     $prompt = $PromptTemplate.Replace('{{LABEL}}', $Label).Replace('{{ISSUES_JSON}}', $issuesJson)
 
     Write-Log "Invoking agy.exe (model=$Model) for label '$Label' ($($Issues.Count) issue(s) in prompt)..."
-    $agyRaw = $null
+    $result = $null
     try {
-        $agyRaw = & $AgyPath --model $Model --output-format json --print $prompt 2>&1
+        $result = Invoke-NativeProcess -FilePath $AgyPath -ArgumentStrings @("--model", $Model, "--output-format", "json", "--print", $prompt)
     } catch {
         Write-Log "agy.exe invocation threw for label '${Label}': $_" "ERROR"
         return @()
     }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log "agy.exe exited $LASTEXITCODE for label '${Label}'. Output: $($agyRaw | Out-String)" "ERROR"
+    if ($result.ExitCode -ne 0) {
+        Write-Log "agy.exe exited $($result.ExitCode) for label '${Label}'. StdOut: $($result.StdOut) StdErr: $($result.StdErr)" "ERROR"
         return @()
     }
 
-    $agyRawText = ($agyRaw | Out-String).Trim()
+    $agyRawText = $result.StdOut.Trim()
 
     $envelope = $null
     try {
@@ -225,6 +287,14 @@ function Publish-StoryFromCluster {
 
     foreach ($sourceNumber in $absorbed) {
         $commentBody = "Closed as absorbed and consolidated into parent story #$newIssueNumber."
+        # `gh` writes its own success confirmation (e.g. "Closed issue ...")
+        # to stderr. Under the script-wide $ErrorActionPreference = "Stop",
+        # capturing that via 2>&1 wraps it in an ErrorRecord and throws even
+        # on real success -- same class of bug as the git-sync step above.
+        # Switch to "Continue" for these calls and check $LASTEXITCODE
+        # ourselves instead of relying on the stream/try-catch.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         try {
             $commentOutput = gh issue comment $sourceNumber --repo $Repo --body $commentBody 2>&1
             if ($LASTEXITCODE -ne 0) {
@@ -241,6 +311,8 @@ function Publish-StoryFromCluster {
             Write-Log "Closed issue #$sourceNumber as absorbed into #$newIssueNumber."
         } catch {
             Write-Log "Error absorbing issue #${sourceNumber} into #${newIssueNumber}: $_" "ERROR"
+        } finally {
+            $ErrorActionPreference = $prevEAP
         }
     }
 }
