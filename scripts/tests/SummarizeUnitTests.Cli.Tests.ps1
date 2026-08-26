@@ -159,16 +159,17 @@ $mockGhLog = Join-Path ([System.IO.Path]::GetTempPath()) "sut-ghlog-$([guid]::Ne
 
 try {
     # Create mock gh executable for Windows (.cmd) and Unix (sh)
-    $cmdContent = "@echo off`r`necho %* >> `"%GH_MOCK_LOG%`"`r`nif `"%~1`"==`"user`" (echo bot-user & exit /b 0)`r`nif `"%~1`"==`"api`" (echo [] & exit /b 0)`r`nexit /b 0`r`n"
-    [System.IO.File]::WriteAllText((Join-Path $mockGhDir "gh.cmd"), $cmdContent, [System.Text.Encoding]::ASCII)
-    [System.IO.File]::WriteAllText((Join-Path $mockGhDir "gh.bat"), $cmdContent, [System.Text.Encoding]::ASCII)
-
-    $shContent = "#!/bin/sh`necho `"`$@`" >> `"`$GH_MOCK_LOG`"`nif [ `"`$1`" = `"user`" ]; then echo `"bot-user`"; exit 0; fi`nif [ `"`$1`" = `"api`" ]; then echo `"[]`"; exit 0; fi`nexit 0`n"
-    $shFile = Join-Path $mockGhDir "gh"
-    [System.IO.File]::WriteAllText($shFile, $shContent, [System.Text.Encoding]::UTF8)
-
-    if ($PSVersionTable.PSVersion.Major -ge 6 -and -not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
-        chmod +x $shFile 2>$null
+    $isWin = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT -or [System.IO.Path]::DirectorySeparatorChar -eq '\'
+    if ($isWin) {
+        $cmdContent = "@echo off`r`necho %* >> `"%GH_MOCK_LOG%`"`r`nif `"%~1`"==`"user`" (echo bot-user & exit /b 0)`r`nif `"%~1`"==`"api`" (echo [] & exit /b 0)`r`nexit /b 0`r`n"
+        [System.IO.File]::WriteAllText((Join-Path $mockGhDir "gh.cmd"), $cmdContent, [System.Text.Encoding]::ASCII)
+        [System.IO.File]::WriteAllText((Join-Path $mockGhDir "gh.bat"), $cmdContent, [System.Text.Encoding]::ASCII)
+    } else {
+        $shContent = "#!/bin/sh`necho `"`$@`" >> `"`$GH_MOCK_LOG`"`nif [ `"`$1`" = `"user`" ]; then echo `"bot-user`"; exit 0; fi`nif [ `"`$1`" = `"api`" ]; then echo `"[]`"; exit 0; fi`nexit 0`n"
+        $shFile = Join-Path $mockGhDir "gh"
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        [System.IO.File]::WriteAllText($shFile, $shContent, $utf8NoBom)
+        & chmod +x $shFile 2>$null
     }
 
     $pathSep = [System.IO.Path]::PathSeparator
