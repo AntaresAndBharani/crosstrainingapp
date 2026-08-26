@@ -163,7 +163,11 @@ function Assert-Equal {
     $normActual   = if ($Actual   -is [string]) { ConvertTo-LfLineEnding $Actual   } else { $Actual }
     $normExpected = if ($Expected -is [string]) { ConvertTo-LfLineEnding $Expected } else { $Expected }
 
-    $match = if ($normActual -is [string] -and $normExpected -is [string]) {
+    $match = if ($null -eq $normActual -and $null -eq $normExpected) {
+        $true
+    } elseif ($null -eq $normActual -or $null -eq $normExpected) {
+        $false
+    } elseif ($normActual -is [string] -and $normExpected -is [string]) {
         $normActual -ceq $normExpected
     } else {
         $normActual -eq $normExpected
