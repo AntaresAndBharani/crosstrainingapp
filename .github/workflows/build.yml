@@ -59,13 +59,23 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
             SHORT_SHA="${HEAD_SHA:0:7}"
-            echo "BRANCH_NAME=$HEAD_REF" >> "$GITHUB_ENV"
-            echo "PR_LABEL=PR #${{ github.event.pull_request.number }}" >> "$GITHUB_ENV"
+            RAW_BRANCH="$HEAD_REF"
+            PR_LABEL="PR #${{ github.event.pull_request.number }}"
           else
             SHORT_SHA="${GITHUB_SHA:0:7}"
-            echo "BRANCH_NAME=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-            echo "PR_LABEL=Manual Build" >> "$GITHUB_ENV"
+            RAW_BRANCH="${GITHUB_REF_NAME}"
+            PR_LABEL="Manual Build"
           fi
+          # Security: Sanitize BRANCH_NAME to an allowlist of characters [a-zA-Z0-9._/-].
+          # While action `with:` parameter interpolation is not shell-executed and therefore immune
+          # to command injection, branch names originating from untrusted PRs can contain Markdown
+          # metacharacters (e.g. backticks, brackets, parentheses). If unescaped, a crafted branch
+          # name could break out of the inline code span in the release body and inject arbitrary
+          # Markdown/HTML links (content spoofing/phishing). Replacing non-allowlisted characters
+          # with '_' guarantees the value remains a benign string in rendered Markdown.
+          SAFE_BRANCH=$(printf '%s' "$RAW_BRANCH" | sed 's/[^a-zA-Z0-9._\/-]/_/g')
+          echo "BRANCH_NAME=$SAFE_BRANCH" >> "$GITHUB_ENV"
+          echo "PR_LABEL=$PR_LABEL" >> "$GITHUB_ENV"
           echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
           echo "UNIT_TEST_ARTIFACT=unit-test-report-pr-$SHORT_SHA" >> "$GITHUB_ENV"
 
@@ -127,6 +137,16 @@ jobs:
       # Requires workflow-level 'contents: write' permission (declared at top of file).
       # Note: GitHub Actions issues a read-only GITHUB_TOKEN for pull_request events triggered
       # from forked repositories, so snapshot release publishing is expected to fail on fork PRs.
+      #
+      # Security boundary & injection safety:
+      # - Command injection: The `body` input below is passed directly as a `with:` parameter to
+      #   `softprops/action-gh-release` (a JS Action), not executed inside a shell. GitHub Actions
+      #   evaluates ${{ env.* }} expressions before invoking the action, so shell/command injection
+      #   is impossible.
+      # - Markdown / content injection: To prevent untrusted branch names from breaking out of the
+      #   surrounding backtick code span and injecting phishing links or deceptive markdown,
+      #   `BRANCH_NAME` is strictly sanitized to [a-zA-Z0-9._/-] in the 'Compute build metadata' step.
+      #   `PR_LABEL` and `SHORT_SHA` are internally controlled and safe.
       - name: Publish rolling snapshot pre-release
         uses: softprops/action-gh-release@v2
         env:
