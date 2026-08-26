@@ -165,6 +165,8 @@ function Assert-Equal {
 
     $match = if ($normActual -is [string] -and $normExpected -is [string]) {
         $normActual -ceq $normExpected
+    } elseif ($null -eq $normExpected) {
+        $null -eq $normActual -or ($normActual -is [string] -and [string]::IsNullOrEmpty($normActual))
     } else {
         $normActual -eq $normExpected
     }
