@@ -134,6 +134,30 @@ function ConvertTo-JsonArray {
     return $json
 }
 
+function ConvertFrom-JsonSafeArray {
+    # THE actual root cause of the flaky story-count corruption (found
+    # after ConvertTo-SafeString below turned out NOT to be the real fix --
+    # kept anyway as a reasonable defensive practice, but this is the one
+    # that mattered): `@($text | ConvertFrom-Json)` -- wrapping a LIVE
+    # PIPELINE in @() -- can nest an already-correct array result inside
+    # another single-element array instead of flattening it. Confirmed
+    # reproducibly, isolated down to this exact difference: `$x =
+    # $text | ConvertFrom-Json` followed by a separate `@($x)` always
+    # worked; `@($text | ConvertFrom-Json)` as one expression sometimes
+    # collapsed a real 9-element array to Count=1 with every field's values
+    # concatenated together. Capture the parse result to a plain variable
+    # FIRST, then check whether it's already an array before wrapping --
+    # @() around an already-materialized variable (not a live pipe) is the
+    # safe, standard idiom and doesn't have this problem. The other three
+    # wrappers in this pipeline (backlog-triage, pr-review, architect)
+    # already happened to use this safe two-step pattern throughout; this
+    # file was the only one written with the unsafe one-liner.
+    param([string]$JsonText)
+    $parsed = $JsonText | ConvertFrom-Json -ErrorAction Stop
+    if ($parsed -is [array]) { return $parsed }
+    return @($parsed)
+}
+
 function ConvertTo-SafeString {
     # Found live building THIS wrapper: `($x | Out-String).Trim()` on
     # captured native-command output is NOT safe for reassembling it into
@@ -232,7 +256,7 @@ function Invoke-ThreeAmigosStep {
     }
     $stories = @()
     if (-not [string]::IsNullOrWhiteSpace($storiesResult.Output)) {
-        try { $stories = @($storiesResult.Output | ConvertFrom-Json -ErrorAction Stop) } catch {
+        try { $stories = ConvertFrom-JsonSafeArray $storiesResult.Output } catch {
             Write-Log "Failed to parse status:review stories JSON: $_" "ERROR"
             return
         }
@@ -352,7 +376,7 @@ function Invoke-ConflictResolutionStep {
     if ($prsResult.ExitCode -ne 0) { return $false }
     $prs = @()
     if (-not [string]::IsNullOrWhiteSpace($prsResult.Output)) {
-        try { $prs = @($prsResult.Output | ConvertFrom-Json -ErrorAction Stop) } catch { return $false }
+        try { $prs = ConvertFrom-JsonSafeArray $prsResult.Output } catch { return $false }
     }
     $conflicting = $prs | Where-Object { $_.mergeable -eq "CONFLICTING" } | Select-Object -First 1
     if ($null -eq $conflicting) {
@@ -421,7 +445,7 @@ function Invoke-FixupStep {
     if ($prsResult.ExitCode -ne 0) { return $false }
     $prs = @()
     if (-not [string]::IsNullOrWhiteSpace($prsResult.Output)) {
-        try { $prs = @($prsResult.Output | ConvertFrom-Json -ErrorAction Stop) } catch { return $false }
+        try { $prs = ConvertFrom-JsonSafeArray $prsResult.Output } catch { return $false }
     }
     if ($prs.Count -eq 0) {
         Write-Log "No PR labeled review:changes-requested found."
@@ -508,7 +532,7 @@ function Test-AnythingInFlight {
     $prsResult = Invoke-GhCommand -GhArgs @("pr", "list", "--repo", $Repo, "--state", "open", "--json", "number")
     if ($prsResult.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($prsResult.Output)) {
         try {
-            $prs = @($prsResult.Output | ConvertFrom-Json -ErrorAction Stop)
+            $prs = ConvertFrom-JsonSafeArray $prsResult.Output
             if ($prs.Count -gt 0) {
                 Write-Log "$($prs.Count) open PR(s) exist -- something is mid-review or approved-pending-merge. Stopping this poll."
                 return $true
@@ -519,7 +543,7 @@ function Test-AnythingInFlight {
     $inDevResult = Invoke-GhCommand -GhArgs @("issue", "list", "--repo", $Repo, "--label", "status:in-development", "--state", "open", "--json", "number")
     if ($inDevResult.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($inDevResult.Output)) {
         try {
-            $stories = @($inDevResult.Output | ConvertFrom-Json -ErrorAction Stop)
+            $stories = ConvertFrom-JsonSafeArray $inDevResult.Output
             if ($stories.Count -gt 0) {
                 Write-Log "$($stories.Count) story/stories already status:in-development. Stopping this poll."
                 return $true
@@ -541,7 +565,7 @@ function Invoke-ImplementationStep {
     if ($storiesResult.ExitCode -ne 0) { return }
     $stories = @()
     if (-not [string]::IsNullOrWhiteSpace($storiesResult.Output)) {
-        try { $stories = @($storiesResult.Output | ConvertFrom-Json -ErrorAction Stop) } catch { return }
+        try { $stories = ConvertFrom-JsonSafeArray $storiesResult.Output } catch { return }
     }
     if ($stories.Count -eq 0) {
         Write-Log "No story at status:ready."
