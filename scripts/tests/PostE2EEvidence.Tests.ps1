@@ -282,6 +282,12 @@ Describe 'post-e2e-evidence.ps1' {
                 $LASTEXITCODE | Should -Be 0
                 $global:PatchCalled | Should -BeTrue
                 $global:PostCalled | Should -BeFalse
+                Should -Invoke -CommandName gh -Times 1 -Exactly -ParameterFilter {
+                    ($args -join ' ') -match 'PATCH'
+                }
+                Should -Invoke -CommandName gh -Times 0 -Exactly -ParameterFilter {
+                    ($args -join ' ') -match 'POST'
+                }
                 $global:CapturedBody | Should -Not -BeNullOrEmpty
                 $global:CapturedBody | Should -Match '^<!-- e2e-evidence -->'
                 $global:CapturedBody | Should -Match '01_login'
