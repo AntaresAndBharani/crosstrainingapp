@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Snapshot Release Body Branch Name Sanitization**: Sanitized `BRANCH_NAME` in `Compute build metadata` to an alphanumeric/delimiter allowlist (`[a-zA-Z0-9._/-]`) in `.github/workflows/build.yml` to prevent Markdown/GFM code-span breakout or link spoofing in rendered GitHub snapshot release notes, and documented the security evaluation for `with:` action input safety (#244, #245, #247).
+
 ### Fixed
 - **CI Branch Ref Injection Hardening**: Passed `github.head_ref` via step-level `env: HEAD_REF: ${{ github.head_ref }}` in `.github/workflows/build.yml` and referenced `$HEAD_REF` within the `Compute build metadata` script to prevent branch name script injection (#152, #167).
 - **Unit Test Summary Artifact Name Guard**: Added fallback guard in `scripts/summarize-unit-tests.ps1` defaulting `-ArtifactName` to `"unit test report"` when null, empty, or whitespace, preventing double-spaced generic truncation notes when `SHORT_SHA` is unset in CI workflows (#161).

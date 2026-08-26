@@ -55,17 +55,26 @@ jobs:
       - name: Compute build metadata
         env:
           HEAD_REF: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
             SHORT_SHA="${HEAD_SHA:0:7}"
-            echo "BRANCH_NAME=$HEAD_REF" >> "$GITHUB_ENV"
+            RAW_BRANCH="$HEAD_REF"
             echo "PR_LABEL=PR #${{ github.event.pull_request.number }}" >> "$GITHUB_ENV"
           else
             SHORT_SHA="${GITHUB_SHA:0:7}"
-            echo "BRANCH_NAME=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            RAW_BRANCH="$REF_NAME"
             echo "PR_LABEL=Manual Build" >> "$GITHUB_ENV"
           fi
+          # Sanitize branch name to an allowlist [a-zA-Z0-9._/-], replacing any other character with '_'.
+          # While with: action inputs are immune to shell/command injection because GitHub Actions interpolates
+          # them before execution without invoking a shell, BRANCH_NAME is rendered inside single backticks in
+          # the release Markdown body. Git branch names can legally contain Markdown/GFM characters (e.g. backticks,
+          # unescaped brackets, parentheses) that could break out of the code span or spoof download links.
+          # Sanitizing to a strict alphanumeric/delimiter allowlist neutralizes this content-spoofing vector.
+          SAFE_BRANCH="$(printf '%s' "$RAW_BRANCH" | sed 's/[^a-zA-Z0-9._/-]/_/g')"
+          echo "BRANCH_NAME=$SAFE_BRANCH" >> "$GITHUB_ENV"
           echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
           echo "UNIT_TEST_ARTIFACT=unit-test-report-pr-$SHORT_SHA" >> "$GITHUB_ENV"
 
@@ -124,6 +133,10 @@ jobs:
       # to prevent leaving the Releases page without a snapshot if a run is cancelled.
       # Note: The 'snapshot' git tag remains pinned to its initial commit; the release body
       # carries the authoritative record of the PR, branch, and commit for each build.
+      # Security note: Interpolating ${{ env.BRANCH_NAME }} in the 'body:' with-parameter is immune
+      # to shell/command injection as GitHub Actions passes action inputs directly to the runner NodeJS
+      # process without invoking a subshell. To prevent Markdown/GFM content spoofing or layout breaking
+      # in the rendered release notes, BRANCH_NAME is sanitized to [a-zA-Z0-9._/-] in 'Compute build metadata'.
       # Requires workflow-level 'contents: write' permission (declared at top of file).
       # Note: GitHub Actions issues a read-only GITHUB_TOKEN for pull_request events triggered
       # from forked repositories, so snapshot release publishing is expected to fail on fork PRs.
