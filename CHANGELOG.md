@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **README CI Workflow References and Release Signing Documentation**: Updated README.md workflow references to accurately describe `Release on Merge to Main` on merge to `main`, `PR Snapshot Build & Pre-Release` on pull requests with `crosstraining-snapshot-<sha>` artifacts, and production release signing verification (#271, #292, #300).
 - **PR Comment Caller Repo Normalization Consolidation**: Removed redundant caller-side `-Repo` fallback guards and parameter defaults in `scripts/post-e2e-evidence.ps1` and `scripts/summarize-unit-tests.ps1`, consolidating normalization logic into `Publish-PrComment` as the single source of truth (#280, #291, #296).
 - **apksigner Path Resolution and Directory Existence Guards**: Added precondition guards for `$ANDROID_HOME`, `$ANDROID_HOME/build-tools` directory existence, and build-tools version discovery before resolving `apksigner` in `.github/workflows/release.yml`, emitting explicit `::error::` annotations instead of failing on unguarded shell globs (#261, #269, #273).
 - **Release Keystore Decode Error Annotation Guard**: Added explicit base64 decoding check and non-empty file validation with `::error::` annotations to the `Decode release keystore` step in `.github/workflows/release.yml`, preventing silent or opaque failures prior to release APK compilation (#259, #269, #272).
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
 
 ### Added
+- **Release Workflow Canonical Step Names Documentation**: Added canonical step name reference table in `docs/local-testing.md` documenting `Build distributable APK (release variant)` and `Package release-signed APK as release distribution artifact` in `.github/workflows/release.yml` to prevent backlog drift (#271, #292, #299).
 - **PR Comment Repo Fallback Test Coverage**: Added comprehensive test coverage across `scripts/tests/PrComment.Tests.ps1`, `scripts/tests/PostE2EEvidence.Tests.ps1`, and `scripts/tests/SummarizeUnitTests.Cli.Tests.ps1` asserting repository parameter fallback to `$env:GITHUB_REPOSITORY` and default repository across omitted, blank, and explicit arguments (#291, #297).
 - **PR Comment Mock Helper Path Tests**: Added direct Pester test coverage in `scripts/tests/PrComment.Tests.ps1` verifying `New-GhApiMock` exit-code propagation and exception throwing behavior (#289, #295).
 - **Release Workflow Static Regression Test Suite**: Added dedicated static regression tests in `scripts/tests/ReleaseWorkflow.Static.Tests.ps1` verifying presence of keystore-decode failure checks, `$ANDROID_HOME/build-tools` existence guards, build-tools glob-match discovery, and Android Debug certificate rejection annotations in `.github/workflows/release.yml` (#269, #274).
