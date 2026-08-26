@@ -413,7 +413,7 @@ function Invoke-ArchitectJudge {
         # `--tools "Read,Grep,Glob"` both blocks a real git/Bash call (the
         # model correctly reports no shell tool available) and still lets
         # Glob/Read/Grep function normally.
-        $result = Invoke-NativeProcess -FilePath $ClaudePath -ArgumentStrings @("--model", $Model, "--effort", "high", "--output-format", "json", "--tools", "Read,Grep,Glob", "--print", $prompt) -WorkingDirectory $RepoRoot
+        $result = Invoke-NativeProcess -FilePath $ClaudePath -ArgumentStrings @("--model", $Model, "--effort", "medium", "--output-format", "json", "--tools", "Read,Grep,Glob", "--print", $prompt) -WorkingDirectory $RepoRoot
     } catch {
         Write-Log "claude.exe invocation threw for issue #$($IssueContext.number): $_" "ERROR"
         return $null
