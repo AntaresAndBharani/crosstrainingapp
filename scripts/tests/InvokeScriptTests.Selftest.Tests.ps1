@@ -66,35 +66,14 @@ Invoke-SelftestScenario `
     -TestName "selftest: passing fixture directory exits 0"
 
 # ---------------------------------------------------------------------------
-# Scenario 2: Isolated temp directory with failing fixture exits 1
+# Scenario 2: Isolated temp directory with consolidated passing, failing, and exception fixtures exits 1
 # ---------------------------------------------------------------------------
-Write-Host "--- selftest: failing fixture directory ---"
+Write-Host "--- selftest: consolidated failing and exception fixtures directory ---"
 Invoke-SelftestScenario `
     -Fixtures @{
-        "SampleFail.Tests.ps1" = "Assert-True -Condition `$false -TestName `"selftest synthetic failure`""
+        "A_Pass.Tests.ps1"      = "Assert-True -Condition `$true -TestName `"selftest mixed pass`""
+        "B_Fail.Tests.ps1"      = "Assert-True -Condition `$false -TestName `"selftest mixed fail`""
+        "C_Exception.Tests.ps1" = "throw `"Synthetic unhandled exception`""
     } `
     -ExpectedExitCode 1 `
-    -TestName "selftest: failing fixture directory exits 1"
-
-# ---------------------------------------------------------------------------
-# Scenario 3: Isolated temp directory with mixed passing and failing fixtures exits 1
-# ---------------------------------------------------------------------------
-Write-Host "--- selftest: mixed fixtures directory ---"
-Invoke-SelftestScenario `
-    -Fixtures @{
-        "A_Pass.Tests.ps1" = "Assert-True -Condition `$true -TestName `"selftest mixed pass`""
-        "B_Fail.Tests.ps1" = "Assert-True -Condition `$false -TestName `"selftest mixed fail`""
-    } `
-    -ExpectedExitCode 1 `
-    -TestName "selftest: mixed fixtures directory exits 1"
-
-# ---------------------------------------------------------------------------
-# Scenario 4: Isolated temp directory with unhandled script exception exits 1
-# ---------------------------------------------------------------------------
-Write-Host "--- selftest: exception fixture directory ---"
-Invoke-SelftestScenario `
-    -Fixtures @{
-        "SampleException.Tests.ps1" = "throw `"Synthetic unhandled exception`""
-    } `
-    -ExpectedExitCode 1 `
-    -TestName "selftest: exception fixture directory exits 1"
+    -TestName "selftest: consolidated failing and exception fixtures directory exits 1"
