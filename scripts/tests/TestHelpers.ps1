@@ -160,8 +160,14 @@ function Assert-Equal {
         $Expected,
         [string]$TestName
     )
-    $normActual   = if ($Actual   -is [string]) { ConvertTo-LfLineEnding $Actual   } else { $Actual }
-    $normExpected = if ($Expected -is [string]) { ConvertTo-LfLineEnding $Expected } else { $Expected }
+    if ($null -eq $Actual -and $null -eq $Expected) {
+        Write-Host "  [PASS] $TestName" -ForegroundColor Green
+        $script:PassCount++
+        return
+    }
+
+    $normActual   = if ($null -ne $Actual   -and $Actual   -is [string]) { ConvertTo-LfLineEnding $Actual   } else { $Actual }
+    $normExpected = if ($null -ne $Expected -and $Expected -is [string]) { ConvertTo-LfLineEnding $Expected } else { $Expected }
 
     $match = if ($normActual -is [string] -and $normExpected -is [string]) {
         $normActual -ceq $normExpected
