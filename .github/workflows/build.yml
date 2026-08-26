@@ -73,7 +73,7 @@ jobs:
           # name could break out of the inline code span in the release body and inject arbitrary
           # Markdown/HTML links (content spoofing/phishing). Replacing non-allowlisted characters
           # with '_' guarantees the value remains a benign string in rendered Markdown.
-          SAFE_BRANCH=$(printf '%s' "$RAW_BRANCH" | sed 's/[^a-zA-Z0-9._\/-]/_/g')
+          SAFE_BRANCH=$(printf '%s' "$RAW_BRANCH" | sed 's/[^a-zA-Z0-9._/-]/_/g')
           echo "BRANCH_NAME=$SAFE_BRANCH" >> "$GITHUB_ENV"
           echo "PR_LABEL=$PR_LABEL" >> "$GITHUB_ENV"
           echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
