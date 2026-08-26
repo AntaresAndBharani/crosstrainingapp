@@ -1,6 +1,9 @@
 <#
 .SYNOPSIS
-    Self-test assertions for Invoke-ScriptTests.ps1.
+    Self-test assertions for Invoke-ScriptTests.ps1 across 2 scenarios:
+      - Scenario 1: Isolated temp directory with single passing fixture (expects exit 0).
+      - Scenario 2: Isolated temp directory with consolidated passing, failing, and
+        exception fixtures (expects exit 1), consolidated to reduce child-process spawns.
     Proves that Invoke-ScriptTests.ps1 propagates non-zero exit codes when
     test fixtures fail and exits 0 when all test fixtures pass.
     Dot-sourced by Invoke-ScriptTests.ps1.
