@@ -375,7 +375,22 @@ function Invoke-ArchitectJudge {
         # all three original prompts said as much. Grant read-only tool
         # access (no Write, no Bash) rather than pure judgment, and pin the
         # working directory to the real checkout so relative paths resolve.
-        $result = Invoke-NativeProcess -FilePath $ClaudePath -ArgumentStrings @("--model", $Model, "--output-format", "json", "--permission-mode", "dontAsk", "--allowedTools", "Read Grep Glob", "--print", $prompt) -WorkingDirectory $RepoRoot
+        #
+        # IMPORTANT, found live: `--allowedTools "Read Grep Glob"` (an
+        # allowlist) does NOT actually restrict this CLI version in --print
+        # mode -- verified directly: the model still successfully invoked
+        # Bash and returned real, accurate command output, and this held
+        # true both with and without --permission-mode dontAsk. The tool
+        # inventory available by default (when not explicitly denied) is
+        # this CLI's full standard set -- Bash, Write, Edit, Agent,
+        # Artifact, ToolSearch, WebFetch, WebSearch, NotebookEdit, etc. --
+        # not just the three named in the allowlist. `--disallowedTools`
+        # (a denylist) DOES work -- verified the model correctly reports it
+        # has no shell tool and refuses to fabricate output once Bash is
+        # explicitly denied, while Read/Grep/Glob continue to function
+        # normally. Deny the dangerous/unnecessary ones explicitly instead
+        # of trusting an allowlist that silently doesn't apply.
+        $result = Invoke-NativeProcess -FilePath $ClaudePath -ArgumentStrings @("--model", $Model, "--output-format", "json", "--disallowedTools", "Bash Write Edit Agent Artifact ToolSearch WebFetch WebSearch NotebookEdit", "--print", $prompt) -WorkingDirectory $RepoRoot
     } catch {
         Write-Log "claude.exe invocation threw for issue #$($IssueContext.number): $_" "ERROR"
         return $null
