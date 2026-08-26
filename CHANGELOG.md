@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Release Workflow Error Annotation Trailing Exit 1 Assertions**: Extended static regex assertions in `scripts/tests/ReleaseWorkflow.Static.Tests.ps1` to require each hardened guard's `::error::` annotation in `.github/workflows/release.yml` to be immediately followed by `exit 1` (#313, #319, #334).
 - **Branch Name Sanitization Regex Bracket Expression**: Removed redundant backslash escape before forward slash in the `BRANCH_NAME` sanitization `sed` bracket expression within `.github/workflows/build.yml` to strictly match POSIX regex allowlist intent (`[^a-zA-Z0-9._/-]`) (#302, #320, #335).
 - **Unconditional Environment Variable Restoration in Test Helper**: Modified `Invoke-SummarizerScript` in `scripts/tests/TestHelpers.ps1` to unconditionally restore environment variables in its `finally` block, ensuring originally-unset variables injected via `-Environment` are cleared ($null) and do not leak across sequential test executions (#316, #321, #336).
 - **README CI Workflow References and Release Signing Documentation**: Updated README.md workflow references to accurately describe `Release on Merge to Main` on merge to `main`, `PR Snapshot Build & Pre-Release` on pull requests with `crosstraining-snapshot-<sha>` artifacts, and production release signing verification (#271, #292, #300).

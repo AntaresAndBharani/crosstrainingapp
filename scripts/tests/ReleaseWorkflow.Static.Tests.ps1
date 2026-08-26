@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Static source-text regression assertions for .github/workflows/release.yml.
     Asserts presence of signing guards, apksigner directory/glob checks, and error annotations.
@@ -17,27 +17,27 @@ Assert-True -Condition ([System.IO.File]::Exists($ReleaseWorkflowPath)) `
 $WorkflowText = [System.IO.File]::ReadAllText($ReleaseWorkflowPath, [System.Text.Encoding]::UTF8)
 
 # ---------------------------------------------------------------------------
-# Keystore Decoding Guards (#259, #269, #272)
+# Keystore Decoding Guards (#259, #269, #272, #319, #334)
 # ---------------------------------------------------------------------------
 Assert-True -Condition ($WorkflowText -match 'base64 -d > "\$KEYSTORE_PATH"') `
             -TestName "static: release.yml decodes keystore to KEYSTORE_PATH"
 
-Assert-True -Condition ($WorkflowText -match '::error::Failed to base64-decode RELEASE_KEYSTORE_BASE64 secret\.') `
+Assert-True -Condition ($WorkflowText -match '(?ms)::error::Failed to base64-decode RELEASE_KEYSTORE_BASE64 secret\."?\s*\n\s*exit 1') `
             -TestName "static: release.yml contains keystore decode failure annotation"
 
 Assert-True -Condition ($WorkflowText -match '\[ ! -s "\$KEYSTORE_PATH" \]') `
             -TestName "static: release.yml contains non-empty keystore file guard"
 
-Assert-True -Condition ($WorkflowText -match '::error::Decoded release keystore at \$KEYSTORE_PATH is missing or empty\.') `
+Assert-True -Condition ($WorkflowText -match '(?ms)::error::Decoded release keystore at \$KEYSTORE_PATH is missing or empty\."?\s*\n\s*exit 1') `
             -TestName "static: release.yml contains empty keystore file error annotation"
 
 # ---------------------------------------------------------------------------
-# apksigner Path Resolution & Directory Guards (#261, #269, #273)
+# apksigner Path Resolution & Directory Guards (#261, #269, #273, #319, #334)
 # ---------------------------------------------------------------------------
 Assert-True -Condition ($WorkflowText -match '\[ -z "\$\{ANDROID_HOME:-\}" \] \|\| \[ ! -d "\$ANDROID_HOME/build-tools" \]') `
             -TestName "static: release.yml contains ANDROID_HOME and build-tools directory existence guard"
 
-Assert-True -Condition ($WorkflowText -match '::error::ANDROID_HOME is unset or \$ANDROID_HOME/build-tools directory does not exist\.') `
+Assert-True -Condition ($WorkflowText -match '(?ms)::error::ANDROID_HOME is unset or \$ANDROID_HOME/build-tools directory does not exist\."?\s*\n\s*exit 1') `
             -TestName "static: release.yml contains ANDROID_HOME directory error annotation"
 
 Assert-True -Condition ($WorkflowText -match 'BUILD_TOOLS_DIRS=\$\(ls -1d "\$ANDROID_HOME"/build-tools/\* 2>/dev/null \|\| true\)') `
@@ -46,17 +46,17 @@ Assert-True -Condition ($WorkflowText -match 'BUILD_TOOLS_DIRS=\$\(ls -1d "\$AND
 Assert-True -Condition ($WorkflowText -match '\[ -z "\$BUILD_TOOLS_DIRS" \]') `
             -TestName "static: release.yml contains empty build-tools discovery guard"
 
-Assert-True -Condition ($WorkflowText -match '::error::No build-tools versions found under \$ANDROID_HOME/build-tools/\.') `
+Assert-True -Condition ($WorkflowText -match '(?ms)::error::No build-tools versions found under \$ANDROID_HOME/build-tools/\."?\s*\n\s*exit 1') `
             -TestName "static: release.yml contains empty build-tools error annotation"
 
 Assert-True -Condition ($WorkflowText -match '\[ ! -x "\$APKSIGNER" \]') `
             -TestName "static: release.yml checks apksigner executable existence"
 
 # ---------------------------------------------------------------------------
-# Debug Certificate Rejection (#259, #269)
+# Debug Certificate Rejection (#259, #269, #319, #334)
 # ---------------------------------------------------------------------------
 Assert-True -Condition ($WorkflowText -match 'grep -q "CN=Android Debug"') `
             -TestName "static: release.yml inspects certificates for CN=Android Debug"
 
-Assert-True -Condition ($WorkflowText -match '::error::Packaged APK is signed with Android Debug certificate, not a release certificate\.') `
+Assert-True -Condition ($WorkflowText -match '(?ms)::error::Packaged APK is signed with Android Debug certificate, not a release certificate\."?\s*\n\s*exit 1') `
             -TestName "static: release.yml contains debug certificate rejection error annotation"
