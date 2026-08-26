@@ -313,7 +313,7 @@ Describe 'post-e2e-evidence.ps1' {
                 $global:PatchCalled | Should -BeTrue
                 $global:PostCalled | Should -BeFalse
                 Should -Invoke -CommandName gh -Times 1 -Exactly -ParameterFilter {
-                    ($args -join ' ') -match 'PATCH'
+                    ($args -join ' ') -match 'PATCH' -and ($args -join ' ') -match 'issues/comments/456'
                 }
                 Should -Invoke -CommandName gh -Times 0 -Exactly -ParameterFilter {
                     ($args -join ' ') -match 'POST'
