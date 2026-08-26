@@ -148,8 +148,12 @@ jobs:
 
       - name: Verify release signature
         run: |
-          if [ -z "${ANDROID_HOME:-}" ] || [ ! -d "$ANDROID_HOME/build-tools" ]; then
-            echo "::error::ANDROID_HOME is unset or $ANDROID_HOME/build-tools directory does not exist."
+          if [ -z "${ANDROID_HOME:-}" ]; then
+            echo "::error::ANDROID_HOME is unset."
+            exit 1
+          fi
+          if [ ! -d "$ANDROID_HOME/build-tools" ]; then
+            echo "::error::$ANDROID_HOME/build-tools directory does not exist."
             exit 1
           fi
 

@@ -35,13 +35,19 @@ Assert-True -Condition ($WorkflowText -match '(?ms)::error::Decoded release keys
             -TestName "static: release.yml contains empty keystore file error annotation"
 
 # ---------------------------------------------------------------------------
-# apksigner Path Resolution & Directory Guards (#261, #269, #273, #319, #334)
+# apksigner Path Resolution & Directory Guards (#261, #269, #273, #311, #318, #325, #334)
 # ---------------------------------------------------------------------------
-Assert-True -Condition ($WorkflowText -match '\[ -z "\$\{ANDROID_HOME:-\}" \] \|\| \[ ! -d "\$ANDROID_HOME/build-tools" \]') `
-            -TestName "static: release.yml contains ANDROID_HOME and build-tools directory existence guard"
+Assert-True -Condition ($WorkflowText -match '\[ -z "\$\{ANDROID_HOME:-\}" \]') `
+            -TestName "static: release.yml contains ANDROID_HOME unset guard"
 
-Assert-True -Condition ($WorkflowText -match '(?ms)::error::ANDROID_HOME is unset or \$ANDROID_HOME/build-tools directory does not exist\."?\s*\n\s*exit 1') `
-            -TestName "static: release.yml contains ANDROID_HOME directory error annotation"
+Assert-True -Condition ($WorkflowText -match '(?ms)::error::ANDROID_HOME is unset\."?\s*\n\s*exit 1') `
+            -TestName "static: release.yml contains ANDROID_HOME unset error annotation"
+
+Assert-True -Condition ($WorkflowText -match '\[ ! -d "\$ANDROID_HOME/build-tools" \]') `
+            -TestName "static: release.yml contains build-tools directory existence guard"
+
+Assert-True -Condition ($WorkflowText -match '(?ms)::error::\$ANDROID_HOME/build-tools directory does not exist\."?\s*\n\s*exit 1') `
+            -TestName "static: release.yml contains build-tools directory error annotation"
 
 Assert-True -Condition ($WorkflowText -match 'BUILD_TOOLS_DIRS=\$\(ls -1d "\$ANDROID_HOME"/build-tools/\* 2>/dev/null \|\| true\)') `
             -TestName "static: release.yml discovers build-tools versions safely"
