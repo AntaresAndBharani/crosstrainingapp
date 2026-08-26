@@ -435,11 +435,45 @@ Describe 'post-e2e-evidence.ps1' {
                 param (
                     [System.Management.Automation.Language.Ast]$Ast
                 )
+                $assignments = @($Ast.FindAll({ $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true))
                 $commands = $Ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true)
                 $violations = @($commands | Where-Object {
-                    $cmdName = $_.GetCommandName()
-                    if ($cmdName -notin @('gh', 'gh.exe')) { return $false }
-                    $elements = @($_.CommandElements | Select-Object -Skip 1)
+                    $cmd = $_
+                    $cmdName = $cmd.GetCommandName()
+                    $isGh = $cmdName -in @('gh', 'gh.exe')
+
+                    if (-not $isGh -and $cmd.CommandElements.Count -gt 0 -and $cmd.CommandElements[0] -is [System.Management.Automation.Language.VariableExpressionAst]) {
+                        $varName = $cmd.CommandElements[0].VariablePath.UserPath
+                        $matchingAssignments = @($assignments | Where-Object {
+                            $assign = $_
+                            if ($assign.Extent.EndOffset -gt $cmd.Extent.StartOffset) { return $false }
+                            $leftVar = $null
+                            if ($assign.Left -is [System.Management.Automation.Language.VariableExpressionAst]) {
+                                $leftVar = $assign.Left.VariablePath.UserPath
+                            } elseif ($assign.Left -is [System.Management.Automation.Language.ConvertExpressionAst] -and $assign.Left.Child -is [System.Management.Automation.Language.VariableExpressionAst]) {
+                                $leftVar = $assign.Left.Child.VariablePath.UserPath
+                            }
+                            return ($leftVar -eq $varName)
+                        })
+                        if ($matchingAssignments.Count -gt 0) {
+                            $lastAssign = $matchingAssignments[-1]
+                            $val = $null
+                            if ($lastAssign.Right -is [System.Management.Automation.Language.CommandExpressionAst] -and $lastAssign.Right.Expression -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                                $val = $lastAssign.Right.Expression.Value
+                            } elseif ($lastAssign.Right -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                                $val = $lastAssign.Right.Value
+                            } else {
+                                $val = $lastAssign.Right.Extent.Text.Trim("'`"")
+                            }
+                            if ($val -in @('gh', 'gh.exe')) {
+                                $isGh = $true
+                            }
+                        }
+                    }
+
+                    if (-not $isGh) { return $false }
+
+                    $elements = @($cmd.CommandElements | Select-Object -Skip 1)
                     $hasApi = $false
                     foreach ($elem in $elements) {
                         if (($elem -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $elem.Value -eq 'api') -or
@@ -483,7 +517,9 @@ Describe 'post-e2e-evidence.ps1' {
                 'gh api "repos/${Repo}/issues/${PrNumber}/comments"',
                 'gh api ("repos/" + $Repo + "/issues/" + $Pr + "/comments")',
                 'gh api repos/foo/issues/comments/456 -X PATCH',
-                'gh api "issues/$PrNumber/comments"'
+                'gh api "issues/$PrNumber/comments"',
+                '$cmd = ''gh''; & $cmd api "repos/$Repo/issues/$Pr/comments"',
+                '$cmd = ''gh.exe''; & $cmd api repos/$Repo/issues/$Pr/comments'
             )
 
             foreach ($code in $variantSnippets) {
