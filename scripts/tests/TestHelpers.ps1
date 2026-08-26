@@ -62,6 +62,9 @@ function Invoke-SummarizerScript {
     foreach ($v in $savedVars) {
         $savedValues[$v] = [Environment]::GetEnvironmentVariable($v)
         [Environment]::SetEnvironmentVariable($v, $null)
+        if (Test-Path "env:$v") {
+            Remove-Item "env:$v" -Force -ErrorAction SilentlyContinue
+        }
     }
     foreach ($k in $Environment.Keys) {
         [Environment]::SetEnvironmentVariable($k, $Environment[$k])
@@ -112,7 +115,12 @@ function Invoke-SummarizerScript {
             Remove-Item $tempWd -Recurse -Force -ErrorAction SilentlyContinue
         }
         foreach ($v in $savedVars) {
-            if ($null -ne $savedValues[$v]) {
+            if ($null -eq $savedValues[$v]) {
+                [Environment]::SetEnvironmentVariable($v, $null)
+                if (Test-Path "env:$v") {
+                    Remove-Item "env:$v" -Force -ErrorAction SilentlyContinue
+                }
+            } else {
                 [Environment]::SetEnvironmentVariable($v, $savedValues[$v])
             }
         }
