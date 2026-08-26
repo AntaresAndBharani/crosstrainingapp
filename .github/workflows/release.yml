@@ -117,7 +117,7 @@ jobs:
         run: |
           KEYSTORE_PATH="${{ runner.temp }}/release.keystore"
           if ! DECODE_STDERR=$(echo "$RELEASE_KEYSTORE_BASE64" | base64 -d 2>&1 > "$KEYSTORE_PATH"); then
-            echo "::error::Failed to base64-decode RELEASE_KEYSTORE_BASE64 secret: $DECODE_STDERR"
+            echo "::error::Failed to base64-decode RELEASE_KEYSTORE_BASE64 secret: ${DECODE_STDERR:0:200}"
             exit 1
           fi
           if [ ! -s "$KEYSTORE_PATH" ]; then
