@@ -134,6 +134,29 @@ function ConvertTo-JsonArray {
     return $json
 }
 
+function ConvertTo-SafeString {
+    # Found live building THIS wrapper: `($x | Out-String).Trim()` on
+    # captured native-command output is NOT safe for reassembling it into
+    # one string for JSON parsing. Out-String runs the value through
+    # PowerShell's display-formatting subsystem, which applies a line-wrap
+    # width that's unreliable in a headless process (varies by how the
+    # process happens to be spawned). Confirmed live and reproducibly
+    # flaky: the exact same gh output, captured the exact same way, parsed
+    # to 9 real story objects most of the time and to one corrupted object
+    # (all 9 numbers concatenated into one field) some of the time, with
+    # no code difference between runs. Avoid the formatting subsystem
+    # entirely -- join array elements with a real newline instead. All
+    # other wrappers in this pipeline (backlog-triage, pr-review,
+    # architect) carried the same latent bug and got the same fix the same
+    # day this was found.
+    param($InputObject)
+    if ($null -eq $InputObject) { return "" }
+    if ($InputObject -is [array]) {
+        return (($InputObject -join "`n")).Trim()
+    }
+    return ([string]$InputObject).Trim()
+}
+
 function Invoke-GitCommand {
     # Same stderr-as-failure fix used in every other wrapper: git writes
     # routine status text to stderr, and $ErrorActionPreference = "Stop"
@@ -148,7 +171,7 @@ function Invoke-GitCommand {
     } finally {
         $ErrorActionPreference = $prevEAP
     }
-    return [pscustomobject]@{ ExitCode = $exitCode; Output = ($output | Out-String).Trim() }
+    return [pscustomobject]@{ ExitCode = $exitCode; Output = ConvertTo-SafeString $output }
 }
 
 function Invoke-GhCommand {
@@ -161,7 +184,7 @@ function Invoke-GhCommand {
     } finally {
         $ErrorActionPreference = $prevEAP
     }
-    return [pscustomobject]@{ ExitCode = $exitCode; Output = ($output | Out-String).Trim() }
+    return [pscustomobject]@{ ExitCode = $exitCode; Output = ConvertTo-SafeString $output }
 }
 
 function Get-Subtasks {

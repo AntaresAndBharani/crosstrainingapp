@@ -102,6 +102,26 @@ function ConvertTo-EscapedArgument {
     return $result
 }
 
+function ConvertTo-SafeString {
+    # Found live building the Three Amigos + Dev & Test wrapper: `($x |
+    # Out-String).Trim()` on captured native-command output is NOT safe
+    # for reassembling it into one string for JSON parsing. Out-String
+    # runs the value through PowerShell's display-formatting subsystem,
+    # which applies a line-wrap width that's unreliable in a headless
+    # process (varies by how the process happens to be spawned).
+    # Confirmed live and reproducibly flaky: the exact same gh output,
+    # captured the exact same way, parsed correctly most of the time and
+    # to one corrupted object (fields concatenated together) some of the
+    # time, with no code difference between runs. Avoid the formatting
+    # subsystem entirely -- join array elements with a real newline.
+    param($InputObject)
+    if ($null -eq $InputObject) { return "" }
+    if ($InputObject -is [array]) {
+        return (($InputObject -join "`n")).Trim()
+    }
+    return ([string]$InputObject).Trim()
+}
+
 function Invoke-NativeProcess {
     param(
         [string]$FilePath,
@@ -144,7 +164,7 @@ function Get-OpenPullRequests {
     }
 
     $prs = @()
-    $rawText = ($raw | Out-String).Trim()
+    $rawText = ConvertTo-SafeString $raw
     if (-not [string]::IsNullOrWhiteSpace($rawText)) {
         try {
             $parsed = $rawText | ConvertFrom-Json -ErrorAction Stop
@@ -179,7 +199,7 @@ function Get-PRComments {
     }
 
     $comments = @()
-    $rawText = ($raw | Out-String).Trim()
+    $rawText = ConvertTo-SafeString $raw
     if (-not [string]::IsNullOrWhiteSpace($rawText)) {
         try {
             $parsed = $rawText | ConvertFrom-Json -ErrorAction Stop
@@ -210,7 +230,7 @@ function Get-PRDiff {
         Write-Log "gh pr diff exited $LASTEXITCODE for PR #${Number}: $($raw | Out-String)" "ERROR"
         throw "gh pr diff failed for PR #$Number"
     }
-    return ($raw | Out-String).TrimEnd()
+    return ConvertTo-SafeString $raw
 }
 
 function Get-LinkedIssueJson {
@@ -241,7 +261,7 @@ function Get-LinkedIssueJson {
         return $null
     }
 
-    return ($raw | Out-String).Trim()
+    return ConvertTo-SafeString $raw
 }
 
 function Get-VerdictComments {
