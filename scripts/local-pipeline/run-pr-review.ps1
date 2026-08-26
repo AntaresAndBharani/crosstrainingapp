@@ -339,7 +339,18 @@ function Invoke-PrReviewJudge {
     Write-Log "Invoking claude.exe (model=$Model) for PR #$PrNumber..."
     $result = $null
     try {
-        $result = Invoke-NativeProcess -FilePath $ClaudePath -ArgumentStrings @("--model", $Model, "--output-format", "json", "--print", $prompt)
+        # IMPORTANT, found live building Architect: a bare `--print` call
+        # with NO tool-related flags at all still has this CLI's full
+        # default tool set available (Bash, Write, Edit, Agent, Artifact,
+        # etc.) -- verified directly, the model successfully invoked Bash
+        # and returned real, accurate command output despite no tool flags
+        # being passed. This node's design is pure judgment, zero tool
+        # access (the diff is already fully embedded in the prompt, unlike
+        # Architect there's no missing context a repo-browse would add),
+        # so explicitly disable everything via `--tools ""` rather than
+        # relying on omission -- verified this actually blocks execution
+        # (the model can no longer fabricate real command output).
+        $result = Invoke-NativeProcess -FilePath $ClaudePath -ArgumentStrings @("--model", $Model, "--output-format", "json", "--tools", "", "--print", $prompt)
     } catch {
         Write-Log "claude.exe invocation threw for PR #${PrNumber}: $_" "ERROR"
         return $null
