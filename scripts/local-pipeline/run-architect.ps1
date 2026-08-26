@@ -63,7 +63,11 @@ param(
     [string]$ClaudePath = "C:\Users\rogal\.local\bin\claude.exe",
     [string]$DefaultModel = "claude-opus-5",
     [string]$BacklogTriageModel = "claude-sonnet-5",
-    [string]$PromptTemplateDir = (Join-Path $PSScriptRoot "..\..\.claude\tasks")
+    [string]$PromptTemplateDir = (Join-Path $PSScriptRoot "..\..\.claude\tasks"),
+    # Manual-validation convenience, not used by the Task Scheduler cutover:
+    # restrict this run to specific issue numbers instead of every qualifying
+    # story found. Leave unset for normal unattended operation.
+    [int[]]$OnlyIssueNumbers = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -761,6 +765,11 @@ try {
     }
 
     $qualifyingStories = Get-QualifyingStories
+
+    if ($OnlyIssueNumbers.Count -gt 0) {
+        Write-Log "OnlyIssueNumbers filter active: restricting to $($OnlyIssueNumbers -join ', ')."
+        $qualifyingStories = @($qualifyingStories | Where-Object { $OnlyIssueNumbers -contains $_.Number })
+    }
 
     if ($qualifyingStories.Count -eq 0) {
         Write-Log "Nothing to architect across labels: $($TriggerLabels -join ', '). Exiting without invoking claude.exe."
