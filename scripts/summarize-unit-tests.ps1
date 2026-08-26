@@ -3,13 +3,9 @@ param (
     [string]$ResultsDir = "app/build/test-results/testDebugUnitTest",
     [string]$OutFile = "unit-test-summary.md",
     [string]$PrNumber = "",
-    [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
+    [string]$Repo = "",
     [string]$ArtifactName = ""
 )
-
-if ([string]::IsNullOrWhiteSpace($Repo)) {
-    $Repo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }
-}
 
 $artifactNameFallbackApplied = $false
 if ([string]::IsNullOrWhiteSpace($ArtifactName)) {

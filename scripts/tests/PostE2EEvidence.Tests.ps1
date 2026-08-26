@@ -291,6 +291,108 @@ Describe 'post-e2e-evidence.ps1' {
         }
     }
 
+    Context 'Repo fallback behavior' {
+        BeforeEach {
+            $script:SavedRepoEnv = $env:GITHUB_REPOSITORY
+        }
+        AfterEach {
+            $env:GITHUB_REPOSITORY = $script:SavedRepoEnv
+        }
+
+        It 'falls back to AntaresAndBharani/crosstrainingapp when -Repo is omitted and GITHUB_REPOSITORY is unset' {
+            $env:GITHUB_REPOSITORY = $null
+            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "e2e-test-$([guid]::NewGuid())"
+            [System.IO.Directory]::CreateDirectory($tempDir) | Out-Null
+            $summaryFile = Join-Path $tempDir "summary.json"
+            '[{"flow": "01_login", "passed": true}]' | Set-Content -Path $summaryFile -Encoding UTF8
+
+            $script:TargetRepo = $null
+            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
+            Mock -CommandName gh -MockWith {
+                param()
+                $global:LASTEXITCODE = 0
+                $argsList = $args -join ' '
+                if ($argsList -match 'release view') { return 'release exists' }
+                if ($argsList -match 'repos/([^/]+/[^/]+)/issues') {
+                    $script:TargetRepo = $Matches[1]
+                }
+                if ($argsList -match 'api user') { return 'bot-user' }
+                if ($argsList -match 'POST') { return '{"id":999}' }
+                return '[]'
+            }
+
+            try {
+                & $script:PostE2EScript -PrNumber "123" -SummaryPath $summaryFile -Version "v1.0.0"
+                $LASTEXITCODE | Should -Be 0
+                $script:TargetRepo | Should -Be "AntaresAndBharani/crosstrainingapp"
+            } finally {
+                Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'falls back to GITHUB_REPOSITORY when -Repo is omitted or blank' {
+            $env:GITHUB_REPOSITORY = "CustomOrg/e2e-repo"
+            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "e2e-test-$([guid]::NewGuid())"
+            [System.IO.Directory]::CreateDirectory($tempDir) | Out-Null
+            $summaryFile = Join-Path $tempDir "summary.json"
+            '[{"flow": "01_login", "passed": true}]' | Set-Content -Path $summaryFile -Encoding UTF8
+
+            $script:TargetRepo = $null
+            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
+            Mock -CommandName gh -MockWith {
+                param()
+                $global:LASTEXITCODE = 0
+                $argsList = $args -join ' '
+                if ($argsList -match 'release view') { return 'release exists' }
+                if ($argsList -match 'repos/([^/]+/[^/]+)/issues') {
+                    $script:TargetRepo = $Matches[1]
+                }
+                if ($argsList -match 'api user') { return 'bot-user' }
+                if ($argsList -match 'POST') { return '{"id":999}' }
+                return '[]'
+            }
+
+            try {
+                & $script:PostE2EScript -PrNumber "123" -SummaryPath $summaryFile -Version "v1.0.0"
+                $LASTEXITCODE | Should -Be 0
+                $script:TargetRepo | Should -Be "CustomOrg/e2e-repo"
+            } finally {
+                Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'passes explicit -Repo through to gh api' {
+            $env:GITHUB_REPOSITORY = "EnvOrg/env-repo"
+            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "e2e-test-$([guid]::NewGuid())"
+            [System.IO.Directory]::CreateDirectory($tempDir) | Out-Null
+            $summaryFile = Join-Path $tempDir "summary.json"
+            '[{"flow": "01_login", "passed": true}]' | Set-Content -Path $summaryFile -Encoding UTF8
+
+            $script:TargetRepo = $null
+            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
+            Mock -CommandName gh -MockWith {
+                param()
+                $global:LASTEXITCODE = 0
+                $argsList = $args -join ' '
+                if ($argsList -match 'release view') { return 'release exists' }
+                if ($argsList -match 'repos/([^/]+/[^/]+)/issues') {
+                    $script:TargetRepo = $Matches[1]
+                }
+                if ($argsList -match 'api user') { return 'bot-user' }
+                if ($argsList -match 'POST') { return '{"id":999}' }
+                return '[]'
+            }
+
+            try {
+                & $script:PostE2EScript -Repo "ExplicitOrg/custom-repo" -PrNumber "123" -SummaryPath $summaryFile -Version "v1.0.0"
+                $LASTEXITCODE | Should -Be 0
+                $script:TargetRepo | Should -Be "ExplicitOrg/custom-repo"
+            } finally {
+                Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
     Context 'Static hygiene' {
         It 'contains no raw gh api comment listing or posting calls' {
             $content = Get-Content -LiteralPath $script:PostE2EScript -Raw

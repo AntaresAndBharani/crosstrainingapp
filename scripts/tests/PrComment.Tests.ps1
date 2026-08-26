@@ -133,6 +133,100 @@ Describe 'Publish-PrComment' {
         }
     }
 
+    Context 'Repo parameter normalization and fallback' {
+        BeforeEach {
+            $script:SavedRepoEnv = $env:GITHUB_REPOSITORY
+        }
+        AfterEach {
+            $env:GITHUB_REPOSITORY = $script:SavedRepoEnv
+        }
+
+        It 'falls back to AntaresAndBharani/crosstrainingapp when -Repo is omitted and GITHUB_REPOSITORY is unset' {
+            $env:GITHUB_REPOSITORY = $null
+            $script:TargetRepo = $null
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -OnList {
+                param($argsList)
+                if ($argsList -match 'repos/([^/]+/[^/]+)/issues') {
+                    $script:TargetRepo = $Matches[1]
+                }
+            }
+
+            $result = Publish-PrComment -PrNumber "123" -Marker "<!-- marker -->" -Body "Test"
+            $result | Should -BeTrue
+            $script:TargetRepo | Should -Be "AntaresAndBharani/crosstrainingapp"
+        }
+
+        It 'falls back to AntaresAndBharani/crosstrainingapp when -Repo is empty or whitespace and GITHUB_REPOSITORY is unset' {
+            $env:GITHUB_REPOSITORY = $null
+            $script:TargetRepo = $null
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -OnList {
+                param($argsList)
+                if ($argsList -match 'repos/([^/]+/[^/]+)/issues') {
+                    $script:TargetRepo = $Matches[1]
+                }
+            }
+
+            $r1 = Publish-PrComment -Repo "" -PrNumber "123" -Marker "<!-- marker -->" -Body "Test"
+            $script:TargetRepo | Should -Be "AntaresAndBharani/crosstrainingapp"
+
+            $script:TargetRepo = $null
+            $r2 = Publish-PrComment -Repo "   " -PrNumber "123" -Marker "<!-- marker -->" -Body "Test"
+            $script:TargetRepo | Should -Be "AntaresAndBharani/crosstrainingapp"
+
+            $r1 | Should -BeTrue
+            $r2 | Should -BeTrue
+        }
+
+        It 'falls back to GITHUB_REPOSITORY when -Repo is omitted, empty, or whitespace' {
+            $env:GITHUB_REPOSITORY = "CustomOrg/custom-repo"
+            $script:TargetRepo = $null
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -OnList {
+                param($argsList)
+                if ($argsList -match 'repos/([^/]+/[^/]+)/issues') {
+                    $script:TargetRepo = $Matches[1]
+                }
+            }
+
+            $r1 = Publish-PrComment -PrNumber "123" -Marker "<!-- marker -->" -Body "Test"
+            $script:TargetRepo | Should -Be "CustomOrg/custom-repo"
+
+            $script:TargetRepo = $null
+            $r2 = Publish-PrComment -Repo "" -PrNumber "123" -Marker "<!-- marker -->" -Body "Test"
+            $script:TargetRepo | Should -Be "CustomOrg/custom-repo"
+
+            $script:TargetRepo = $null
+            $r3 = Publish-PrComment -Repo "  " -PrNumber "123" -Marker "<!-- marker -->" -Body "Test"
+            $script:TargetRepo | Should -Be "CustomOrg/custom-repo"
+
+            $r1 | Should -BeTrue
+            $r2 | Should -BeTrue
+            $r3 | Should -BeTrue
+        }
+
+        It 'uses explicit -Repo when provided, taking precedence over GITHUB_REPOSITORY' {
+            $env:GITHUB_REPOSITORY = "EnvOrg/env-repo"
+            $script:TargetRepo = $null
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -OnList {
+                param($argsList)
+                if ($argsList -match 'repos/([^/]+/[^/]+)/issues') {
+                    $script:TargetRepo = $Matches[1]
+                }
+            }
+
+            $result = Publish-PrComment -Repo "ExplicitOrg/explicit-repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "Test"
+            $result | Should -BeTrue
+            $script:TargetRepo | Should -Be "ExplicitOrg/explicit-repo"
+        }
+    }
+
     Context 'Listing and Pagination' {
         It 'includes --paginate when querying comments' {
             $script:PaginateCalled = $false

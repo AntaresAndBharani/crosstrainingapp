@@ -2,14 +2,10 @@ param (
     [string]$SummaryPath,
     [string]$PrNumber = "",
     [string]$Version = "",
-    [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" })
+    [string]$Repo = ""
 )
 
 . (Join-Path $PSScriptRoot 'lib/PrComment.ps1')
-
-if ([string]::IsNullOrWhiteSpace($Repo)) {
-    $Repo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }
-}
 
 if ($PrNumber) {
     if ($PrNumber -notmatch '^\d+$') {
