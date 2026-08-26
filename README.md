@@ -45,22 +45,18 @@ The build runs in **GitHub Actions** — you don't need a local Android SDK.
 
 ### Option A — download the APK from a Release (recommended)
 
-1. Push a version tag:
-   ```sh
-   git tag v1.0.0
-   git push origin v1.0.0
-   ```
-2. The **Release APK** workflow builds the app and publishes a GitHub Release
-   with `crosstraining-v1.0.0.apk` attached.
+1. Merging changes into `main` automatically triggers the **Release on Merge to Main** workflow.
+2. The workflow verifies production signing credentials, builds the release APK, verifies the signature, and publishes an official GitHub Release with `crosstraining-<tag>.apk` attached (e.g. `crosstraining-v1.0.0.apk`).
 3. On your Android phone, open the Release page, download the `.apk`, and tap it.
    When prompted, allow *Install unknown apps* for your browser/Files app, then
    tap **Install**.
 
-### Option B — download the APK from a workflow run
+### Option B — download the snapshot APK from a PR workflow run
 
-Every push to `main` runs the **Build APK** workflow and uploads
-`crosstraining-debug-apk` as an artifact (Actions tab → run → Artifacts). Unzip
-and sideload the APK the same way.
+Every pull request runs the **PR Snapshot Build & Pre-Release** workflow, uploading a
+`crosstraining-snapshot-<sha>` artifact to the workflow run and updating the rolling **Snapshot**
+pre-release with `crosstraining-snapshot.apk`. Download the snapshot APK from the PR run artifacts
+or the Snapshot pre-release page to test in-flight changes.
 
 ### Local build & testing
 
@@ -73,18 +69,15 @@ With JDK 17 and the Android SDK installed:
 .\scripts\run-e2e-tests.ps1
 ```
 
-> The published APK is **debug-signed** — perfect for personal testing and free
-> to distribute to yourself. To ship to the Play Store later you'd add a release
-> keystore and signing config.
+> **Release Signing:** Published official GitHub releases are **release-signed**. The `Release on Merge to Main` workflow enforces preflight checks for release keystore secrets and runs `apksigner` verification to ensure the published release artifact is signed with the production release keystore rather than debug credentials.
 
 ## Installing on your phone, step by step
 
-1. On the phone, open the GitHub Release (or artifact) link and download the APK.
+1. On the phone, open the GitHub Release (or snapshot pre-release / artifact) link and download the APK.
 2. Tap the downloaded file. Android asks to allow installs from this source —
    enable it for your browser/Files app.
 3. Tap **Install**, then **Open**.
-4. (If "app not installed" appears because an older copy exists, uninstall the
-   previous version first — debug builds use the `.debug` application id.)
+4. (If "app not installed" appears because an older copy exists with a different signing key or package variant, uninstall the previous version first.)
 
 ## Changelog
 

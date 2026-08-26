@@ -66,3 +66,16 @@ appId: com.fractanomics.crosstraining
 - tapOn: "+ Add Block"
 - takeScreenshot: "screenshots/added_block"
 ```
+
+---
+
+## 5. Release Workflow Step Names
+
+For maintainers and contributors referencing steps in `.github/workflows/release.yml`:
+
+An audit of `.github/workflows/release.yml` confirmed the canonical step names used during release build and distribution packaging:
+- **Build Step:** `Build distributable APK (release variant)`
+- **Packaging Step:** `Package release-signed APK as release distribution artifact`
+
+The workflow file was audited and required no renaming. Stale references (such as `Build distributable APK (debug variant, debug-signed)` or `Package debug-signed APK as release distribution artifact`) originated in historical issue acceptance-criteria text (e.g. subtask #212), not in the workflow itself. Future stories and subtasks referencing release workflow steps should quote the verbatim step names above.
+
