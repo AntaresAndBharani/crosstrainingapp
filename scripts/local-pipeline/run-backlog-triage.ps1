@@ -74,7 +74,7 @@ function Get-OpenIssuesForLabel {
     }
 
     $issues = @()
-    $rawText = ($raw | Out-String).Trim()
+    $rawText = ConvertTo-SafeString $raw
     if (-not [string]::IsNullOrWhiteSpace($rawText)) {
         try {
             $parsed = $rawText | ConvertFrom-Json -ErrorAction Stop
@@ -91,6 +91,27 @@ function Get-OpenIssuesForLabel {
 
     Write-Log "Fetched $($issues.Count) open issue(s) for label '$Label'."
     return , $issues
+}
+
+function ConvertTo-SafeString {
+    # Found live building the Three Amigos + Dev & Test wrapper: `($x |
+    # Out-String).Trim()` on a captured native-command output is NOT a
+    # safe way to reassemble it into one string for JSON parsing. Out-String
+    # runs the value through PowerShell's display-formatting subsystem
+    # (the same one used for console output), which applies a line-wrap
+    # width -- and that width is unreliable in a headless/non-interactive
+    # process (varies by how the process happens to be spawned). Confirmed
+    # live and reproducibly flaky: the exact same gh output, captured the
+    # exact same way, parsed to 9 real objects most of the time and to one
+    # corrupted object (fields concatenated together) some of the time,
+    # with no code difference between runs. Avoid the formatting subsystem
+    # entirely -- join array elements with a real newline instead.
+    param($InputObject)
+    if ($null -eq $InputObject) { return "" }
+    if ($InputObject -is [array]) {
+        return (($InputObject -join "`n")).Trim()
+    }
+    return ([string]$InputObject).Trim()
 }
 
 function ConvertTo-JsonArray {
@@ -276,7 +297,7 @@ function Publish-StoryFromCluster {
         Remove-Item -LiteralPath $bodyFile -Force -ErrorAction SilentlyContinue
     }
 
-    $createOutputText = ($createOutput | Out-String).Trim()
+    $createOutputText = ConvertTo-SafeString $createOutput
     $newIssueNumber = $null
     if ($createOutputText -match '/issues/(\d+)\s*$') {
         $newIssueNumber = $Matches[1]

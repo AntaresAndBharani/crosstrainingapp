@@ -177,6 +177,26 @@ function Invoke-NativeProcess {
     }
 }
 
+function ConvertTo-SafeString {
+    # Found live building the Three Amigos + Dev & Test wrapper: `($x |
+    # Out-String).Trim()` on captured native-command output is NOT safe
+    # for reassembling it into one string for JSON parsing. Out-String
+    # runs the value through PowerShell's display-formatting subsystem,
+    # which applies a line-wrap width that's unreliable in a headless
+    # process (varies by how the process happens to be spawned).
+    # Confirmed live and reproducibly flaky: the exact same gh output,
+    # captured the exact same way, parsed correctly most of the time and
+    # to one corrupted object (fields concatenated together) some of the
+    # time, with no code difference between runs. Avoid the formatting
+    # subsystem entirely -- join array elements with a real newline.
+    param($InputObject)
+    if ($null -eq $InputObject) { return "" }
+    if ($InputObject -is [array]) {
+        return (($InputObject -join "`n")).Trim()
+    }
+    return ([string]$InputObject).Trim()
+}
+
 function ConvertTo-JsonArray {
     # ConvertTo-Json collapses a 1-element array back to a bare object when
     # piped; force array bracket wrapping so the prompt always embeds a
@@ -217,7 +237,7 @@ function Get-QualifyingStories {
             throw "gh issue list failed for label '$label'"
         }
 
-        $rawText = ($raw | Out-String).Trim()
+        $rawText = ConvertTo-SafeString $raw
         $items = @()
         if (-not [string]::IsNullOrWhiteSpace($rawText)) {
             try {
@@ -295,7 +315,7 @@ function Get-IssueContext {
         throw "gh issue view failed for issue #$Number"
     }
 
-    $rawText = ($raw | Out-String).Trim()
+    $rawText = ConvertTo-SafeString $raw
     try {
         return $rawText | ConvertFrom-Json -ErrorAction Stop
     } catch {
@@ -319,7 +339,7 @@ function Get-ExistingSubtasks {
         throw "gh api sub_issues failed for parent #$ParentNumber"
     }
 
-    $rawText = ($raw | Out-String).Trim()
+    $rawText = ConvertTo-SafeString $raw
     $subtaskNumbers = @()
     if (-not [string]::IsNullOrWhiteSpace($rawText)) {
         $subtaskNumbers = @($rawText -split "`r?`n" | Where-Object { $_ -match '^\d+$' })
@@ -339,7 +359,7 @@ function Get-ExistingSubtasks {
             Write-Log "gh issue view exited $LASTEXITCODE for subtask #${num}: $($subRaw | Out-String)" "ERROR"
             throw "gh issue view failed for subtask #$num"
         }
-        $subRawText = ($subRaw | Out-String).Trim()
+        $subRawText = ConvertTo-SafeString $subRaw
         try {
             $subtasks += ($subRawText | ConvertFrom-Json -ErrorAction Stop)
         } catch {
@@ -576,7 +596,7 @@ function Publish-ArchitectDecision {
             if ($LASTEXITCODE -ne 0) {
                 Write-Log "Failed to fetch parent database id for issue #${IssueNumber}: $($parentIdOutput | Out-String)" "ERROR"
             } else {
-                $parentId = ($parentIdOutput | Out-String).Trim()
+                $parentId = ConvertTo-SafeString $parentIdOutput
             }
         } finally {
             $ErrorActionPreference = $prevEAP
@@ -615,7 +635,7 @@ function Publish-ArchitectDecision {
             Remove-Item -LiteralPath $bodyFile -Force -ErrorAction SilentlyContinue
         }
 
-        $createOutputText = ($createOutput | Out-String).Trim()
+        $createOutputText = ConvertTo-SafeString $createOutput
         $newIssueNumber = $null
         if ($createOutputText -match '/issues/(\d+)\s*$') {
             $newIssueNumber = $Matches[1]
@@ -633,7 +653,7 @@ function Publish-ArchitectDecision {
                 Write-Log "Failed to fetch database id for new subtask #${newIssueNumber}: $($newIdOutput | Out-String)" "ERROR"
                 continue
             }
-            $newId = ($newIdOutput | Out-String).Trim()
+            $newId = ConvertTo-SafeString $newIdOutput
 
             $linkOutput = gh api "repos/$Repo/issues/$IssueNumber/sub_issues" -F "sub_issue_id=$newId" 2>&1
             if ($LASTEXITCODE -ne 0) {
