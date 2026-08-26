@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Release Workflow ANDROID_HOME and build-tools Precondition Diagnostics**: Split compound precondition guard into distinct sequential checks for unset `ANDROID_HOME` and missing `$ANDROID_HOME/build-tools` directory in `.github/workflows/release.yml`, each with dedicated `::error::` annotations followed by `exit 1`, and updated static regression assertions in `scripts/tests/ReleaseWorkflow.Static.Tests.ps1` (#311, #318, #325).
 - **Release Keystore Decode Error Diagnostic Detail**: Captured `base64 -d` stderr into a variable in the `Decode release keystore` step of `.github/workflows/release.yml` and surfaced it within the `::error::` annotation on decode failure, and added static regression assertions in `scripts/tests/ReleaseWorkflow.Static.Tests.ps1` (#309, #318, #324).
 - **Release Workflow Error Annotation Trailing Exit 1 Assertions**: Extended static regex assertions in `scripts/tests/ReleaseWorkflow.Static.Tests.ps1` to require each hardened guard's `::error::` annotation in `.github/workflows/release.yml` to be immediately followed by `exit 1` (#313, #319, #334).
 - **Branch Name Sanitization Regex Bracket Expression**: Removed redundant backslash escape before forward slash in the `BRANCH_NAME` sanitization `sed` bracket expression within `.github/workflows/build.yml` to strictly match POSIX regex allowlist intent (`[^a-zA-Z0-9._/-]`) (#302, #320, #335).
