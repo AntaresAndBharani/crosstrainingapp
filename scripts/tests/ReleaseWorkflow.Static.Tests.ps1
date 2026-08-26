@@ -17,12 +17,15 @@ Assert-True -Condition ([System.IO.File]::Exists($ReleaseWorkflowPath)) `
 $WorkflowText = [System.IO.File]::ReadAllText($ReleaseWorkflowPath, [System.Text.Encoding]::UTF8)
 
 # ---------------------------------------------------------------------------
-# Keystore Decoding Guards (#259, #269, #272, #319, #334)
+# Keystore Decoding Guards (#259, #269, #272, #309, #318, #319, #324, #334)
 # ---------------------------------------------------------------------------
-Assert-True -Condition ($WorkflowText -match 'base64 -d > "\$KEYSTORE_PATH"') `
+Assert-True -Condition ($WorkflowText -match 'base64 -d 2>&1 > "\$KEYSTORE_PATH"') `
             -TestName "static: release.yml decodes keystore to KEYSTORE_PATH"
 
-Assert-True -Condition ($WorkflowText -match '(?ms)::error::Failed to base64-decode RELEASE_KEYSTORE_BASE64 secret\."?\s*\n\s*exit 1') `
+Assert-True -Condition ($WorkflowText -match 'DECODE_STDERR=\$\(echo "\$RELEASE_KEYSTORE_BASE64" \| base64 -d') `
+            -TestName "static: release.yml captures base64 decode stderr into variable"
+
+Assert-True -Condition ($WorkflowText -match '(?ms)::error::Failed to base64-decode RELEASE_KEYSTORE_BASE64 secret: \$DECODE_STDERR"?\s*\n\s*exit 1') `
             -TestName "static: release.yml contains keystore decode failure annotation"
 
 Assert-True -Condition ($WorkflowText -match '\[ ! -s "\$KEYSTORE_PATH" \]') `
