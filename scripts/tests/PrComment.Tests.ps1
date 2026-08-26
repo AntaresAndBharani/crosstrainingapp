@@ -96,7 +96,7 @@ BeforeAll {
 Describe 'Publish-PrComment' {
     Context 'Guard and validation' {
         It 'returns $false and emits warning when gh CLI is missing' {
-            Mock -CommandName Get-Command -MockWith { return $null } -ParameterFilter { $Name -eq 'gh' }
+            Set-GhAvailable -Available $false
             Mock -CommandName gh -MockWith { throw "gh should not be called" }
 
             $result = Publish-PrComment -PrNumber "123" -Marker "<!-- marker -->" -Body "Test"
@@ -153,31 +153,17 @@ Describe 'Publish-PrComment' {
 
     Context 'Sticky comment replacement vs creation' {
         It 'PATCHes existing comment when marker matches' {
-            $script:commentsJson = @(
+            $comments = @(
                 @{ id = 101; body = "Unrelated comment"; user = @{ login = "bot-user" } },
                 @{ id = 102; body = "<!-- marker -->`nExisting evidence"; user = @{ login = "bot-user" } }
-            ) | ConvertTo-Json -Compress
+            )
 
             $script:PatchedCommentId = $null
 
-            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-            Mock -CommandName gh -MockWith {
-                param()
-                $global:LASTEXITCODE = 0
-                $argsList = $args -join ' '
-                if ($argsList -match 'api repos/.+/issues/123/comments' -and $argsList -notmatch 'PATCH') {
-                    return $script:commentsJson
-                }
-                if ($argsList -match 'api user') {
-                    return 'bot-user'
-                }
-                if ($argsList -match 'PATCH') {
-                    if ($argsList -match 'comments/(\d+)') {
-                        $script:PatchedCommentId = [int]$Matches[1]
-                    }
-                    return ''
-                }
-                return ''
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $comments -OnPatch {
+                param($commentId)
+                $script:PatchedCommentId = $commentId
             }
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence"
@@ -186,28 +172,15 @@ Describe 'Publish-PrComment' {
         }
 
         It 'POSTs new comment when no existing comment matches marker' {
-            $script:commentsJson = @(
+            $comments = @(
                 @{ id = 101; body = "Unrelated comment"; user = @{ login = "bot-user" } }
-            ) | ConvertTo-Json -Compress
+            )
 
             $script:Posted = $false
 
-            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-            Mock -CommandName gh -MockWith {
-                param()
-                $global:LASTEXITCODE = 0
-                $argsList = $args -join ' '
-                if ($argsList -match 'api repos/.+/issues/123/comments' -and $argsList -notmatch 'POST') {
-                    return $script:commentsJson
-                }
-                if ($argsList -match 'api user') {
-                    return 'bot-user'
-                }
-                if ($argsList -match 'POST') {
-                    $script:Posted = $true
-                    return ''
-                }
-                return ''
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $comments -OnPost {
+                $script:Posted = $true
             }
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence"
@@ -217,30 +190,16 @@ Describe 'Publish-PrComment' {
 
         It 'matches marker literally even when containing regex metacharacters' {
             $regexMarker = '<!-- [special] (marker.*+?^${}|) -->'
-            $script:commentsJson = @(
+            $comments = @(
                 @{ id = 201; body = "$regexMarker`nExisting evidence"; user = @{ login = "bot-user" } }
-            ) | ConvertTo-Json -Compress
+            )
 
             $script:PatchedCommentId = $null
 
-            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-            Mock -CommandName gh -MockWith {
-                param()
-                $global:LASTEXITCODE = 0
-                $argsList = $args -join ' '
-                if ($argsList -match 'api repos/.+/issues/123/comments' -and $argsList -notmatch 'PATCH') {
-                    return $script:commentsJson
-                }
-                if ($argsList -match 'api user') {
-                    return 'bot-user'
-                }
-                if ($argsList -match 'PATCH') {
-                    if ($argsList -match 'comments/(\d+)') {
-                        $script:PatchedCommentId = [int]$Matches[1]
-                    }
-                    return ''
-                }
-                return ''
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $comments -OnPatch {
+                param($commentId)
+                $script:PatchedCommentId = $commentId
             }
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker $regexMarker -Body "New evidence"
@@ -251,35 +210,19 @@ Describe 'Publish-PrComment' {
         It 'does not match when regex pattern would match but literal prefix does not' {
             # Regex '<!-- marker.* -->' would match '<!-- marker123 -->', but literal prefix check must not
             $patternMarker = '<!-- marker.* -->'
-            $script:commentsJson = @(
+            $comments = @(
                 @{ id = 202; body = "<!-- marker123 -->`nExisting evidence"; user = @{ login = "bot-user" } }
-            ) | ConvertTo-Json -Compress
+            )
 
             $script:Posted = $false
             $script:PatchedCommentId = $null
 
-            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-            Mock -CommandName gh -MockWith {
-                param()
-                $global:LASTEXITCODE = 0
-                $argsList = $args -join ' '
-                if ($argsList -match 'api repos/.+/issues/123/comments' -and $argsList -notmatch 'POST' -and $argsList -notmatch 'PATCH') {
-                    return $script:commentsJson
-                }
-                if ($argsList -match 'api user') {
-                    return 'bot-user'
-                }
-                if ($argsList -match 'PATCH') {
-                    if ($argsList -match 'comments/(\d+)') {
-                        $script:PatchedCommentId = [int]$Matches[1]
-                    }
-                    return ''
-                }
-                if ($argsList -match 'POST') {
-                    $script:Posted = $true
-                    return ''
-                }
-                return ''
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $comments -OnPost {
+                $script:Posted = $true
+            } -OnPatch {
+                param($commentId)
+                $script:PatchedCommentId = $commentId
             }
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker $patternMarker -Body "New evidence"
@@ -289,25 +232,12 @@ Describe 'Publish-PrComment' {
         }
 
         It 'handles comments with null or missing body without throwing' {
-            $script:commentsJson = '[{"id": 301, "body": null, "user": {"login": "bot-user"}}, {"id": 302, "user": {"login": "bot-user"}}]'
+            $commentsJson = '[{"id": 301, "body": null, "user": {"login": "bot-user"}}, {"id": 302, "user": {"login": "bot-user"}}]'
             $script:Posted = $false
 
-            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-            Mock -CommandName gh -MockWith {
-                param()
-                $global:LASTEXITCODE = 0
-                $argsList = $args -join ' '
-                if ($argsList -match 'api repos/.+/issues/123/comments' -and $argsList -notmatch 'POST') {
-                    return $script:commentsJson
-                }
-                if ($argsList -match 'api user') {
-                    return 'bot-user'
-                }
-                if ($argsList -match 'POST') {
-                    $script:Posted = $true
-                    return ''
-                }
-                return ''
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $commentsJson -OnPost {
+                $script:Posted = $true
             }
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence"
@@ -318,21 +248,16 @@ Describe 'Publish-PrComment' {
 
     Context 'Error resilience and non-terminating behavior' {
         It 'returns $false and emits warning when gh api list command fails' {
-            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-            Mock -CommandName gh -MockWith {
-                $global:LASTEXITCODE = 1
-                return ''
-            }
+            Set-GhAvailable -Available $true
+            New-GhApiMock -ExitCode 1
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence"
             $result | Should -BeFalse
         }
 
         It 'returns $false and emits warning when gh api throws an exception' {
-            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-            Mock -CommandName gh -MockWith {
-                throw "Simulated network failure"
-            }
+            Set-GhAvailable -Available $true
+            New-GhApiMock -ThrowException "Simulated network failure"
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence"
             $result | Should -BeFalse
@@ -343,19 +268,8 @@ Describe 'Publish-PrComment' {
         It 'leaves no temp files in GetTempPath on success' {
             $prefix = "test-cleanup-success-$([guid]::NewGuid().ToString().Substring(0,8))"
 
-            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-            Mock -CommandName gh -MockWith {
-                param()
-                $global:LASTEXITCODE = 0
-                $argsList = $args -join ' '
-                if ($argsList -match 'api repos/.+/issues/123/comments' -and $argsList -notmatch 'POST') {
-                    return '[]'
-                }
-                if ($argsList -match 'api user') {
-                    return 'bot-user'
-                }
-                return ''
-            }
+            Set-GhAvailable -Available $true
+            New-GhApiMock
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence" -TempFilePrefix $prefix
             $result | Should -BeTrue
@@ -367,10 +281,8 @@ Describe 'Publish-PrComment' {
         It 'leaves no temp files in GetTempPath on failure' {
             $prefix = "test-cleanup-fail-$([guid]::NewGuid().ToString().Substring(0,8))"
 
-            Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-            Mock -CommandName gh -MockWith {
-                throw "Simulated error during publish"
-            }
+            Set-GhAvailable -Available $true
+            New-GhApiMock -ThrowException "Simulated error during publish"
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence" -TempFilePrefix $prefix
             $result | Should -BeFalse
