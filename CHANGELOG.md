@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Unconditional Environment Variable Restoration in Test Helper**: Modified `Invoke-SummarizerScript` in `scripts/tests/TestHelpers.ps1` to unconditionally restore environment variables in its `finally` block, ensuring originally-unset variables injected via `-Environment` are cleared ($null) and do not leak across sequential test executions (#316, #321, #336).
 - **README CI Workflow References and Release Signing Documentation**: Updated README.md workflow references to accurately describe `Release on Merge to Main` on merge to `main`, `PR Snapshot Build & Pre-Release` on pull requests with `crosstraining-snapshot-<sha>` artifacts, and production release signing verification (#271, #292, #300).
 - **PR Comment Caller Repo Normalization Consolidation**: Removed redundant caller-side `-Repo` fallback guards and parameter defaults in `scripts/post-e2e-evidence.ps1` and `scripts/summarize-unit-tests.ps1`, consolidating normalization logic into `Publish-PrComment` as the single source of truth (#280, #291, #296).
 - **apksigner Path Resolution and Directory Existence Guards**: Added precondition guards for `$ANDROID_HOME`, `$ANDROID_HOME/build-tools` directory existence, and build-tools version discovery before resolving `apksigner` in `.github/workflows/release.yml`, emitting explicit `::error::` annotations instead of failing on unguarded shell globs (#261, #269, #273).
