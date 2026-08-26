@@ -18,6 +18,7 @@ Describe 'post-e2e-evidence.ps1' {
 
             & $script:PostE2EScript -PrNumber "abc" -SummaryPath "dummy.json"
             $LASTEXITCODE | Should -Be 1
+            Should -Invoke -CommandName gh -Times 0 -Exactly
         }
 
         It 'exits 1 when PrNumber is empty and gh pr view fails or returns no number' {
@@ -30,11 +31,15 @@ Describe 'post-e2e-evidence.ps1' {
 
             & $script:PostE2EScript -PrNumber "" -SummaryPath "dummy.json"
             $LASTEXITCODE | Should -Be 1
+            Should -Invoke -CommandName gh -Times 0 -Exactly -ParameterFilter { ($args -join ' ') -match 'comments' }
         }
 
         It 'exits 1 when SummaryPath is missing or non-existent' {
+            Mock -CommandName gh -MockWith { throw "gh should not be called" }
+
             & $script:PostE2EScript -PrNumber "123" -SummaryPath "nonexistent-summary-$([guid]::NewGuid()).json"
             $LASTEXITCODE | Should -Be 1
+            Should -Invoke -CommandName gh -Times 0 -Exactly
         }
     }
 
@@ -45,7 +50,6 @@ Describe 'post-e2e-evidence.ps1' {
             $summaryFile = Join-Path $tempDir "summary.json"
             '[{"flow":"01_login","passed":true}]' | Set-Content -Path $summaryFile -Encoding UTF8
 
-            $global:CommentApiCalled = $false
             Mock -CommandName gh -MockWith {
                 param()
                 $argsList = $args -join ' '
@@ -53,16 +57,13 @@ Describe 'post-e2e-evidence.ps1' {
                     $global:LASTEXITCODE = 1
                     return 'release not found'
                 }
-                if ($argsList -match 'comments') {
-                    $global:CommentApiCalled = $true
-                }
                 return ''
             }
 
             try {
                 & $script:PostE2EScript -PrNumber "123" -SummaryPath $summaryFile -Version "v1.0.0"
                 $LASTEXITCODE | Should -Be 1
-                $global:CommentApiCalled | Should -BeFalse
+                Should -Invoke -CommandName gh -Times 0 -Exactly -ParameterFilter { ($args -join ' ') -match 'comments' }
             } finally {
                 Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -76,7 +77,6 @@ Describe 'post-e2e-evidence.ps1' {
             $summaryFile = Join-Path $tempDir "summary.json"
             '[]' | Set-Content -Path $summaryFile -Encoding UTF8
 
-            $global:CommentApiCalled = $false
             Mock -CommandName gh -MockWith {
                 param()
                 $argsList = $args -join ' '
@@ -84,16 +84,13 @@ Describe 'post-e2e-evidence.ps1' {
                     $global:LASTEXITCODE = 0
                     return 'release info'
                 }
-                if ($argsList -match 'comments') {
-                    $global:CommentApiCalled = $true
-                }
                 return ''
             }
 
             try {
                 & $script:PostE2EScript -PrNumber "123" -SummaryPath $summaryFile -Version "v1.0.0"
                 $LASTEXITCODE | Should -Be 1
-                $global:CommentApiCalled | Should -BeFalse
+                Should -Invoke -CommandName gh -Times 0 -Exactly -ParameterFilter { ($args -join ' ') -match 'comments' }
             } finally {
                 Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
             }
