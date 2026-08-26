@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Release Keystore Decode Error Annotation Guard**: Added explicit base64 decoding check and non-empty file validation with `::error::` annotations to the `Decode release keystore` step in `.github/workflows/release.yml`, preventing silent or opaque failures prior to release APK compilation (#259, #269, #272).
 - **Snapshot Release Body Branch Name Sanitization & Security Boundary**: Sanitized `BRANCH_NAME` in the `Compute build metadata` step of `.github/workflows/build.yml` to an allowlist of characters (`[a-zA-Z0-9._/-]`), preventing Markdown formatting breakout or link spoofing in the public snapshot pre-release body, and added inline comments documenting parameter injection safety and the Markdown sanitization boundary (#244, #245, #247).
 - **CI Branch Ref Injection Hardening**: Passed `github.head_ref` via step-level `env: HEAD_REF: ${{ github.head_ref }}` in `.github/workflows/build.yml` and referenced `$HEAD_REF` within the `Compute build metadata` script to prevent branch name script injection (#152, #167).
 - **Unit Test Summary Artifact Name Guard**: Added fallback guard in `scripts/summarize-unit-tests.ps1` defaulting `-ArtifactName` to `"unit test report"` when null, empty, or whitespace, preventing double-spaced generic truncation notes when `SHORT_SHA` is unset in CI workflows (#161).
