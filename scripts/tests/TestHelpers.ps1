@@ -61,7 +61,7 @@ function Invoke-SummarizerScript {
     $savedValues = @{}
     foreach ($v in $savedVars) {
         $savedValues[$v] = [Environment]::GetEnvironmentVariable($v)
-        [Environment]::SetEnvironmentVariable($v, $null)
+        [Environment]::SetEnvironmentVariable($v, [NullString]::Value)
         if (Test-Path "env:$v") {
             Remove-Item "env:$v" -Force -ErrorAction SilentlyContinue
         }
@@ -116,7 +116,7 @@ function Invoke-SummarizerScript {
         }
         foreach ($v in $savedVars) {
             if ($null -eq $savedValues[$v]) {
-                [Environment]::SetEnvironmentVariable($v, $null)
+                [Environment]::SetEnvironmentVariable($v, [NullString]::Value)
                 if (Test-Path "env:$v") {
                     Remove-Item "env:$v" -Force -ErrorAction SilentlyContinue
                 }
