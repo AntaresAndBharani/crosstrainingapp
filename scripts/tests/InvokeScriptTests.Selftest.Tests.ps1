@@ -29,86 +29,72 @@ function Invoke-HarnessChildProcess {
     return $proc.ExitCode
 }
 
+function Invoke-SelftestScenario {
+    param (
+        [System.Collections.IDictionary]$Fixtures,
+        [int]$ExpectedExitCode,
+        [string]$TestName
+    )
+
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "selftest-$([guid]::NewGuid())"
+    try {
+        [System.IO.Directory]::CreateDirectory($tempDir) | Out-Null
+        foreach ($key in $Fixtures.Keys) {
+            $fixturePath = Join-Path $tempDir $key
+            $content = $Fixtures[$key]
+            [System.IO.File]::WriteAllText($fixturePath, $content, [System.Text.Encoding]::UTF8)
+        }
+
+        $exitCode = Invoke-HarnessChildProcess -TestDirectory $tempDir
+        Assert-Equal -Actual $exitCode -Expected $ExpectedExitCode -TestName $TestName
+    } finally {
+        if (Test-Path $tempDir) {
+            Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Scenario 1: Isolated temp directory with passing fixture exits 0
 # ---------------------------------------------------------------------------
 Write-Host "--- selftest: passing fixture directory ---"
-$tempPassDir = Join-Path ([System.IO.Path]::GetTempPath()) "selftest-pass-$([guid]::NewGuid())"
-try {
-    [System.IO.Directory]::CreateDirectory($tempPassDir) | Out-Null
-    $passFixture = Join-Path $tempPassDir "SamplePass.Tests.ps1"
-    $passContent = "Assert-True -Condition `$true -TestName `"selftest synthetic pass`"`nAssert-Equal -Actual 42 -Expected 42 -TestName `"selftest synthetic equality`""
-    [System.IO.File]::WriteAllText($passFixture, $passContent, [System.Text.Encoding]::UTF8)
-
-    $exitCode = Invoke-HarnessChildProcess -TestDirectory $tempPassDir
-    Assert-Equal -Actual $exitCode -Expected 0 `
-                 -TestName "selftest: passing fixture directory exits 0"
-} finally {
-    if (Test-Path $tempPassDir) {
-        Remove-Item $tempPassDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
+Invoke-SelftestScenario `
+    -Fixtures @{
+        "SamplePass.Tests.ps1" = "Assert-True -Condition `$true -TestName `"selftest synthetic pass`"`nAssert-Equal -Actual 42 -Expected 42 -TestName `"selftest synthetic equality`""
+    } `
+    -ExpectedExitCode 0 `
+    -TestName "selftest: passing fixture directory exits 0"
 
 # ---------------------------------------------------------------------------
 # Scenario 2: Isolated temp directory with failing fixture exits 1
 # ---------------------------------------------------------------------------
 Write-Host "--- selftest: failing fixture directory ---"
-$tempFailDir = Join-Path ([System.IO.Path]::GetTempPath()) "selftest-fail-$([guid]::NewGuid())"
-try {
-    [System.IO.Directory]::CreateDirectory($tempFailDir) | Out-Null
-    $failFixture = Join-Path $tempFailDir "SampleFail.Tests.ps1"
-    $failContent = "Assert-True -Condition `$false -TestName `"selftest synthetic failure`""
-    [System.IO.File]::WriteAllText($failFixture, $failContent, [System.Text.Encoding]::UTF8)
-
-    $exitCode = Invoke-HarnessChildProcess -TestDirectory $tempFailDir
-    Assert-Equal -Actual $exitCode -Expected 1 `
-                 -TestName "selftest: failing fixture directory exits 1"
-} finally {
-    if (Test-Path $tempFailDir) {
-        Remove-Item $tempFailDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
+Invoke-SelftestScenario `
+    -Fixtures @{
+        "SampleFail.Tests.ps1" = "Assert-True -Condition `$false -TestName `"selftest synthetic failure`""
+    } `
+    -ExpectedExitCode 1 `
+    -TestName "selftest: failing fixture directory exits 1"
 
 # ---------------------------------------------------------------------------
 # Scenario 3: Isolated temp directory with mixed passing and failing fixtures exits 1
 # ---------------------------------------------------------------------------
 Write-Host "--- selftest: mixed fixtures directory ---"
-$tempMixedDir = Join-Path ([System.IO.Path]::GetTempPath()) "selftest-mixed-$([guid]::NewGuid())"
-try {
-    [System.IO.Directory]::CreateDirectory($tempMixedDir) | Out-Null
-    $mixedPassFixture = Join-Path $tempMixedDir "A_Pass.Tests.ps1"
-    $mixedPassContent = "Assert-True -Condition `$true -TestName `"selftest mixed pass`""
-    [System.IO.File]::WriteAllText($mixedPassFixture, $mixedPassContent, [System.Text.Encoding]::UTF8)
-
-    $mixedFailFixture = Join-Path $tempMixedDir "B_Fail.Tests.ps1"
-    $mixedFailContent = "Assert-True -Condition `$false -TestName `"selftest mixed fail`""
-    [System.IO.File]::WriteAllText($mixedFailFixture, $mixedFailContent, [System.Text.Encoding]::UTF8)
-
-    $exitCode = Invoke-HarnessChildProcess -TestDirectory $tempMixedDir
-    Assert-Equal -Actual $exitCode -Expected 1 `
-                 -TestName "selftest: mixed fixtures directory exits 1"
-} finally {
-    if (Test-Path $tempMixedDir) {
-        Remove-Item $tempMixedDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
+Invoke-SelftestScenario `
+    -Fixtures @{
+        "A_Pass.Tests.ps1" = "Assert-True -Condition `$true -TestName `"selftest mixed pass`""
+        "B_Fail.Tests.ps1" = "Assert-True -Condition `$false -TestName `"selftest mixed fail`""
+    } `
+    -ExpectedExitCode 1 `
+    -TestName "selftest: mixed fixtures directory exits 1"
 
 # ---------------------------------------------------------------------------
 # Scenario 4: Isolated temp directory with unhandled script exception exits 1
 # ---------------------------------------------------------------------------
 Write-Host "--- selftest: exception fixture directory ---"
-$tempExDir = Join-Path ([System.IO.Path]::GetTempPath()) "selftest-ex-$([guid]::NewGuid())"
-try {
-    [System.IO.Directory]::CreateDirectory($tempExDir) | Out-Null
-    $exFixture = Join-Path $tempExDir "SampleException.Tests.ps1"
-    $exContent = "throw `"Synthetic unhandled exception`""
-    [System.IO.File]::WriteAllText($exFixture, $exContent, [System.Text.Encoding]::UTF8)
-
-    $exitCode = Invoke-HarnessChildProcess -TestDirectory $tempExDir
-    Assert-Equal -Actual $exitCode -Expected 1 `
-                 -TestName "selftest: exception fixture directory exits 1"
-} finally {
-    if (Test-Path $tempExDir) {
-        Remove-Item $tempExDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
+Invoke-SelftestScenario `
+    -Fixtures @{
+        "SampleException.Tests.ps1" = "throw `"Synthetic unhandled exception`""
+    } `
+    -ExpectedExitCode 1 `
+    -TestName "selftest: exception fixture directory exits 1"

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
 
 ### Added
+- **Script Test Runner Self-Test Scenario Helper**: Extracted `Invoke-SelftestScenario` helper function in `scripts/tests/InvokeScriptTests.Selftest.Tests.ps1` managing temporary directory lifecycle, multi-fixture file generation, process execution, and assertion validation, eliminating duplicated try-finally boilerplate across test scenarios (#252, #255, #256).
 - **PR Comment Test Mock Setup Helper**: Added shared `Set-GhAvailable` and `New-GhApiMock` mock helpers to `scripts/tests/PrComment.Tests.ps1` and refactored all context blocks to eliminate duplicated inline mock dispatch logic (#229, #233, #238, #239).
 - **Post E2E Evidence Automated Pester Test Suite**: Added dedicated Pester test suite in `scripts/tests/PostE2EEvidence.Tests.ps1` covering PR number validation, release verification guards, flow parsing, markdown formatting, static hygiene, and delegation to `Publish-PrComment` (#232, #237).
 - **ArtifactName Fallback-Equivalence Regression Test**: Added test coverage in `scripts/tests/SummarizeUnitTests.Cli.Tests.ps1` asserting that explicitly passing `-ArtifactName "unit test report"` renders a backticked code span rather than unquoted generic fallback text (#225, #231, #235).
