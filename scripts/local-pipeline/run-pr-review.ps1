@@ -370,7 +370,11 @@ function Invoke-PrReviewJudge {
     }
 
     $responseText = $envelope.result.Trim()
-    if ($responseText -match '(?s)^```(?:json)?\s*(.*?)\s*```$') {
+    # Non-anchored on purpose -- see run-architect.ps1 for why: a model can
+    # add trailing prose after a complete, valid fenced JSON block despite
+    # being told not to, and an end-anchored ($) match fails entirely in
+    # that case. Extract the first fenced block wherever it appears.
+    if ($responseText -match '(?s)```(?:json)?\s*(.*?)\s*```') {
         $responseText = $Matches[1].Trim()
     }
 

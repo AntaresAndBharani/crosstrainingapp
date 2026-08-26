@@ -406,7 +406,15 @@ function Invoke-ArchitectJudge {
     }
 
     $responseText = $envelope.result.Trim()
-    if ($responseText -match '(?s)^```(?:json)?\s*(.*?)\s*```$') {
+    # Non-anchored on purpose: with tool access, the model sometimes adds a
+    # short wrap-up sentence after the closing fence despite being told not
+    # to (seen live -- a real PO_ESCALATION response explained its reasoning
+    # in a trailing paragraph after valid, complete JSON). An end-anchored
+    # ($) match would fail entirely in that case and fall through to trying
+    # to parse the whole raw response as JSON. Extract the first fenced
+    # block wherever it appears; fall back to the raw trimmed text if there
+    # is no fence at all.
+    if ($responseText -match '(?s)```(?:json)?\s*(.*?)\s*```') {
         $responseText = $Matches[1].Trim()
     }
 
