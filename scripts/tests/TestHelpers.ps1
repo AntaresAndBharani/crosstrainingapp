@@ -156,8 +156,8 @@ function Assert-True {
 
 function Assert-Equal {
     param (
-        $Actual,
-        $Expected,
+        [AllowNull()][object]$Actual,
+        [AllowNull()][object]$Expected,
         [string]$TestName
     )
     $normActual   = if ($Actual   -is [string]) { ConvertTo-LfLineEnding $Actual   } else { $Actual }

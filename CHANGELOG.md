@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Branch Protection Script-Tests Matrix Required Checks**: Configured repository branch protection rules on `main` to require both `script-tests (ubuntu-latest)` and `script-tests (windows-latest)` matrix status checks and eliminated deprecated singular `script-tests` check requirement (#250, #254, #329).
+
 ### Fixed
 - **Release Workflow ANDROID_HOME and build-tools Precondition Diagnostics**: Split compound precondition guard into distinct sequential checks for unset `ANDROID_HOME` and missing `$ANDROID_HOME/build-tools` directory in `.github/workflows/release.yml`, each with dedicated `::error::` annotations followed by `exit 1`, and updated static regression assertions in `scripts/tests/ReleaseWorkflow.Static.Tests.ps1` (#311, #318, #325).
 - **Release Keystore Decode Error Diagnostic Detail**: Captured `base64 -d` stderr into a variable in the `Decode release keystore` step of `.github/workflows/release.yml` and surfaced it within the `::error::` annotation on decode failure, and added static regression assertions in `scripts/tests/ReleaseWorkflow.Static.Tests.ps1` (#309, #318, #324).
