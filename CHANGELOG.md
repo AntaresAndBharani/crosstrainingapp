@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E Test Suites**: Addressed genuine UI regressions in E2E flows (03, 04, 05, 06) and fixed flakiness across the entire test suite. Flows now properly reflect updated data models and UI state.
 
 ### Added
+- **Invoke-SummarizerScript Environment Variable Restoration Regression Test**: Added regression test coverage in `scripts/tests/SummarizeUnitTests.Cli.Tests.ps1` verifying that originally-unset and pre-set environment variables passed in `-Environment` are restored to `$null` and their initial values respectively after `Invoke-SummarizerScript` returns (#321, #337).
 - **Release Workflow Canonical Step Names Documentation**: Added canonical step name reference table in `docs/local-testing.md` documenting `Build distributable APK (release variant)` and `Package release-signed APK as release distribution artifact` in `.github/workflows/release.yml` to prevent backlog drift (#271, #292, #299).
 - **PR Comment Repo Fallback Test Coverage**: Added comprehensive test coverage across `scripts/tests/PrComment.Tests.ps1`, `scripts/tests/PostE2EEvidence.Tests.ps1`, and `scripts/tests/SummarizeUnitTests.Cli.Tests.ps1` asserting repository parameter fallback to `$env:GITHUB_REPOSITORY` and default repository across omitted, blank, and explicit arguments (#291, #297).
 - **PR Comment Mock Helper Path Tests**: Added direct Pester test coverage in `scripts/tests/PrComment.Tests.ps1` verifying `New-GhApiMock` exit-code propagation and exception throwing behavior (#289, #295).
