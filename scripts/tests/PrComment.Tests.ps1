@@ -291,4 +291,22 @@ Describe 'Publish-PrComment' {
             $remainingFiles.Count | Should -Be 0
         }
     }
+
+    Context 'Shared mock helper — New-GhApiMock exit code and exception paths' {
+        It 'sets $LASTEXITCODE and returns empty string when -ExitCode is non-zero' {
+            Set-GhAvailable -Available $true
+            New-GhApiMock -ExitCode 42
+
+            $output = gh api repos/test/repo/issues/123/comments
+            $output | Should -BeNullOrEmpty
+            $global:LASTEXITCODE | Should -Be 42
+        }
+
+        It 'throws specified exception message when -ThrowException is provided' {
+            Set-GhAvailable -Available $true
+            New-GhApiMock -ThrowException "Custom failure message"
+
+            { gh api repos/test/repo/issues/123/comments } | Should -Throw -ExpectedMessage "Custom failure message"
+        }
+    }
 }
