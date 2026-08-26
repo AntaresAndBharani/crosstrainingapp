@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Branch Protection Matrix Checks Documentation**: Documented live PR verification evidence in `docs/local-testing.md` confirming `script-tests (ubuntu-latest)` and `script-tests (windows-latest)` operate as required matrix status checks strictly gating merges to `main` (#359, #362, #369).
 - **Branch Protection Matrix Checks Empirical Verification**: Verified and captured live GitHub Actions check rollups and branch protection enforcement on `main` confirming `script-tests (ubuntu-latest)` and `script-tests (windows-latest)` operate as distinct required status checks gating PR merges (#359, #362, #368).
 - **Branch Protection Script-Tests Matrix Required Checks**: Configured repository branch protection rules on `main` to require both `script-tests (ubuntu-latest)` and `script-tests (windows-latest)` matrix status checks and eliminated deprecated singular `script-tests` check requirement (#250, #254, #329).
 
