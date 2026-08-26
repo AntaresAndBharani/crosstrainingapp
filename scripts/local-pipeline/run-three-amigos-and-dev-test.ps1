@@ -312,7 +312,7 @@ function Invoke-ThreeAmigosStep {
             continue
         }
         if ($result.ExitCode -ne 0) {
-            Write-Log "agy.exe exited $($result.ExitCode) for story #${storyNumber}. StdErr: $($result.StdErr)" "ERROR"
+            Write-Log "agy.exe exited $($result.ExitCode) for story #${storyNumber}. StdErr: $($result.StdErr) | StdOut: $($result.StdOut)" "ERROR"
             continue
         }
 
@@ -515,7 +515,7 @@ function Invoke-FixupStep {
         Write-Log "agy.exe invocation threw for fix-up on PR #${prNumber}: $_" "ERROR"
     }
     if ($null -ne $result -and $result.ExitCode -ne 0) {
-        Write-Log "agy.exe exited $($result.ExitCode) for fix-up on PR #${prNumber}. StdErr: $($result.StdErr)" "ERROR"
+        Write-Log "agy.exe exited $($result.ExitCode) for fix-up on PR #${prNumber}. StdErr: $($result.StdErr) | StdOut: $($result.StdOut)" "ERROR"
     } else {
         Write-Log "Fix-up session for PR #$prNumber completed."
     }
@@ -616,7 +616,7 @@ function Invoke-ImplementationStep {
                 Write-Log "agy.exe invocation threw for subtask #$($subtask.number): $_" "ERROR"
             }
             if ($null -ne $result -and $result.ExitCode -ne 0) {
-                Write-Log "agy.exe exited $($result.ExitCode) for subtask #$($subtask.number). StdErr: $($result.StdErr)" "ERROR"
+                Write-Log "agy.exe exited $($result.ExitCode) for subtask #$($subtask.number). StdErr: $($result.StdErr) | StdOut: $($result.StdOut)" "ERROR"
             } else {
                 Write-Log "Implementation session for subtask #$($subtask.number) completed."
             }
