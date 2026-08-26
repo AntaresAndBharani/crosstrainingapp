@@ -45,18 +45,26 @@ function Invoke-SummarizerScript {
     param (
         [string]$ResultsDir,
         [string]$PrNumber    = "",
+        [string]$Repo        = $null,
         [string]$ArtifactName = $null,
-        [string]$WorkingDirectory = $null
+        [string]$WorkingDirectory = $null,
+        [hashtable]$Environment = @{}
     )
 
     $tempOut = Join-Path ([System.IO.Path]::GetTempPath()) "summary-test-$([guid]::NewGuid()).md"
 
-    # Clear env vars that affect output determinism
-    $savedVars = @('GITHUB_WORKSPACE', 'GITHUB_STEP_SUMMARY', 'GITHUB_REPOSITORY')
+    # Clear env vars that affect output determinism, saving initial values
+    $savedVars = [System.Collections.Generic.HashSet[string]]::new([string[]]@('GITHUB_WORKSPACE', 'GITHUB_STEP_SUMMARY', 'GITHUB_REPOSITORY'))
+    foreach ($k in $Environment.Keys) {
+        [void]$savedVars.Add($k)
+    }
     $savedValues = @{}
     foreach ($v in $savedVars) {
         $savedValues[$v] = [Environment]::GetEnvironmentVariable($v)
         [Environment]::SetEnvironmentVariable($v, $null)
+    }
+    foreach ($k in $Environment.Keys) {
+        [Environment]::SetEnvironmentVariable($k, $Environment[$k])
     }
 
     # Choose working dir
@@ -78,6 +86,9 @@ function Invoke-SummarizerScript {
         '-OutFile',    (EscapeArg $tempOut),
         '-PrNumber',   (EscapeArg $PrNumber)
     )
+    if ($null -ne $Repo) {
+        $argParts += @('-Repo', (EscapeArg $Repo))
+    }
     if ($null -ne $ArtifactName) {
         $argParts += @('-ArtifactName', (EscapeArg $ArtifactName))
     }
