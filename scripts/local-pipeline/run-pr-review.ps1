@@ -370,7 +370,7 @@ function Invoke-PrReviewJudge {
         # so explicitly disable everything via `--tools ""` rather than
         # relying on omission -- verified this actually blocks execution
         # (the model can no longer fabricate real command output).
-        $result = Invoke-NativeProcess -FilePath $ClaudePath -ArgumentStrings @("--model", $Model, "--output-format", "json", "--tools", "", "--print", $prompt)
+        $result = Invoke-NativeProcess -FilePath $ClaudePath -ArgumentStrings @("--model", $Model, "--effort", "medium", "--output-format", "json", "--tools", "", "--print", $prompt)
     } catch {
         Write-Log "claude.exe invocation threw for PR #${PrNumber}: $_" "ERROR"
         return $null
