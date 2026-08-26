@@ -228,8 +228,9 @@ Describe 'Publish-PrComment' {
     }
 
     Context 'Listing and Pagination' {
-        It 'includes --paginate when querying comments' {
+        It 'includes --paginate and --slurp when querying comments' {
             $script:PaginateCalled = $false
+            $script:SlurpCalled = $false
 
             Set-GhAvailable -Available $true
             New-GhApiMock -OnList {
@@ -237,11 +238,44 @@ Describe 'Publish-PrComment' {
                 if ($argsList -match '--paginate') {
                     $script:PaginateCalled = $true
                 }
+                if ($argsList -match '--slurp') {
+                    $script:SlurpCalled = $true
+                }
             }
 
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "Test"
             $result | Should -BeTrue
             $script:PaginateCalled | Should -BeTrue
+            $script:SlurpCalled | Should -BeTrue
+        }
+
+        It 'discovers and PATCHes marker comment located on the second page of multi-page response' {
+            $multiPageRaw = '[
+                [
+                    {"id": 101, "body": "Page 1 comment", "user": {"login": "bot-user"}},
+                    {"id": 102, "body": "Another page 1 comment", "user": {"login": "bot-user"}}
+                ],
+                [
+                    {"id": 201, "body": "Page 2 first comment", "user": {"login": "bot-user"}},
+                    {"id": 202, "body": "<!-- marker -->`nPage 2 evidence", "user": {"login": "bot-user"}}
+                ]
+            ]'
+
+            $script:PatchedCommentId = $null
+            $script:Posted = $false
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $multiPageRaw -OnPatch {
+                param($commentId)
+                $script:PatchedCommentId = $commentId
+            } -OnPost {
+                $script:Posted = $true
+            }
+
+            $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "Updated evidence"
+            $result | Should -BeTrue
+            $script:PatchedCommentId | Should -Be 202
+            $script:Posted | Should -BeFalse
         }
     }
 

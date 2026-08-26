@@ -54,7 +54,7 @@ function Publish-PrComment {
 
         $commentsRaw = $null
         try {
-            $commentsRaw = gh api "repos/$Repo/issues/$PrNumber/comments" --paginate
+            $commentsRaw = gh api "repos/$Repo/issues/$PrNumber/comments" --paginate --slurp
         } catch {
             Write-Warning "Failed to invoke gh api to list PR comments on PR #${PrNumber}: $_"
             return $false
@@ -72,7 +72,15 @@ function Publish-PrComment {
                 if ($null -ne $parsed) {
                     foreach ($item in $parsed) {
                         if ($null -ne $item) {
-                            $comments += $item
+                            if ($item -is [System.Collections.IEnumerable] -and $item -isnot [string] -and $item -isnot [System.Management.Automation.PSCustomObject]) {
+                                foreach ($subItem in $item) {
+                                    if ($null -ne $subItem) {
+                                        $comments += $subItem
+                                    }
+                                }
+                            } else {
+                                $comments += $item
+                            }
                         }
                     }
                 }
