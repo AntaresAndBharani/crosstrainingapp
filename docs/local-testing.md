@@ -91,4 +91,11 @@ An audit of `.github/workflows/build.yml` confirmed the canonical status-check c
 
 These are the exact required-status-check context names to configure in GitHub branch protection rules for `main` (replacing any deprecated monolithic `script-tests` check name). Future stories and subtasks referencing branch protection status checks for script tests should quote the verbatim check names above.
 
+### Live Verification Evidence
+
+Empirical verification against active pull requests targeting `main` (captured via `gh pr checks` and `gh api /repos/AntaresAndBharani/crosstrainingapp/branches/main/protection` on 2026-08-26 across PR #358 and PR #370) confirms:
+- Both `script-tests (ubuntu-latest)` and `script-tests (windows-latest)` appear as distinct **REQUIRED** status checks in repository branch protection settings.
+- PR merge state is strictly gated on both matrix legs reporting success (`mergeStateStatus: CLEAN` only when both checks pass).
+
+
 
