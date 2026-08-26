@@ -112,7 +112,11 @@ function Invoke-SummarizerScript {
             Remove-Item $tempWd -Recurse -Force -ErrorAction SilentlyContinue
         }
         foreach ($v in $savedVars) {
-            [Environment]::SetEnvironmentVariable($v, $savedValues[$v])
+            if ($null -eq $savedValues[$v]) {
+                [Environment]::SetEnvironmentVariable($v, $null)
+            } else {
+                [Environment]::SetEnvironmentVariable($v, $savedValues[$v])
+            }
         }
     }
 
