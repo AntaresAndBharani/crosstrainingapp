@@ -510,7 +510,7 @@ function Invoke-FixupStep {
         # Genuinely agentic step -- --dangerously-skip-permissions is
         # deliberate here, unlike every judgment-only call elsewhere in
         # this pipeline. Real file/bash access is the point.
-        $result = Invoke-NativeProcess -FilePath $AgyPath -ArgumentStrings @("--model", $AgenticModel, "--dangerously-skip-permissions", "--output-format", "json", "--print", $prompt) -WorkingDirectory $RepoRoot
+        $result = Invoke-NativeProcess -FilePath $AgyPath -ArgumentStrings @("--model", $AgenticModel, "--dangerously-skip-permissions", "--print-timeout", "20m0s", "--output-format", "json", "--print", $prompt) -WorkingDirectory $RepoRoot
     } catch {
         Write-Log "agy.exe invocation threw for fix-up on PR #${prNumber}: $_" "ERROR"
     }
@@ -611,7 +611,7 @@ function Invoke-ImplementationStep {
             Write-Log "Invoking agy.exe (model=$AgenticModel, full tool access) for implementation of subtask #$($subtask.number)..."
             $result = $null
             try {
-                $result = Invoke-NativeProcess -FilePath $AgyPath -ArgumentStrings @("--model", $AgenticModel, "--dangerously-skip-permissions", "--output-format", "json", "--print", $prompt) -WorkingDirectory $RepoRoot
+                $result = Invoke-NativeProcess -FilePath $AgyPath -ArgumentStrings @("--model", $AgenticModel, "--dangerously-skip-permissions", "--print-timeout", "20m0s", "--output-format", "json", "--print", $prompt) -WorkingDirectory $RepoRoot
             } catch {
                 Write-Log "agy.exe invocation threw for subtask #$($subtask.number): $_" "ERROR"
             }
