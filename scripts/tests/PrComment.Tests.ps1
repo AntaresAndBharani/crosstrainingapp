@@ -589,4 +589,12 @@ Describe 'Publish-PrComment' {
             { gh api repos/test/repo/issues/123/comments } | Should -Throw -ExpectedMessage "Custom failure message"
         }
     }
+
+    Context 'Performance and collection hygiene' {
+        It 'uses List[object] instead of array accumulation (+=)' {
+            $scriptText = Get-Content -Raw -Path (Join-Path (Join-Path $PSScriptRoot "..") "lib\PrComment.ps1")
+            $scriptText | Should -Match '\[System\.Collections\.Generic\.List\[object\]\]::new\(\)'
+            $scriptText | Should -Not -Match '\$comments\s*\+='
+        }
+    }
 }
