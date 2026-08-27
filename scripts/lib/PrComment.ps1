@@ -92,17 +92,27 @@ function Publish-PrComment {
 
         $currentUser = $null
         try {
-            $currentUser = gh api user --jq .login 2>$null
+            $userRaw = gh api user --jq .login 2>$null
+            if ($LASTEXITCODE -eq 0 -and (-not [string]::IsNullOrWhiteSpace($userRaw))) {
+                $currentUser = $userRaw.Trim()
+            }
         } catch {
             $currentUser = $null
         }
 
-        $targetComment = $comments | Where-Object {
-            ($null -ne $_.body) -and
-            ($_.body -is [string]) -and
-            ($_.body.StartsWith($Marker, [System.StringComparison]::Ordinal)) -and
-            ([string]::IsNullOrWhiteSpace($currentUser) -or (($null -ne $_.user) -and ($_.user.login -eq $currentUser)))
-        } | Select-Object -Last 1
+        if ([string]::IsNullOrWhiteSpace($currentUser)) {
+            Write-Warning "Failed to resolve current GitHub user; skipping author matching and creating a new comment."
+        }
+
+        $targetComment = $null
+        if (-not [string]::IsNullOrWhiteSpace($currentUser)) {
+            $targetComment = $comments | Where-Object {
+                ($null -ne $_.body) -and
+                ($_.body -is [string]) -and
+                ($_.body.StartsWith($Marker, [System.StringComparison]::Ordinal)) -and
+                (($null -ne $_.user) -and ($_.user.login -eq $currentUser))
+            } | Select-Object -Last 1
+        }
 
         if ($targetComment) {
             Write-Host "Updating existing PR comment on PR #$PrNumber (ID: $($targetComment.id))..."
