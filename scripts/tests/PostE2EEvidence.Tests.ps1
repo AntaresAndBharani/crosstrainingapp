@@ -449,6 +449,29 @@ Describe 'post-e2e-evidence.ps1' {
                         $matchingAssignments = @($assignments | Where-Object {
                             $assign = $_
                             if ($assign.Extent.EndOffset -gt $cmd.Extent.StartOffset) { return $false }
+
+                            $assignScope = $null
+                            $curr = $assign.Parent
+                            while ($null -ne $curr) {
+                                if ($curr -is [System.Management.Automation.Language.ScriptBlockAst] -or
+                                    $curr -is [System.Management.Automation.Language.FunctionDefinitionAst]) {
+                                    $assignScope = $curr
+                                    break
+                                }
+                                $curr = $curr.Parent
+                            }
+
+                            $cmdAncestor = $cmd.Parent
+                            $inScope = $false
+                            while ($null -ne $cmdAncestor) {
+                                if ($cmdAncestor -eq $assignScope) {
+                                    $inScope = $true
+                                    break
+                                }
+                                $cmdAncestor = $cmdAncestor.Parent
+                            }
+                            if (-not $inScope) { return $false }
+
                             $leftVar = $null
                             if ($assign.Left -is [System.Management.Automation.Language.VariableExpressionAst]) {
                                 $leftVar = $assign.Left.VariablePath.UserPath
@@ -531,6 +554,24 @@ Describe 'post-e2e-evidence.ps1' {
                 $violations = Find-RawGhApiCommentCalls -Ast $ast
                 $violations.Count | Should -BeGreaterThan 0
             }
+        }
+
+        It 'does not flag raw comment calls when an identically-named variable is assigned non-gh in a sibling function' {
+            $siblingSnippet = @'
+function Invoke-OtherTool {
+    $cmd = 'curl'
+    & $cmd api "repos/$Repo/issues/$Pr/comments"
+}
+function Invoke-GhTool {
+    & $cmd api "repos/$Repo/issues/$Pr/comments"
+}
+'@
+            $tokens = $null
+            $errors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($siblingSnippet, [ref]$tokens, [ref]$errors)
+            $errors.Count | Should -Be 0
+            $violations = Find-RawGhApiCommentCalls -Ast $ast
+            $violations.Count | Should -Be 0
         }
 
         It 'dot-sources lib/PrComment.ps1' {
