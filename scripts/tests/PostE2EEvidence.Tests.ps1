@@ -316,7 +316,7 @@ Describe 'post-e2e-evidence.ps1' {
                     ($args -join ' ') -match 'PATCH' -and ($args -join ' ') -match 'issues/comments/456'
                 }
                 Should -Invoke -CommandName gh -Times 0 -Exactly -ParameterFilter {
-                    ($args -join ' ') -match 'POST'
+                    ($args -join ' ') -match 'POST' -and ($args -join ' ') -match 'issues/123/comments'
                 }
                 $global:CapturedBody | Should -Not -BeNullOrEmpty
                 $global:CapturedBody | Should -Match '^<!-- e2e-evidence -->'
