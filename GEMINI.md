@@ -9,8 +9,7 @@
 - **GitHub Token Setup:** `& C:\Users\rogal\workspaces\Set-GhToken-Antares.ps1` (Run before git push / gh commands)
 - **Run Unit Tests:** `.\gradlew.bat testDebugUnitTest --no-daemon`
 - **Build Debug APK:** `.\gradlew.bat assembleDebug --no-daemon`
-- **Build Snapshot APK (CI Parity):** `.\gradlew.bat assembleSnapshot -PsnapshotLabel=localtest --no-daemon`
-- **Full Pre-PR Verification Suite:** `.\gradlew.bat testDebugUnitTest assembleSnapshot -PsnapshotLabel=localtest --no-daemon`
+- **Full Pre-PR Verification Suite:** `.\gradlew.bat testDebugUnitTest --no-daemon; .\scripts\tests\Invoke-ScriptTests.ps1`
 - **Capture E2E Artifacts:** `.\scripts\run-e2e-tests.ps1 -CaptureArtifacts -Version "latest" -PushArtifacts`
 - **Lint Check:** `.\gradlew.bat lintDebug --no-daemon`
 
@@ -23,11 +22,8 @@
 6. **Local APK Sync:** When building APKs, automatically copy the output APK to `local_test\latest.apk`.
 7. **GitHub Permissions:** Always run `C:\Users\rogal\workspaces\Set-GhToken-Antares.ps1` for Git push and `gh` operations under the `AntaresAndBharani` organization.
 8. **CI/CD Lifecycle & Definition of Done:**
-   - **PR Workflow:** Opening/updating a PR builds the snapshot APK and updates the rolling `snapshot` pre-release on GitHub.
-     - **Concurrency / cancellation:** Pushing a new commit to a PR branch automatically cancels the superseded snapshot build for that branch — redundant runner minutes are eliminated.
-     - **In-place release update:** The `snapshot` pre-release is always updated in place and **never deleted**, so it remains downloadable even if an in-flight build is cancelled mid-run.
-     - **Shared release:** The `snapshot` pre-release is shared across all open PRs — it reflects the most recently *completed* build. Always check the PR/branch/commit line in the release body before installing to confirm which PR the APK belongs to.
-   - **Merge to Main:** Merging into `main` automatically tags the release and publishes the official GitHub Release with the APK.
+   - **PR Workflow:** Opening/updating a PR triggers the CI & Test Verification workflow (`build.yml`), executing cross-platform script regression tests and Android unit tests, uploading unit test reports, and publishing sticky test summaries on the PR.
+   - **Merge to Main:** Merging into `main` automatically tags the release and publishes the official GitHub Release with the release-signed APK (`release.yml`).
    - **Agent Completion Gate:** Development is only complete when local tests pass, E2E artifacts are captured, the PR is opened, AND all remote GitHub Actions CI checks pass (Green).
 
 ## Agentic SDLC Pipeline

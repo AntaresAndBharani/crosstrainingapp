@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **PR Snapshot Build & Rolling Pre-Release**: Removed snapshot APK generation (`assembleSnapshot`), APK artifact uploads, and rolling snapshot pre-release publishing from `.github/workflows/build.yml` in favor of focused PR unit and script test verification, dropping `contents: write` workflow permissions.
+
 ### Changed
 - **Post E2E Evidence Static Hygiene AST Lexical Scoping**: Scoped variable-assignment matching in `Find-RawGhApiCommentCalls` within `scripts/tests/PostE2EEvidence.Tests.ps1` to enclosing `ScriptBlockAst` and function boundaries rather than whole-file AST offsets, preventing false positives/negatives across sibling functions, and added AST sibling scoping regression test coverage (#377, #387, #392).
 - **Summarizer CLI Test Strict Null Assertions**: Reverted loose `[string]::IsNullOrEmpty` workaround assertions to strict `Assert-Equal -Expected $null` checks in `scripts/tests/SummarizeUnitTests.Cli.Tests.ps1` for environment variable restoration verification (#371, #389, #396).

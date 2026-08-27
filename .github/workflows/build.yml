@@ -1,4 +1,4 @@
-name: PR Snapshot Build & Pre-Release
+name: PR CI & Test Verification
 
 on:
   pull_request:
@@ -6,16 +6,13 @@ on:
   workflow_dispatch:
 
 # Concurrency configuration:
-# - A new push to the same PR branch supersedes the in-flight snapshot build (cancel-in-progress: true).
-# - Cancellation is safe because the rolling snapshot release is updated in place and never deleted.
-# - The rolling release is shared across open PRs (last-writer-wins); each workflow_dispatch run gets
-#   a unique group via github.run_id so manual builds never cancel each other.
+# - A new push to the same PR branch supersedes in-flight test runs (cancel-in-progress: true).
 concurrency:
   group: build-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 jobs:
@@ -66,13 +63,6 @@ jobs:
             RAW_BRANCH="${GITHUB_REF_NAME}"
             PR_LABEL="Manual Build"
           fi
-          # Security: Sanitize BRANCH_NAME to an allowlist of characters [a-zA-Z0-9._/-].
-          # While action `with:` parameter interpolation is not shell-executed and therefore immune
-          # to command injection, branch names originating from untrusted PRs can contain Markdown
-          # metacharacters (e.g. backticks, brackets, parentheses). If unescaped, a crafted branch
-          # name could break out of the inline code span in the release body and inject arbitrary
-          # Markdown/HTML links (content spoofing/phishing). Replacing non-allowlisted characters
-          # with '_' guarantees the value remains a benign string in rendered Markdown.
           SAFE_BRANCH=$(printf '%s' "$RAW_BRANCH" | sed 's/[^a-zA-Z0-9._/-]/_/g')
           echo "BRANCH_NAME=$SAFE_BRANCH" >> "$GITHUB_ENV"
           echo "PR_LABEL=$PR_LABEL" >> "$GITHUB_ENV"
@@ -111,58 +101,3 @@ jobs:
           retention-days: 7
           overwrite: true
           if-no-files-found: warn
-
-      - name: Build snapshot APK
-        run: ./gradlew assembleSnapshot -PsnapshotLabel=${{ env.SHORT_SHA }} --stacktrace
-
-      - name: Collect APK
-        run: |
-          mkdir -p dist
-          cp app/build/outputs/apk/snapshot/app-snapshot.apk dist/crosstraining-snapshot.apk
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: crosstraining-snapshot-${{ env.SHORT_SHA }}
-          path: dist/crosstraining-snapshot.apk
-          overwrite: true
-          if-no-files-found: error
-
-      # Rolling pre-release so the snapshot can be downloaded directly
-      # to a phone from the Releases page (Releases -> "Snapshot").
-      # Updated in-place via softprops/action-gh-release (no delete-and-recreate step)
-      # to prevent leaving the Releases page without a snapshot if a run is cancelled.
-      # Note: The 'snapshot' git tag remains pinned to its initial commit; the release body
-      # carries the authoritative record of the PR, branch, and commit for each build.
-      # Requires workflow-level 'contents: write' permission (declared at top of file).
-      # Note: GitHub Actions issues a read-only GITHUB_TOKEN for pull_request events triggered
-      # from forked repositories, so snapshot release publishing is expected to fail on fork PRs.
-      #
-      # Security boundary & injection safety:
-      # - Command injection: The `body` input below is passed directly as a `with:` parameter to
-      #   `softprops/action-gh-release` (a JS Action), not executed inside a shell. GitHub Actions
-      #   evaluates ${{ env.* }} expressions before invoking the action, so shell/command injection
-      #   is impossible.
-      # - Markdown / content injection: To prevent untrusted branch names from breaking out of the
-      #   surrounding backtick code span and injecting phishing links or deceptive markdown,
-      #   `BRANCH_NAME` is strictly sanitized to [a-zA-Z0-9._/-] in the 'Compute build metadata' step.
-      #   `PR_LABEL` and `SHORT_SHA` are internally controlled and safe.
-      - name: Publish rolling snapshot pre-release
-        uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: snapshot
-          name: Snapshot (latest dev build)
-          prerelease: true
-          files: dist/crosstraining-snapshot.apk
-          body: |
-            Latest development snapshot — ${{ env.PR_LABEL }} (`${{ env.BRANCH_NAME }}`), commit `${{ env.SHORT_SHA }}`.
-
-            Installs **alongside** the released app as **CrossTraining Snapshot**
-            (`com.fractanomics.crosstraining.snapshot`), so you can test before merging without touching real data.
-
-            **Install on your phone:**
-            1. Download `crosstraining-snapshot.apk` below.
-            2. Open it; allow "Install unknown apps" if prompted.
-            3. Tap Install.
