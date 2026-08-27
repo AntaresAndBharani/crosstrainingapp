@@ -65,7 +65,7 @@ function Publish-PrComment {
             return $false
         }
 
-        $comments = @()
+        $comments = [System.Collections.Generic.List[object]]::new()
         if (-not [string]::IsNullOrWhiteSpace($commentsRaw)) {
             try {
                 $parsed = $commentsRaw | ConvertFrom-Json
@@ -75,11 +75,11 @@ function Publish-PrComment {
                             if ($item -is [System.Collections.IEnumerable] -and $item -isnot [string] -and $item -isnot [System.Management.Automation.PSCustomObject]) {
                                 foreach ($subItem in $item) {
                                     if ($null -ne $subItem) {
-                                        $comments += $subItem
+                                        $comments.Add($subItem)
                                     }
                                 }
                             } else {
-                                $comments += $item
+                                $comments.Add($item)
                             }
                         }
                     }
