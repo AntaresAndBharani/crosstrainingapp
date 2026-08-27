@@ -330,11 +330,11 @@ Describe 'post-e2e-evidence.ps1' {
     Context 'Repo fallback behavior' {
         BeforeEach {
             $script:SavedRepoEnv = $env:GITHUB_REPOSITORY
-            $script:TargetRepo = $null
+            $global:TargetRepo = $null
         }
         AfterEach {
             $env:GITHUB_REPOSITORY = $script:SavedRepoEnv
-            $script:TargetRepo = $null
+            $global:TargetRepo = $null
         }
 
         It 'falls back to AntaresAndBharani/crosstrainingapp when -Repo is omitted and GITHUB_REPOSITORY is unset' {
@@ -351,7 +351,7 @@ Describe 'post-e2e-evidence.ps1' {
                 $argsList = $args -join ' '
                 if ($argsList -match 'release view') { return 'release exists' }
                 if ($argsList -match 'repos/([^/]+/[^/]+)/issues') {
-                    $script:TargetRepo = $Matches[1]
+                    $global:TargetRepo = $Matches[1]
                 }
                 if ($argsList -match 'api user') { return 'bot-user' }
                 if ($argsList -match 'POST') { return '{"id":999}' }
@@ -361,7 +361,7 @@ Describe 'post-e2e-evidence.ps1' {
             try {
                 & $script:PostE2EScript -PrNumber "123" -SummaryPath $summaryFile -Version "v1.0.0"
                 $LASTEXITCODE | Should -Be 0
-                $script:TargetRepo | Should -Be "AntaresAndBharani/crosstrainingapp"
+                $global:TargetRepo | Should -Be "AntaresAndBharani/crosstrainingapp"
             } finally {
                 Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -381,7 +381,7 @@ Describe 'post-e2e-evidence.ps1' {
                 $argsList = $args -join ' '
                 if ($argsList -match 'release view') { return 'release exists' }
                 if ($argsList -match 'repos/([^/]+/[^/]+)/issues') {
-                    $script:TargetRepo = $Matches[1]
+                    $global:TargetRepo = $Matches[1]
                 }
                 if ($argsList -match 'api user') { return 'bot-user' }
                 if ($argsList -match 'POST') { return '{"id":999}' }
@@ -391,7 +391,7 @@ Describe 'post-e2e-evidence.ps1' {
             try {
                 & $script:PostE2EScript -PrNumber "123" -SummaryPath $summaryFile -Version "v1.0.0"
                 $LASTEXITCODE | Should -Be 0
-                $script:TargetRepo | Should -Be "CustomOrg/e2e-repo"
+                $global:TargetRepo | Should -Be "CustomOrg/e2e-repo"
             } finally {
                 Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -411,7 +411,7 @@ Describe 'post-e2e-evidence.ps1' {
                 $argsList = $args -join ' '
                 if ($argsList -match 'release view') { return 'release exists' }
                 if ($argsList -match 'repos/([^/]+/[^/]+)/issues') {
-                    $script:TargetRepo = $Matches[1]
+                    $global:TargetRepo = $Matches[1]
                 }
                 if ($argsList -match 'api user') { return 'bot-user' }
                 if ($argsList -match 'POST') { return '{"id":999}' }
@@ -421,7 +421,7 @@ Describe 'post-e2e-evidence.ps1' {
             try {
                 & $script:PostE2EScript -Repo "ExplicitOrg/custom-repo" -PrNumber "123" -SummaryPath $summaryFile -Version "v1.0.0"
                 $LASTEXITCODE | Should -Be 0
-                $script:TargetRepo | Should -Be "ExplicitOrg/custom-repo"
+                $global:TargetRepo | Should -Be "ExplicitOrg/custom-repo"
             } finally {
                 Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
             }
