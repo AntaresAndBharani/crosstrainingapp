@@ -225,7 +225,7 @@ Write-Host "--- -Environment restoration ---"
 $testUnsetVar = "TEST_UNSET_VAR_$([guid]::NewGuid().ToString('N'))"
 [Environment]::SetEnvironmentVariable($testUnsetVar, $null)
 $valBefore = [Environment]::GetEnvironmentVariable($testUnsetVar)
-Assert-Equal -Actual $valBefore -Expected $null `
+Assert-True  -Condition ([string]::IsNullOrEmpty($valBefore)) `
              -TestName "cli: test variable is confirmed `$null before Invoke-SummarizerScript"
 
 $testPresetVar = "TEST_PRESET_VAR_$([guid]::NewGuid().ToString('N'))"
@@ -240,7 +240,7 @@ try {
     Assert-Equal -Actual $envTestResult.ExitCode -Expected 0 `
                  -TestName "cli: -Environment restoration call exits 0"
     $valAfter = [Environment]::GetEnvironmentVariable($testUnsetVar)
-    Assert-Equal -Actual $valAfter -Expected $null `
+    Assert-True  -Condition ([string]::IsNullOrEmpty($valAfter)) `
                  -TestName "cli: originally-unset env var is restored to `$null after Invoke-SummarizerScript"
     $valPresetAfter = [Environment]::GetEnvironmentVariable($testPresetVar)
     Assert-Equal -Actual $valPresetAfter -Expected "initial_value" `
