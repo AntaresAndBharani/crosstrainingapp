@@ -34,7 +34,11 @@ BeforeAll {
 
             [int]$ExitCode = 0,
 
-            [string]$ThrowException = $null
+            [string]$ThrowException = $null,
+
+            [int]$UserExitCode = 0,
+
+            [string]$UserThrowException = $null
         )
 
         $commentsString = if ($Comments -is [string]) {
@@ -67,6 +71,14 @@ BeforeAll {
             }
 
             if ($argsList -match 'api user') {
+                if ($UserThrowException) {
+                    throw $UserThrowException
+                }
+                if ($UserExitCode -ne 0) {
+                    $global:LASTEXITCODE = $UserExitCode
+                    return ''
+                }
+                $global:LASTEXITCODE = 0
                 return $CurrentUser
             }
 
@@ -371,6 +383,146 @@ Describe 'Publish-PrComment' {
             $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence"
             $result | Should -BeTrue
             $script:Posted | Should -BeTrue
+        }
+    }
+
+    Context 'Author filtering and fallback safety' {
+        It 'PATCHes existing marker comment when authored by current user' {
+            $comments = @(
+                @{ id = 101; body = "<!-- marker -->`nExisting evidence"; user = @{ login = "bot-user" } }
+            )
+            $script:PatchedCommentId = $null
+            $script:Posted = $false
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $comments -CurrentUser 'bot-user' -OnPatch {
+                param($commentId)
+                $script:PatchedCommentId = $commentId
+            } -OnPost {
+                $script:Posted = $true
+            }
+
+            $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence"
+            $result | Should -BeTrue
+            $script:PatchedCommentId | Should -Be 101
+            $script:Posted | Should -BeFalse
+        }
+
+        It 'POSTs new comment and never PATCHes when marker comment is authored by a different user' {
+            $comments = @(
+                @{ id = 101; body = "<!-- marker -->`nExisting evidence"; user = @{ login = "other-author" } }
+            )
+            $script:PatchedCommentId = $null
+            $script:Posted = $false
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $comments -CurrentUser 'bot-user' -OnPatch {
+                param($commentId)
+                $script:PatchedCommentId = $commentId
+            } -OnPost {
+                $script:Posted = $true
+            }
+
+            $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence"
+            $result | Should -BeTrue
+            $script:Posted | Should -BeTrue
+            $script:PatchedCommentId | Should -BeNullOrEmpty
+        }
+
+        It 'POSTs new comment, never PATCHes other author comment, and emits warning when gh api user returns blank' {
+            $comments = @(
+                @{ id = 101; body = "<!-- marker -->`nExisting evidence"; user = @{ login = "other-author" } }
+            )
+            $script:PatchedCommentId = $null
+            $script:Posted = $false
+            $capturedWarnings = @()
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $comments -CurrentUser '' -OnPatch {
+                param($commentId)
+                $script:PatchedCommentId = $commentId
+            } -OnPost {
+                $script:Posted = $true
+            }
+
+            $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence" -WarningVariable capturedWarnings
+            $result | Should -BeTrue
+            $script:Posted | Should -BeTrue
+            $script:PatchedCommentId | Should -BeNullOrEmpty
+            $capturedWarnings.Count | Should -BeGreaterThan 0
+            $capturedWarnings[0].ToString() | Should -Match 'resolve current GitHub user'
+        }
+
+        It 'POSTs new comment, never PATCHes other author comment, and emits warning when gh api user returns whitespace' {
+            $comments = @(
+                @{ id = 101; body = "<!-- marker -->`nExisting evidence"; user = @{ login = "other-author" } }
+            )
+            $script:PatchedCommentId = $null
+            $script:Posted = $false
+            $capturedWarnings = @()
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $comments -CurrentUser '   ' -OnPatch {
+                param($commentId)
+                $script:PatchedCommentId = $commentId
+            } -OnPost {
+                $script:Posted = $true
+            }
+
+            $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence" -WarningVariable capturedWarnings
+            $result | Should -BeTrue
+            $script:Posted | Should -BeTrue
+            $script:PatchedCommentId | Should -BeNullOrEmpty
+            $capturedWarnings.Count | Should -BeGreaterThan 0
+            $capturedWarnings[0].ToString() | Should -Match 'resolve current GitHub user'
+        }
+
+        It 'POSTs new comment, never PATCHes other author comment, and emits warning when gh api user exits non-zero' {
+            $comments = @(
+                @{ id = 101; body = "<!-- marker -->`nExisting evidence"; user = @{ login = "other-author" } }
+            )
+            $script:PatchedCommentId = $null
+            $script:Posted = $false
+            $capturedWarnings = @()
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $comments -UserExitCode 1 -OnPatch {
+                param($commentId)
+                $script:PatchedCommentId = $commentId
+            } -OnPost {
+                $script:Posted = $true
+            }
+
+            $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence" -WarningVariable capturedWarnings
+            $result | Should -BeTrue
+            $script:Posted | Should -BeTrue
+            $script:PatchedCommentId | Should -BeNullOrEmpty
+            $capturedWarnings.Count | Should -BeGreaterThan 0
+            $capturedWarnings[0].ToString() | Should -Match 'resolve current GitHub user'
+        }
+
+        It 'POSTs new comment, never PATCHes other author comment, and emits warning when gh api user throws exception' {
+            $comments = @(
+                @{ id = 101; body = "<!-- marker -->`nExisting evidence"; user = @{ login = "other-author" } }
+            )
+            $script:PatchedCommentId = $null
+            $script:Posted = $false
+            $capturedWarnings = @()
+
+            Set-GhAvailable -Available $true
+            New-GhApiMock -Comments $comments -UserThrowException 'API rate limit exceeded' -OnPatch {
+                param($commentId)
+                $script:PatchedCommentId = $commentId
+            } -OnPost {
+                $script:Posted = $true
+            }
+
+            $result = Publish-PrComment -Repo "test/repo" -PrNumber "123" -Marker "<!-- marker -->" -Body "New evidence" -WarningVariable capturedWarnings
+            $result | Should -BeTrue
+            $script:Posted | Should -BeTrue
+            $script:PatchedCommentId | Should -BeNullOrEmpty
+            $capturedWarnings.Count | Should -BeGreaterThan 0
+            $capturedWarnings[0].ToString() | Should -Match 'resolve current GitHub user'
         }
     }
 
