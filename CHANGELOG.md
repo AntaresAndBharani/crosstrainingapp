@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Summarizer CLI Test Strict Null Assertions**: Reverted loose `[string]::IsNullOrEmpty` workaround assertions to strict `Assert-Equal -Expected $null` checks in `scripts/tests/SummarizeUnitTests.Cli.Tests.ps1` for environment variable restoration verification (#371, #389, #396).
 - **Post E2E Evidence Repo Fallback Test Scope Harmonization**: Aligned `$script:TargetRepo` scoping and `BeforeEach`/`AfterEach` variable resets in `scripts/tests/PostE2EEvidence.Tests.ps1` with the reference pattern in `scripts/tests/PrComment.Tests.ps1`, preventing state leakage across sequential test executions (#360, #365).
 - **Post E2E Evidence Sticky Comment PATCH Endpoint Assertion**: Tightened the `Should -Invoke` ParameterFilter in `scripts/tests/PostE2EEvidence.Tests.ps1` to assert both the PATCH method and the exact comment endpoint path (`issues/comments/456`), preventing false passes on incorrect comment targets (#360, #364).
 - **Release Workflow Regex Flag Simplification**: Removed redundant `(?ms)` inline options from all six `-match` error annotation assertions in `scripts/tests/ReleaseWorkflow.Static.Tests.ps1`, relying solely on default .NET regex semantics and newline whitespace patterns (#361, #367).
