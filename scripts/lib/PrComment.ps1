@@ -10,6 +10,7 @@
 
 function Publish-PrComment {
     [CmdletBinding()]
+    [OutputType([bool])]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Deliberate human-readable CI console output')]
     # Publish-PrComment is the single source of truth for -Repo fallback and normalization. Callers should pass -Repo through directly.
     param(
