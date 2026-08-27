@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Post E2E Evidence Static Hygiene AST Lexical Scoping**: Scoped variable-assignment matching in `Find-RawGhApiCommentCalls` within `scripts/tests/PostE2EEvidence.Tests.ps1` to enclosing `ScriptBlockAst` and function boundaries rather than whole-file AST offsets, preventing false positives/negatives across sibling functions, and added AST sibling scoping regression test coverage (#377, #387, #392).
 - **Summarizer CLI Test Strict Null Assertions**: Reverted loose `[string]::IsNullOrEmpty` workaround assertions to strict `Assert-Equal -Expected $null` checks in `scripts/tests/SummarizeUnitTests.Cli.Tests.ps1` for environment variable restoration verification (#371, #389, #396).
 - **Post E2E Evidence Repo Fallback Test Scope Harmonization**: Aligned `$script:TargetRepo` scoping and `BeforeEach`/`AfterEach` variable resets in `scripts/tests/PostE2EEvidence.Tests.ps1` with the reference pattern in `scripts/tests/PrComment.Tests.ps1`, preventing state leakage across sequential test executions (#360, #365).
 - **Post E2E Evidence Sticky Comment PATCH Endpoint Assertion**: Tightened the `Should -Invoke` ParameterFilter in `scripts/tests/PostE2EEvidence.Tests.ps1` to assert both the PATCH method and the exact comment endpoint path (`issues/comments/456`), preventing false passes on incorrect comment targets (#360, #364).
