@@ -18,9 +18,9 @@ $SummarizerScript = Join-Path (Join-Path $PSScriptRoot "..") "summarize-unit-tes
 
 function ConvertTo-LfLineEnding {
     param (
-        [string]$Text
+        [AllowNull()][string]$Text
     )
-    if ($null -eq $Text) { return "" }
+    if ($null -eq $Text) { return $null }
     return $Text.Replace("`r`n", "`n")
 }
 
@@ -160,8 +160,8 @@ function Assert-Equal {
         [AllowNull()][object]$Expected,
         [string]$TestName
     )
-    $normActual   = if ($Actual   -is [string]) { ConvertTo-LfLineEnding $Actual   } else { $Actual }
-    $normExpected = if ($Expected -is [string]) { ConvertTo-LfLineEnding $Expected } else { $Expected }
+    $normActual   = if ($null -ne $Actual   -and $Actual   -is [string]) { ConvertTo-LfLineEnding $Actual   } else { $Actual }
+    $normExpected = if ($null -ne $Expected -and $Expected -is [string]) { ConvertTo-LfLineEnding $Expected } else { $Expected }
 
     $match = if ($null -eq $normActual -and $null -eq $normExpected) {
         $true
