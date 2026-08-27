@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Removed
+- **Post E2E Evidence Redundant Inline TargetRepo Resets**: Removed redundant inline `$script:TargetRepo = $null` resets from individual `It` blocks in the `Repo fallback behavior` context within `scripts/tests/PostE2EEvidence.Tests.ps1`, relying solely on the existing `BeforeEach` hook (#381, #387, #394).
 - **PR Snapshot Build & Rolling Pre-Release**: Removed snapshot APK generation (`assembleSnapshot`), APK artifact uploads, and rolling snapshot pre-release publishing from `.github/workflows/build.yml` in favor of focused PR unit and script test verification, dropping `contents: write` workflow permissions.
 
 ### Changed

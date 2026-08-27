@@ -344,7 +344,6 @@ Describe 'post-e2e-evidence.ps1' {
             $summaryFile = Join-Path $tempDir "summary.json"
             '[{"flow": "01_login", "passed": true}]' | Set-Content -Path $summaryFile -Encoding UTF8
 
-            $script:TargetRepo = $null
             Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
             Mock -CommandName gh -MockWith {
                 param()
@@ -375,7 +374,6 @@ Describe 'post-e2e-evidence.ps1' {
             $summaryFile = Join-Path $tempDir "summary.json"
             '[{"flow": "01_login", "passed": true}]' | Set-Content -Path $summaryFile -Encoding UTF8
 
-            $script:TargetRepo = $null
             Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
             Mock -CommandName gh -MockWith {
                 param()
@@ -406,7 +404,6 @@ Describe 'post-e2e-evidence.ps1' {
             $summaryFile = Join-Path $tempDir "summary.json"
             '[{"flow": "01_login", "passed": true}]' | Set-Content -Path $summaryFile -Encoding UTF8
 
-            $script:TargetRepo = $null
             Mock -CommandName Get-Command -MockWith { return [PSCustomObject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
             Mock -CommandName gh -MockWith {
                 param()
