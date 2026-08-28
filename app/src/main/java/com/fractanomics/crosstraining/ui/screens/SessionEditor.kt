@@ -94,6 +94,7 @@ import com.fractanomics.crosstraining.ui.BlockDraft
 import com.fractanomics.crosstraining.ui.SessionDraft
 import com.fractanomics.crosstraining.ui.SetDraft
 import com.fractanomics.crosstraining.ui.WORKOUT_FORMATS
+import com.fractanomics.crosstraining.ui.components.AppNumericTextField
 import com.fractanomics.crosstraining.ui.components.DateField
 import com.fractanomics.crosstraining.ui.components.Dropdown
 import com.fractanomics.crosstraining.ui.components.EmptyState
@@ -914,21 +915,25 @@ private fun CompactBlockEditor(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            OutlinedTextField(
+                            AppNumericTextField(
                                 value = block.rmReps,
-                                onValueChange = { block.rmReps = it.filter { c -> c.isDigit() } },
+                                onValueChange = { block.rmReps = it },
                                 label = { Text("Reps") },
                                 singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                allowDecimals = false,
+                                minValue = 1.0,
+                                maxValue = 999.0,
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier.width(70.dp)
                             )
-                            OutlinedTextField(
+                            AppNumericTextField(
                                 value = block.rmWeight,
                                 onValueChange = { block.rmWeight = it },
                                 label = { Text("kg") },
                                 singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                allowDecimals = true,
+                                minValue = 0.0,
+                                maxValue = 999.9,
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier.width(85.dp)
                             )
@@ -982,27 +987,28 @@ private fun SpreadsheetSetRow(
                 .padding(horizontal = 6.dp),
             contentAlignment = Alignment.Center
         ) {
-            BasicTextField(
+            AppNumericTextField(
                 modifier = Modifier.fillMaxWidth().semantics { contentDescription = "reps_${setIndex - 1}" },
                 value = set.reps,
-                onValueChange = { set.reps = it.filter { c -> c.isDigit() } },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                onValueChange = { set.reps = it },
+                allowDecimals = false,
+                isBasic = true,
                 textStyle = TextStyle(
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface
-                )
+                ),
+                placeholder = {
+                    Text(
+                        "0",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             )
-            if (set.reps.isEmpty()) {
-                Text(
-                    "0",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                    textAlign = TextAlign.Center
-                )
-            }
         }
 
         // Weight Input Box
@@ -1016,27 +1022,28 @@ private fun SpreadsheetSetRow(
                 .padding(horizontal = 6.dp),
             contentAlignment = Alignment.Center
         ) {
-            BasicTextField(
+            AppNumericTextField(
                 modifier = Modifier.fillMaxWidth().semantics { contentDescription = "weight_${setIndex - 1}" },
                 value = set.value,
                 onValueChange = { set.value = it },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                allowDecimals = true,
+                isBasic = true,
                 textStyle = TextStyle(
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface
-                )
+                ),
+                placeholder = {
+                    Text(
+                        "0.0",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             )
-            if (set.value.isEmpty()) {
-                Text(
-                    "0.0",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                    textAlign = TextAlign.Center
-                )
-            }
         }
 
         // Warmup [W] and Failed [F] Flag Pills
