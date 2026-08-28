@@ -43,6 +43,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -122,7 +123,11 @@ enum class DrawerSection(val header: String) {
 }
 
 @Composable
-fun AppNavigation(viewModel: AppViewModel) {
+fun AppNavigation(
+    viewModel: AppViewModel,
+    pendingRoute: String? = null,
+    onRouteHandled: () -> Unit = {}
+) {
     val navController = rememberNavController()
     val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
     val authUser by viewModel.authUser.collectAsStateWithLifecycle()
@@ -130,10 +135,24 @@ fun AppNavigation(viewModel: AppViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
 
     var guestModeAccepted by remember { mutableStateOf(false) }
-    val isAuthenticated = !authUser?.email.isNullOrBlank() || guestModeAccepted
+    val isAuthenticated = !authUser?.email.isNullOrBlank() || guestModeAccepted || pendingRoute != null
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(pendingRoute) {
+        if (pendingRoute != null) {
+            if (!guestModeAccepted && authUser?.email.isNullOrBlank()) {
+                guestModeAccepted = true
+            }
+            navController.navigate(pendingRoute) {
+                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+            onRouteHandled()
+        }
+    }
 
     if (!isAuthenticated) {
         LoginWelcomeScreen(
