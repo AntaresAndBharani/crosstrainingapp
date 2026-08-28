@@ -571,6 +571,42 @@ function Invoke-GhTool {
             $violations.Count | Should -Be 0
         }
 
+        It 'does not flag raw comment calls when an identically-named variable is assigned gh-value in a sibling function' {
+            $siblingGhSnippet = @'
+function Invoke-OtherTool {
+    $cmd = 'gh'
+    Write-Host $cmd
+}
+function Invoke-GhTool {
+    & $cmd api "repos/$Repo/issues/$Pr/comments"
+}
+'@
+            $tokens = $null
+            $errors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($siblingGhSnippet, [ref]$tokens, [ref]$errors)
+            $errors.Count | Should -Be 0
+            $violations = Find-RawGhApiCommentCalls -Ast $ast
+            $violations.Count | Should -Be 0
+        }
+
+        It 'does not flag raw comment calls when a sibling function assigns gh-value to identically-named variable and target has no local assignment' {
+            $siblingGhAssignSnippet = @'
+function Invoke-SiblingTool {
+    $cmd = 'gh'
+    & $cmd write-gist "hello"
+}
+function Invoke-TargetTool {
+    & $cmd api "repos/$Repo/issues/$Pr/comments"
+}
+'@
+            $tokens = $null
+            $errors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($siblingGhAssignSnippet, [ref]$tokens, [ref]$errors)
+            $errors.Count | Should -Be 0
+            $violations = Find-RawGhApiCommentCalls -Ast $ast
+            $violations.Count | Should -Be 0
+        }
+
         It 'dot-sources lib/PrComment.ps1' {
             $content = Get-Content -LiteralPath $script:PostE2EScript -Raw
             $content | Should -Match "lib/PrComment\.ps1"
