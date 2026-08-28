@@ -61,8 +61,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.ui.timer.TimerEngine
+import com.fractanomics.crosstraining.ui.timer.TimerEngineProvider
 import com.fractanomics.crosstraining.ui.timer.TimerMode
 import com.fractanomics.crosstraining.ui.timer.TimerPhase
+import com.fractanomics.crosstraining.ui.timer.TimerService
 import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfig
 import java.util.Locale
 
@@ -73,12 +75,8 @@ fun TimerScreen(
     onOpenDrawer: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val timerEngine = remember { TimerEngine(context) }
+    val timerEngine = remember { TimerEngineProvider.get(context) }
     val snapshot by timerEngine.snapshot.collectAsStateWithLifecycle()
-
-    DisposableEffect(Unit) {
-        onDispose { timerEngine.release() }
-    }
 
     var selectedMode by remember { mutableStateOf(TimerMode.EMOM) }
     var intervalSecs by remember { mutableIntStateOf(60) }
@@ -321,6 +319,7 @@ fun TimerScreen(
                             onClick = {
                                 timerEngine.configure(buildConfig())
                                 timerEngine.start()
+                                TimerService.startService(context)
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -438,7 +437,12 @@ fun TimerScreen(
                         ) {
                             Button(
                                 onClick = {
-                                    if (snapshot.isRunning) timerEngine.pause() else timerEngine.start()
+                                    if (snapshot.isRunning) {
+                                        timerEngine.pause()
+                                    } else {
+                                        timerEngine.start()
+                                        TimerService.startService(context)
+                                    }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = phaseColor),
                                 modifier = Modifier.weight(1f)
