@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -16,7 +17,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-class TimerEngine(private val context: Context? = null) {
+class TimerEngine(
+    private val context: Context? = null,
+    private val coroutineDispatcher: CoroutineDispatcher = Dispatchers.Main
+) {
 
     private var toneGenerator: ToneGenerator? = try {
         ToneGenerator(AudioManager.STREAM_MUSIC, 100)
@@ -34,7 +38,7 @@ class TimerEngine(private val context: Context? = null) {
         }
     }
 
-    private val scope = CoroutineScope(Dispatchers.Main + Job())
+    private val scope = CoroutineScope(coroutineDispatcher + Job())
     private var timerJob: Job? = null
 
     private var config = WorkoutTimerConfig()
@@ -303,8 +307,16 @@ class TimerEngine(private val context: Context? = null) {
         } catch (_: Exception) {}
     }
 
+    fun stop() {
+        reset()
+    }
+
     fun release() {
         timerJob?.cancel()
         toneGenerator?.release()
+    }
+
+    companion object {
+        fun getInstance(context: Context): TimerEngine = TimerEngineProvider.get(context)
     }
 }
