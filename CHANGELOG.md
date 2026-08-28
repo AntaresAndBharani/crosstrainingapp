@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Notification Tap Navigation into Active TimerScreen**: Implemented `MainActivity` launch and resume intent handling with `singleTop` launch mode, `NavigationIntentHandler`, and `AppNavigation` deep-link routing to navigate directly into `TimerScreen` with preserved active timer state when tapping the `TimerService` foreground notification (#421).
 - **Workout Timer Foreground Service Graceful Teardown**: Implemented `TimerTeardownController` and `TimerService` lifecycle management to terminate the foreground service, dismiss notifications, and release `MediaSessionCompat` resources cleanly when the workout timer is stopped (`ACTION_STOP`), reset (`TimerEngine.reset()`), or finished (`TimerPhase.FINISHED`) (#422).
 - **Architect Decompose Subtask Output Schema Verification**: Added comprehensive unit, integration, and static regression test suite in `scripts/tests/ArchitectWorkflow.Schema.Tests.ps1` verifying schema compliance for Claude agent output (`PROCEED` and `PO_ESCALATION` outcomes, required subtask fields, enums, and live parent story #407 sub-issue structure) (#409).
 
