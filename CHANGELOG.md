@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Architect Decompose Subtask Output Schema Verification**: Added comprehensive unit, integration, and static regression test suite in `scripts/tests/ArchitectWorkflow.Schema.Tests.ps1` verifying schema compliance for Claude agent output (`PROCEED` and `PO_ESCALATION` outcomes, required subtask fields, enums, and live parent story #407 sub-issue structure) (#409).
+
 ### Removed
 - **Post E2E Evidence Redundant Inline TargetRepo Resets**: Removed redundant inline `$script:TargetRepo = $null` resets from individual `It` blocks in the `Repo fallback behavior` context within `scripts/tests/PostE2EEvidence.Tests.ps1`, relying solely on the existing `BeforeEach` hook (#381, #387, #394).
 - **PR Snapshot Build & Rolling Pre-Release**: Removed snapshot APK generation (`assembleSnapshot`), APK artifact uploads, and rolling snapshot pre-release publishing from `.github/workflows/build.yml` in favor of focused PR unit and script test verification, dropping `contents: write` workflow permissions.
