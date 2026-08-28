@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Workout Timer Notification Action Buttons**: Wired interactive Play/Pause (`ACTION_START`/`ACTION_PAUSE`) and Next (`ACTION_NEXT`) notification action buttons to `TimerEngine` via `TimerNotificationActionDispatcher` and `TimerNotificationSpec`, with MediaStyle compact view support, full round advancement across all timer modes (EMOM, Tabata, Death By, AMRAP/Time Cap), and comprehensive unit and integration test coverage (#420).
 - **Workout Timer Foreground Service Graceful Teardown**: Implemented `TimerTeardownController` and `TimerService` lifecycle management to terminate the foreground service, dismiss notifications, and release `MediaSessionCompat` resources cleanly when the workout timer is stopped (`ACTION_STOP`), reset (`TimerEngine.reset()`), or finished (`TimerPhase.FINISHED`) (#422).
 - **Architect Decompose Subtask Output Schema Verification**: Added comprehensive unit, integration, and static regression test suite in `scripts/tests/ArchitectWorkflow.Schema.Tests.ps1` verifying schema compliance for Claude agent output (`PROCEED` and `PO_ESCALATION` outcomes, required subtask fields, enums, and live parent story #407 sub-issue structure) (#409).
 
