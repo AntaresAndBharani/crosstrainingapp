@@ -218,11 +218,7 @@ class TimerService : Service() {
             stopPendingIntent
         ).build()
 
-        val roundInfo = "Round ${snapshot.currentRound}/${snapshot.totalRounds}"
-        val title = "${snapshot.phase.label} - $roundInfo"
-        val remainingFormatted = formatTime(snapshot.roundSecondsRemaining)
-        val totalRemainingFormatted = formatTime(snapshot.totalSecondsRemaining)
-        val contentText = "Remaining: $remainingFormatted | Total Left: $totalRemainingFormatted"
+        val content = TimerNotificationFormatter.createNotificationContent(snapshot)
 
         val style = androidx.media.app.NotificationCompat.MediaStyle()
             .setShowActionsInCompactView(0, 1)
@@ -233,11 +229,11 @@ class TimerService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle(title)
-            .setContentText(contentText)
+            .setContentTitle(content.title)
+            .setContentText(content.contentText)
             .setContentIntent(contentPendingIntent)
-            .setOngoing(snapshot.isRunning)
-            .setOnlyAlertOnce(true)
+            .setOngoing(content.isRunning)
+            .setOnlyAlertOnce(content.onlyAlertOnce)
             .setStyle(style)
             .addAction(playPauseAction)
             .addAction(nextAction)
@@ -245,11 +241,7 @@ class TimerService : Service() {
             .build()
     }
 
-    private fun formatTime(seconds: Int): String {
-        val m = seconds / 60
-        val s = seconds % 60
-        return "%02d:%02d".format(m, s)
-    }
+    private fun formatTime(seconds: Int): String = TimerNotificationFormatter.formatTime(seconds)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
