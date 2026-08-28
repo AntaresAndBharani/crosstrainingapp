@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **AppNumericTextField Automated Unit & Compose UI Test Suite**: Added comprehensive unit test suite in `AppNumericTextFieldTest.kt` and Compose UI instrumentation test suite in `AppNumericTextFieldComposeTest.kt` verifying no digit concatenation on replace, decimal parsing accuracy, and clamp on commit on focus loss or IME Done (#430).
 - **TimerService Foreground Service with MediaStyle Notification**: Implemented `TimerService` foreground service with `NotificationCompat.MediaStyle` backed by `MediaSessionCompat`, dynamic phase and round formatting via `TimerNotificationFormatter`, real-time countdown updates, and `setOnlyAlertOnce(true)` to prevent re-alerting during active workout timer execution (#419).
 - **Notification Tap Navigation into Active TimerScreen**: Implemented `MainActivity` launch and resume intent handling with `singleTop` launch mode, `NavigationIntentHandler`, and `AppNavigation` deep-link routing to navigate directly into `TimerScreen` with preserved active timer state when tapping the `TimerService` foreground notification (#421).
 - **Workout Timer Foreground Service Graceful Teardown**: Implemented `TimerTeardownController` and `TimerService` lifecycle management to terminate the foreground service, dismiss notifications, and release `MediaSessionCompat` resources cleanly when the workout timer is stopped (`ACTION_STOP`), reset (`TimerEngine.reset()`), or finished (`TimerPhase.FINISHED`) (#422).
