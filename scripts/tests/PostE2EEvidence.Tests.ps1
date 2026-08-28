@@ -571,6 +571,23 @@ function Invoke-GhTool {
             $violations.Count | Should -Be 0
         }
 
+        It 'does not flag raw comment calls when a sibling function assigns gh-valued $cmd and target has no local assignment' {
+            $siblingSnippet = @'
+function Invoke-Helper {
+    $cmd = 'gh'
+}
+function Invoke-GhTool {
+    & $cmd api "repos/$Repo/issues/$Pr/comments"
+}
+'@
+            $tokens = $null
+            $errors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($siblingSnippet, [ref]$tokens, [ref]$errors)
+            $errors.Count | Should -Be 0
+            $violations = Find-RawGhApiCommentCalls -Ast $ast
+            $violations.Count | Should -Be 0
+        }
+
         It 'dot-sources lib/PrComment.ps1' {
             $content = Get-Content -LiteralPath $script:PostE2EScript -Raw
             $content | Should -Match "lib/PrComment\.ps1"
