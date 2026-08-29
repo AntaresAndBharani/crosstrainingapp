@@ -1,144 +1,196 @@
-﻿<#
+<#
 .SYNOPSIS
-    Helper module for downloading and caching GitHub Actions / Release build artifacts.
+    Shared helper for retrieving and SHA-caching main-branch APK artifacts from GitHub.
 .DESCRIPTION
-    Provides Get-LatestMainBuildApk to retrieve SHA-cached main-branch APK builds,
-    avoiding redundant network transfers and downloading on demand.
+    Provides Get-LatestMainCommitSha and Get-LatestMainBuildApk to resolve the latest
+    main-branch HEAD SHA, check local artifact cache (app/build/outputs/apk/ci-main),
+    and retrieve/cache remote build artifacts from GitHub Actions CI or GitHub Releases.
 #>
+
+function Get-LatestMainCommitSha {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
+        [string]$Branch = "main"
+    )
+
+    $ErrorActionPreference = 'Continue'
+
+    if ([string]::IsNullOrWhiteSpace($Repo)) {
+        $Repo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Branch)) {
+        $Branch = "main"
+    }
+
+    if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) {
+        Write-Warning "GitHub CLI (gh) not found in PATH; cannot resolve latest commit SHA."
+        return $null
+    }
+
+    try {
+        $shaRaw = gh api "repos/$Repo/commits/$Branch" --jq .sha 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($shaRaw)) {
+            Write-Warning "Failed to fetch commit SHA for branch '$Branch' on repo '$Repo'."
+            return $null
+        }
+
+        $trimmed = $shaRaw.Trim()
+        if ($trimmed.Length -gt 7) {
+            return $trimmed.Substring(0, 7)
+        }
+        return $trimmed
+    } catch {
+        Write-Warning "Error fetching commit SHA: $_"
+        return $null
+    }
+}
 
 function Get-LatestMainSha {
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [string]$Repo = "AntaresAndBharani/crosstrainingapp"
+        [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
+        [string]$Branch = "main"
     )
-
-    $sha = $null
-    try {
-        $gitOut = & git rev-parse origin/main 2>$null
-        if ($LASTEXITCODE -eq 0 -and (-not [string]::IsNullOrWhiteSpace($gitOut))) {
-            $sha = $gitOut.Trim()
-        }
-    } catch {}
-
-    if ([string]::IsNullOrWhiteSpace($sha)) {
-        try {
-            $gitOut = & git rev-parse main 2>$null
-            if ($LASTEXITCODE -eq 0 -and (-not [string]::IsNullOrWhiteSpace($gitOut))) {
-                $sha = $gitOut.Trim()
-            }
-        } catch {}
-    }
-
-    if ([string]::IsNullOrWhiteSpace($sha)) {
-        try {
-            $ghOut = & gh api "repos/$Repo/commits/main" -q .sha 2>$null
-            if ($LASTEXITCODE -eq 0 -and (-not [string]::IsNullOrWhiteSpace($ghOut))) {
-                $sha = $ghOut.Trim()
-            }
-        } catch {}
-    }
-
-    return $sha
+    return (Get-LatestMainCommitSha -Repo $Repo -Branch $Branch)
 }
 
 function Get-LatestMainBuildApk {
     [CmdletBinding()]
     [OutputType([string])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Deliberate human-readable CLI console output')]
     param(
         [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
+        [string]$Branch = "main",
         [string]$CacheDir = "app/build/outputs/apk/ci-main",
-        [string]$ExplicitSha = $null,
-        [switch]$ForceDownload
+        [Alias("ExplicitSha")]
+        [string]$Sha = $null,
+        [Alias("ForceDownload")]
+        [switch]$Force
     )
 
-    $sha = if (-not [string]::IsNullOrWhiteSpace($ExplicitSha)) {
-        $ExplicitSha.Trim()
+    $ErrorActionPreference = 'Continue'
+
+    if ([string]::IsNullOrWhiteSpace($Repo)) {
+        $Repo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Branch)) {
+        $Branch = "main"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($CacheDir)) {
+        $CacheDir = "app/build/outputs/apk/ci-main"
+    }
+
+    # Resolve commit SHA if not explicitly provided
+    $resolvedSha = $Sha
+    if ([string]::IsNullOrWhiteSpace($resolvedSha)) {
+        $resolvedSha = Get-LatestMainCommitSha -Repo $Repo -Branch $Branch
+        if ([string]::IsNullOrWhiteSpace($resolvedSha)) {
+            Write-Warning "Could not determine latest commit SHA for '$Branch' on '$Repo'."
+            return $null
+        }
     } else {
-        Get-LatestMainSha -Repo $Repo
-    }
-
-    if ([string]::IsNullOrWhiteSpace($sha)) {
-        throw "Failed to resolve latest main commit SHA for repository '$Repo'."
-    }
-
-    $shortSha = if ($sha.Length -gt 7) { $sha.Substring(0, 7) } else { $sha }
-
-    # Resolve CacheDir path
-    $targetDir = $CacheDir
-    if (-not [System.IO.Path]::IsPathRooted($targetDir)) {
-        $targetDir = Join-Path $PWD $CacheDir
-    }
-
-    $expectedFiles = @(
-        (Join-Path $targetDir "app-debug-$sha.apk"),
-        (Join-Path $targetDir "app-debug-$shortSha.apk")
-    )
-
-    if (-not $ForceDownload) {
-        foreach ($f in $expectedFiles) {
-            if ([System.IO.File]::Exists($f)) {
-                return [System.IO.Path]::GetFullPath($f)
-            }
-        }
-        if ([System.IO.Directory]::Exists($targetDir)) {
-            $matching = Get-ChildItem -Path $targetDir -Filter "*$shortSha*.apk" -File -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($null -ne $matching) {
-                return $matching.FullName
-            }
+        $resolvedSha = $resolvedSha.Trim()
+        if ($resolvedSha.Length -gt 7) {
+            $resolvedSha = $resolvedSha.Substring(0, 7)
         }
     }
 
-    # Ensure target directory exists
-    if (-not [System.IO.Directory]::Exists($targetDir)) {
-        [System.IO.Directory]::CreateDirectory($targetDir) | Out-Null
+    # Resolve target cache directory and cached APK path
+    $resolvedCacheDir = if ([System.IO.Path]::IsPathRooted($CacheDir)) {
+        $CacheDir
+    } else {
+        Join-Path (Get-Location) $CacheDir
     }
 
-    # Verify GitHub CLI availability
+    $expectedFileName = "app-debug-$resolvedSha.apk"
+    $cachedApkPath = Join-Path $resolvedCacheDir $expectedFileName
+
+    # Check local cache first (unless -Force is specified)
+    if (-not $Force -and (Test-Path -LiteralPath $cachedApkPath -PathType Leaf)) {
+        Write-Host "Found cached APK for SHA $resolvedSha at '$cachedApkPath' (skipping network download)." -ForegroundColor Green
+        return [System.IO.Path]::GetFullPath($cachedApkPath)
+    }
+
+    # If cache miss or -Force: retrieve from GitHub
     if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) {
-        throw "GitHub CLI ('gh') is not installed or not found on PATH. Cannot retrieve CI artifacts."
+        Write-Warning "GitHub CLI (gh) not found in PATH; cannot download remote build artifact."
+        return $null
     }
 
-    # Attempt to download via gh release / run artifact
-    $downloadSuccess = $false
+    if (-not (Test-Path -LiteralPath $resolvedCacheDir)) {
+        try {
+            [System.IO.Directory]::CreateDirectory($resolvedCacheDir) | Out-Null
+        } catch {
+            Write-Warning "Failed to create cache directory '$resolvedCacheDir': $_"
+            return $null
+        }
+    }
 
-    # Try 1: gh run download
+    $tempDownloadDir = Join-Path ([System.IO.Path]::GetTempPath()) "apk-artifact-$([guid]::NewGuid())"
     try {
-        $runs = gh run list --repo $Repo --branch main --workflow build.yml --status success --limit 1 --json databaseId 2>$null | ConvertFrom-Json
-        if ($runs -and $runs.Count -gt 0) {
-            $runId = $runs[0].databaseId
-            & gh run download $runId --repo $Repo --dir $targetDir 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                $downloadSuccess = $true
+        [System.IO.Directory]::CreateDirectory($tempDownloadDir) | Out-Null
+
+        $downloadSucceeded = $false
+
+        # Strategy 1: Attempt to download GitHub Actions CI artifact matching commit SHA
+        try {
+            $runsRaw = gh api "repos/$Repo/actions/runs?branch=$Branch&status=success&per_page=10" 2>$null
+            if ($LASTEXITCODE -eq 0 -and (-not [string]::IsNullOrWhiteSpace($runsRaw))) {
+                $runsData = $runsRaw | ConvertFrom-Json
+                if ($null -ne $runsData -and $null -ne $runsData.workflow_runs) {
+                    $matchingRun = $runsData.workflow_runs | Where-Object {
+                        $null -ne $_.head_sha -and $_.head_sha.StartsWith($resolvedSha, [System.StringComparison]::OrdinalIgnoreCase)
+                    } | Select-Object -First 1
+
+                    if ($matchingRun) {
+                        Write-Host "Found matching CI run $($matchingRun.id) for SHA $resolvedSha. Downloading artifact..." -ForegroundColor Cyan
+                        $null = gh run download $matchingRun.id --repo $Repo --dir $tempDownloadDir 2>$null
+                        if ($LASTEXITCODE -eq 0) {
+                            $downloadSucceeded = $true
+                        }
+                    }
+                }
+            }
+        } catch {
+            Write-Warning "Failed querying CI artifacts: $_"
+        }
+
+        # Strategy 2: Fallback to GitHub Releases if CI artifact download didn't find/download APK
+        if (-not $downloadSucceeded) {
+            try {
+                Write-Host "Checking GitHub Releases for SHA $resolvedSha / latest release..." -ForegroundColor Cyan
+                $null = gh release download --repo $Repo --dir $tempDownloadDir --pattern "*.apk" 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    $downloadSucceeded = $true
+                }
+            } catch {
+                Write-Warning "Failed querying GitHub Releases: $_"
             }
         }
-    } catch {}
 
-    # Try 2: gh release download
-    if (-not $downloadSuccess) {
-        try {
-            & gh release download --repo $Repo --dir $targetDir --pattern "*.apk" --clobber 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                $downloadSuccess = $true
-            }
-        } catch {}
+        # Look for any APK in downloaded files
+        $foundApk = Get-ChildItem -Path $tempDownloadDir -Filter "*.apk" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $foundApk) {
+            Copy-Item -LiteralPath $foundApk.FullName -Destination $cachedApkPath -Force
+            Write-Host "Successfully retrieved and cached APK at '$cachedApkPath'." -ForegroundColor Green
+            return [System.IO.Path]::GetFullPath($cachedApkPath)
+        } else {
+            Write-Warning "No APK artifact found in download for SHA $resolvedSha."
+            return $null
+        }
+    } catch {
+        Write-Warning "Failed to retrieve main-branch APK: $_"
+        return $null
+    } finally {
+        if (Test-Path -LiteralPath $tempDownloadDir) {
+            Remove-Item -LiteralPath $tempDownloadDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
-
-    if (-not $downloadSuccess) {
-        throw "Failed to download artifact or release from GitHub for repository '$Repo'."
-    }
-
-    # Locate downloaded APK
-    $downloadedApk = Get-ChildItem -Path $targetDir -Filter "*.apk" -Recurse -File | Select-Object -First 1
-    if ($null -eq $downloadedApk) {
-        throw "No APK file found in downloaded artifact directory '$targetDir'."
-    }
-
-    # Cache with standard naming
-    $cachedPath = Join-Path $targetDir "app-debug-$shortSha.apk"
-    if ($downloadedApk.FullName -ne $cachedPath) {
-        Copy-Item -Path $downloadedApk.FullName -Destination $cachedPath -Force
-    }
-
-    return [System.IO.Path]::GetFullPath($cachedPath)
 }
+

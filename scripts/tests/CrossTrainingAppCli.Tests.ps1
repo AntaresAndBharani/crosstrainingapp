@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Unit and integration tests for CrossTraining App CLI router and helper modules.
     Tests AVD discovery, boot lock polling, SHA caching, and CLI argument routing.
@@ -90,19 +90,19 @@ try {
     Remove-Item -Path $tempCacheDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Test 6: Missing SHA throws when offline/no gh token
+# Test 6: Missing SHA returns null or throws when offline/no gh token
 $emptyCacheDir = Join-Path ([System.IO.Path]::GetTempPath()) "apk-cache-empty-$([guid]::NewGuid())"
 [System.IO.Directory]::CreateDirectory($emptyCacheDir) | Out-Null
 try {
-    $caughtArtifactError = $false
+    $res = $null
     try {
-        # Intentionally invalid repo to test graceful error throwing
-        Get-LatestMainBuildApk -Repo "NonExistent/Repo-404-XYZ" -CacheDir $emptyCacheDir -ExplicitSha "deadbeef123" | Out-Null
+        # Intentionally invalid repo to test graceful error throwing or null return
+        $res = Get-LatestMainBuildApk -Repo "NonExistent/Repo-404-XYZ" -CacheDir $emptyCacheDir -ExplicitSha "deadbeef123"
     } catch {
-        $caughtArtifactError = $true
+        $res = $null
     }
-    Assert-True -Condition $caughtArtifactError `
-                -TestName "artifact: missing APK download failure throws exception for caller fallback"
+    Assert-True -Condition ([string]::IsNullOrWhiteSpace($res)) `
+                -TestName "artifact: missing APK download failure returns empty/null for caller fallback"
 } finally {
     Remove-Item -Path $emptyCacheDir -Recurse -Force -ErrorAction SilentlyContinue
 }

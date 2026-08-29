@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     CrossTraining App CLI router.
 .DESCRIPTION
@@ -150,6 +150,9 @@ if ($Local) {
     Write-StatusBadge 'FETCH' "Retrieving latest verified build APK via GitHubArtifactHelper..."
     try {
         $apkPath = Get-LatestMainBuildApk
+        if ([string]::IsNullOrWhiteSpace($apkPath)) {
+            throw "Artifact retrieval returned empty or null path."
+        }
         Write-StatusBadge 'FETCH' "Successfully resolved APK: $apkPath"
     } catch {
         Write-StatusBadge 'ERROR' "Artifact retrieval failed: $_"
