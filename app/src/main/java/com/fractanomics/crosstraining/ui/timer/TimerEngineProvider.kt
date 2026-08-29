@@ -10,11 +10,13 @@ object TimerEngineProvider {
     @Volatile
     private var instance: TimerEngine? = null
 
-    fun get(context: Context): TimerEngine {
+    fun get(context: Context? = null): TimerEngine {
         return instance ?: synchronized(this) {
-            instance ?: TimerEngine(context.applicationContext).also { instance = it }
+            instance ?: TimerEngine(context?.applicationContext).also { instance = it }
         }
     }
+
+    fun getInstance(context: Context? = null): TimerEngine = get(context)
 
     fun setInstanceForTesting(engine: TimerEngine?) {
         instance = engine

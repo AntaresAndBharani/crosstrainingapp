@@ -208,7 +208,6 @@ class TimerService : Service() {
             .addAction(stopAction)
             .build()
     }
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
