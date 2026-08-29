@@ -1,9 +1,14 @@
-﻿<#
+<#
 .SYNOPSIS
-    Helper module for Android ADB and Emulator operations.
+    AdbEmulatorHelper: Android Virtual Device (AVD) discovery, 3-stage boot sequencing,
+    and signature-conflict-safe APK installation/deployment.
 .DESCRIPTION
-    Provides functions for AVD discovery, process management, 3-stage boot lock polling,
-    and signature-conflict-safe APK deployment and app launching.
+    Provides helper functions for:
+    - Get-PreferredAvd: Discovers and filters phone AVDs (Pixel/Phone), excluding Wear OS, TV, and Automotive.
+    - Start-AvdEmulator: Launches the emulator in a detached process with optimized flags (GUI or Headless).
+    - Wait-ForEmulatorBoot: Bulletproof 3-stage boot verification (sys.boot_completed, init.svc.bootanim, pm path android).
+    - Deploy-And-Launch-App: Installs APK with downgrade flags, auto-heals signature mismatches, clears data if requested, and launches MainActivity.
+    - Get-AdbCommand, Get-EmulatorCommand, Get-OnlineDevices: Tool path discovery and online device enumeration.
 #>
 
 function Format-StatusBadge {
@@ -18,18 +23,17 @@ function Format-StatusBadge {
         [string]$Message
     )
 
-    $colorMap = @{
-        'INFO'    = '36' # Cyan
-        'AVD'     = '33' # Yellow
-        'FETCH'   = '35' # Magenta
-        'DEPLOY'  = '34' # Blue
-        'SUCCESS' = '32' # Green
-        'ERROR'   = '31' # Red
+    $colorCode = switch ($Badge) {
+        'INFO'    { '36' } # Cyan
+        'AVD'     { '33' } # Yellow
+        'FETCH'   { '35' } # Magenta
+        'DEPLOY'  { '34' } # Blue
+        'SUCCESS' { '32' } # Green
+        'ERROR'   { '31' } # Red
     }
 
-    $code = $colorMap[$Badge]
     $esc = [char]27
-    return "${esc}[${code}m[${Badge}]${esc}[0m ${Message}"
+    return "${esc}[${colorCode}m[${Badge}]${esc}[0m ${Message}"
 }
 
 function Write-StatusBadge {
@@ -43,8 +47,7 @@ function Write-StatusBadge {
         [string]$Message
     )
 
-    $formatted = Format-StatusBadge -Badge $Badge -Message $Message
-    Write-Host $formatted
+    Write-Host (Format-StatusBadge -Badge $Badge -Message $Message)
 }
 
 function Get-AdbCommand {
@@ -115,7 +118,8 @@ function Get-OnlineDevices {
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
-        [string]$AdbExe = $null
+        [string]$AdbExe = $null,
+        [scriptblock]$CommandExecutor = $null
     )
 
     if ([string]::IsNullOrWhiteSpace($AdbExe)) {
@@ -124,7 +128,12 @@ function Get-OnlineDevices {
 
     $devices = @()
     try {
-        $output = & $AdbExe devices 2>$null
+        $output = if ($null -ne $CommandExecutor) {
+            & $CommandExecutor "devices"
+        } else {
+            & $AdbExe devices 2>$null
+        }
+
         foreach ($line in ($output -split "`r?`n")) {
             $trimmed = $line.Trim()
             if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("List of devices") -or $trimmed.StartsWith("*")) {
@@ -135,10 +144,10 @@ function Get-OnlineDevices {
             }
         }
     } catch {
-        # Return empty list on adb query error
+        $null = $_
     }
 
-    return $devices
+    return , [string[]]$devices
 }
 
 function Get-PreferredAvd {
@@ -163,6 +172,7 @@ function Get-PreferredAvd {
 
     $candidates = @()
     foreach ($avd in $AvdList) {
+        if ($null -eq $avd) { continue }
         $name = $avd.Trim()
         if ([string]::IsNullOrWhiteSpace($name)) { continue }
         # Exclude non-phone form factors
@@ -186,7 +196,8 @@ function Get-PreferredAvd {
 }
 
 function Start-AvdEmulator {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    [OutputType([System.Diagnostics.Process])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$AvdName,
@@ -220,8 +231,11 @@ function Start-AvdEmulator {
     $psi.UseShellExecute = $true
     $psi.CreateNoWindow = $Headless.IsPresent
 
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    return $proc
+    if ($PSCmdlet.ShouldProcess($AvdName, "Start Android Emulator")) {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        return $proc
+    }
+    return $null
 }
 
 function Wait-ForEmulatorBoot {
@@ -230,7 +244,8 @@ function Wait-ForEmulatorBoot {
     param(
         [string]$AdbExe = $null,
         [int]$TimeoutSeconds = 120,
-        [int]$PollIntervalSeconds = 2
+        [int]$PollIntervalSeconds = 2,
+        [scriptblock]$CommandExecutor = $null
     )
 
     if ([string]::IsNullOrWhiteSpace($AdbExe)) {
@@ -240,39 +255,67 @@ function Wait-ForEmulatorBoot {
     $startTime = [System.DateTime]::UtcNow
     $timeout = [System.TimeSpan]::FromSeconds($TimeoutSeconds)
 
-    # Wait for adb server/device recognition
+    # Stage 0: Wait for adb server/device recognition
     try {
-        & $AdbExe wait-for-device 2>$null
-    } catch {}
+        if ($null -ne $CommandExecutor) {
+            & $CommandExecutor "wait-for-device" | Out-Null
+        } else {
+            & $AdbExe wait-for-device 2>$null
+        }
+    } catch {
+        $null = $_
+    }
 
     while (([System.DateTime]::UtcNow - $startTime) -lt $timeout) {
         $bootCompleted = $false
         $animStopped = $false
         $pmReady = $false
 
+        # Stage 1: Check sys.boot_completed == 1
         try {
-            $propBoot = & $AdbExe shell getprop sys.boot_completed 2>$null
-            if ($null -ne $propBoot -and $propBoot.Trim() -eq '1') {
+            $propBoot = if ($null -ne $CommandExecutor) {
+                & $CommandExecutor "shell getprop sys.boot_completed"
+            } else {
+                & $AdbExe shell getprop sys.boot_completed 2>$null
+            }
+            if ($null -ne $propBoot -and ($propBoot -join "`n").Trim() -eq '1') {
                 $bootCompleted = $true
             }
-        } catch {}
-
-        if ($bootCompleted) {
-            try {
-                $propAnim = & $AdbExe shell getprop init.svc.bootanim 2>$null
-                if ($null -ne $propAnim -and $propAnim.Trim() -eq 'stopped') {
-                    $animStopped = $true
-                }
-            } catch {}
+        } catch {
+            $null = $_
         }
 
+        # Stage 2: Check init.svc.bootanim == stopped
+        if ($bootCompleted) {
+            try {
+                $propAnim = if ($null -ne $CommandExecutor) {
+                    & $CommandExecutor "shell getprop init.svc.bootanim"
+                } else {
+                    & $AdbExe shell getprop init.svc.bootanim 2>$null
+                }
+                if ($null -ne $propAnim -and ($propAnim -join "`n").Trim() -eq 'stopped') {
+                    $animStopped = $true
+                }
+            } catch {
+                $null = $_
+            }
+        }
+
+        # Stage 3: Check adb shell pm path android succeeds and returns package:
         if ($bootCompleted -and $animStopped) {
             try {
-                $pmPath = & $AdbExe shell pm path android 2>$null
-                if ($LASTEXITCODE -eq 0 -and $null -ne $pmPath -and $pmPath.Trim().StartsWith('package:')) {
+                $pmPath = if ($null -ne $CommandExecutor) {
+                    & $CommandExecutor "shell pm path android"
+                } else {
+                    & $AdbExe shell pm path android 2>$null
+                }
+                $pmText = if ($null -ne $pmPath) { ($pmPath -join "`n").Trim() } else { "" }
+                if ($pmText.StartsWith('package:')) {
                     $pmReady = $true
                 }
-            } catch {}
+            } catch {
+                $null = $_
+            }
         }
 
         if ($bootCompleted -and $animStopped -and $pmReady) {
@@ -295,44 +338,62 @@ function Deploy-And-Launch-App {
         [string]$PackageName = "com.fractanomics.crosstraining",
         [string]$MainActivity = "com.fractanomics.crosstraining/.MainActivity",
         [switch]$ClearData,
-        [string]$AdbExe = $null
+        [string]$AdbExe = $null,
+        [scriptblock]$CommandExecutor = $null
     )
 
     if ([string]::IsNullOrWhiteSpace($AdbExe)) {
         $AdbExe = Get-AdbCommand
     }
 
-    if (-not [System.IO.File]::Exists($ApkPath)) {
+    if ($null -eq $CommandExecutor -and -not [System.IO.File]::Exists($ApkPath)) {
         throw "APK file not found at path: $ApkPath"
     }
 
-    # Step 1: Attempt install with downgrade / reinstall flags
-    $installOutput = & $AdbExe install -r -d "$ApkPath" 2>&1
-    $installText = $installOutput -join "`n"
+    # Step 1: Clear data if requested before/as part of deployment
+    if ($ClearData) {
+        Write-StatusBadge 'AVD' "Clearing application data (--clear-data)..."
+        if ($null -ne $CommandExecutor) {
+            & $CommandExecutor "shell pm clear $PackageName" | Out-Null
+        } else {
+            & $AdbExe shell pm clear $PackageName 2>&1 | Out-Null
+        }
+    }
 
-    # Step 2: Signature conflict auto-healing
+    # Step 2: Attempt install with downgrade / reinstall flags (-r -d)
+    $installOutput = if ($null -ne $CommandExecutor) {
+        & $CommandExecutor "install -r -d `"$ApkPath`""
+    } else {
+        & $AdbExe install -r -d "$ApkPath" 2>&1
+    }
+    $installText = if ($null -ne $installOutput) { ($installOutput -join "`n") } else { "" }
+
+    # Step 3: Signature conflict auto-healing
     if ($installText -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE|INSTALL_FAILED_SHARED_USER_INCOMPATIBLE|signatures do not match') {
         Write-StatusBadge 'AVD' "Detected signature mismatch (INSTALL_FAILED_UPDATE_INCOMPATIBLE). Uninstalling existing package for clean install..."
-        & $AdbExe uninstall $PackageName 2>&1 | Out-Null
-        $retryOutput = & $AdbExe install -r -d "$ApkPath" 2>&1
-        $retryText = $retryOutput -join "`n"
+        if ($null -ne $CommandExecutor) {
+            & $CommandExecutor "uninstall $PackageName" | Out-Null
+            $retryOutput = & $CommandExecutor "install -r -d `"$ApkPath`""
+        } else {
+            & $AdbExe uninstall $PackageName 2>&1 | Out-Null
+            $retryOutput = & $AdbExe install -r -d "$ApkPath" 2>&1
+        }
+        $retryText = if ($null -ne $retryOutput) { ($retryOutput -join "`n") } else { "" }
         if ($retryText -notmatch 'Success') {
             throw "Failed to install APK after clean retry: $retryText"
         }
-    } elseif ($installText -notmatch 'Success' -and $LASTEXITCODE -ne 0) {
+    } elseif ($installText -notmatch 'Success') {
         throw "Failed to install APK: $installText"
-    }
-
-    # Step 3: Clear data if requested
-    if ($ClearData) {
-        Write-StatusBadge 'AVD' "Clearing application data (--clear-data)..."
-        & $AdbExe shell pm clear $PackageName 2>&1 | Out-Null
     }
 
     # Step 4: Start MainActivity
     Write-StatusBadge 'DEPLOY' "Launching $MainActivity..."
-    $launchOutput = & $AdbExe shell am start -n $MainActivity 2>&1
-    $launchText = $launchOutput -join "`n"
+    $launchOutput = if ($null -ne $CommandExecutor) {
+        & $CommandExecutor "shell am start -n $MainActivity"
+    } else {
+        & $AdbExe shell am start -n $MainActivity 2>&1
+    }
+    $launchText = if ($null -ne $launchOutput) { ($launchOutput -join "`n") } else { "" }
     if ($launchText -match 'Error|Exception' -and $launchText -notmatch 'Warning: Activity not started') {
         Write-StatusBadge 'ERROR' "Warning during app launch: $launchText"
     }
