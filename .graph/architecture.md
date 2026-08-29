@@ -1,4 +1,4 @@
-# CrossTraining App — System Architecture & Standards
+﻿# CrossTraining App — System Architecture & Standards
 
 ## System Overview & Technology Stack
 
@@ -174,23 +174,24 @@ crosstrainingapp/
 │       │       │   │   ├── LibraryScreen.kt      # Movement catalog & routine builder
 │       │       │   │   ├── LoginWelcomeScreen.kt # Authentication, Google Sign-In, & Guest mode gate
 │       │       │   │   ├── LogSessionScreen.kt   # Daily workout logging screen
-│       │       │   │   ├── ProfileScreen.kt      # User account, theme toggle, and CSV backup/restore
-│       │       │   │   ├── ProgressScreen.kt     # Personal record analytics & progression charts
-│       │       │   │   ├── SessionEditor.kt      # Comprehensive session editor with set spreadsheet
-│       │       │   │   └── TimerScreen.kt        # Workout interval timer configuration & active display
-│       │       │   ├── theme/                    # Material Design 3 theme tokens
-│       │       │   │   ├── Color.kt              # App color palettes
-│       │       │   │   ├── Theme.kt              # CrossTrainingTheme wrapper with light/dark/system support
-│       │       │   │   └── Type.kt               # Typography specifications
-│       │       │   └── timer/                    # Foreground Timer Subsystem
-│       │       │       ├── TimerEngine.kt        # State machine, countdown loop, audio tones, & vibrations
-│       │       │       ├── TimerEngineProvider.kt# Application-scoped singleton provider for TimerEngine
-│       │       │       ├── TimerNotificationActionDispatcher.kt # Dispatches notification intent actions to TimerEngine
-│       │       │       ├── TimerNotificationFormatter.kt # Dynamic title & content string formatter for notifications
-│       │       │       ├── TimerNotificationSpec.kt # Notification action and metadata builder
-│       │       │       ├── TimerService.kt       # Foreground service hosting ongoing MediaStyle notification
-│       │       │       ├── TimerTeardownController.kt # Graceful service termination and resource release
-│       │       │       └── WorkoutTimer.kt       # Timer data contracts (TimerMode, TimerPhase, WorkoutTimerConfig, TimerSnapshot)
+│       │       │   ├── ProfileScreen.kt          # User account, theme toggle, and CSV backup/restore
+│       │       │   ├── ProgressScreen.kt         # Personal record analytics & progression charts
+│       │       │   ├── SessionEditor.kt          # Comprehensive session editor with set spreadsheet
+│       │       │   └── TimerScreen.kt            # Workout interval timer configuration & active display
+│       │       ├── theme/                        # Material Design 3 theme tokens
+│       │       │   ├── Color.kt                  # App color palettes
+│       │       │   ├── Theme.kt                  # CrossTrainingTheme wrapper with light/dark/system support
+│       │       │   └── Type.kt                   # Typography specifications
+│       │       └── timer/                        # Foreground Timer Subsystem
+│       │           ├── NotificationPermissionHelper.kt # Runtime notification permission check & launch helper
+│       │           ├── TimerEngine.kt            # State machine, countdown loop, audio tones, & vibrations
+│       │           ├── TimerEngineProvider.kt    # Application-scoped singleton provider for TimerEngine
+│       │           ├── TimerNotificationActionDispatcher.kt # Dispatches notification intent actions to TimerEngine
+│       │           ├── TimerNotificationFormatter.kt # Dynamic title & content string formatter for notifications
+│       │           ├── TimerNotificationSpec.kt  # Notification action and metadata builder
+│       │           ├── TimerService.kt           # Foreground service hosting ongoing MediaStyle notification
+│       │           ├── TimerTeardownController.kt # Graceful service termination and resource release
+│       │           └── WorkoutTimer.kt           # Timer data contracts (TimerMode, TimerPhase, WorkoutTimerConfig, TimerSnapshot)
 │       │       └── util/
 │       │           ├── RepScheme.kt              # Rep scheme pattern parsing & wave validation
 │       │           └── WorkoutParser.kt          # Free-text WOD and complex routine parsing algorithms
@@ -200,6 +201,7 @@ crosstrainingapp/
 │           ├── ui/screens/SessionEditorNumericMigrationTest.kt
 │           ├── ui/screens/TimerScreenNumericMigrationTest.kt
 │           ├── ui/theme/ThemeModeTest.kt
+│           ├── ui/timer/NotificationPermissionTest.kt
 │           ├── ui/timer/NotificationTapNavigationTest.kt
 │           ├── ui/timer/SharedTimerStateTest.kt
 │           ├── ui/timer/TimerEngineTest.kt
