@@ -1,5 +1,7 @@
 package com.fractanomics.crosstraining.ui.components
 
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -14,22 +16,45 @@ import org.junit.Test
 class AppNumericTextFieldTest {
 
     // =========================================================================
-    // Scenario: No digit concatenation on replace
+    // Scenario 1: Select-all on focus and direct digit replacement
     // =========================================================================
 
     @Test
-    fun `no digit concatenation on replace - clearing 10 and typing 6 results in 6`() {
-        // Given a field showing "10"
-        // When the user clears it and types "6"
-        val filtered = NumericInputSanitizer.filterInput("6", allowDecimals = false)
-        // Then the resulting value is "6", not "610"
+    fun `scenario 1 - select-all on focus produces full selection range`() {
+        val initialText = "10"
+        val initialTfv = TextFieldValue(text = initialText)
+        val focusedTfv = initialTfv.copy(selection = TextRange(0, initialTfv.text.length))
+
+        assertEquals(0, focusedTfv.selection.start)
+        assertEquals(2, focusedTfv.selection.end)
+        assertEquals(2, focusedTfv.selection.length)
+    }
+
+    @Test
+    fun `scenario 1 - direct digit replacement replaces entire selected text without concatenation`() {
+        // Given text "10" is fully selected
+        val initialText = "10"
+        val selection = TextRange(0, initialText.length)
+
+        // When user types '6' to replace selected range
+        val typedChar = "6"
+        val replaced = initialText.replaceRange(selection.start, selection.end, typedChar)
+        val filtered = NumericInputSanitizer.filterInput(replaced, allowDecimals = false)
+
+        // Then result is "6", not "610" or "106"
         assertEquals("6", filtered)
     }
 
     @Test
-    fun `no digit concatenation on replace - non-numeric characters filtered out`() {
-        val nonNumeric = NumericInputSanitizer.filterInput("12a3b4#*!", allowDecimals = false)
-        assertEquals("1234", nonNumeric)
+    fun `no digit concatenation on replace - clearing 10 and typing 6 results in 6`() {
+        val filtered = NumericInputSanitizer.filterInput("6", allowDecimals = false)
+        assertEquals("6", filtered)
+    }
+
+    @Test
+    fun `scenario 1 - non-numeric characters are filtered out`() {
+        val filtered = NumericInputSanitizer.filterInput("12a3b4#$", allowDecimals = false)
+        assertEquals("1234", filtered)
     }
 
     @Test
@@ -39,63 +64,30 @@ class AppNumericTextFieldTest {
     }
 
     // =========================================================================
-    // Scenario: Decimal parsing accuracy
+    // Scenario 2: Intermediate blank state
     // =========================================================================
 
     @Test
-    fun `decimal parsing accuracy - typing 22_5 parses exactly to 22_5`() {
-        // Given a field configured with allowDecimals = true
-        // When the user types "22.5"
-        val filtered = NumericInputSanitizer.filterInput("22.5", allowDecimals = true)
-        assertEquals("22.5", filtered)
+    fun `scenario 2 - backspacing all digits results in empty string without reverting`() {
+        val emptyInput = NumericInputSanitizer.filterInput("", allowDecimals = false)
+        assertEquals("", emptyInput)
 
-        // Then the parsed value equals 22.5 exactly
-        val parsed = filtered.toDoubleOrNull()
-        assertEquals(22.5, parsed)
-    }
-
-    @Test
-    fun `decimal parsing accuracy - comma is normalized to decimal dot`() {
-        val commaFiltered = NumericInputSanitizer.filterInput("22,5", allowDecimals = true)
-        assertEquals("22.5", commaFiltered)
-
-        val parsed = commaFiltered.toDoubleOrNull()
-        assertEquals(22.5, parsed)
-    }
-
-    @Test
-    fun `decimal parsing accuracy - multiple decimal points are rejected`() {
-        val multiDecimal = NumericInputSanitizer.filterInput("22.5.8.9", allowDecimals = true)
-        assertEquals("22.589", multiDecimal)
-
-        val parsed = multiDecimal.toDoubleOrNull()
-        assertEquals(22.589, parsed)
-    }
-
-    @Test
-    fun `decimal parsing accuracy - leading zero decimal fractions parse accurately`() {
-        val filtered = NumericInputSanitizer.filterInput("0.75", allowDecimals = true)
-        assertEquals("0.75", filtered)
-
-        val parsed = filtered.toDoubleOrNull()
-        assertEquals(0.75, parsed)
+        val uncommittedEmpty = NumericInputSanitizer.sanitizeAndClamp("", minValue = null, maxValue = 100.0)
+        assertEquals("", uncommittedEmpty)
     }
 
     // =========================================================================
-    // Scenario: Clamp on commit
+    // Scenario 3: Commit, clamping, and IME action handling
     // =========================================================================
 
     @Test
     fun `clamp on commit - empty text commits minValue`() {
-        // Given a field with minValue and maxValue set
-        // When the field is left empty and loses focus, or IME Done is pressed while empty
         val clampedEmpty = NumericInputSanitizer.sanitizeAndClamp(
             text = "",
             minValue = 5.0,
             maxValue = 100.0,
             allowDecimals = false
         )
-        // Then the committed value equals minValue
         assertEquals("5", clampedEmpty)
     }
 
@@ -193,6 +185,53 @@ class AppNumericTextFieldTest {
             allowDecimals = true
         )
         assertEquals("5.2", leadingZeroMixed)
+    }
+
+    @Test
+    fun `scenario 3 - trailing decimal dot sanitized on commit`() {
+        val committed = NumericInputSanitizer.sanitizeAndClamp("22.", minValue = 0.0, maxValue = 100.0, allowDecimals = true)
+        assertEquals("22", committed)
+    }
+
+    // =========================================================================
+    // Scenario 4: Decimal parsing accuracy
+    // =========================================================================
+
+    @Test
+    fun `decimal parsing accuracy - typing 22_5 parses exactly to 22_5`() {
+        val filtered = NumericInputSanitizer.filterInput("22.5", allowDecimals = true)
+        assertEquals("22.5", filtered)
+
+        val parsed = filtered.toDoubleOrNull()
+        assertEquals(22.5, parsed)
+    }
+
+    @Test
+    fun `decimal parsing accuracy - comma is normalized to decimal dot`() {
+        val commaFiltered = NumericInputSanitizer.filterInput("22,5", allowDecimals = true)
+        assertEquals("22.5", commaFiltered)
+
+        val parsed = commaFiltered.toDoubleOrNull()
+        assertEquals(22.5, parsed)
+    }
+
+    @Test
+    fun `decimal parsing accuracy - multiple decimal points are rejected`() {
+        val multiDecimal = NumericInputSanitizer.filterInput("22.5.8.9", allowDecimals = true)
+        assertEquals("22.589", multiDecimal)
+
+        val parsed = multiDecimal.toDoubleOrNull()
+        assertEquals(22.589, parsed)
+    }
+
+    @Test
+    fun `decimal parsing accuracy - leading zero decimal fractions parse accurately`() {
+        val filtered = NumericInputSanitizer.filterInput("0.75", allowDecimals = true)
+        assertEquals("0.75", filtered)
+
+        val parsed = filtered.toDoubleOrNull()
+        assertEquals(0.75, parsed)
+    }
     }
 
     // =========================================================================

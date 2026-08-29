@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
@@ -39,7 +38,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -56,10 +54,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fractanomics.crosstraining.ui.components.AppNumericTextField
 import com.fractanomics.crosstraining.ui.timer.TimerEngine
 import com.fractanomics.crosstraining.ui.timer.TimerEngineProvider
 import com.fractanomics.crosstraining.ui.timer.TimerMode
@@ -213,71 +211,79 @@ fun TimerScreen(
                         when (selectedMode) {
                             TimerMode.EMOM -> {
                                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    OutlinedTextField(
-                                        value = intervalSecs.toString(),
-                                        onValueChange = { intervalSecs = it.toIntOrNull() ?: 60 },
+                                    AppNumericTextField(
+                                        value = intervalSecs,
+                                        onValueChange = { intervalSecs = it },
                                         label = { Text("Interval (seconds)") },
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        minValue = 1,
+                                        maxValue = 3600,
                                         modifier = Modifier.weight(1f)
                                     )
-                                    OutlinedTextField(
-                                        value = totalRounds.toString(),
-                                        onValueChange = { totalRounds = it.toIntOrNull() ?: 10 },
+                                    AppNumericTextField(
+                                        value = totalRounds,
+                                        onValueChange = { totalRounds = it },
                                         label = { Text("Total Rounds") },
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        minValue = 1,
+                                        maxValue = 999,
                                         modifier = Modifier.weight(1f)
                                     )
                                 }
                             }
                             TimerMode.AMRAP, TimerMode.TIME_CAP -> {
-                                OutlinedTextField(
-                                    value = targetMinutes.toString(),
-                                    onValueChange = { targetMinutes = it.toIntOrNull() ?: 12 },
+                                AppNumericTextField(
+                                    value = targetMinutes,
+                                    onValueChange = { targetMinutes = it },
                                     label = { Text("Target Duration (minutes)") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    minValue = 1,
+                                    maxValue = 1440,
                                     modifier = Modifier.fillMaxWidth()
                                 )
                             }
                             TimerMode.DEATH_BY -> {
-                                OutlinedTextField(
-                                    value = totalRounds.toString(),
-                                    onValueChange = { totalRounds = it.toIntOrNull() ?: 15 },
+                                AppNumericTextField(
+                                    value = totalRounds,
+                                    onValueChange = { totalRounds = it },
                                     label = { Text("Maximum Rounds") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    minValue = 1,
+                                    maxValue = 999,
                                     modifier = Modifier.fillMaxWidth()
                                 )
                             }
                             TimerMode.TABATA -> {
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedTextField(
-                                        value = workSecs.toString(),
-                                        onValueChange = { workSecs = it.toIntOrNull() ?: 20 },
+                                    AppNumericTextField(
+                                        value = workSecs,
+                                        onValueChange = { workSecs = it },
                                         label = { Text("Work (s)") },
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        minValue = 1,
+                                        maxValue = 3600,
                                         modifier = Modifier.weight(1f)
                                     )
-                                    OutlinedTextField(
-                                        value = restSecs.toString(),
-                                        onValueChange = { restSecs = it.toIntOrNull() ?: 10 },
+                                    AppNumericTextField(
+                                        value = restSecs,
+                                        onValueChange = { restSecs = it },
                                         label = { Text("Rest (s)") },
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        minValue = 0,
+                                        maxValue = 3600,
                                         modifier = Modifier.weight(1f)
                                     )
-                                    OutlinedTextField(
-                                        value = totalRounds.toString(),
-                                        onValueChange = { totalRounds = it.toIntOrNull() ?: 8 },
+                                    AppNumericTextField(
+                                        value = totalRounds,
+                                        onValueChange = { totalRounds = it },
                                         label = { Text("Rounds") },
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        minValue = 1,
+                                        maxValue = 999,
                                         modifier = Modifier.weight(1f)
                                     )
                                 }
                             }
                             TimerMode.REST -> {
-                                OutlinedTextField(
-                                    value = restSecs.toString(),
-                                    onValueChange = { restSecs = it.toIntOrNull() ?: 90 },
+                                AppNumericTextField(
+                                    value = restSecs,
+                                    onValueChange = { restSecs = it },
                                     label = { Text("Rest Duration (seconds)") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    minValue = 1,
+                                    maxValue = 3600,
                                     modifier = Modifier.fillMaxWidth()
                                 )
                             }
