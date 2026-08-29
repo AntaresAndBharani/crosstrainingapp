@@ -162,6 +162,8 @@ object NumericInputSanitizer {
             return if (clamped == parsed) {
                 if (trimmed.startsWith("0") && trimmed.length > 1 && trimmed[1] != '.') {
                     if (clamped % 1.0 == 0.0) clamped.toLong().toString() else clamped.toString()
+                } else if (trimmed.endsWith(".")) {
+                    if (clamped % 1.0 == 0.0) clamped.toLong().toString() else clamped.toString()
                 } else {
                     trimmed
                 }
