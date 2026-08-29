@@ -48,6 +48,16 @@ function Get-LatestMainCommitSha {
     }
 }
 
+function Get-LatestMainSha {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
+        [string]$Branch = "main"
+    )
+    return (Get-LatestMainCommitSha -Repo $Repo -Branch $Branch)
+}
+
 function Get-LatestMainBuildApk {
     [CmdletBinding()]
     [OutputType([string])]
@@ -56,7 +66,9 @@ function Get-LatestMainBuildApk {
         [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "AntaresAndBharani/crosstrainingapp" }),
         [string]$Branch = "main",
         [string]$CacheDir = "app/build/outputs/apk/ci-main",
+        [Alias("ExplicitSha")]
         [string]$Sha = $null,
+        [Alias("ForceDownload")]
         [switch]$Force
     )
 
@@ -102,7 +114,7 @@ function Get-LatestMainBuildApk {
     # Check local cache first (unless -Force is specified)
     if (-not $Force -and (Test-Path -LiteralPath $cachedApkPath -PathType Leaf)) {
         Write-Host "Found cached APK for SHA $resolvedSha at '$cachedApkPath' (skipping network download)." -ForegroundColor Green
-        return $cachedApkPath
+        return [System.IO.Path]::GetFullPath($cachedApkPath)
     }
 
     # If cache miss or -Force: retrieve from GitHub
@@ -167,7 +179,7 @@ function Get-LatestMainBuildApk {
         if ($null -ne $foundApk) {
             Copy-Item -LiteralPath $foundApk.FullName -Destination $cachedApkPath -Force
             Write-Host "Successfully retrieved and cached APK at '$cachedApkPath'." -ForegroundColor Green
-            return $cachedApkPath
+            return [System.IO.Path]::GetFullPath($cachedApkPath)
         } else {
             Write-Warning "No APK artifact found in download for SHA $resolvedSha."
             return $null
@@ -181,3 +193,4 @@ function Get-LatestMainBuildApk {
         }
     }
 }
+
