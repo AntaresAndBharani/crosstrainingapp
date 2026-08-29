@@ -63,6 +63,7 @@ class TimerService : Service() {
     private lateinit var timerEngine: TimerEngine
     private lateinit var notificationManager: NotificationManagerCompat
     internal lateinit var teardownController: TimerTeardownController
+    internal lateinit var actionDispatcher: TimerNotificationActionDispatcher
 
     override fun onCreate() {
         super.onCreate()
@@ -96,38 +97,28 @@ class TimerService : Service() {
                 stopSelf()
             }
         )
-    }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> {
-                teardownController.onServiceStarted()
-                val notification = buildNotification(timerEngine.snapshot.value)
-                startForeground(NOTIFICATION_ID, notification)
-                timerEngine.start()
-                startObservingTimer()
-            }
-            ACTION_PAUSE -> {
-                timerEngine.pause()
-            }
-            ACTION_NEXT -> {
-                timerEngine.skipRound()
-            }
-            ACTION_STOP -> {
-                teardownController.handleStopAction(timerEngine)
-            }
-            ACTION_RESET -> {
-                timerEngine.reset()
-                teardownController.performGracefulTeardown()
-            }
-            else -> {
-                if (!teardownController.isServiceActive) {
-                    teardownController.onServiceStarted()
-                    val notification = buildNotification(timerEngine.snapshot.value)
-                    startForeground(NOTIFICATION_ID, notification)
+        actionDispatcher = TimerNotificationActionDispatcher(
+            timerEngine = timerEngine,
+            teardownController = teardownController,
+            onStartObserving = {
+                if (observerJob == null || observerJob?.isActive != true) {
                     startObservingTimer()
                 }
             }
+        )
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val action = intent?.action
+        if (action == ACTION_START || (!teardownController.isServiceActive && action == null)) {
+            teardownController.onServiceStarted()
+            val notification = buildNotification(timerEngine.snapshot.value)
+            startForeground(NOTIFICATION_ID, notification)
+            timerEngine.start()
+            startObservingTimer()
+        } else {
+            actionDispatcher.handleAction(action)
         }
         return START_NOT_STICKY
     }
@@ -165,6 +156,8 @@ class TimerService : Service() {
     }
 
     fun buildNotification(snapshot: TimerSnapshot): Notification {
+        val spec = createTimerNotificationSpec(snapshot)
+
         val contentIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_NAVIGATE_TO, DESTINATION_TIMER)
@@ -176,52 +169,27 @@ class TimerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val playPauseAction = if (snapshot.isRunning) {
-            val pauseIntent = Intent(this, TimerService::class.java).apply { action = ACTION_PAUSE }
-            val pausePendingIntent = PendingIntent.getService(
-                this, 1, pauseIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        fun createAction(actionSpec: NotificationActionSpec): NotificationCompat.Action {
+            val intent = Intent(this, TimerService::class.java).apply { action = actionSpec.action }
+            val pendingIntent = PendingIntent.getService(
+                this,
+                actionSpec.requestCode,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            NotificationCompat.Action.Builder(
-                android.R.drawable.ic_media_pause,
-                "Pause",
-                pausePendingIntent
-            ).build()
-        } else {
-            val playIntent = Intent(this, TimerService::class.java).apply { action = ACTION_START }
-            val playPendingIntent = PendingIntent.getService(
-                this, 2, playIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            NotificationCompat.Action.Builder(
-                android.R.drawable.ic_media_play,
-                "Play",
-                playPendingIntent
+            return NotificationCompat.Action.Builder(
+                actionSpec.iconRes,
+                actionSpec.title,
+                pendingIntent
             ).build()
         }
 
-        val nextIntent = Intent(this, TimerService::class.java).apply { action = ACTION_NEXT }
-        val nextPendingIntent = PendingIntent.getService(
-            this, 3, nextIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val nextAction = NotificationCompat.Action.Builder(
-            android.R.drawable.ic_media_next,
-            "Next",
-            nextPendingIntent
-        ).build()
-
-        val stopIntent = Intent(this, TimerService::class.java).apply { action = ACTION_STOP }
-        val stopPendingIntent = PendingIntent.getService(
-            this, 4, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val stopAction = NotificationCompat.Action.Builder(
-            android.R.drawable.ic_menu_close_clear_cancel,
-            "Stop",
-            stopPendingIntent
-        ).build()
-
-        val content = TimerNotificationFormatter.createNotificationContent(snapshot)
+        val playPauseAction = createAction(spec.playPauseAction)
+        val nextAction = createAction(spec.nextAction)
+        val stopAction = createAction(spec.stopAction)
 
         val style = androidx.media.app.NotificationCompat.MediaStyle()
-            .setShowActionsInCompactView(0, 1)
+            .setShowActionsInCompactView(*spec.compactActionIndices)
 
         mediaSession?.sessionToken?.let {
             style.setMediaSession(it)
@@ -229,20 +197,17 @@ class TimerService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle(content.title)
-            .setContentText(content.contentText)
+            .setContentTitle(spec.title)
+            .setContentText(spec.contentText)
             .setContentIntent(contentPendingIntent)
-            .setOngoing(content.isRunning)
-            .setOnlyAlertOnce(content.onlyAlertOnce)
+            .setOngoing(spec.isOngoing)
+            .setOnlyAlertOnce(true)
             .setStyle(style)
             .addAction(playPauseAction)
             .addAction(nextAction)
             .addAction(stopAction)
             .build()
     }
-
-    private fun formatTime(seconds: Int): String = TimerNotificationFormatter.formatTime(seconds)
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {

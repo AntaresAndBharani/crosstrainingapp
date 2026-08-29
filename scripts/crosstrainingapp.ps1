@@ -1,140 +1,191 @@
-﻿<#
+<#
 .SYNOPSIS
-    CrossTraining unified CLI for emulator provisioning, build caching, and deployment.
+    CrossTraining App CLI router.
 .DESCRIPTION
-    Router for the 'emulator' subcommand and execution flags.
-    Usage:
-        pwsh ./scripts/crosstrainingapp.ps1 emulator --latest-main
-        pwsh ./scripts/crosstrainingapp.ps1 emulator --local
-        pwsh ./scripts/crosstrainingapp.ps1 emulator --headless
-        pwsh ./scripts/crosstrainingapp.ps1 emulator --clear-data
+    Unified developer and autonomous agent CLI for provisioning Android Virtual Devices (AVDs),
+    retrieving verified main-branch CI builds, and deploying APKs locally or headless.
+.EXAMPLE
+    pwsh ./scripts/crosstrainingapp.ps1 emulator --latest-main
+.EXAMPLE
+    pwsh ./scripts/crosstrainingapp.ps1 emulator --local --headless
 #>
+
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $false)]
-    [string]$Command = "emulator",
+    [string]$Subcommand = 'emulator',
 
-    [Alias("latest-main")]
+    [Alias('latest-main')]
     [switch]$LatestMain,
 
     [switch]$Local,
 
     [switch]$Headless,
 
-    [Alias("clear-data")]
+    [Alias('clear-data')]
     [switch]$ClearData
 )
 
-$ErrorActionPreference = 'Stop'
+# Parse additional double-dash or single-dash arguments passed via $args
+$extraArgs = @($args)
+if ($Subcommand.StartsWith('-')) {
+    $extraArgs = @($Subcommand) + $extraArgs
+    $Subcommand = 'emulator'
+}
 
-# Import helper libraries
+foreach ($arg in $extraArgs) {
+    switch ($arg) {
+        '--latest-main' { $LatestMain = $true }
+        '-latest-main'  { $LatestMain = $true }
+        '--local'       { $Local = $true }
+        '-local'        { $Local = $true }
+        '--headless'    { $Headless = $true }
+        '-headless'     { $Headless = $true }
+        '--clear-data'  { $ClearData = $true }
+        '-clear-data'   { $ClearData = $true }
+        'emulator'      { $Subcommand = 'emulator' }
+        'help'          { $Subcommand = 'help' }
+        '--help'        { $Subcommand = 'help' }
+        '-h'            { $Subcommand = 'help' }
+    }
+}
+
+# Dot-source helper modules from scripts/lib
 $libDir = Join-Path $PSScriptRoot "lib"
 . (Join-Path $libDir "AdbEmulatorHelper.ps1")
 . (Join-Path $libDir "GitHubArtifactHelper.ps1")
 
-function Write-StatusBadge {
-    param(
-        [ValidateSet("INFO", "AVD", "FETCH", "DEPLOY", "SUCCESS", "ERROR")]
-        [string]$Badge,
-        [string]$Message
-    )
-    $colorMap = @{
-        "INFO"    = "Cyan"
-        "AVD"     = "Yellow"
-        "FETCH"   = "Magenta"
-        "DEPLOY"  = "Blue"
-        "SUCCESS" = "Green"
-        "ERROR"   = "Red"
-    }
-    $c = $colorMap[$Badge]
-    Write-Host "[$Badge] " -ForegroundColor $c -NoNewline
-    Write-Host $Message
+function Show-Help {
+    Write-StatusBadge 'INFO' "CrossTraining CLI tool"
+    Write-Host ""
+    Write-Host "Usage: crosstrainingapp.ps1 <subcommand> [flags]"
+    Write-Host ""
+    Write-Host "Subcommands:"
+    Write-Host "  emulator         Provision AVD, retrieve/build APK, and deploy to device"
+    Write-Host "  help             Show this help message"
+    Write-Host ""
+    Write-Host "Flags for 'emulator':"
+    Write-Host "  --latest-main    Deploy latest main-branch CI/Release build (default mode)"
+    Write-Host "  --local          Compile locally via Gradle (:app:assembleDebug) before deployment"
+    Write-Host "  --headless       Launch emulator with -no-window (GUI disabled)"
+    Write-Host "  --clear-data     Clear application data upon install via 'adb shell pm clear'"
 }
 
-function Invoke-LocalBuild {
-    Write-StatusBadge "DEPLOY" "Compiling locally with assembleDebug..."
-    $isWin = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT -or [System.IO.Path]::DirectorySeparatorChar -eq '\'
-    $gradlew = if ($isWin) { ".\gradlew.bat" } else { "./gradlew" }
-    
-    $buildArgs = @(":app:assembleDebug", "--build-cache", "--parallel")
-    $proc = Start-Process -FilePath $gradlew -ArgumentList ($buildArgs -join " ") -Wait -PassThru -NoNewWindow
-    if ($proc.ExitCode -ne 0) {
-        throw "Local Gradle compilation failed with exit code $($proc.ExitCode)."
-    }
-
-    $localApk = "app/build/outputs/apk/debug/app-debug.apk"
-    if (-not (Test-Path $localApk)) {
-        throw "Build succeeded but APK not found at $localApk."
-    }
-    return (Resolve-Path $localApk).Path
+if ($Subcommand -eq 'help') {
+    Show-Help
+    exit 0
 }
 
-if ($Command -ne "emulator") {
-    Write-StatusBadge "ERROR" "Unknown command '$Command'. Supported commands: emulator"
+if ($Subcommand -ne 'emulator') {
+    Write-StatusBadge 'ERROR' "Unknown subcommand '$Subcommand'. Run with 'help' for usage."
     exit 1
 }
 
-Write-StatusBadge "INFO" "Starting CrossTrainingApp CLI runner..."
+# ---------------------------------------------------------------------------
+# Emulator Subcommand Execution Flow
+# ---------------------------------------------------------------------------
+Write-StatusBadge 'INFO' "Starting CrossTraining emulator workflow..."
 
-# 1. Determine APK to deploy
-$apkToDeploy = $null
+# 1. Device check / provisioning
+$onlineDevices = Get-OnlineDevices
+if ($onlineDevices.Count -eq 0) {
+    Write-StatusBadge 'AVD' "No online Android device detected."
+    try {
+        $avd = Get-PreferredAvd
+    } catch {
+        Write-StatusBadge 'ERROR' "$_"
+        exit 1
+    }
+
+    $headlessStr = if ($Headless) { " (headless mode: -no-window)" } else { "" }
+    Write-StatusBadge 'AVD' "Booting preferred phone AVD '$avd'$headlessStr..."
+    
+    try {
+        $null = Start-AvdEmulator -AvdName $avd -Headless:$Headless
+    } catch {
+        Write-StatusBadge 'ERROR' "Failed to start emulator: $_"
+        exit 1
+    }
+
+    Write-StatusBadge 'AVD' "Waiting for 3-stage boot lock (sys.boot_completed, bootanim stopped, pm ready)..."
+    try {
+        $null = Wait-ForEmulatorBoot
+    } catch {
+        Write-StatusBadge 'ERROR' "Boot lock timeout or failure: $_"
+        exit 1
+    }
+
+    Write-StatusBadge 'AVD' "Android device online and boot sequence complete."
+} else {
+    Write-StatusBadge 'AVD' "Using online Android device: $($onlineDevices -join ', ')"
+}
+
+# 2. Resolving APK (Local compilation or Latest-Main retrieval with fallback)
+$apkPath = $null
+$isWindowsOs = ($env:OS -match 'Windows') -or ($IsWindows -eq $true)
+$gradlewCmd = if ($isWindowsOs) { ".\gradlew.bat" } else { "./gradlew" }
 
 if ($Local) {
-    Write-StatusBadge "INFO" "Local compilation mode requested (--local)."
-    $apkToDeploy = Invoke-LocalBuild
-} elseif ($LatestMain) {
-    Write-StatusBadge "FETCH" "Fetching verified latest-main build artifact..."
-    try {
-        $apkToDeploy = Get-LatestMainBuildApk
-    } catch {
-        Write-StatusBadge "ERROR" "Failed to retrieve main artifact from GitHub: $_"
-        Write-StatusBadge "DEPLOY" "Falling back to local Gradle compilation..."
-        $apkToDeploy = Invoke-LocalBuild
+    Write-StatusBadge 'DEPLOY' "Compiling debug APK locally via Gradle (:app:assembleDebug --build-cache --parallel)..."
+    & $gradlewCmd :app:assembleDebug --build-cache --parallel
+    if ($LASTEXITCODE -ne 0) {
+        Write-StatusBadge 'ERROR' "Gradle compilation failed with exit code $LASTEXITCODE."
+        exit $LASTEXITCODE
+    }
+
+    $debugApk = Join-Path $PSScriptRoot "../app/build/outputs/apk/debug/app-debug.apk"
+    if (Test-Path $debugApk) {
+        $apkPath = [System.IO.Path]::GetFullPath($debugApk)
+    } else {
+        # Search recursively in outputs
+        $found = Get-ChildItem -Path (Join-Path $PSScriptRoot "../app/build/outputs/apk") -Filter "*.apk" -Recurse -File | Select-Object -First 1
+        if ($found) {
+            $apkPath = $found.FullName
+        } else {
+            Write-StatusBadge 'ERROR' "Could not find assembled APK in app/build/outputs/apk/"
+            exit 1
+        }
     }
 } else {
-    Write-StatusBadge "FETCH" "No build source specified; defaulting to --latest-main..."
+    Write-StatusBadge 'FETCH' "Retrieving latest verified build APK via GitHubArtifactHelper..."
     try {
-        $apkToDeploy = Get-LatestMainBuildApk
+        $apkPath = Get-LatestMainBuildApk
+        if ([string]::IsNullOrWhiteSpace($apkPath)) {
+            throw "Artifact retrieval returned empty or null path."
+        }
+        Write-StatusBadge 'FETCH' "Successfully resolved APK: $apkPath"
     } catch {
-        Write-StatusBadge "ERROR" "Failed to retrieve main artifact: $_"
-        Write-StatusBadge "DEPLOY" "Falling back to local compilation..."
-        $apkToDeploy = Invoke-LocalBuild
+        Write-StatusBadge 'ERROR' "Artifact retrieval failed: $_"
+        Write-StatusBadge 'DEPLOY' "Gracefully falling back to compiling locally via $gradlewCmd :app:assembleDebug..."
+        & $gradlewCmd :app:assembleDebug --build-cache --parallel
+        if ($LASTEXITCODE -ne 0) {
+            Write-StatusBadge 'ERROR' "Fallback Gradle compilation failed with exit code $LASTEXITCODE."
+            exit $LASTEXITCODE
+        }
+        $debugApk = Join-Path $PSScriptRoot "../app/build/outputs/apk/debug/app-debug.apk"
+        if (Test-Path $debugApk) {
+            $apkPath = [System.IO.Path]::GetFullPath($debugApk)
+        } else {
+            $found = Get-ChildItem -Path (Join-Path $PSScriptRoot "../app/build/outputs/apk") -Filter "*.apk" -Recurse -File | Select-Object -First 1
+            if ($found) {
+                $apkPath = $found.FullName
+            } else {
+                Write-StatusBadge 'ERROR' "Could not find assembled APK in app/build/outputs/apk/"
+                exit 1
+            }
+        }
     }
 }
 
-# 2. Check / Launch Emulator
-Write-StatusBadge "AVD" "Checking online Android devices..."
-$adbDevices = @()
+# 3. Deployment and launch
+Write-StatusBadge 'DEPLOY' "Deploying APK '$apkPath'..."
 try {
-    $adbDevices = @(adb devices 2>$null | Where-Object { $_ -match 'device$' -and $_ -notmatch 'List of' })
-} catch {}
-
-if ($adbDevices.Count -eq 0) {
-    Write-StatusBadge "AVD" "No running emulator found. Selecting preferred AVD..."
-    $avdName = Get-PreferredAvd
-    Write-StatusBadge "AVD" "Launching AVD: $avdName (Headless: $Headless)..."
-    
-    $emuArgs = @("-avd", $avdName, "-no-boot-anim", "-no-snapshot-save", "-gpu", "host", "-netdelay", "none", "-netspeed", "full")
-    if ($Headless) {
-        $emuArgs += "-no-window"
-    }
-
-    $emulatorCmd = if (Get-Command emulator -ErrorAction SilentlyContinue) { "emulator" } else { "emulator.exe" }
-    Start-Process -FilePath $emulatorCmd -ArgumentList ($emuArgs -join " ")
-
-    Write-StatusBadge "AVD" "Waiting for 3-stage boot sequencing lock..."
-    Wait-ForEmulatorBoot
-    Write-StatusBadge "AVD" "AVD boot completed and verified responsive."
-} else {
-    Write-StatusBadge "AVD" "Active Android device detected."
+    $null = Deploy-And-Launch-App -ApkPath $apkPath -ClearData:$ClearData
+} catch {
+    Write-StatusBadge 'ERROR' "Deployment failed: $_"
+    exit 1
 }
 
-# 3. Deploy APK
-Write-StatusBadge "DEPLOY" "Deploying APK ($apkToDeploy)..."
-Deploy-And-Launch-App -ApkPath $apkToDeploy -ClearData:$ClearData
-
-Write-StatusBadge "SUCCESS" "Application deployed and launched successfully!"
-Write-Host ""
-Write-Host "Logcat diagnostic monitoring hint:" -ForegroundColor Cyan
-Write-Host "  adb logcat -s CrossTrainingApp:* TimerService:*" -ForegroundColor Yellow
-Write-Host ""
+Write-StatusBadge 'SUCCESS' "CrossTraining application deployed and started successfully."
+Write-StatusBadge 'INFO' "Logcat monitor hint: adb logcat -s CrossTrainingApp:* TimerService:*"
+exit 0
