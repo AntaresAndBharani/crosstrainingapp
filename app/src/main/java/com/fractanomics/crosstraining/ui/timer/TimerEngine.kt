@@ -96,7 +96,7 @@ class TimerEngine(
     }
 
     fun skipRound() {
-        if (!_snapshot.value.isRunning && _snapshot.value.phase != TimerPhase.WORK && _snapshot.value.phase != TimerPhase.REST) return
+        if (!_snapshot.value.isRunning && _snapshot.value.phase != TimerPhase.WORK && _snapshot.value.phase != TimerPhase.REST && _snapshot.value.phase != TimerPhase.PREP) return
         advanceToNextPhaseOrRound()
     }
 
@@ -182,15 +182,42 @@ class TimerEngine(
     private fun advanceToNextPhaseOrRound() {
         val current = _snapshot.value
 
+        if (current.phase == TimerPhase.PREP) {
+            timerJob?.cancel()
+            val totalSecs = calculateInitialTotalSeconds(config)
+            val roundSecs = calculateInitialRoundSeconds(config)
+            val wasRunning = current.isRunning
+            _snapshot.value = current.copy(
+                phase = TimerPhase.WORK,
+                isRunning = wasRunning,
+                currentRound = 1,
+                totalRounds = config.totalRounds,
+                roundSecondsRemaining = roundSecs,
+                roundSecondsElapsed = 0,
+                roundTotalSeconds = roundSecs,
+                totalSecondsElapsed = 0,
+                totalSecondsRemaining = totalSecs,
+                targetRepsCurrentRound = 1
+            )
+            if (wasRunning) {
+                timerJob = scope.launch {
+                    runTimerLoop()
+                }
+            }
+            return
+        }
+
         when (config.mode) {
             TimerMode.TABATA -> {
                 if (current.phase == TimerPhase.WORK) {
                     // Transition WORK -> REST
+                    val remainingTotal = config.restSeconds + (config.totalRounds - current.currentRound) * (config.workSeconds + config.restSeconds)
                     _snapshot.value = current.copy(
                         phase = TimerPhase.REST,
                         roundSecondsRemaining = config.restSeconds,
                         roundSecondsElapsed = 0,
-                        roundTotalSeconds = config.restSeconds
+                        roundTotalSeconds = config.restSeconds,
+                        totalSecondsRemaining = remainingTotal
                     )
                 } else {
                     // Transition REST -> WORK (Next Round)
@@ -198,12 +225,14 @@ class TimerEngine(
                         finishTimer()
                     } else {
                         val nextRound = current.currentRound + 1
+                        val remainingTotal = (config.totalRounds - nextRound + 1) * (config.workSeconds + config.restSeconds)
                         _snapshot.value = current.copy(
                             phase = TimerPhase.WORK,
                             currentRound = nextRound,
                             roundSecondsRemaining = config.workSeconds,
                             roundSecondsElapsed = 0,
-                            roundTotalSeconds = config.workSeconds
+                            roundTotalSeconds = config.workSeconds,
+                            totalSecondsRemaining = remainingTotal
                         )
                     }
                 }
@@ -214,12 +243,14 @@ class TimerEngine(
                 } else {
                     val nextRound = current.currentRound + 1
                     val roundSecs = config.intervalSeconds
+                    val remainingTotal = (config.totalRounds - nextRound + 1) * roundSecs
                     _snapshot.value = current.copy(
                         phase = TimerPhase.WORK,
                         currentRound = nextRound,
                         roundSecondsRemaining = roundSecs,
                         roundSecondsElapsed = 0,
-                        roundTotalSeconds = roundSecs
+                        roundTotalSeconds = roundSecs,
+                        totalSecondsRemaining = remainingTotal
                     )
                 }
             }
@@ -229,13 +260,15 @@ class TimerEngine(
                 } else {
                     val nextRound = current.currentRound + 1
                     val roundSecs = 60 // Death By is 1 minute per round
+                    val remainingTotal = (config.totalRounds - nextRound + 1) * 60
                     _snapshot.value = current.copy(
                         phase = TimerPhase.WORK,
                         currentRound = nextRound,
                         roundSecondsRemaining = roundSecs,
                         roundSecondsElapsed = 0,
                         roundTotalSeconds = roundSecs,
-                        targetRepsCurrentRound = nextRound
+                        targetRepsCurrentRound = nextRound,
+                        totalSecondsRemaining = remainingTotal
                     )
                 }
             }
