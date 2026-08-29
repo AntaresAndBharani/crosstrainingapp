@@ -1,4 +1,4 @@
-﻿# Architecture & Engineering Standards (`.graph/architecture.md`)
+# Architecture & Engineering Standards (`.graph/architecture.md`)
 
 **Repository**: `AntaresAndBharani/crosstrainingapp`  
 **System**: CrossTraining Mobile Android Application (`com.fractanomics.crosstraining`)  
@@ -88,7 +88,7 @@ flowchart TD
 | **Cloud & Identity** | Firebase BoM + Play Services | Firebase BoM `33.9.0`, Play Services Auth `21.3.0`, Credentials `1.3.0` | Multi-environment Firestore schema, Google Sign-In, anonymous/email authentication, remote routine catalog. |
 | **Unit & Integration Testing** | JUnit 4 + Coroutines Test | JUnit `4.13.2`, `kotlinx-coroutines-test 1.9.0` | Fast, deterministic JVM unit tests for ViewModels, DAOs, parsers, services, and formatters. |
 | **End-to-End Testing** | Maestro UI Automation | Maestro CLI (`e2e/*.yaml`) | Declarative, cross-platform UI integration flows validating user journeys and visual snapshots. |
-| **CI/CD & Automation** | GitHub Actions Workflows | `.github/workflows/*.yml` | Automated PR verification (`build.yml`), snapshot APK generation, and release-signed production builds (`release.yml`). |
+| **CI/CD & Automation** | GitHub Actions Workflows | `.github/workflows/*.yml` | Automated PR verification (`build.yml`), multi-platform script verification matrix (`ubuntu-latest`, `windows-latest`), and release-signed production builds (`release.yml`). |
 
 ---
 
@@ -183,6 +183,8 @@ crosstrainingapp/
 │   │   ├── build.yml                     # PR build, script verification & unit test CI
 │   │   ├── release.yml                   # Production tag, release signing & APK publication
 │   │   ├── architect.yml                 # Autonomous living architecture synchronization
+│   │   ├── dev-test.yml                  # Automated subtask development and test execution
+│   │   ├── pr-review.yml                 # Autonomous pull request code review pipeline
 │   │   └── three-amigos.yml              # Autonomous story triage & test verification
 │   └── ISSUE_TEMPLATE/                   # Structured user story and subtask templates
 ├── .graph/                               # Living Architecture & Engineering Governance
@@ -273,15 +275,29 @@ crosstrainingapp/
 │           │   ├── components/           # AppNumericTextField Unit Tests
 │           │   ├── screens/              # Screen Migration Tests
 │           │   ├── theme/                # Theme Mode Tests
-│           │   └── timer/                # TimerEngine, TimerService & Teardown Tests
+│           │   └── timer/                # TimerEngine, TimerService, SharedTimerState & Teardown Tests
 │           └── util/                     # WorkoutParser & RepScheme Tests
 ├── e2e/                                  # Maestro E2E Integration Test Flows
 ├── gradle/                               # Gradle Wrapper & Version Catalog
 │   ├── libs.versions.toml                # Centralized dependency management
 │   └── wrapper/
 ├── scripts/                              # Developer & CI Automation Scripts
+│   ├── lib/                              # Shared script helper libraries (PrComment.ps1)
 │   ├── run-e2e-tests.ps1                 # Maestro E2E executor & artifact capturer
-│   └── tests/Invoke-ScriptTests.ps1      # Cross-platform script test harness
+│   ├── summarize-unit-tests.ps1          # JUnit XML parser & sticky comment publisher
+│   └── tests/                            # Script regression & unit test suite
+│       ├── ArchitectWorkflow.Schema.Tests.ps1
+│       ├── ArchitectWorkflow.Static.Tests.ps1
+│       ├── ArchitectWorkflow.SubIssues.Tests.ps1
+│       ├── Invoke-ScriptTests.ps1        # Cross-platform script test harness
+│       ├── InvokeScriptTests.Selftest.Tests.ps1
+│       ├── PostE2EEvidence.Tests.ps1
+│       ├── PrComment.Tests.ps1
+│       ├── ReleaseWorkflow.Static.Tests.ps1
+│       ├── SummarizeUnitTests.Cli.Tests.ps1
+│       ├── SummarizeUnitTests.Markdown.Tests.ps1
+│       ├── SummarizeUnitTests.Static.Tests.ps1
+│       └── TestHelpers.ps1
 ├── build.gradle.kts                      # Root Gradle build script
 ├── CHANGELOG.md                          # Historical record of changes (Keep a Changelog)
 ├── GEMINI.md                             # Agent workspace guidelines & quick commands
@@ -401,9 +417,10 @@ The application utilizes constructor injection wired via composition roots:
 1. **No Android Framework / UI Bleed into Domain Utilities**:
    - `WorkoutParser`, `RepScheme`, `ProgressAnalytics`, and `NumericInputSanitizer` must never import Android classes (`android.*`, `androidx.compose.*`).
    - All domain calculations must execute deterministically on any standard JVM.
-2. **Strict Unidirectional Data Flow (UDF)**:
+2. **Strict Unidirectional Data Flow (UDF) & No Circular Dependencies**:
    - Composables must never mutate ViewModel state or repository data directly.
    - Child components must not receive the `AppViewModel` instance directly; pass only the minimal required immutable state and event lambdas.
+   - Architectural layers must maintain strict inward dependency direction: Presentation -> Application -> Data -> Domain. No layer or module may introduce circular dependencies to its consumers.
 3. **Physical Database Isolation**:
    - Real user data and Demo data must never reside in the same SQLite file.
    - All persistence switches must route through `DataModeManager`.
@@ -426,6 +443,7 @@ The application utilizes constructor injection wired via composition roots:
 | **Framework Bleed into Domain** | Importing Android `Context` or Compose `State` inside `WorkoutParser` or `ProgressAnalytics`. | Keep domain modules pure Kotlin; perform context resolution and formatting in the Presentation layer. |
 | **Mixed Real & Demo Records** | Flagging demo rows with an `isDemo` boolean in the production database. | Physical database isolation via `DataModeManager` pointing to separate SQLite files. |
 | **Hardcoded Machine Paths in Gradle** | Adding local Windows `org.gradle.java.home` to repository `gradle.properties`. | Machine-specific paths belong in `~/.gradle/gradle.properties`; keep repository configuration portable. |
+| **Circular Module or Package References** | Circular dependencies between domain models, UI viewmodels, and data services. | Adhere to concentric inward Clean Architecture dependency paths. |
 
 ---
 
@@ -446,4 +464,4 @@ When implementing features, refactoring subsystems, or updating architecture:
    - Open a Pull Request on GitHub with a comprehensive Mission Plan description.
 5. **Remote CI / CD Quality Gate (100% Green)**:
    - Verify that all GitHub Actions CI checks (`build.yml`, `release.yml`) pass with zero errors.
-   - Confirm that the PR Snapshot build artifact (`crosstraining-snapshot.apk`) is published before merging.
+   - Confirm that PR status checks are 100% passing before merging.
