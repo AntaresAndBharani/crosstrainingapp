@@ -232,7 +232,6 @@ class AppNumericTextFieldTest {
         val parsed = filtered.toDoubleOrNull()
         assertEquals(0.75, parsed)
     }
-    }
 
     // =========================================================================
     // Schemes, Ranges, and Negative Support
