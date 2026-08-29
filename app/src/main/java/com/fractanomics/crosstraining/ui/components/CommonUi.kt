@@ -8,12 +8,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -23,8 +27,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
@@ -156,6 +162,8 @@ object NumericInputSanitizer {
             return if (clamped == parsed) {
                 if (trimmed.startsWith("0") && trimmed.length > 1 && trimmed[1] != '.') {
                     if (clamped % 1.0 == 0.0) clamped.toLong().toString() else clamped.toString()
+                } else if (trimmed.endsWith(".")) {
+                    if (clamped % 1.0 == 0.0) clamped.toLong().toString() else clamped.toString()
                 } else {
                     trimmed
                 }
@@ -192,6 +200,7 @@ fun AppNumericTextField(
     placeholder: @Composable (() -> Unit)? = null,
     leadingIcon: @Composable (() -> Unit)? = null,
     trailingIcon: @Composable (() -> Unit)? = null,
+    textStyle: TextStyle = LocalTextStyle.current,
     minValue: Double? = null,
     maxValue: Double? = null,
     allowDecimals: Boolean = false,
@@ -203,7 +212,10 @@ fun AppNumericTextField(
     enabled: Boolean = true,
     readOnly: Boolean = false,
     singleLine: Boolean = true,
-    isError: Boolean = false
+    isError: Boolean = false,
+    isBasic: Boolean = false,
+    shape: Shape = OutlinedTextFieldDefaults.shape,
+    colors: TextFieldColors = OutlinedTextFieldDefaults.colors()
 ) {
     val focusManager = LocalFocusManager.current
     var isFocused by remember { mutableStateOf(false) }
@@ -241,66 +253,136 @@ fun AppNumericTextField(
         onValueChange(committed)
     }
 
-    OutlinedTextField(
-        value = textFieldValue,
-        onValueChange = { newTfv ->
-            val filtered = NumericInputSanitizer.filterInput(
-                text = newTfv.text,
-                allowDecimals = allowDecimals,
-                allowNegative = allowNegative,
-                allowScheme = allowScheme,
-                allowRangeOrList = allowRangeOrList
-            )
+    if (isBasic) {
+        Box(
+            modifier = modifier.onFocusChanged { focusState ->
+                val wasFocused = isFocused
+                isFocused = focusState.isFocused
+                if (focusState.isFocused && !wasFocused) {
+                    textFieldValue = textFieldValue.copy(
+                        selection = TextRange(0, textFieldValue.text.length)
+                    )
+                } else if (!focusState.isFocused && wasFocused) {
+                    commitValue()
+                }
+            },
+            contentAlignment = Alignment.Center
+        ) {
+            BasicTextField(
+                value = textFieldValue,
+                onValueChange = { newTfv ->
+                    val filtered = NumericInputSanitizer.filterInput(
+                        text = newTfv.text,
+                        allowDecimals = allowDecimals,
+                        allowNegative = allowNegative,
+                        allowScheme = allowScheme,
+                        allowRangeOrList = allowRangeOrList
+                    )
 
-            val updatedTfv = if (filtered != newTfv.text) {
-                val newCursor = filtered.length.coerceAtMost(newTfv.selection.end)
-                newTfv.copy(text = filtered, selection = TextRange(newCursor))
-            } else {
-                newTfv
-            }
+                    val updatedTfv = if (filtered != newTfv.text) {
+                        val newCursor = filtered.length.coerceAtMost(newTfv.selection.end)
+                        newTfv.copy(text = filtered, selection = TextRange(newCursor))
+                    } else {
+                        newTfv
+                    }
 
-            textFieldValue = updatedTfv
-            onValueChange(updatedTfv.text)
-        },
-        modifier = modifier.onFocusChanged { focusState ->
-            val wasFocused = isFocused
-            isFocused = focusState.isFocused
-            if (focusState.isFocused && !wasFocused) {
-                textFieldValue = textFieldValue.copy(
-                    selection = TextRange(0, textFieldValue.text.length)
+                    textFieldValue = updatedTfv
+                    onValueChange(updatedTfv.text)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = enabled,
+                readOnly = readOnly,
+                singleLine = singleLine,
+                textStyle = textStyle,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = when {
+                        allowScheme || allowRangeOrList -> KeyboardType.Text
+                        allowDecimals -> KeyboardType.Decimal
+                        else -> KeyboardType.Number
+                    },
+                    imeAction = imeAction
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        commitValue()
+                        focusManager.clearFocus()
+                        onImeAction?.invoke()
+                    },
+                    onNext = {
+                        commitValue()
+                        onImeAction?.invoke()
+                    }
                 )
-            } else if (!focusState.isFocused && wasFocused) {
-                commitValue()
+            )
+            if (textFieldValue.text.isEmpty() && placeholder != null) {
+                placeholder()
             }
-        },
-        label = label,
-        placeholder = placeholder,
-        leadingIcon = leadingIcon,
-        trailingIcon = trailingIcon,
-        enabled = enabled,
-        readOnly = readOnly,
-        singleLine = singleLine,
-        isError = isError,
-        keyboardOptions = KeyboardOptions(
-            keyboardType = when {
-                allowScheme || allowRangeOrList -> KeyboardType.Text
-                allowDecimals -> KeyboardType.Decimal
-                else -> KeyboardType.Number
+        }
+    } else {
+        OutlinedTextField(
+            value = textFieldValue,
+            onValueChange = { newTfv ->
+                val filtered = NumericInputSanitizer.filterInput(
+                    text = newTfv.text,
+                    allowDecimals = allowDecimals,
+                    allowNegative = allowNegative,
+                    allowScheme = allowScheme,
+                    allowRangeOrList = allowRangeOrList
+                )
+
+                val updatedTfv = if (filtered != newTfv.text) {
+                    val newCursor = filtered.length.coerceAtMost(newTfv.selection.end)
+                    newTfv.copy(text = filtered, selection = TextRange(newCursor))
+                } else {
+                    newTfv
+                }
+
+                textFieldValue = updatedTfv
+                onValueChange(updatedTfv.text)
             },
-            imeAction = imeAction
-        ),
-        keyboardActions = KeyboardActions(
-            onDone = {
-                commitValue()
-                focusManager.clearFocus()
-                onImeAction?.invoke()
+            modifier = modifier.onFocusChanged { focusState ->
+                val wasFocused = isFocused
+                isFocused = focusState.isFocused
+                if (focusState.isFocused && !wasFocused) {
+                    textFieldValue = textFieldValue.copy(
+                        selection = TextRange(0, textFieldValue.text.length)
+                    )
+                } else if (!focusState.isFocused && wasFocused) {
+                    commitValue()
+                }
             },
-            onNext = {
-                commitValue()
-                onImeAction?.invoke()
-            }
+            label = label,
+            placeholder = placeholder,
+            leadingIcon = leadingIcon,
+            trailingIcon = trailingIcon,
+            textStyle = textStyle,
+            shape = shape,
+            colors = colors,
+            enabled = enabled,
+            readOnly = readOnly,
+            singleLine = singleLine,
+            isError = isError,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = when {
+                    allowScheme || allowRangeOrList -> KeyboardType.Text
+                    allowDecimals -> KeyboardType.Decimal
+                    else -> KeyboardType.Number
+                },
+                imeAction = imeAction
+            ),
+            keyboardActions = KeyboardActions(
+                onDone = {
+                    commitValue()
+                    focusManager.clearFocus()
+                    onImeAction?.invoke()
+                },
+                onNext = {
+                    commitValue()
+                    onImeAction?.invoke()
+                }
+            )
         )
-    )
+    }
 }
 
 /**
@@ -315,13 +397,17 @@ fun AppNumericTextField(
     placeholder: @Composable (() -> Unit)? = null,
     leadingIcon: @Composable (() -> Unit)? = null,
     trailingIcon: @Composable (() -> Unit)? = null,
+    textStyle: TextStyle = LocalTextStyle.current,
     minValue: Int = 0,
     maxValue: Int = Int.MAX_VALUE,
     imeAction: ImeAction = ImeAction.Done,
     onImeAction: (() -> Unit)? = null,
     enabled: Boolean = true,
     singleLine: Boolean = true,
-    isError: Boolean = false
+    isError: Boolean = false,
+    isBasic: Boolean = false,
+    shape: Shape = OutlinedTextFieldDefaults.shape,
+    colors: TextFieldColors = OutlinedTextFieldDefaults.colors()
 ) {
     AppNumericTextField(
         value = value.toString(),
@@ -334,6 +420,7 @@ fun AppNumericTextField(
         placeholder = placeholder,
         leadingIcon = leadingIcon,
         trailingIcon = trailingIcon,
+        textStyle = textStyle,
         minValue = minValue.toDouble(),
         maxValue = maxValue.toDouble(),
         allowDecimals = false,
@@ -341,7 +428,10 @@ fun AppNumericTextField(
         onImeAction = onImeAction,
         enabled = enabled,
         singleLine = singleLine,
-        isError = isError
+        isError = isError,
+        isBasic = isBasic,
+        shape = shape,
+        colors = colors
     )
 }
 
@@ -357,13 +447,17 @@ fun AppNumericTextField(
     placeholder: @Composable (() -> Unit)? = null,
     leadingIcon: @Composable (() -> Unit)? = null,
     trailingIcon: @Composable (() -> Unit)? = null,
+    textStyle: TextStyle = LocalTextStyle.current,
     minValue: Double = 0.0,
     maxValue: Double = Double.MAX_VALUE,
     imeAction: ImeAction = ImeAction.Done,
     onImeAction: (() -> Unit)? = null,
     enabled: Boolean = true,
     singleLine: Boolean = true,
-    isError: Boolean = false
+    isError: Boolean = false,
+    isBasic: Boolean = false,
+    shape: Shape = OutlinedTextFieldDefaults.shape,
+    colors: TextFieldColors = OutlinedTextFieldDefaults.colors()
 ) {
     val displayValue = value?.let {
         if (it % 1.0 == 0.0) it.toLong().toString() else it.toString()
@@ -380,6 +474,7 @@ fun AppNumericTextField(
         placeholder = placeholder,
         leadingIcon = leadingIcon,
         trailingIcon = trailingIcon,
+        textStyle = textStyle,
         minValue = minValue,
         maxValue = maxValue,
         allowDecimals = true,
@@ -387,6 +482,9 @@ fun AppNumericTextField(
         onImeAction = onImeAction,
         enabled = enabled,
         singleLine = singleLine,
-        isError = isError
+        isError = isError,
+        isBasic = isBasic,
+        shape = shape,
+        colors = colors
     )
 }
