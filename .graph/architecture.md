@@ -1,375 +1,379 @@
-# Architecture & Engineering Standards (`.graph/architecture.md`)
+﻿# CrossTraining App — System Architecture & Standards
 
-**Repository**: `AntaresAndBharani/crosstrainingapp`  
-**System**: CrossTraining Mobile Application (`com.fractanomics.crosstraining`)  
-**Status**: Living Architecture Standard (Continuously Synchronized)  
-**Target Platform**: Android 15 (API 35) | Kotlin 2.0.21 | JVM 17  
+## System Overview & Technology Stack
 
----
-
-## 🏛️ System Overview & Technology Stack
-
-### System Overview
-`crosstrainingapp` is a modern, offline-first native Android application engineered for elite strength and conditioning athletes, coaches, and functional fitness practitioners. The platform delivers real-time workout tracking, multi-block training logging, cycle periodization, 1RM (Rep-Max) analytics, background interval timers, and cloud-synced workout sharing.
-
-The architecture emphasizes **Zero-Latency Local Persistence**, **Unidirectional Data Flow (UDF)**, and **Strict Sandbox Isolation**:
-1. **Local-First Single Source of Truth**: All operational state and workout history live in a high-performance SQLite database via Room with reactive Kotlin `Flow` streams.
-2. **Dual-Database Mode Architecture**: An isolated physical database switching mechanism allows users to explore complete sample datasets (`crosstraining-demo.db`) without mutating production user records (`crosstraining.db`).
-3. **Continuous Background Interval Engine**: A robust foreground service (`TimerService`) with `MediaStyle` notifications and audio/haptic cues operates independently of UI lifecycle states.
-4. **Cloud Synchronization & Federation**: Asynchronous sync with Firebase Firestore and Authentication (including Google Credential Manager), isolated by deployment environment (`snapshot` vs `production`).
-
-```mermaid
-flowchart TD
-    subgraph UI_Layer ["Presentation & UI Layer (Jetpack Compose + Material 3)"]
-        Activity["MainActivity (Single Activity + Edge-to-Edge)"]
-        NavHost["AppNavigation (NavHost / BottomBar / Drawer)"]
-        Screens["Compose Screens (Log, History, Progress, Cycles, Library, Timer, Profile)"]
-        VM["AppViewModel (StateFlow & Coroutine Orchestration)"]
-    end
-
-    subgraph Background_Subsystem ["Background & Hardware Execution Subsystem"]
-        TimerServ["TimerService (Foreground Service + MediaStyle Notification)"]
-        Teardown["TimerTeardownController (Lifecycle & Notification Detach)"]
-        Engine["TimerEngine (Audio ToneGenerator & Vibrator Manager)"]
-    end
-
-    subgraph Data_Layer ["Data & Persistence Layer (Repository Pattern)"]
-        DMM["DataModeManager (Real vs Demo DB & Preference Store)"]
-        Repo["Repository (Transaction Coordination & Relational Cascades)"]
-        RoomDB[("Room Database (SQLite WAL: crosstraining.db / crosstraining-demo.db)")]
-        DAOs["DAOs (Cycle, Exercise, Routine, Session, Block, RepMax, CycleGoal)"]
-    end
-
-    subgraph Cloud_Layer ["Cloud & Identity Services (Firebase)"]
-        CloudSync["UserCloudSyncManager (Bidirectional Environment-Scoped Sync)"]
-        CommunitySync["FirebaseSyncManager (Public Workout Federation)"]
-        FirebaseAuth["Firebase Auth & Android Credential Manager"]
-    end
-
-    Activity --> NavHost
-    NavHost --> Screens
-    Screens <--> VM
-    VM <--> DMM
-    DMM <--> Repo
-    Repo <--> RoomDB
-    RoomDB <--> DAOs
-    Screens -.-> TimerServ
-    TimerServ <--> Teardown
-    TimerServ <--> Engine
-    VM <--> CloudSync
-    VM <--> CommunitySync
-    CloudSync <--> FirebaseAuth
-```
-
----
-
-### Technology Stack Matrix
-
-| Layer / Concern | Technology | Version / Standard | Rationale |
-|---|---|---|---|
-| **Platform SDK** | Android SDK | `compileSdk = 35`, `targetSdk = 35`, `minSdk = 26` | Modern Android 15 capabilities, predictive back gesture support, and edge-to-edge system bars. |
-| **Runtime & Language** | Kotlin | `2.0.21` (JVM 17 Target) | Kotlin 2.0 compiler pipeline, modern language idioms, fast compile times, and full JVM 17 standard library features. |
-| **Build & Annotation** | Gradle Kotlin DSL + KSP | AGP `8.7.2`, KSP `2.0.21-1.0.28` | Declarative `build.gradle.kts` configuration, type-safe version catalogs (`libs.versions.toml`), and fast Kotlin Symbol Processing for Room. |
-| **UI Toolkit** | Jetpack Compose | Compose BOM `2024.10.01` (Kotlin Compose Plugin) | Declarative reactive UI, zero XML view overhead, fine-grained recomposition, and native dynamic color theming. |
-| **Design System** | Material 3 (M3) | `androidx.compose.material3:material3` | Material You tokens, dynamic light/dark theming (`AppThemeMode`), accessible typography, and standard components. |
-| **Concurrency & Streams** | Kotlin Coroutines & Flow | `kotlinx-coroutines 1.9.0` | Non-blocking asynchronous programming, structured concurrency with `viewModelScope`, and hot/cold reactive data streams. |
-| **State Observation** | Lifecycle Compose | `lifecycle-runtime-compose:2.8.7` | `collectAsStateWithLifecycle()` ensures zero UI state collection when composables are inactive or backgrounded. |
-| **Local Database** | Room | `room 2.6.1` (KSP) | Type-safe SQL abstraction, reactive Flow queries, ACID transaction support (`withTransaction`), and schema migration safety. |
-| **Background Execution** | Android Foreground Service + MediaStyle | `androidx.media:media:1.7.0` | Uninterruptible timer execution during device lock/backgrounding with lock-screen MediaSession transport controls. |
-| **Cloud & Federation** | Firebase BoM | `firebase-bom:33.9.0` (Firestore, Auth, Analytics) | Scalable NoSQL cloud backup, real-time sync across devices, anonymous auth fallback, and routine sharing. |
-| **Identity & Authentication** | Credential Manager | `androidx.credentials:1.3.0`, `googleid:1.1.1` | Passkey-ready, seamless Google One-Tap sign-in with persistent local session caching. |
-| **Testing Framework** | JUnit 4 + Coroutines Test + Pester | `junit:4.13.2`, `kotlinx-coroutines-test:1.9.0` | Comprehensive JVM unit testing for viewmodels, parsers, and timer state machines; Pester for CI automation scripts. |
-
----
-
-## 🧱 Layer Boundaries & Clean Architecture (Separation of Concerns)
-
-The codebase strictly adheres to **Clean Architecture** and **Unidirectional Data Flow (UDF)**. Dependencies strictly flow inward: **UI Layer -> ViewModel -> Repository -> Room / Remote Data Sources**.
+**CrossTraining** (`com.fractanomics.crosstraining`) is an offline-first Android application engineered for CrossFit athletes, strength trainees, and strength & conditioning coaches. The platform enables comprehensive tracking of strength progressions, complex barbell routines, periodized training cycles, monostructural conditioning metrics, and workout interval timers.
 
 ```mermaid
 graph TD
-    subgraph Presentation_Layer ["Layer 3: Presentation & UI Layer"]
-        Views["Jetpack Compose UI (Screens & Shared Components)"]
-        Navigation["AppNavigation & NavigationIntentHandler"]
-        ViewModel["AppViewModel (StateFlow, viewModelScope)"]
-    end
+    UI[Presentation Layer: Jetpack Compose / Material 3]
+    VM[ViewModel: AppViewModel & StateFlow]
+    DM[DataModeManager: Mode Routing & Preferences]
+    Repo[Repository: Single Source of Truth]
+    Room[(Room Database: SQLite Local Persistence)]
+    FB[(Firebase: Auth, Firestore & Cloud Sync)]
+    Timer[Timer Subsystem: TimerEngine & Foreground Service]
 
-    subgraph Timer_Subsystem ["Layer 2b: Foreground & Timer Services"]
-        Service["TimerService (MediaSessionCompat)"]
-        TeardownCtrl["TimerTeardownController"]
-        TimerCore["TimerEngine (ToneGenerator, Vibrator)"]
-    end
-
-    subgraph Data_Layer ["Layer 2a: Data & Persistence Layer"]
-        ModeManager["DataModeManager (DB Switcher & Prefs)"]
-        RepositoryImpl["Repository (Transactions & Coordination)"]
-        RoomEntities["Room DAOs & AppDatabase"]
-        FirebaseSync["UserCloudSyncManager & FirebaseSyncManager"]
-    end
-
-    subgraph Domain_Core ["Layer 1: Domain Models & Core Utilities"]
-        Models["Domain Models (Cycle, Routine, Session, RepMax, BlockSet)"]
-        Parsers["Pure Parsers (WorkoutParser, RepScheme)"]
-        ValueTypes["Value Objects & Enums (BlockKind, MetricType, UserRole)"]
-    end
-
-    Views --> ViewModel
-    Navigation --> ViewModel
-    ViewModel --> ModeManager
-    ModeManager --> RepositoryImpl
-    RepositoryImpl --> RoomEntities
-    RepositoryImpl --> Models
-    ViewModel --> FirebaseSync
-    Views -.-> Service
-    Service --> TeardownCtrl
-    Service --> TimerCore
-    RepositoryImpl --> Parsers
+    UI -->|User Events & Intent Actions| VM
+    VM -->|Collects StateFlow| UI
+    VM -->|Data Operations| Repo
+    VM -->|Mode & Role Management| DM
+    DM -->|Routes Active DB| Repo
+    Repo -->|Atomic SQL Transactions| Room
+    Repo -->|Bi-Directional Sync| FB
+    UI <-->|Observes & Controls| Timer
+    Timer -.->|Foreground Media Notification| UI
 ```
 
-### Layer Responsibilities
+### Technology Stack & Framework Specifications
 
-#### 1. Domain & Core Utilities Layer (`data.model`, `util`)
-- **Entities & Relations**: Plain Kotlin data classes (`Cycle`, `Exercise`, `Routine`, `Session`, `SessionBlock`, `BlockSet`, `RepMax`, `CycleGoal`).
-- **Composite Relations**: Read-only models combining parent-child relations with Room annotations (`RoutineWithBlocks`, `SessionWithBlocks`, `CycleWithGoals`).
-- **Pure Functional Logic**:
-  - `WorkoutParser`: Tokenizes and parses freeform workout shorthand (e.g. `"Snatch 5x3 @ 60, 65, 70 kg E2MOM"`) into structured blocks, exercises, and sets without side effects.
-  - `RepScheme`: Evaluates rep schemes (waves, fixed reps, NxM sequences) into discrete set lists.
-- **Constraints**: **Zero dependencies** on Android UI packages, ViewModels, or Room DAOs.
-
-#### 2. Data & Persistence Layer (`data`, `data.dao`, `data.firebase`)
-- **Database & DAOs**: Room SQLite database with Write-Ahead Logging (WAL). DAOs return cold `Flow<T>` for observation and suspend functions for atomic single-shot operations.
-- **Repository (`Repository.kt`)**:
-  - The single source of truth and entry point for all data operations.
-  - Encapsulates database transactions via `db.withTransaction { ... }`.
-  - Enforces referential integrity on cascaded writes (e.g., sessions -> session blocks -> block sets -> rep maxes).
-  - Handles CSV snapshot serialization and deserialization (`BackupCsv`).
-- **DataModeManager (`DataModeManager.kt`)**:
-  - Encapsulates dynamic switching between real database (`crosstraining.db`) and demo sandbox (`crosstraining-demo.db`).
-  - Exposes `repositoryFlow: Flow<Repository>` to automatically re-bind all downstream UI state flows upon mode toggle.
-  - Manages persistent app preferences (`SharedPreferences`): theme mode, user role (`ATHLETE` vs `COACH`), auth tokens.
-- **Cloud Federation (`data.firebase`)**:
-  - `UserCloudSyncManager`: Handles user-scoped bidirectional document synchronization across Firebase Firestore partitioned by environment namespaces.
-  - `FirebaseSyncManager`: Manages routine publishing and code-based workout imports.
-
-#### 3. Presentation & UI Layer (`ui`, `ui.screens`, `ui.components`, `ui.navigation`, `ui.theme`)
-- **Single Activity Architecture**: `MainActivity` serves as the root window host, initializing edge-to-edge styling, root theme, and navigation.
-- **Unified ViewModel (`AppViewModel.kt`)**:
-  - Central reactive hub. Uses `flatMapLatest` on `data.repositoryFlow` to dynamically switch data sources without recreating ViewModels.
-  - Emits immutable `StateFlow<T>` models wrapped in `stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), default)`.
-- **Navigation (`AppNavigation.kt`, `NavigationIntentHandler.kt`)**:
-  - Manages bottom bar tabs (`BottomDestination`) and drawer items (`DrawerItem`).
-  - Supports cold/warm intent routing from notification taps directly to targeted destinations (e.g. Timer screen).
-- **Design System & Components (`ui.components`, `ui.theme`)**:
-  - `AppNumericTextField`: Standardized numeric input component providing auto-selection on focus, deferred commit on blur, decimal formatting, and error validation.
-  - `LineChart`: Canvas-based data visualization for strength progression and volume tracking.
-
-#### 4. Background Execution & Timer Subsystem (`ui.timer`)
-- **TimerService (`TimerService.kt`)**:
-  - Foreground service running an interactive `MediaStyle` notification.
-  - Exposes pending intents for Play/Pause, Next Round, and Stop directly from the Android lock screen.
-- **TimerTeardownController (`TimerTeardownController.kt`)**:
-  - Coordinates graceful foreground service detachment, notification cancellation, and `MediaSessionCompat` cleanup upon timer completion or stop.
-- **TimerEngine (`TimerEngine.kt`)**:
-  - Thread-safe workout timer state machine emitting immutable `TimerSnapshot` flows.
-  - Integrates low-latency audio tones (`ToneGenerator`) and multi-pattern haptics (`Vibrator` / `VibratorManager`).
+| Tier / Subsystem | Technology | Specification / Version | Architectural Role |
+|---|---|---|---|
+| **Language & Runtime** | Kotlin | 2.0.21 / JVM 17 (`compileOptions`, `kotlinOptions`) | Strongly-typed functional & object-oriented application core |
+| **Android SDK Target** | Android SDK | `minSdk 26`, `targetSdk 35`, `compileSdk 35` | Modern Android 15 platform compliance with Android 8.0+ backwards compatibility |
+| **UI Toolkit** | Jetpack Compose | Compose BOM `2024.10.01`, Material 3 | Declarative, reactive, component-driven user interface |
+| **Navigation** | Navigation Compose | `2.8.4` (`androidx.navigation.compose`) | Single-Activity declarative navigation host and deep-linking |
+| **Persistence** | AndroidX Room | `2.6.1` with KSP `2.0.21-1.0.28` | Local relational SQLite database with typed DAOs and schema migrations |
+| **Asynchronous & Flow** | Kotlin Coroutines & Flow | `1.9.0` (`StateFlow`, `SharedFlow`, `Flow`) | Structured concurrency, reactive data streaming, non-blocking I/O |
+| **Lifecycle Integration** | AndroidX Lifecycle | `2.8.7` (`lifecycle-runtime-compose`, `viewmodel-compose`) | Lifecycle-aware UI state collection (`collectAsStateWithLifecycle`) |
+| **Identity & Cloud Sync** | Firebase & Google ID | Firebase BoM `33.9.0`, Play Services Auth `21.3.0`, Credential Manager `1.3.0` | Multi-tenant cloud synchronization, user authentication, and workout sharing |
+| **Media & Peripherals** | AndroidX Media & Audio | `androidx.media:1.7.0`, `ToneGenerator`, `VibratorManager` | Foreground MediaStyle notifications, audio interval cues, and haptics |
+| **Build & Tooling** | Gradle Kotlin DSL | AGP `8.7.2`, Gradle Wrapper | Automated reproducible build pipelines, signing, and asset packaging |
 
 ---
 
-## 📁 Directory & Package Structure Guidelines
+## Layer Boundaries & Clean Architecture (Domain, Data, Presentation/UI separation of concerns)
 
-```text
-com.fractanomics.crosstraining/
-├── CrossTrainingApp.kt              # Application subclass (Application Context & Lazy Singletons)
-├── MainActivity.kt                  # Single Activity host (Edge-to-Edge, Intent routing, Theme wrapper)
-│
-├── data/                            # DATA LAYER: Persistence, Repositories, and Core Data Management
-│   ├── AppDatabase.kt               # Room Database configuration, entity registry, and migration logic
-│   ├── Backup.kt                    # CSV import/export encoder and decoder utilities
-│   ├── Converters.kt                # Room TypeConverters (LocalDate, Enums, Lists)
-│   ├── DataModeManager.kt           # Real vs Demo DB switcher, Preferences & Session storage
-│   ├── DemoData.kt                  # Deterministic demo dataset generator
-│   ├── Repository.kt                # Master data repository (Single point of database access)
-│   ├── SeedData.kt                  # Initial starter exercise library and standard routines
-│   │
-│   ├── dao/                         # Room Data Access Objects (Reactive Flows & CRUD queries)
-│   │   ├── BlockDao.kt              # Session blocks and block sets DAO
-│   │   ├── CycleDao.kt              # Macro/mesocycle periodization DAO
-│   │   ├── CycleGoalDao.kt          # Target weight and rep goals DAO
-│   │   ├── ExerciseDao.kt           # Movement and exercise catalog DAO
-│   │   ├── RepMaxDao.kt             # 1RM and historical personal records DAO
-│   │   ├── RoutineDao.kt            # Routine templates and routine blocks DAO
-│   │   └── SessionDao.kt            # Logged workout sessions DAO
-│   │
-│   ├── firebase/                    # CLOUD & FEDERATION: Firebase Auth and Firestore Cloud Sync
-│   │   ├── FirebaseSyncManager.kt   # Public routine sharing and community workout discovery
-│   │   └── UserCloudSyncManager.kt  # Environment-partitioned user backup and sync manager
-│   │
-│   └── model/                       # DOMAIN MODELS: Plain Kotlin Entities and Relations
-│       ├── BlockSet.kt              # Individual work/warmup/failed set entity
-│       ├── Cycle.kt                 # Training cycle entity
-│       ├── CycleGoal.kt             # Cycle target goal entity
-│       ├── Enums.kt                 # BlockKind, ExerciseCategory, MetricType
-│       ├── Exercise.kt              # Exercise catalog entity
-│       ├── Relations.kt             # Composite entities (RoutineWithBlocks, SessionWithBlocks, CycleWithGoals)
-│       ├── RepMax.kt                # Repetition maximum entity
-│       ├── Routine.kt               # Reusable routine template entity
-│       ├── RoutineBlock.kt          # Block definition within a routine
-│       ├── Session.kt               # Logged training session entity
-│       ├── SessionBlock.kt          # Individual block within a logged session
-│       └── UserRole.kt              # User permission profile (Athlete vs Coach)
-│
-├── ui/                              # PRESENTATION LAYER: UI, ViewModels, and State Management
-│   ├── AppViewModel.kt              # Central ViewModel coordinating reactive UI state and data operations
-│   ├── Format.kt                    # Number, date, weight, and duration formatting helpers
-│   ├── ProgressAnalytics.kt         # Volume calculation, 1RM progression, and analytics logic
-│   ├── SessionDraft.kt              # Editable draft state models for session logging
-│   │
-│   ├── components/                  # Reusable UI Widgets & Design System Components
-│   │   ├── AppNumericTextField.kt   # Standard numeric/decimal text field with select-all and deferred commit
-│   │   ├── CommonUi.kt              # Standard cards, badges, section headers, and chips
-│   │   ├── DateField.kt             # Interactive date picker field
-│   │   ├── Dropdown.kt              # Single and multi-select dropdown menus
-│   │   ├── LineChart.kt             # Custom Canvas line chart for 1RM and volume progression
-│   │   └── QuickAddWorkoutDialog.kt # Quick workout and exercise creation modal
-│   │
-│   ├── navigation/                  # Navigation & Routing Subsystem
-│   │   ├── AppNavigation.kt         # Compose NavHost, BottomNavigation bar, and Navigation Drawer
-│   │   └── NavigationIntentHandler.kt # Deep linking and notification intent dispatcher
-│   │
-│   ├── screens/                     # Feature Screens (Top-Level Composable Views)
-│   │   ├── CyclesScreen.kt          # Training cycle management and goal tracking view
-│   │   ├── HistoryScreen.kt         # Workout history calendar and session list view
-│   │   ├── LibraryScreen.kt         # Exercise and routine library view (with Coach tools)
-│   │   ├── LoginWelcomeScreen.kt    # Authentication, Google Sign-In, and Profile selection view
-│   │   ├── LogSessionScreen.kt      # Quick session logging view
-│   │   ├── ProfileScreen.kt         # User settings, theme mode, backup/restore, cloud sync view
-│   │   ├── ProgressScreen.kt        # Analytics, 1RM charts, and volume metrics view
-│   │   ├── SessionEditor.kt         # Comprehensive multi-block session creator/editor
-│   │   └── TimerScreen.kt           # Interval, EMOM, AMRAP, and For-Time workout timer view
-│   │
-│   ├── theme/                       # Design System & Theming Tokens
-│   │   ├── Color.kt                 # Color palette tokens (Dark and Light modes)
-│   │   ├── Theme.kt                 # CrossTrainingTheme Material 3 composable wrapper
-│   │   └── Type.kt                  # Typography definitions
-│   │
-│   └── timer/                       # Timer Subsystem & Background Hardware Engine
-│       ├── TimerEngine.kt           # Core workout timer state machine and ticker
-│       ├── TimerEngineProvider.kt   # Singleton provider for shared timer instance
-│       ├── TimerNotificationFormatter.kt # Notification title, text, and subtext formatter
-│       ├── TimerService.kt          # MediaStyle Foreground Service
-│       ├── TimerTeardownController.kt # Deterministic service teardown and notification cleanup
-│       └── WorkoutTimer.kt          # Timer configuration and snapshot data models
-│
-└── util/                            # CROSS-CUTTING DOMAIN UTILITIES
-    ├── RepScheme.kt                 # Wave and fixed rep scheme parser and evaluator
-    └── WorkoutParser.kt             # Freeform text tokenizer and workout syntax parser
-```
-
----
-
-## 🎨 Design Patterns, State Management & Dependency Injection
-
-### 1. Unidirectional Data Flow (UDF) & State Hoisting
-State always flows down to composables, and user events always flow up to the ViewModel:
+The codebase strictly adheres to **Clean Architecture** principles and **Unidirectional Data Flow (UDF)**. Dependencies strictly point inward toward domain models and business logic.
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant Composable as Jetpack Compose Screen
-    participant VM as AppViewModel
-    participant Repo as Repository
-    participant DB as Room DB (SQLite)
+graph RL
+    subgraph Presentation ["Presentation Layer (ui)"]
+        UI_Screens[Compose Screens]
+        UI_Components[Reusable Components]
+        UI_VM[AppViewModel]
+        UI_Timer[Timer Engine & Service]
+    end
 
-    Composable->>VM: Collect state via collectAsStateWithLifecycle()
-    User->>Composable: User taps "Save Session"
-    Composable->>VM: viewModel.saveSession(draft)
-    VM->>Repo: repo.saveSession(session, blocks)
-    Repo->>DB: db.withTransaction { insert / cascade }
-    DB-->>Repo: SQLite Transaction Committed
-    DB-->>VM: Room invalidates table & emits updated Flow<List<SessionWithBlocks>>
-    VM-->>Composable: StateFlow emits new immutable UiState
-    Composable-->>User: Screen recomposes with updated session history
+    subgraph Data ["Data Layer (data)"]
+        D_Repo[Repository]
+        D_Mode[DataModeManager]
+        D_DAO[Room DAOs]
+        D_DB[AppDatabase]
+        D_Cloud[UserCloudSyncManager & FirebaseSyncManager]
+    end
+
+    subgraph Domain ["Domain & Utility Layer (util & data.model)"]
+        DOM_Models[Entities & Data Classes]
+        DOM_Enums[Enums & Schemes]
+        DOM_Utils[WorkoutParser & RepScheme]
+    end
+
+    Presentation --> Data
+    Presentation --> Domain
+    Data --> Domain
 ```
 
-### 2. Live Reactive Repository Switching (`flatMapLatest`)
-When the user toggles between Real and Demo data modes, the application updates all active UI flows live without recreating the ViewModel or restarting the Activity:
+### 1. Domain & Utility Layer (`com.fractanomics.crosstraining.util` & `data.model`)
+- **Responsibilities:**
+  - Contains core business entities (`Cycle`, `Session`, `Routine`, `Exercise`, `RepMax`, `BlockSet`), domain value objects, and enums (`BlockKind`, `MetricType`, `ExerciseCategory`, `UserRole`, `TimerMode`, `TimerPhase`).
+  - Encapsulates pure domain algorithms: `WorkoutParser` (free-text workout syntax parsing, rep-scheme extraction, movement extraction) and `RepScheme` (wave-loading validation and rep-count decomposition).
+- **Architectural Rules:**
+  - **Zero Platform Dependencies:** Must not import Android framework classes (`android.*`, `Context`, `View`, `Bundle`, Compose UI tokens).
+  - **Deterministic & Pure:** All functions must be deterministic, free of side-effects, and 100% unit-testable without Android mocks or robolectric runners.
+
+### 2. Data Layer (`com.fractanomics.crosstraining.data`)
+- **Responsibilities:**
+  - **Room Database & DAOs (`data.dao`):** Provides strongly-typed SQL mapping, foreign key constraints, cascading deletes, indexes, and reactive queries via Kotlin `Flow`.
+  - **Single Source of Truth (`Repository`):** Coordinates multi-entity transactional persistence using `db.withTransaction { ... }`. Encapsulates write-time business logic such as auto-creating exercises (`getOrCreateExercise`), synchronizing routine blocks, discovering new rep-maxes, and deduplicating routines.
+  - **Dual-Sandbox Routing (`DataModeManager`):** Seamlessly redirects repository bindings between the live database (`crosstraining.db`) and the disposable sample database (`crosstraining-demo.db`), guaranteeing that demo sessions cannot corrupt athlete history.
+  - **Cloud Synchronization (`data.firebase`):** Handles background synchronization of user data against partitioned Firestore documents (`UserCloudSyncManager`) and global community workout publishing via alphanumeric share codes (`FirebaseSyncManager`).
+  - **Backup & Migration Engine (`BackupCsv`, `AppDatabase.MIGRATION_*`):** Manages relational CSV serialization/deserialization and SQLite schema migrations (v1 through v5).
+- **Architectural Rules:**
+  - DAOs must remain package-private or accessible exclusively through `Repository`.
+  - All database writes, file I/O, and network operations must execute on background coroutine dispatchers (`Dispatchers.IO`).
+
+### 3. Presentation / UI Layer (`com.fractanomics.crosstraining.ui`)
+- **Responsibilities:**
+  - **State Orchestration (`AppViewModel`):** Serves as the central state holder for the UI. Binds reactive streams from `DataModeManager.repositoryFlow`, exposes lifecycle-safe `StateFlow<T>`, and receives user intents to trigger coroutine executions on `viewModelScope`.
+  - **Declarative Navigation (`ui.navigation`):** Defines top-level navigation routes (`BottomDestination`, `DrawerItem`), handles dynamic bottom bars based on user role (Athlete vs Coach), and processes external navigation intents via `NavigationIntentHandler`.
+  - **Stateful Screens & Stateless Content (`ui.screens`):** Implements clean separation between stateful container composables (which inject the ViewModel) and stateless presentation composables (which receive pure data classes and emit lambdas).
+  - **Design System & Components (`ui.components`, `ui.theme`):** Encapsulates Material 3 theme definitions, typography, dynamic color palettes, and robust UI primitives such as `AppNumericTextField` and `LineChart`.
+  - **Foreground Timer Subsystem (`ui.timer`):** Hoists `TimerEngine` to application scope, running tick loops independent of activity lifecycle, and binds to `TimerService` for MediaStyle notifications and hardware cues (audio/vibrations).
+- **Architectural Rules:**
+  - UI components must never instantiate or interact with Room DAOs or Firebase SDKs directly.
+  - State collection in Composables must always utilize `collectAsStateWithLifecycle()` to prevent background resource leaks.
+
+---
+
+## Directory & Package Structure Guidelines
+
+The directory structure enforces strict modular separation by technical concern and domain responsibility:
+
+```
+crosstrainingapp/
+├── app/
+│   ├── build.gradle.kts                          # App build configuration, dependencies, and signing configs
+│   ├── proguard-rules.pro                        # Proguard / R8 optimization rules
+│   └── src/
+│       ├── main/
+│       │   ├── AndroidManifest.xml               # App manifest, permissions, service & activity declarations
+│       │   └── java/com/fractanomics/crosstraining/
+│       │       ├── CrossTrainingApp.kt           # Application class & Composition Root (DataModeManager, TimerEngine)
+│       │       ├── MainActivity.kt               # Single Activity host with Edge-to-Edge & NavigationIntentHandler
+│       │       ├── data/
+│       │       │   ├── AppDatabase.kt            # Room database definition, type converters, & migrations (v1-v5)
+│       │       │   ├── Repository.kt             # Single Source of Truth repository with atomic transaction writes
+│       │       │   ├── DataModeManager.kt        # Dual-database routing (Live vs Demo) & persistent preferences
+│       │       │   ├── Backup.kt                 # Relational CSV export and import serialization engine
+│       │       │   ├── Converters.kt             # Room type converters (LocalDate, enums, primitives)
+│       │       │   ├── SeedData.kt               # Starter database seeding (exercises, routines, sample cycles)
+│       │       │   ├── DemoData.kt               # Isolated comprehensive demo dataset generator
+│       │       │   ├── dao/                      # Room Data Access Objects
+│       │       │   │   ├── BlockDao.kt           # Session blocks and block sets DAO
+│       │       │   │   ├── CycleDao.kt           # Training cycles DAO
+│       │       │   │   ├── CycleGoalDao.kt       # Periodization cycle goals DAO
+│       │       │   │   ├── ExerciseDao.kt        # Movement and exercise catalog DAO
+│       │       │   │   ├── RepMaxDao.kt          # Personal records & rep-max history DAO
+│       │       │   │   ├── RoutineDao.kt         # Routines and routine blocks DAO
+│       │       │   │   └── SessionDao.kt         # Logged workouts & session history DAO
+│       │       │   ├── firebase/                 # Cloud synchronization and remote identity
+│       │       │   │   ├── UserCloudSyncManager.kt # Firestore user data sync & Firebase Auth integration
+│       │       │   │   └── FirebaseSyncManager.kt  # Community workout sharing & lookup by share code
+│       │       │   └── model/                    # Relational Room entities, relations, & domain enums
+│       │       │       ├── BlockSet.kt           # Set-level entity (reps, weight, metricValue, warmup, failed)
+│       │       │       ├── Cycle.kt              # Periodized training cycle entity
+│       │       │       ├── CycleGoal.kt          # Target lift and rep-max goal entity
+│       │       │       ├── Enums.kt              # Domain enums (BlockKind, MetricType, ExerciseCategory)
+│       │       │       ├── Exercise.kt           # Exercise entity
+│       │       │       ├── Relations.kt          # Room 1-to-N relation models (CycleWithGoals, RoutineWithBlocks, SessionWithBlocks)
+│       │       │       ├── RepMax.kt             # Rep-max record entity
+│       │       │       ├── Routine.kt            # Routine template entity
+│       │       │       ├── RoutineBlock.kt       # Routine block template entity
+│       │       │       ├── Session.kt            # Logged training session entity
+│       │       │       ├── SessionBlock.kt       # Session block entity
+│       │       │       └── UserRole.kt           # User persona model (ATHLETE vs COACH)
+│       │       ├── ui/
+│       │       │   ├── AppViewModel.kt           # Unified UI ViewModel exposing StateFlows and dispatching actions
+│       │       │   ├── Format.kt                 # UI display formatting helpers (dates, weights, times, scores)
+│       │       │   ├── ProgressAnalytics.kt      # Rep-max calculation, volume progression, and PR charting models
+│       │       │   ├── SessionDraft.kt           # Ephemeral UI editing models for workout logging & editing
+│       │       │   ├── components/               # Reusable Jetpack Compose UI components
+│       │       │   │   ├── AppNumericTextField.kt# Resilient numeric input with select-all and deferred commit
+│       │       │   │   ├── CommonUi.kt           # Shared UI buttons, headers, cards, and modal sheets
+│       │       │   │   ├── DateField.kt          # Date picker field with Material 3 integration
+│       │       │   │   ├── Dropdown.kt           # Form dropdown selector
+│       │       │   │   ├── LineChart.kt          # Custom Canvas-rendered strength progression line chart
+│       │       │   │   └── QuickAddWorkoutDialog.kt # Modal dialog for quick workout insertion
+│       │       │   ├── navigation/               # Navigation topology & routing
+│       │       │   │   ├── AppNavigation.kt      # NavHost, BottomNavigationBar, and ModalNavigationDrawer
+│       │       │   │   └── NavigationIntentHandler.kt # Deep-link and notification intent routing handler
+│       │       │   ├── screens/                  # Top-level screen composables
+│       │       │   │   ├── CyclesScreen.kt       # Training cycle management & periodization planning
+│       │       │   │   ├── HistoryScreen.kt      # Historical training session log & search
+│       │       │   │   ├── LibraryScreen.kt      # Movement catalog & routine builder
+│       │       │   │   ├── LoginWelcomeScreen.kt # Authentication, Google Sign-In, & Guest mode gate
+│       │       │   │   ├── LogSessionScreen.kt   # Daily workout logging screen
+│       │       │   ├── ProfileScreen.kt          # User account, theme toggle, and CSV backup/restore
+│       │       │   ├── ProgressScreen.kt         # Personal record analytics & progression charts
+│       │       │   ├── SessionEditor.kt          # Comprehensive session editor with set spreadsheet
+│       │       │   └── TimerScreen.kt            # Workout interval timer configuration & active display
+│       │       ├── theme/                        # Material Design 3 theme tokens
+│       │       │   ├── Color.kt                  # App color palettes
+│       │       │   ├── Theme.kt                  # CrossTrainingTheme wrapper with light/dark/system support
+│       │       │   └── Type.kt                   # Typography specifications
+│       │       └── timer/                        # Foreground Timer Subsystem
+│       │           ├── NotificationPermissionHelper.kt # Runtime notification permission check & launch helper
+│       │           ├── TimerEngine.kt            # State machine, countdown loop, audio tones, & vibrations
+│       │           ├── TimerEngineProvider.kt    # Application-scoped singleton provider for TimerEngine
+│       │           ├── TimerNotificationActionDispatcher.kt # Dispatches notification intent actions to TimerEngine
+│       │           ├── TimerNotificationFormatter.kt # Dynamic title & content string formatter for notifications
+│       │           ├── TimerNotificationSpec.kt  # Notification action and metadata builder
+│       │           ├── TimerService.kt           # Foreground service hosting ongoing MediaStyle notification
+│       │           ├── TimerTeardownController.kt # Graceful service termination and resource release
+│       │           └── WorkoutTimer.kt           # Timer data contracts (TimerMode, TimerPhase, WorkoutTimerConfig, TimerSnapshot)
+│       │       └── util/
+│       │           ├── RepScheme.kt              # Rep scheme pattern parsing & wave validation
+│       │           └── WorkoutParser.kt          # Free-text WOD and complex routine parsing algorithms
+│       └── test/java/com/fractanomics/crosstraining/ # Unit and integration test suites
+│           ├── data/RoutineModelTest.kt
+│           ├── ui/components/AppNumericTextFieldTest.kt
+│           ├── ui/screens/SessionEditorNumericMigrationTest.kt
+│           ├── ui/screens/TimerScreenNumericMigrationTest.kt
+│           ├── ui/theme/ThemeModeTest.kt
+│           ├── ui/timer/NotificationPermissionTest.kt
+│           ├── ui/timer/NotificationTapNavigationTest.kt
+│           ├── ui/timer/SharedTimerStateTest.kt
+│           ├── ui/timer/TimerEngineTest.kt
+│           ├── ui/timer/TimerNotificationActionTest.kt
+│           ├── ui/timer/TimerServiceTest.kt
+│           ├── ui/timer/TimerTeardownTest.kt
+│           └── util/WorkoutParserTest.kt
+├── docs/                                         # Technical documentation & testing runbooks
+│   └── local-testing.md                          # Comprehensive local testing guide & CI status check registry
+├── e2e/                                          # Automated Maestro E2E test flows
+│   ├── flow-mapping.json                         # Mapping of E2E test flows to functional domains
+│   └── flows/                                    # Maestro YAML scenario scripts (01-06)
+└── scripts/                                      # Automation scripts & CI test harnesses
+    ├── lib/                                      # Reusable PowerShell modules (GitHubArtifactHelper, PrComment)
+    └── tests/                                    # Pester test suites verifying CI pipelines and scripts
+```
+
+---
+
+## Design Patterns, State Management & Dependency Injection
+
+### 1. Unidirectional Data Flow (UDF) & Reactive StateFlow Architecture
+The presentation layer strictly follows the UDF pattern:
+- **UI State**: ViewModels expose immutable `StateFlow<T>` objects created via `stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), initial)`. The 5-second `WhileSubscribed` timeout ensures that upstream database queries pause when the app is backgrounded, while surviving brief configuration changes (e.g. screen rotations).
+- **User Intent**: Composables capture user interactions and dispatch discrete events (e.g. `viewModel.saveSession(draft)`) to the ViewModel.
+- **State Collection**: Composables collect state using `collectAsStateWithLifecycle()`, guaranteeing automatic subscription binding and unbinding aligned with the Android lifecycle.
 
 ```kotlin
-// AppViewModel.kt
+// ViewModel state declaration pattern
 val sessions: StateFlow<List<SessionWithBlocks>> =
     data.repositoryFlow
         .flatMapLatest { it.allSessions }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList()
+        )
 ```
 
-### 3. Composition Root & Factory-Based Dependency Injection
-The application utilizes a lightweight, transparent Composition Root pattern without heavy reflection frameworks:
-- `CrossTrainingApp` owns singleton instances of `DataModeManager` and `TimerEngine`.
-- `MainActivity` resolves `dataModes` from `application` and instantiates `AppViewModel` via `AppViewModel.factory(dataModes)`.
-- Composables receive the shared `AppViewModel` or stateless lambdas, enabling rapid previewing and isolated UI unit testing.
+### 2. Dual-Sandbox Routing Pattern (`DataModeManager`)
+To provide a seamless, non-destructive trial experience ("Continue as Guest" / "Explore Demo"):
+- `DataModeManager` maintains two distinct `Repository` instances backed by separate SQLite database files:
+  1. `crosstraining.db` (Athletes' permanent real training history)
+  2. `crosstraining-demo.db` (Generated sample training history)
+- All ViewModel data streams subscribe to `data.repositoryFlow`, allowing live, instantaneous UI switching between real and demo databases with zero memory leaks and zero risk of cross-contamination.
 
-### 4. Deterministic Service Teardown Pattern (`TimerTeardownController`)
-To prevent zombie foreground services, lingering lockscreen notifications, or leaked `MediaSessionCompat` instances, teardown logic is isolated into a testable controller:
+### 3. Stateful Container vs Stateless Presentation Composables
+To maximize UI testability, previewability, and separation of concerns, all screens follow the container/content separation pattern:
+- **Stateful Route (`*Screen`)**: Responsible for collecting `StateFlow`s via `collectAsStateWithLifecycle()`, resolving navigation callbacks, and forwarding parameters.
+- **Stateless Content (`*Content`)**: Pure composable accepting data models and emitting lambda events. Does not reference `ViewModel`, enabling rapid rendering in `@Preview` and isolated UI tests.
 
 ```kotlin
-// TimerTeardownController.kt
-class TimerTeardownController(
-    private val onStopForeground: (removeNotification: Boolean) -> Unit,
-    private val onDismissNotification: () -> Unit,
-    private val onReleaseMediaSession: () -> Unit,
-    private val onStopService: () -> Unit
+// 1. Stateful Container
+@Composable
+fun CyclesScreen(
+    viewModel: AppViewModel,
+    outerPadding: PaddingValues,
+    onOpenDrawer: () -> Unit = {},
+    onOpenTimer: () -> Unit = {}
 ) {
-    fun teardown(reason: TeardownReason) {
-        onStopForeground(true)
-        onDismissNotification()
-        onReleaseMediaSession()
-        onStopService()
-    }
+    val cycles by viewModel.cycles.collectAsStateWithLifecycle()
+    val userRole by viewModel.userRole.collectAsStateWithLifecycle()
+    
+    CyclesContent(
+        cycles = cycles,
+        userRole = userRole,
+        outerPadding = outerPadding,
+        onOpenDrawer = onOpenDrawer,
+        onActivateCycle = { id -> viewModel.activateCycle(id) },
+        onDeleteCycle = { cycle -> viewModel.deleteCycle(cycle) }
+    )
+}
+
+// 2. Stateless Content
+@Composable
+fun CyclesContent(
+    cycles: List<Cycle>,
+    userRole: UserRole,
+    outerPadding: PaddingValues,
+    onOpenDrawer: () -> Unit,
+    onActivateCycle: (Long) -> Unit,
+    onDeleteCycle: (Cycle) -> Unit
+) {
+    // Pure rendering logic
 }
 ```
 
-### 5. Deferred Input & Auto-Selection Pattern (`AppNumericTextField`)
-All numeric and decimal inputs throughout the application use `AppNumericTextField`:
-- **Auto-Selection**: Selecting a field highlights existing text for instant overwrite without manual backspacing.
-- **Deferred Commit**: Edits remain local string state until blur (`onFocusChanged`) or keyboard commit (`Done`/`Next`), preventing partial state corruption in ViewModels.
-- **Safe Parsing**: Validates and coerces inputs against min/max ranges and integer/decimal specifications.
+### 4. Dependency Injection via Composition Root
+The project utilizes a lightweight, compile-time **Manual Dependency Injection / Composition Root** architecture:
+- `CrossTrainingApp` instantiates shared application singletons (`DataModeManager`, `TimerEngine`) lazily.
+- `AppViewModel.factory(dataModes)` implements `ViewModelProvider.Factory` to inject dependencies directly into ViewModels without requiring reflection or heavy DI containers.
+- `TimerEngineProvider` provides safe, thread-safe access to the singleton `TimerEngine` across `MainActivity` and `TimerService`.
+
+### 5. Application-Scoped Foreground Timer Subsystem
+Workouts require continuous countdown tracking even when the screen is locked or the application is placed in the background:
+- **`TimerEngine`**: Thread-safe state machine managing countdown ticks, phase transitions (`PREP` -> `WORK` -> `REST` -> `FINISHED`), round advancement, and hardware peripherals (`ToneGenerator`, `VibratorManager`).
+- **`TimerService`**: Foreground service hosting an ongoing `NotificationCompat.MediaStyle` notification with active countdown progress and interactive notification action buttons (`Play`, `Pause`, `Next`, `Stop`).
+- **`TimerNotificationActionDispatcher`**: Decouples incoming notification intent actions from direct timer execution.
+- **`TimerTeardownController`**: Manages graceful service shutdown, dismisses notifications, and releases `MediaSessionCompat` resources when the timer stops or completes.
+- **`NavigationIntentHandler`**: Captures notification click deep links and routes the Compose `NavHost` directly into the active `TimerScreen`.
+
+### 6. Localized Ephemeral Buffer & Deferred Commit Pattern (`AppNumericTextField`)
+For high-frequency numeric inputs (reps, sets, weights, interval seconds, round counts):
+- Maintains an ephemeral `TextFieldValue` buffer inside the Composable using `remember(value) { mutableStateOf(TextFieldValue(value.toString())) }`.
+- Automatically selects all text upon gaining focus (`TextRange(0, text.length)`), enabling instant single-digit replacement without digit concatenation bugs.
+- Immediately filters out invalid characters (non-digits, redundant decimals).
+- Defers final parsing, leading-zero sanitization, and bounds clamping (`minValue`..`maxValue`) until **focus loss** or **IME Done/Next** action.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Composable as AppNumericTextField
+    participant VM as AppViewModel / Draft
+
+    User->>Composable: Taps input field (Focus Gained)
+    Composable->>Composable: Select all text (TextRange(0, len))
+    User->>Composable: Types single digit "5"
+    Composable->>Composable: Replaces selection instantly (Buffer = "5")
+    User->>Composable: Submits IME Done or unfocuses
+    Composable->>Composable: Sanitizes & clamps to [minValue..maxValue]
+    Composable->>VM: onValueChange(5)
+```
+
+### 7. SHA-Cached Main-Branch Artifact Retrieval (`GitHubArtifactHelper`)
+To support deterministic local E2E testing without redundant compilation:
+- Resolves the target `main` branch HEAD commit SHA via `git rev-parse origin/main`.
+- Checks the local artifact cache at `app/build/outputs/apk/ci-main/<sha>.apk`.
+- On cache miss, downloads the official CI build artifact or release asset via `gh run download` / `gh release download` and caches it locally.
 
 ---
 
-## 🚫 Architectural Constraints & Anti-Patterns
+## Architectural Constraints & Anti-Patterns
 
-### Strict Architectural Rules
-1. **No UI Framework Logic in Domain or Data**:
-   - Never import `androidx.compose.*`, `android.view.*`, or `android.widget.*` inside `data/`, `data/model/`, or `util/`.
-2. **No Direct DAO Access from UI**:
-   - Composables and ViewModels must never query DAOs directly. All database access must flow through `Repository.kt` to ensure transactional integrity and cache consistency.
-3. **Strict Physical Database Isolation**:
-   - Real user data (`crosstraining.db`) and Demo data (`crosstraining-demo.db`) must remain physically isolated SQLite files. No operation in demo mode may execute against the real database.
-4. **Lifecycle-Aware State Collection**:
-   - Always collect ViewModel `StateFlow`s using `collectAsStateWithLifecycle()` in Compose. Never use raw `collectAsState()` in production screens to prevent background CPU drain.
-5. **Atomic Multi-Table Mutations**:
-   - Any write operation touching multiple tables (e.g. Session + Blocks + Sets + RepMax) must be wrapped in `db.withTransaction { ... }`.
-6. **Zero Hardcoded Design Tokens**:
-   - All colors, shapes, and typography must reference `MaterialTheme.colorScheme`, `MaterialTheme.shapes`, or `MaterialTheme.typography` to guarantee seamless Light/Dark mode transitions.
+### Strict Architectural Constraints
 
-### Anti-Patterns to Avoid
+1. **Inward-Only Dependency Rule**:
+   - The UI layer (`com.fractanomics.crosstraining.ui`) must never directly query Room DAOs, `AppDatabase`, or Firebase SDKs. All operations must flow through `AppViewModel`.
+   - Domain utilities (`com.fractanomics.crosstraining.util`) and models (`data.model`) must remain pure Kotlin with zero Android framework imports.
+2. **Lifecycle-Safe Reactive Collection**:
+   - UI Composables must always use `collectAsStateWithLifecycle()` to collect `StateFlow`s. Raw `collectAsState()` is prohibited because it continues collecting when the application is backgrounded.
+3. **Structured Non-Blocking Coroutines**:
+   - All database transactions, CSV parsing, and network synchronizations must execute on `Dispatchers.IO`.
+   - `GlobalScope.launch` and `runBlocking` are strictly prohibited in production code. Use `viewModelScope` in ViewModels and `rememberCoroutineScope` in Composables for UI-only effects.
+4. **Relational Atomic Integrity**:
+   - Multi-entity writes (e.g. saving a `Session` with its `SessionBlock`s and `BlockSet`s) must be wrapped in `db.withTransaction { ... }`.
+5. **Peripheral & Hardware Resilience**:
+   - Audio (`ToneGenerator`) and Haptic (`VibratorManager` / `Vibrator`) invocations must be safely wrapped with fallback exception handling to support varying Android API levels, emulator environments, and headless test runners.
+6. **Zero Environment Configuration Leaks**:
+   - Never commit developer-specific JVM paths (e.g. `org.gradle.java.home`) to repository `gradle.properties`. Keystore secrets and environment tokens must be injected via Gradle properties or environment variables.
+7. **Strict Acyclic Package Graph**:
+   - Dependencies must strictly follow: `util` → `model` → `dao` → `data` → `ui`. Circular dependencies between packages or components are forbidden.
 
-| Anti-Pattern | Violation | Architectural Remedy |
+### Architectural Anti-Patterns & Solutions
+
+| Anti-Pattern | Violation | Required Architectural Solution |
 |---|---|---|
-| **Direct DAO Ingestion** | Calling `db.sessionDao().insertSession(...)` in a ViewModel. | Route all mutations through `Repository.saveSession(...)`. |
-| **Unconfined Coroutines** | Launching background work in `GlobalScope` or unbounded `CoroutineScope()`. | Use `viewModelScope` for UI-bound work and `CoroutineScope(SupervisorJob() + Dispatchers.IO)` for app-lifecycle seeding. |
-| **Mutable State Leakage** | Exposing `MutableStateFlow` or `MutableState` from ViewModels to Composables. | Expose read-only `StateFlow<T>` via `.asStateFlow()` or `.stateIn()`. |
-| **Zombie Foreground Services** | Leaving `TimerService` active after timer completion or notification swipe. | Delegate teardown to `TimerTeardownController.teardown()`. |
-| **Raw Numeric Input** | Using standard `OutlinedTextField` for reps, sets, or weights. | Use `AppNumericTextField` with integrated decimal/integer validation and selection handling. |
-| **Speculative Cloud Writes** | Blocking UI operations on remote Firebase network calls. | Perform optimistic local Room updates immediately; trigger background sync asynchronously via `UserCloudSyncManager`. |
+| **Direct DAO Access in UI** | Calling `exerciseDao.insert()` directly inside a `@Composable` button click. | Dispatch user intent to `AppViewModel.saveExercise()`, delegating to `Repository`. |
+| **Blocking the Main Thread** | Performing CSV file export or database queries synchronously on `Dispatchers.Main`. | Dispatch file and database I/O via `withContext(Dispatchers.IO)`. |
+| **Raw Hardcoded UI Values** | Hardcoding raw hex colors (`#FF0000`) or raw pixel sizes in Composables. | Use Material 3 tokens: `MaterialTheme.colorScheme.*`, `MaterialTheme.typography.*`, and `dp`/`sp` units. |
+| **Cross-Sandbox State Contamination** | Directing demo data modifications into the live SQLite database file. | Route all data access through `DataModeManager.repositoryFlow`, ensuring clean physical database separation. |
+| **Orphaned Background Timers** | Starting an unbound coroutine timer loop that leaks memory when the screen is destroyed. | Encapsulate timer state within the singleton `TimerEngine` and bind background execution to `TimerService`. |
+| **Over-Hoisting Transient State** | Storing temporary text field typing buffers or dropdown expansion booleans in `AppViewModel`. | Keep transient UI state local to the Composable using `remember { mutableStateOf(...) }`. |
+| **UI Logic in Domain Layer** | Importing Android UI widgets, formatters, or `Context` into `WorkoutParser` or `RepScheme`. | Keep domain algorithms 100% platform-agnostic pure Kotlin functions. |
+| **Unsafe String Navigation Routing** | Concatenating unescaped argument strings in Compose navigation calls. | Use type-safe sealed destinations with structured argument encoding. |
 
 ---
 
-## 📋 Definition of Done (DoD) for Architecture & Code Updates
+## Definition of Done (DoD) for Architecture Updates
 
-Any structural modernization, refactoring, or feature addition must fulfill the following criteria:
-1. **Zero Production Code Regression**: No production code or existing tests may be broken.
-2. **Strict Layer Boundary Compliance**: New classes must reside in their designated package layer (`data`, `ui`, `util`).
-3. **Living Documentation Synchronization**: Any architectural modification, schema migration, or new subsystem must be documented in `.graph/architecture.md`.
-4. **Changelog Maintenance**: Formal changes must be recorded in `CHANGELOG.md` under `## [Unreleased]` adhering to Keep a Changelog standards.
+When modifying system architecture or implementing new features:
+1. **Automated Verification**: All local unit tests pass (`.\gradlew.bat testDebugUnitTest --no-daemon`).
+2. **Architecture Compliance**: New features must strictly adhere to the layered structure (`data/model`, `data/dao`, `data/firebase`, `ui/screens`, `ui/components`, `ui/timer`, `util`).
+3. **Living Documentation Sync**: Any structural modifications, new layers, or data flow updates must be synchronized with `.graph/architecture.md` and `.agents/rules/`.
+4. **Changelog Maintenance**: Add a descriptive entry under `## [Unreleased]` in `CHANGELOG.md` following the Keep a Changelog standard.
+5. **Remote CI Gate**: Remote GitHub Actions CI workflows (`build.yml`, `release.yml`) must report 100% green status prior to PR merge.
