@@ -179,18 +179,25 @@ fun QuickAddWorkoutDialog(
                         }
                     }
 
-                    OutlinedTextField(
+                    AppNumericTextField(
                         value = setsScheme,
                         onValueChange = { setsScheme = it },
                         label = { Text("Number of sets / scheme (e.g. 5x3 or 3-2-1)") },
+                        minValue = 1.0,
+                        maxValue = 999.0,
+                        allowScheme = true,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    OutlinedTextField(
+                    AppNumericTextField(
                         value = weightInput,
                         onValueChange = { weightInput = it },
                         label = { Text("Weight for sets (e.g. 60, 65, 70 or 60-80)") },
+                        minValue = 0.0,
+                        maxValue = 999.9,
+                        allowDecimals = true,
+                        allowRangeOrList = true,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
