@@ -57,7 +57,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.fractanomics.crosstraining.ui.components.AppNumericTextField
+import com.fractanomics.crosstraining.ui.timer.NotificationPermissionHelper
 import com.fractanomics.crosstraining.ui.timer.TimerEngine
 import com.fractanomics.crosstraining.ui.timer.TimerEngineProvider
 import com.fractanomics.crosstraining.ui.timer.TimerMode
@@ -85,6 +88,27 @@ fun TimerScreen(
     var prepCountdownSecs by remember { mutableIntStateOf(10) }
     var soundEnabled by remember { mutableStateOf(true) }
     var vibrationEnabled by remember { mutableStateOf(true) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            TimerService.startService(context)
+        }
+    }
+
+    val startWorkoutTimer: () -> Unit = {
+        timerEngine.start()
+        NotificationPermissionHelper.handleTimerStartWithPermission(
+            context = context,
+            onPermissionRequired = {
+                permissionLauncher.launch(NotificationPermissionHelper.POST_NOTIFICATIONS)
+            },
+            onStartService = {
+                TimerService.startService(context)
+            }
+        )
+    }
 
     fun buildConfig() = WorkoutTimerConfig(
         mode = selectedMode,
@@ -324,8 +348,7 @@ fun TimerScreen(
                         Button(
                             onClick = {
                                 timerEngine.configure(buildConfig())
-                                timerEngine.start()
-                                TimerService.startService(context)
+                                startWorkoutTimer()
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -446,8 +469,7 @@ fun TimerScreen(
                                     if (snapshot.isRunning) {
                                         timerEngine.pause()
                                     } else {
-                                        timerEngine.start()
-                                        TimerService.startService(context)
+                                        startWorkoutTimer()
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = phaseColor),
