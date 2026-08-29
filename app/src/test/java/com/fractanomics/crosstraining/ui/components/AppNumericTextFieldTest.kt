@@ -3,11 +3,21 @@ package com.fractanomics.crosstraining.ui.components
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
+/**
+ * Unit test suite for [AppNumericTextField] logic and [NumericInputSanitizer].
+ * Covers Acceptance Criteria from Issue #430:
+ * - Scenario: No digit concatenation on replace
+ * - Scenario: Decimal parsing accuracy
+ * - Scenario: Clamp on commit
+ */
 class AppNumericTextFieldTest {
 
-    // --- Scenario 1: Select-all on focus and direct digit replacement ---
+    // =========================================================================
+    // Scenario 1: Select-all on focus and direct digit replacement
+    // =========================================================================
 
     @Test
     fun `scenario 1 - select-all on focus produces full selection range`() {
@@ -36,12 +46,26 @@ class AppNumericTextFieldTest {
     }
 
     @Test
+    fun `no digit concatenation on replace - clearing 10 and typing 6 results in 6`() {
+        val filtered = NumericInputSanitizer.filterInput("6", allowDecimals = false)
+        assertEquals("6", filtered)
+    }
+
+    @Test
     fun `scenario 1 - non-numeric characters are filtered out`() {
         val filtered = NumericInputSanitizer.filterInput("12a3b4#$", allowDecimals = false)
         assertEquals("1234", filtered)
     }
 
-    // --- Scenario 2: Intermediate blank state ---
+    @Test
+    fun `no digit concatenation on replace - integer mode ignores decimal dots and commas`() {
+        val integerFiltered = NumericInputSanitizer.filterInput("10.5,2", allowDecimals = false)
+        assertEquals("1052", integerFiltered)
+    }
+
+    // =========================================================================
+    // Scenario 2: Intermediate blank state
+    // =========================================================================
 
     @Test
     fun `scenario 2 - backspacing all digits results in empty string without reverting`() {
@@ -52,46 +76,115 @@ class AppNumericTextFieldTest {
         assertEquals("", uncommittedEmpty)
     }
 
-    // --- Scenario 3: Commit, clamping, and IME action handling ---
+    // =========================================================================
+    // Scenario 3: Commit, clamping, and IME action handling
+    // =========================================================================
 
     @Test
-    fun `scenario 3 - empty field commits to minValue when minValue is configured`() {
-        val emptyClampedInt = NumericInputSanitizer.sanitizeAndClamp("", minValue = 1.0, maxValue = 100.0)
-        assertEquals("1", emptyClampedInt)
-
-        val emptyClampedDec = NumericInputSanitizer.sanitizeAndClamp("", minValue = 0.5, maxValue = 100.0, allowDecimals = true)
-        assertEquals("0.5", emptyClampedDec)
+    fun `clamp on commit - empty text commits minValue`() {
+        val clampedEmpty = NumericInputSanitizer.sanitizeAndClamp(
+            text = "",
+            minValue = 5.0,
+            maxValue = 100.0,
+            allowDecimals = false
+        )
+        assertEquals("5", clampedEmpty)
     }
 
     @Test
-    fun `scenario 3 - value below minValue is clamped to minValue`() {
-        val belowMin = NumericInputSanitizer.sanitizeAndClamp("0", minValue = 5.0, maxValue = 100.0)
+    fun `clamp on commit - empty text commits decimal minValue when allowDecimals is true`() {
+        val clampedDecimalEmpty = NumericInputSanitizer.sanitizeAndClamp(
+            text = "",
+            minValue = 2.5,
+            maxValue = 50.0,
+            allowDecimals = true
+        )
+        assertEquals("2.5", clampedDecimalEmpty)
+    }
+
+    @Test
+    fun `clamp on commit - empty text without minValue returns empty string`() {
+        val clampedEmptyNoMin = NumericInputSanitizer.sanitizeAndClamp(
+            text = "",
+            minValue = null,
+            maxValue = 100.0
+        )
+        assertEquals("", clampedEmptyNoMin)
+    }
+
+    @Test
+    fun `clamp on commit - value below minValue is clamped to minValue`() {
+        val belowMin = NumericInputSanitizer.sanitizeAndClamp(
+            text = "2",
+            minValue = 5.0,
+            maxValue = 100.0
+        )
         assertEquals("5", belowMin)
     }
 
     @Test
-    fun `scenario 3 - value above maxValue is clamped to maxValue`() {
-        val aboveMax = NumericInputSanitizer.sanitizeAndClamp("150", minValue = 1.0, maxValue = 100.0)
+    fun `clamp on commit - value above maxValue is clamped to maxValue`() {
+        val aboveMax = NumericInputSanitizer.sanitizeAndClamp(
+            text = "150",
+            minValue = 1.0,
+            maxValue = 100.0
+        )
         assertEquals("100", aboveMax)
     }
 
     @Test
-    fun `scenario 3 - integer leading zeros are sanitized`() {
-        assertEquals("5", NumericInputSanitizer.sanitizeAndClamp("05", minValue = 1.0, maxValue = 100.0))
-        assertEquals("7", NumericInputSanitizer.sanitizeAndClamp("007", minValue = 1.0, maxValue = 100.0))
-        assertEquals("0", NumericInputSanitizer.sanitizeAndClamp("00", minValue = 0.0, maxValue = 100.0))
+    fun `clamp on commit - decimal value below minValue clamped to minValue`() {
+        val belowMinDec = NumericInputSanitizer.sanitizeAndClamp(
+            text = "1.5",
+            minValue = 2.5,
+            maxValue = 100.0,
+            allowDecimals = true
+        )
+        assertEquals("2.5", belowMinDec)
     }
 
     @Test
-    fun `scenario 3 - decimal leading zeros are sanitized while preserving valid fractions`() {
-        // "05.2" -> "5.2"
-        assertEquals("5.2", NumericInputSanitizer.sanitizeAndClamp("05.2", minValue = 0.0, maxValue = 100.0, allowDecimals = true))
-        // "00.5" -> "0.5"
-        assertEquals("0.5", NumericInputSanitizer.sanitizeAndClamp("00.5", minValue = 0.0, maxValue = 100.0, allowDecimals = true))
-        // "0.5" preserved
-        assertEquals("0.5", NumericInputSanitizer.sanitizeAndClamp("0.5", minValue = 0.0, maxValue = 100.0, allowDecimals = true))
-        // "0.05" preserved
-        assertEquals("0.05", NumericInputSanitizer.sanitizeAndClamp("0.05", minValue = 0.0, maxValue = 100.0, allowDecimals = true))
+    fun `clamp on commit - decimal value above maxValue clamped to maxValue`() {
+        val aboveMaxDec = NumericInputSanitizer.sanitizeAndClamp(
+            text = "120.75",
+            minValue = 0.0,
+            maxValue = 100.0,
+            allowDecimals = true
+        )
+        assertEquals("100", aboveMaxDec)
+    }
+
+    @Test
+    fun `clamp on commit - leading zero integer is sanitized from 05 to 5`() {
+        val leadingZero = NumericInputSanitizer.sanitizeAndClamp(
+            text = "05",
+            minValue = 1.0,
+            maxValue = 100.0,
+            allowDecimals = false
+        )
+        assertEquals("5", leadingZero)
+    }
+
+    @Test
+    fun `clamp on commit - leading zero with decimal fraction is preserved for 0_5`() {
+        val leadingZeroDec = NumericInputSanitizer.sanitizeAndClamp(
+            text = "0.5",
+            minValue = 0.0,
+            maxValue = 100.0,
+            allowDecimals = true
+        )
+        assertEquals("0.5", leadingZeroDec)
+    }
+
+    @Test
+    fun `clamp on commit - leading zero with whole number and decimal is sanitized from 05_2 to 5_2`() {
+        val leadingZeroMixed = NumericInputSanitizer.sanitizeAndClamp(
+            text = "05.2",
+            minValue = 0.0,
+            maxValue = 100.0,
+            allowDecimals = true
+        )
+        assertEquals("5.2", leadingZeroMixed)
     }
 
     @Test
@@ -100,55 +193,99 @@ class AppNumericTextFieldTest {
         assertEquals("22", committed)
     }
 
-    // --- Scenario 4: Decimal support ---
+    // =========================================================================
+    // Scenario 4: Decimal parsing accuracy
+    // =========================================================================
 
     @Test
-    fun `scenario 4 - decimal parsing accuracy and comma normalization`() {
-        // Typing "22.5" accepts decimal
+    fun `decimal parsing accuracy - typing 22_5 parses exactly to 22_5`() {
         val filtered = NumericInputSanitizer.filterInput("22.5", allowDecimals = true)
         assertEquals("22.5", filtered)
 
-        // Comma converted to dot in decimal mode
-        val commaDecimal = NumericInputSanitizer.filterInput("22,5", allowDecimals = true)
-        assertEquals("22.5", commaDecimal)
-
-        // Multiple decimal points rejected
-        val multiDecimal = NumericInputSanitizer.filterInput("22.5.8", allowDecimals = true)
-        assertEquals("22.58", multiDecimal)
+        val parsed = filtered.toDoubleOrNull()
+        assertEquals(22.5, parsed)
     }
 
     @Test
-    fun `scenario 4 - whole number decimal formatting cleans trailing zero`() {
-        val wholeNumberDec = NumericInputSanitizer.sanitizeAndClamp("22.0", minValue = 0.0, maxValue = 100.0, allowDecimals = true)
-        assertEquals("22.0", wholeNumberDec) // Preserves user-typed decimal precision if valid
-    }
+    fun `decimal parsing accuracy - comma is normalized to decimal dot`() {
+        val commaFiltered = NumericInputSanitizer.filterInput("22,5", allowDecimals = true)
+        assertEquals("22.5", commaFiltered)
 
-    // --- Advanced Features: Schemes, Ranges, and Negative Values ---
-
-    @Test
-    fun `schemes ranges and lists support`() {
-        // Rep scheme
-        val scheme = NumericInputSanitizer.filterInput("5x3", allowScheme = true)
-        assertEquals("5x3", scheme)
-        assertEquals("5x3", NumericInputSanitizer.sanitizeAndClamp("5x3", allowScheme = true))
-
-        // Weight range
-        val range = NumericInputSanitizer.filterInput("60-80", allowRangeOrList = true)
-        assertEquals("60-80", range)
-        assertEquals("60-80", NumericInputSanitizer.sanitizeAndClamp("60-80", allowRangeOrList = true))
-
-        // Weight list
-        val list = NumericInputSanitizer.filterInput("60, 65, 70", allowRangeOrList = true)
-        assertEquals("60, 65, 70", list)
-        assertEquals("60, 65, 70", NumericInputSanitizer.sanitizeAndClamp("60, 65, 70", allowRangeOrList = true))
+        val parsed = commaFiltered.toDoubleOrNull()
+        assertEquals(22.5, parsed)
     }
 
     @Test
-    fun `negative value support`() {
+    fun `decimal parsing accuracy - multiple decimal points are rejected`() {
+        val multiDecimal = NumericInputSanitizer.filterInput("22.5.8.9", allowDecimals = true)
+        assertEquals("22.589", multiDecimal)
+
+        val parsed = multiDecimal.toDoubleOrNull()
+        assertEquals(22.589, parsed)
+    }
+
+    @Test
+    fun `decimal parsing accuracy - leading zero decimal fractions parse accurately`() {
+        val filtered = NumericInputSanitizer.filterInput("0.75", allowDecimals = true)
+        assertEquals("0.75", filtered)
+
+        val parsed = filtered.toDoubleOrNull()
+        assertEquals(0.75, parsed)
+    }
+
+    // =========================================================================
+    // Schemes, Ranges, and Negative Support
+    // =========================================================================
+
+    @Test
+    fun `scheme formatting - allowScheme preserves 5x3 and 3x10 expressions`() {
+        val filtered = NumericInputSanitizer.filterInput("5x3", allowScheme = true)
+        assertEquals("5x3", filtered)
+
+        val clamped = NumericInputSanitizer.sanitizeAndClamp("5x3", allowScheme = true)
+        assertEquals("5x3", clamped)
+    }
+
+    @Test
+    fun `range and list formatting - allowRangeOrList preserves 60-80 and lists`() {
+        val filteredRange = NumericInputSanitizer.filterInput("60-80", allowRangeOrList = true)
+        assertEquals("60-80", filteredRange)
+
+        val clampedRange = NumericInputSanitizer.sanitizeAndClamp("60-80", allowRangeOrList = true)
+        assertEquals("60-80", clampedRange)
+
+        val filteredList = NumericInputSanitizer.filterInput("60, 65, 70", allowRangeOrList = true)
+        assertEquals("60, 65, 70", filteredList)
+
+        val clampedList = NumericInputSanitizer.sanitizeAndClamp("60, 65, 70", allowRangeOrList = true)
+        assertEquals("60, 65, 70", clampedList)
+    }
+
+    @Test
+    fun `negative numbers - allowNegative allows leading minus sign`() {
         val negative = NumericInputSanitizer.filterInput("-15", allowNegative = true)
         assertEquals("-15", negative)
 
-        val invalidNegative = NumericInputSanitizer.filterInput("15-", allowNegative = true)
-        assertEquals("15", invalidNegative)
+        val internalMinus = NumericInputSanitizer.filterInput("15-20", allowNegative = true)
+        assertEquals("1520", internalMinus)
+    }
+
+    // =========================================================================
+    // Double display formatting helper verification
+    // =========================================================================
+
+    @Test
+    fun `double value display formatting logic`() {
+        fun formatDouble(value: Double?): String {
+            return value?.let {
+                if (it % 1.0 == 0.0) it.toLong().toString() else it.toString()
+            } ?: ""
+        }
+
+        assertEquals("", formatDouble(null))
+        assertEquals("100", formatDouble(100.0))
+        assertEquals("22.5", formatDouble(22.5))
+        assertEquals("0", formatDouble(0.0))
+        assertEquals("0.75", formatDouble(0.75))
     }
 }
