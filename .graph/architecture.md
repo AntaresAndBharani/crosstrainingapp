@@ -6,23 +6,23 @@
 
 ```mermaid
 graph TD
-    UI[Presentation Layer: Jetpack Compose / Material 3]
-    VM[ViewModel: AppViewModel & StateFlow]
-    DM[DataModeManager: Mode Routing & Preferences]
-    Repo[Repository: Single Source of Truth]
-    Room[(Room Database: SQLite Local Persistence)]
-    FB[(Firebase: Auth, Firestore & Cloud Sync)]
-    Timer[Timer Subsystem: TimerEngine & Foreground Service]
+    UI["Presentation Layer (Jetpack Compose / Material 3)"]
+    VM["ViewModel (AppViewModel & StateFlow)"]
+    DM["DataModeManager (Mode Routing & Persistent Preferences)"]
+    Repo["Repository (Single Source of Truth)"]
+    Room[("Room Database (SQLite Local Persistence)")]
+    FB[("Firebase (Auth, Firestore & Cloud Sync)")]
+    Timer["Timer Subsystem (TimerEngine & Foreground Service)"]
 
     UI -->|User Events & Intent Actions| VM
     VM -->|Collects StateFlow| UI
     VM -->|Data Operations| Repo
     VM -->|Mode & Role Management| DM
-    DM -->|Routes Active DB| Repo
+    DM -->|Routes Active DB Instance| Repo
     Repo -->|Atomic SQL Transactions| Room
-    Repo -->|Bi-Directional Sync| FB
+    Repo -->|Bi-Directional Cloud Sync| FB
     UI <-->|Observes & Controls| Timer
-    Timer -.->|Foreground Media Notification| UI
+    Timer -.->|Foreground Media Notification & Deep Links| UI
 ```
 
 ### Technology Stack & Framework Specifications
@@ -40,6 +40,13 @@ graph TD
 | **Media & Peripherals** | AndroidX Media & Audio | `androidx.media:1.7.0`, `ToneGenerator`, `VibratorManager` | Foreground MediaStyle notifications, audio interval cues, and haptics |
 | **Build & Tooling** | Gradle Kotlin DSL | AGP `8.7.2`, Gradle Wrapper | Automated reproducible build pipelines, signing, and asset packaging |
 
+### Multi-Environment Packaging & Build Variants
+
+The build system defines three distinct build types:
+- **`debug`**: Local development build configured with `APP_ENV="snapshot"` and signed with the standard debug keystore.
+- **`snapshot`**: Pre-release CI verification build inheriting from `debug` configuration with matching fallbacks, compiled for automated E2E and device testing.
+- **`release`**: Production-optimized build configured with `APP_ENV="production"`, integrating ProGuard/R8 optimizations (`proguard-rules.pro`), and signed using secure environment keystore credentials (`RELEASE_STORE_FILE`, `RELEASE_KEY_ALIAS`).
+
 ---
 
 ## Layer Boundaries & Clean Architecture (Domain, Data, Presentation/UI separation of concerns)
@@ -49,24 +56,26 @@ The codebase strictly adheres to **Clean Architecture** principles and **Unidire
 ```mermaid
 graph RL
     subgraph Presentation ["Presentation Layer (ui)"]
-        UI_Screens[Compose Screens]
-        UI_Components[Reusable Components]
-        UI_VM[AppViewModel]
-        UI_Timer[Timer Engine & Service]
+        UI_Screens["Compose Screens (ui.screens)"]
+        UI_Components["Reusable Components (ui.components)"]
+        UI_VM["AppViewModel"]
+        UI_Nav["Navigation & Intent Handling (ui.navigation)"]
+        UI_Timer["Timer Engine & Service (ui.timer)"]
     end
 
     subgraph Data ["Data Layer (data)"]
-        D_Repo[Repository]
-        D_Mode[DataModeManager]
-        D_DAO[Room DAOs]
-        D_DB[AppDatabase]
-        D_Cloud[UserCloudSyncManager & FirebaseSyncManager]
+        D_Repo["Repository (Single Source of Truth)"]
+        D_Mode["DataModeManager (Sandbox Routing)"]
+        D_DAO["Room DAOs (data.dao)"]
+        D_DB["AppDatabase (SQLite & Migrations)"]
+        D_Cloud["UserCloudSyncManager & FirebaseSyncManager (data.firebase)"]
+        D_Backup["Backup (CSV Engine)"]
     end
 
     subgraph Domain ["Domain & Utility Layer (util & data.model)"]
-        DOM_Models[Entities & Data Classes]
-        DOM_Enums[Enums & Schemes]
-        DOM_Utils[WorkoutParser & RepScheme]
+        DOM_Models["Entities & Value Objects (Cycle, Session, Routine, etc.)"]
+        DOM_Enums["Domain Enums (BlockKind, MetricType, UserRole, etc.)"]
+        DOM_Utils["Pure Algorithms (WorkoutParser, RepScheme)"]
     end
 
     Presentation --> Data
@@ -76,11 +85,11 @@ graph RL
 
 ### 1. Domain & Utility Layer (`com.fractanomics.crosstraining.util` & `data.model`)
 - **Responsibilities:**
-  - Contains core business entities (`Cycle`, `Session`, `Routine`, `Exercise`, `RepMax`, `BlockSet`), domain value objects, and enums (`BlockKind`, `MetricType`, `ExerciseCategory`, `UserRole`, `TimerMode`, `TimerPhase`).
+  - Contains core business entities (`Cycle`, `Session`, `Routine`, `Exercise`, `RepMax`, `BlockSet`, `RoutineBlock`, `SessionBlock`, `CycleGoal`), domain value objects, and enums (`BlockKind`, `MetricType`, `ExerciseCategory`, `UserRole`, `TimerMode`, `TimerPhase`).
   - Encapsulates pure domain algorithms: `WorkoutParser` (free-text workout syntax parsing, rep-scheme extraction, movement extraction) and `RepScheme` (wave-loading validation and rep-count decomposition).
-- **Architectural Rules:**
+- **Architectural Invariants:**
   - **Zero Platform Dependencies:** Must not import Android framework classes (`android.*`, `Context`, `View`, `Bundle`, Compose UI tokens).
-  - **Deterministic & Pure:** All functions must be deterministic, free of side-effects, and 100% unit-testable without Android mocks or robolectric runners.
+  - **Deterministic & Pure:** All functions must be deterministic, free of side-effects, and 100% unit-testable without Android mocks or Robolectric runners.
 
 ### 2. Data Layer (`com.fractanomics.crosstraining.data`)
 - **Responsibilities:**
@@ -89,7 +98,7 @@ graph RL
   - **Dual-Sandbox Routing (`DataModeManager`):** Seamlessly redirects repository bindings between the live database (`crosstraining.db`) and the disposable sample database (`crosstraining-demo.db`), guaranteeing that demo sessions cannot corrupt athlete history.
   - **Cloud Synchronization (`data.firebase`):** Handles background synchronization of user data against partitioned Firestore documents (`UserCloudSyncManager`) and global community workout publishing via alphanumeric share codes (`FirebaseSyncManager`).
   - **Backup & Migration Engine (`BackupCsv`, `AppDatabase.MIGRATION_*`):** Manages relational CSV serialization/deserialization and SQLite schema migrations (v1 through v5).
-- **Architectural Rules:**
+- **Architectural Invariants:**
   - DAOs must remain package-private or accessible exclusively through `Repository`.
   - All database writes, file I/O, and network operations must execute on background coroutine dispatchers (`Dispatchers.IO`).
 
@@ -100,7 +109,7 @@ graph RL
   - **Stateful Screens & Stateless Content (`ui.screens`):** Implements clean separation between stateful container composables (which inject the ViewModel) and stateless presentation composables (which receive pure data classes and emit lambdas).
   - **Design System & Components (`ui.components`, `ui.theme`):** Encapsulates Material 3 theme definitions, typography, dynamic color palettes, and robust UI primitives such as `AppNumericTextField` and `LineChart`.
   - **Foreground Timer Subsystem (`ui.timer`):** Hoists `TimerEngine` to application scope, running tick loops independent of activity lifecycle, and binds to `TimerService` for MediaStyle notifications and hardware cues (audio/vibrations).
-- **Architectural Rules:**
+- **Architectural Invariants:**
   - UI components must never instantiate or interact with Room DAOs or Firebase SDKs directly.
   - State collection in Composables must always utilize `collectAsStateWithLifecycle()` to prevent background resource leaks.
 
@@ -159,8 +168,7 @@ crosstrainingapp/
 │       │       │   ├── ProgressAnalytics.kt      # Rep-max calculation, volume progression, and PR charting models
 │       │       │   ├── SessionDraft.kt           # Ephemeral UI editing models for workout logging & editing
 │       │       │   ├── components/               # Reusable Jetpack Compose UI components
-│       │       │   │   ├── AppNumericTextField.kt# Resilient numeric input with select-all and deferred commit
-│       │       │   │   ├── CommonUi.kt           # Shared UI buttons, headers, cards, and modal sheets
+│       │       │   │   ├── CommonUi.kt           # Shared UI buttons, headers, cards, AppNumericTextField, modal sheets
 │       │       │   │   ├── DateField.kt          # Date picker field with Material 3 integration
 │       │       │   │   ├── Dropdown.kt           # Form dropdown selector
 │       │       │   │   ├── LineChart.kt          # Custom Canvas-rendered strength progression line chart
@@ -174,30 +182,31 @@ crosstrainingapp/
 │       │       │   │   ├── LibraryScreen.kt      # Movement catalog & routine builder
 │       │       │   │   ├── LoginWelcomeScreen.kt # Authentication, Google Sign-In, & Guest mode gate
 │       │       │   │   ├── LogSessionScreen.kt   # Daily workout logging screen
-│       │       │   ├── ProfileScreen.kt          # User account, theme toggle, and CSV backup/restore
-│       │       │   ├── ProgressScreen.kt         # Personal record analytics & progression charts
-│       │       │   ├── SessionEditor.kt          # Comprehensive session editor with set spreadsheet
-│       │       │   └── TimerScreen.kt            # Workout interval timer configuration & active display
-│       │       ├── theme/                        # Material Design 3 theme tokens
-│       │       │   ├── Color.kt                  # App color palettes
-│       │       │   ├── Theme.kt                  # CrossTrainingTheme wrapper with light/dark/system support
-│       │       │   └── Type.kt                   # Typography specifications
-│       │       └── timer/                        # Foreground Timer Subsystem
-│       │           ├── NotificationPermissionHelper.kt # Runtime notification permission check & launch helper
-│       │           ├── TimerEngine.kt            # State machine, countdown loop, audio tones, & vibrations
-│       │           ├── TimerEngineProvider.kt    # Application-scoped singleton provider for TimerEngine
-│       │           ├── TimerNotificationActionDispatcher.kt # Dispatches notification intent actions to TimerEngine
-│       │           ├── TimerNotificationFormatter.kt # Dynamic title & content string formatter for notifications
-│       │           ├── TimerNotificationSpec.kt  # Notification action and metadata builder
-│       │           ├── TimerService.kt           # Foreground service hosting ongoing MediaStyle notification
-│       │           ├── TimerTeardownController.kt # Graceful service termination and resource release
-│       │           └── WorkoutTimer.kt           # Timer data contracts (TimerMode, TimerPhase, WorkoutTimerConfig, TimerSnapshot)
+│       │       │   │   ├── ProfileScreen.kt      # User account, theme toggle, and CSV backup/restore
+│       │       │   │   ├── ProgressScreen.kt     # Personal record analytics & progression charts
+│       │       │   │   ├── SessionEditor.kt      # Comprehensive session editor with set spreadsheet
+│       │       │   │   └── TimerScreen.kt        # Workout interval timer configuration & active display
+│       │       │   ├── theme/                    # Material Design 3 theme tokens
+│       │       │   │   ├── Color.kt              # App color palettes
+│       │       │   │   ├── Theme.kt              # CrossTrainingTheme wrapper with light/dark/system support
+│       │       │   │   └── Type.kt               # Typography specifications
+│       │       │   └── timer/                    # Foreground Timer Subsystem
+│       │       │       ├── NotificationPermissionHelper.kt # Runtime notification permission check & launch helper
+│       │       │       ├── TimerEngine.kt        # State machine, countdown loop, audio tones, & vibrations
+│       │       │       ├── TimerEngineProvider.kt# Application-scoped singleton provider for TimerEngine
+│       │       │       ├── TimerNotificationActionDispatcher.kt # Dispatches notification intent actions to TimerEngine
+│       │       │       ├── TimerNotificationFormatter.kt # Dynamic title & content string formatter for notifications
+│       │       │       ├── TimerNotificationSpec.kt # Notification action and metadata builder
+│       │       │       ├── TimerService.kt       # Foreground service hosting ongoing MediaStyle notification
+│       │       │       ├── TimerTeardownController.kt # Graceful service termination and resource release
+│       │       │       └── WorkoutTimer.kt       # Timer data contracts (TimerMode, TimerPhase, WorkoutTimerConfig, TimerSnapshot)
 │       │       └── util/
 │       │           ├── RepScheme.kt              # Rep scheme pattern parsing & wave validation
 │       │           └── WorkoutParser.kt          # Free-text WOD and complex routine parsing algorithms
 │       └── test/java/com/fractanomics/crosstraining/ # Unit and integration test suites
 │           ├── data/RoutineModelTest.kt
 │           ├── ui/components/AppNumericTextFieldTest.kt
+│           ├── ui/components/QuickAddWorkoutDialogNumericMigrationTest.kt
 │           ├── ui/screens/SessionEditorNumericMigrationTest.kt
 │           ├── ui/screens/TimerScreenNumericMigrationTest.kt
 │           ├── ui/theme/ThemeModeTest.kt
@@ -325,7 +334,12 @@ sequenceDiagram
     Composable->>VM: onValueChange(5)
 ```
 
-### 7. SHA-Cached Main-Branch Artifact Retrieval (`GitHubArtifactHelper`)
+### 7. Atomic Relational Transaction Pattern (`db.withTransaction`)
+Multi-table relational writes must maintain complete atomicity:
+- Saving complex entities (e.g. a `Session` with its associated `SessionBlock`s and `BlockSet`s, or a `Routine` with its `RoutineBlock`s) executes within `db.withTransaction { ... }`.
+- If any stage fails, the entire transaction is rolled back, preventing orphaned records and foreign-key corruption.
+
+### 8. SHA-Cached Main-Branch Artifact Retrieval (`GitHubArtifactHelper`)
 To support deterministic local E2E testing without redundant compilation:
 - Resolves the target `main` branch HEAD commit SHA via `git rev-parse origin/main`.
 - Checks the local artifact cache at `app/build/outputs/apk/ci-main/<sha>.apk`.
