@@ -1,4 +1,4 @@
-﻿package com.fractanomics.crosstraining.ui.components
+package com.fractanomics.crosstraining.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -37,6 +37,28 @@ object ResetPasswordValidator {
 
     fun isValidEmail(email: String): Boolean {
         return EMAIL_REGEX.matches(email.trim())
+    }
+}
+
+/**
+ * Maps Firebase Auth exceptions and network failures to user-friendly UI messages.
+ */
+object PasswordResetErrorMapper {
+    const val GENERIC_ERROR_MESSAGE = "An error occurred. Please try again."
+    const val NETWORK_ERROR_MESSAGE = "Network error. Please check your connection."
+    const val RATE_LIMIT_ERROR_MESSAGE = "Too many attempts. Try again later."
+    const val SUCCESS_SNACKBAR_MESSAGE = "If an account exists, a setup link has been sent to your inbox."
+
+    fun map(error: Throwable?): String {
+        if (error == null) return GENERIC_ERROR_MESSAGE
+        return when {
+            error is com.google.firebase.FirebaseNetworkException -> NETWORK_ERROR_MESSAGE
+            error is com.google.firebase.auth.FirebaseAuthRecentLoginRequiredException -> RATE_LIMIT_ERROR_MESSAGE
+            error is java.net.UnknownHostException || error is java.net.SocketTimeoutException || error is java.io.IOException -> NETWORK_ERROR_MESSAGE
+            error.javaClass.simpleName.contains("Network", ignoreCase = true) -> NETWORK_ERROR_MESSAGE
+            !error.localizedMessage.isNullOrBlank() -> error.localizedMessage!!
+            else -> GENERIC_ERROR_MESSAGE
+        }
     }
 }
 
@@ -108,7 +130,7 @@ fun ResetPasswordDialog(
                     Text(
                         text = message,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.error
                     )
                 }
             }
