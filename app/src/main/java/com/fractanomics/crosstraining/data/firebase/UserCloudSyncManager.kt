@@ -56,7 +56,7 @@ object UserCloudSyncManager {
             if (user != null && user.uid.isNotBlank()) {
                 return user.uid.replace("/", "_")
             }
-            return auth.currentUser?.uid?.replace("/", "_") ?: ""
+            return runCatching { auth.currentUser?.uid?.replace("/", "_") }.getOrNull() ?: ""
         }
 
     init {
@@ -225,7 +225,7 @@ object UserCloudSyncManager {
     }
 
     fun signOut() {
-        auth.signOut()
+        runCatching { auth.signOut() }
         _userState.value = null
         _syncState.value = SyncStatus.IDLE
     }
@@ -290,6 +290,7 @@ object UserCloudSyncManager {
                 mapOf(
                     "session" to mapOf(
                         "id" to swb.session.id,
+                        "cycleId" to swb.session.cycleId,
                         "date" to swb.session.date.toString(),
                         "title" to swb.session.title,
                         "notes" to swb.session.notes
@@ -345,6 +346,20 @@ object UserCloudSyncManager {
                 )
             }
             doc.collection("data").document("cycle_goals").set(mapOf("list" to goalsPayload)).await()
+
+            // 5. Upload Rep Maxes (PR History)
+            val repMaxes = repo.exportSnapshot().repMaxes
+            val repMaxesPayload = repMaxes.map { rm ->
+                mapOf(
+                    "id" to rm.id,
+                    "exerciseId" to rm.exerciseId,
+                    "reps" to rm.reps,
+                    "weight" to rm.weight,
+                    "date" to rm.date.toString(),
+                    "cycleId" to rm.cycleId
+                )
+            }
+            doc.collection("data").document("rep_maxes").set(mapOf("list" to repMaxesPayload)).await()
         }
 
         _syncState.value = SyncStatus.SUCCESS
@@ -421,6 +436,89 @@ object UserCloudSyncManager {
                     val targetWeight = (map["targetWeight"] as? Number)?.toDouble() ?: 0.0
                     val notes = map["notes"] as? String ?: ""
                     repo.saveCycleGoal(com.fractanomics.crosstraining.data.model.CycleGoal(cycleId = cycleId, exerciseId = exerciseId, targetReps = targetReps, startWeight = startWeight, targetWeight = targetWeight, notes = notes))
+                }
+            }
+
+            // 4. Download Sessions & Logs (Workouts)
+            val sessSnap = doc.collection("data").document("sessions").get().await()
+            if (sessSnap.exists()) {
+                @Suppress("UNCHECKED_CAST")
+                val sessList = sessSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
+                val existingSessions = repo.getAllSessionsWithBlocksOnce()
+                sessList.forEach { swbMap ->
+                    @Suppress("UNCHECKED_CAST")
+                    val sMap = swbMap["session"] as? Map<String, Any> ?: return@forEach
+                    val dateStr = sMap["date"] as? String ?: return@forEach
+                    val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
+                    val title = sMap["title"] as? String ?: ""
+                    val notes = sMap["notes"] as? String ?: ""
+                    val cycleId = (sMap["cycleId"] as? Number)?.toLong() ?: 0L
+
+                    val alreadyExists = existingSessions.any { it.session.date == date && it.session.title == title }
+                    if (!alreadyExists) {
+                        @Suppress("UNCHECKED_CAST")
+                        val bList = swbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
+                        val blockInserts = bList.mapIndexed { bIdx, bMapRaw ->
+                            @Suppress("UNCHECKED_CAST")
+                            val bMap = bMapRaw["block"] as? Map<String, Any> ?: bMapRaw
+                            val block = SessionBlock(
+                                id = 0,
+                                sessionId = 0,
+                                position = (bMap["position"] as? Number)?.toInt() ?: bIdx,
+                                name = bMap["name"] as? String ?: "",
+                                kind = runCatching { BlockKind.valueOf(bMap["kind"] as String) }.getOrDefault(BlockKind.WEIGHTLIFTING),
+                                format = bMap["format"] as? String ?: "",
+                                scheme = bMap["scheme"] as? String ?: "",
+                                mainExerciseId = (bMap["mainExerciseId"] as? Number)?.toLong(),
+                                routineId = (bMap["routineId"] as? Number)?.toLong(),
+                                description = bMap["description"] as? String ?: "",
+                                resultText = bMap["resultText"] as? String ?: "",
+                                resultValue = (bMap["resultValue"] as? Number)?.toDouble(),
+                                notes = bMap["notes"] as? String ?: ""
+                            )
+                            @Suppress("UNCHECKED_CAST")
+                            val setList = bMapRaw["sets"] as? List<Map<String, Any>> ?: emptyList()
+                            val sets = setList.mapIndexed { sIdx, sMapItem ->
+                                BlockSet(
+                                    id = 0,
+                                    blockId = 0,
+                                    position = (sMapItem["position"] as? Number)?.toInt() ?: sIdx,
+                                    groupIndex = (sMapItem["groupIndex"] as? Number)?.toInt() ?: 0,
+                                    reps = (sMapItem["reps"] as? Number)?.toInt() ?: 0,
+                                    weight = (sMapItem["weight"] as? Number)?.toDouble() ?: 0.0,
+                                    metricValue = (sMapItem["metricValue"] as? Number)?.toDouble() ?: 0.0,
+                                    isWarmup = sMapItem["isWarmup"] as? Boolean ?: false,
+                                    isFailed = sMapItem["isFailed"] as? Boolean ?: false,
+                                    notes = sMapItem["notes"] as? String ?: ""
+                                )
+                            }
+                            com.fractanomics.crosstraining.data.BlockInsert(block = block, sets = sets)
+                        }
+                        repo.saveSession(Session(id = 0, cycleId = cycleId, date = date, title = title, notes = notes), blockInserts)
+                    }
+                }
+            }
+
+            // 5. Download Rep Maxes (PR History)
+            val rmSnap = doc.collection("data").document("rep_maxes").get().await()
+            if (rmSnap.exists()) {
+                @Suppress("UNCHECKED_CAST")
+                val rmList = rmSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
+                val existingRms = repo.exportSnapshot().repMaxes
+                rmList.forEach { map ->
+                    val exerciseId = (map["exerciseId"] as? Number)?.toLong() ?: return@forEach
+                    val reps = (map["reps"] as? Number)?.toInt() ?: return@forEach
+                    val weight = (map["weight"] as? Number)?.toDouble() ?: return@forEach
+                    val dateStr = map["date"] as? String ?: return@forEach
+                    val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
+                    val cycleId = (map["cycleId"] as? Number)?.toLong()
+
+                    val exists = existingRms.any {
+                        it.exerciseId == exerciseId && it.reps == reps && it.weight == weight && it.date == date
+                    }
+                    if (!exists) {
+                        repo.recordRepMax(exerciseId, reps, weight, date, cycleId)
+                    }
                 }
             }
         }
