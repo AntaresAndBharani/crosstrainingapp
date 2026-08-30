@@ -66,6 +66,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import com.fractanomics.crosstraining.BuildConfig
+import com.fractanomics.crosstraining.ui.components.ResetPasswordDialog
 
 @Composable
 fun LoginWelcomeScreen(
@@ -231,7 +232,7 @@ fun LoginWelcomeScreen(
                     if (selectedTab == 0) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             TextButton(onClick = { showForgotDialog = true }) {
-                                Text("Forgot Password?", style = MaterialTheme.typography.labelMedium)
+                                Text("Forgot or Set Password?", style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     }
@@ -399,53 +400,29 @@ fun LoginWelcomeScreen(
     }
 
     if (showForgotDialog) {
-        var resetEmail by remember { mutableStateOf(email) }
         var resetMsg by remember { mutableStateOf<String?>(null) }
         var isResetting by remember { mutableStateOf(false) }
 
-        AlertDialog(
-            onDismissRequest = { showForgotDialog = false },
-            title = { Text("Reset Password") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        "Enter your email address to receive a password reset link:",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    OutlinedTextField(
-                        value = resetEmail,
-                        onValueChange = { resetEmail = it },
-                        label = { Text("Email Address") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (resetMsg != null) {
-                        Text(
-                            resetMsg!!,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+        ResetPasswordDialog(
+            initialEmail = email,
+            isLoading = isResetting,
+            message = resetMsg,
+            onDismiss = {
+                showForgotDialog = false
+                resetMsg = null
+            },
+            onSendResetLink = { targetEmail ->
+                isResetting = true
+                resetMsg = null
+                viewModel.sendPasswordReset(targetEmail.trim()) { ok, err ->
+                    isResetting = false
+                    if (ok) {
+                        resetMsg = "Reset link sent to ${targetEmail.trim()}!"
+                    } else {
+                        resetMsg = err ?: "Failed to send reset email"
                     }
                 }
-            },
-            confirmButton = {
-                Button(
-                    enabled = resetEmail.isNotBlank() && !isResetting,
-                    onClick = {
-                        isResetting = true
-                        viewModel.sendPasswordReset(resetEmail.trim()) { ok, err ->
-                            isResetting = false
-                            if (ok) {
-                                resetMsg = "Reset link sent to $resetEmail!"
-                            } else {
-                                resetMsg = err ?: "Failed to send reset email"
-                            }
-                        }
-                    }
-                ) { Text("Send Link") }
-            },
-            dismissButton = { TextButton(onClick = { showForgotDialog = false }) { Text("Close") } }
+            }
         )
     }
 }
