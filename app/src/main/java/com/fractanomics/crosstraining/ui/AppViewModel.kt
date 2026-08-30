@@ -36,6 +36,7 @@ import com.fractanomics.crosstraining.data.firebase.FirebaseSyncManager
 import com.fractanomics.crosstraining.data.firebase.SharedWorkoutPayload
 import com.fractanomics.crosstraining.data.firebase.SyncStatus
 import com.fractanomics.crosstraining.data.firebase.UserCloudSyncManager
+import com.fractanomics.crosstraining.ui.components.PasswordResetErrorMapper
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.time.LocalDate
 
@@ -124,8 +125,15 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     }
 
     fun sendPasswordReset(email: String, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
-        val res = UserCloudSyncManager.sendPasswordReset(email)
-        onResult(res.isSuccess, res.exceptionOrNull()?.localizedMessage)
+        val sanitizedEmail = email.trim().lowercase()
+        val res = UserCloudSyncManager.sendPasswordReset(sanitizedEmail)
+        res.fold(
+            onSuccess = { onResult(true, null) },
+            onFailure = { error ->
+                val uiMessage = PasswordResetErrorMapper.map(error)
+                onResult(false, uiMessage)
+            }
+        )
     }
 
     fun signOut() {

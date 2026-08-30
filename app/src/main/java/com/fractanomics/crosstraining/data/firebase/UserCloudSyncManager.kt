@@ -60,10 +60,12 @@ object UserCloudSyncManager {
         }
 
     init {
-        auth.addAuthStateListener { firebaseAuth ->
-            val user = firebaseAuth.currentUser
-            if (_userState.value == null && user != null && !user.email.isNullOrBlank()) {
-                _userState.value = user.toAuthUser()
+        runCatching {
+            auth.addAuthStateListener { firebaseAuth ->
+                val user = firebaseAuth.currentUser
+                if (_userState.value == null && user != null && !user.email.isNullOrBlank()) {
+                    _userState.value = user.toAuthUser()
+                }
             }
         }
     }
@@ -80,7 +82,7 @@ object UserCloudSyncManager {
             "jangelpv" -> "jangelpv@crosstraining.app"
             "coach" -> "coach@crosstraining.app"
             "athlete" -> "athlete@crosstraining.app"
-            else -> input.trim()
+            else -> trimmed
         }
     }
 

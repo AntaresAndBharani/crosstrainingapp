@@ -59,10 +59,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.fractanomics.crosstraining.R
 import com.fractanomics.crosstraining.ui.AppViewModel
+import com.fractanomics.crosstraining.ui.components.PasswordResetErrorMapper
 import kotlinx.coroutines.launch
 
 import androidx.compose.foundation.clickable
 import androidx.compose.material3.Checkbox
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import com.fractanomics.crosstraining.BuildConfig
@@ -402,6 +404,7 @@ fun LoginWelcomeScreen(
     if (showForgotDialog) {
         var resetMsg by remember { mutableStateOf<String?>(null) }
         var isResetting by remember { mutableStateOf(false) }
+        val keyboardController = LocalSoftwareKeyboardController.current
 
         ResetPasswordDialog(
             initialEmail = email,
@@ -414,12 +417,17 @@ fun LoginWelcomeScreen(
             onSendResetLink = { targetEmail ->
                 isResetting = true
                 resetMsg = null
-                viewModel.sendPasswordReset(targetEmail.trim()) { ok, err ->
+                viewModel.sendPasswordReset(targetEmail) { ok, err ->
                     isResetting = false
                     if (ok) {
-                        resetMsg = "Reset link sent to ${targetEmail.trim()}!"
+                        showForgotDialog = false
+                        resetMsg = null
+                        keyboardController?.hide()
+                        scope.launch {
+                            snackbar.showSnackbar(PasswordResetErrorMapper.SUCCESS_SNACKBAR_MESSAGE)
+                        }
                     } else {
-                        resetMsg = err ?: "Failed to send reset email"
+                        resetMsg = err ?: PasswordResetErrorMapper.GENERIC_ERROR_MESSAGE
                     }
                 }
             }
