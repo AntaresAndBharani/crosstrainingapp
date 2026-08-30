@@ -55,8 +55,8 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
 
     init {
         viewModelScope.launch {
-            repo.cleanupDuplicateRoutines()
-            val persisted = data.getPersistedAuthUser()
+            runCatching { repo.cleanupDuplicateRoutines() }
+            val persisted = runCatching { data.getPersistedAuthUser() }.getOrNull()
             if (persisted != null) {
                 UserCloudSyncManager.setAuthenticatedUser(persisted)
                 val role = data.resolveRoleForUser(persisted.email)

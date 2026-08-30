@@ -20,20 +20,26 @@ import com.fractanomics.crosstraining.data.firebase.AuthUser
  * Also manages app-level preference persistence, such as [AppThemeMode], [UserRole],
  * and authenticated user session persistence ("Remember Me").
  */
-class DataModeManager(context: Context) {
+open class DataModeManager(context: Context? = null) {
 
-    private val appContext = context.applicationContext
-    private val prefs = appContext.getSharedPreferences("crosstraining-prefs", Context.MODE_PRIVATE)
+    private val appContext = context?.applicationContext ?: context
+    private val prefs = appContext?.getSharedPreferences("crosstraining-prefs", Context.MODE_PRIVATE)
 
-    private val realRepository by lazy { Repository(AppDatabase.get(appContext)) }
-    private val demoRepository by lazy { Repository(AppDatabase.demo(appContext)) }
+    private val realRepository by lazy {
+        val ctx = appContext ?: error("Context required for real repository")
+        Repository(AppDatabase.get(ctx))
+    }
+    private val demoRepository by lazy {
+        val ctx = appContext ?: error("Context required for demo repository")
+        Repository(AppDatabase.demo(ctx))
+    }
 
-    private val _demoMode = MutableStateFlow(prefs.getBoolean(KEY_DEMO_MODE, false))
+    private val _demoMode = MutableStateFlow(prefs?.getBoolean(KEY_DEMO_MODE, false) ?: false)
     val demoMode: StateFlow<Boolean> = _demoMode
 
     private val _themeMode = MutableStateFlow(
         runCatching {
-            val saved = prefs.getString(KEY_THEME_MODE, AppThemeMode.LIGHT.name)
+            val saved = prefs?.getString(KEY_THEME_MODE, AppThemeMode.LIGHT.name)
             AppThemeMode.valueOf(saved ?: AppThemeMode.LIGHT.name)
         }.getOrDefault(AppThemeMode.LIGHT)
     )
@@ -41,11 +47,11 @@ class DataModeManager(context: Context) {
 
     private val _userRole = MutableStateFlow(
         runCatching {
-            val saved = prefs.getString(KEY_USER_ROLE, null)
+            val saved = prefs?.getString(KEY_USER_ROLE, null)
             if (saved != null) {
                 UserRole.valueOf(saved)
             } else {
-                val savedEmail = prefs.getString(KEY_SAVED_USER_EMAIL, null)
+                val savedEmail = prefs?.getString(KEY_SAVED_USER_EMAIL, null)
                 resolveRoleForUser(savedEmail)
             }
         }.getOrDefault(UserRole.ATHLETE)
@@ -54,13 +60,13 @@ class DataModeManager(context: Context) {
 
     /** Set and persist the app theme mode. */
     fun setThemeMode(mode: AppThemeMode) {
-        prefs.edit().putString(KEY_THEME_MODE, mode.name).apply()
+        prefs?.edit()?.putString(KEY_THEME_MODE, mode.name)?.apply()
         _themeMode.value = mode
     }
 
     /** Set and persist the app user role (Athlete vs Coach). */
     fun setUserRole(role: UserRole) {
-        prefs.edit().putString(KEY_USER_ROLE, role.name).apply()
+        prefs?.edit()?.putString(KEY_USER_ROLE, role.name)?.apply()
         _userRole.value = role
     }
 
@@ -72,31 +78,31 @@ class DataModeManager(context: Context) {
         }
         val determinedRole = resolveRoleForUser(email)
         setUserRole(determinedRole)
-        prefs.edit()
-            .putString(KEY_SAVED_USER_EMAIL, email)
-            .putString(KEY_SAVED_USER_UID, uid)
-            .putBoolean(KEY_SAVED_USER_IS_ANON, isAnon)
-            .putBoolean(KEY_REMEMBER_ME, true)
-            .apply()
+        prefs?.edit()
+            ?.putString(KEY_SAVED_USER_EMAIL, email)
+            ?.putString(KEY_SAVED_USER_UID, uid)
+            ?.putBoolean(KEY_SAVED_USER_IS_ANON, isAnon)
+            ?.putBoolean(KEY_REMEMBER_ME, true)
+            ?.apply()
     }
 
     /** Clear saved authenticated session on explicit sign out. */
     fun clearAuthSession() {
-        prefs.edit()
-            .remove(KEY_SAVED_USER_EMAIL)
-            .remove(KEY_SAVED_USER_UID)
-            .remove(KEY_SAVED_USER_IS_ANON)
-            .remove(KEY_REMEMBER_ME)
-            .apply()
+        prefs?.edit()
+            ?.remove(KEY_SAVED_USER_EMAIL)
+            ?.remove(KEY_SAVED_USER_UID)
+            ?.remove(KEY_SAVED_USER_IS_ANON)
+            ?.remove(KEY_REMEMBER_ME)
+            ?.apply()
     }
 
     /** Rehydrate saved authenticated user session if available. */
     fun getPersistedAuthUser(): AuthUser? {
-        val remember = prefs.getBoolean(KEY_REMEMBER_ME, true)
+        val remember = prefs?.getBoolean(KEY_REMEMBER_ME, true) ?: true
         if (!remember) return null
-        val email = prefs.getString(KEY_SAVED_USER_EMAIL, null)
-        val uid = prefs.getString(KEY_SAVED_USER_UID, null)
-        val isAnon = prefs.getBoolean(KEY_SAVED_USER_IS_ANON, false)
+        val email = prefs?.getString(KEY_SAVED_USER_EMAIL, null)
+        val uid = prefs?.getString(KEY_SAVED_USER_UID, null)
+        val isAnon = prefs?.getBoolean(KEY_SAVED_USER_IS_ANON, false) ?: false
         if (!email.isNullOrBlank() && !uid.isNullOrBlank()) {
             return AuthUser(uid = uid, email = email, isAnonymous = isAnon)
         }
@@ -124,7 +130,7 @@ class DataModeManager(context: Context) {
     /** Enable/disable demo mode; seeds the demo database on first use. */
     suspend fun setDemoMode(enabled: Boolean) {
         if (enabled) seedIfNeeded()
-        prefs.edit().putBoolean(KEY_DEMO_MODE, enabled).apply()
+        prefs?.edit()?.putBoolean(KEY_DEMO_MODE, enabled)?.apply()
         _demoMode.value = enabled
     }
 
@@ -140,11 +146,11 @@ class DataModeManager(context: Context) {
     /** Restore the demo database to its pristine generated dataset. */
     suspend fun resetDemoData() {
         demoRepository.importSnapshot(DemoData.snapshot())
-        prefs.edit().putInt(KEY_SEED_VERSION, DemoData.SEED_VERSION).apply()
+        prefs?.edit()?.putInt(KEY_SEED_VERSION, DemoData.SEED_VERSION)?.apply()
     }
 
     private suspend fun seedIfNeeded() {
-        val stale = prefs.getInt(KEY_SEED_VERSION, 0) < DemoData.SEED_VERSION
+        val stale = (prefs?.getInt(KEY_SEED_VERSION, 0) ?: 0) < DemoData.SEED_VERSION
         if (stale || demoRepository.exportSnapshot().sessions.isEmpty()) resetDemoData()
     }
 

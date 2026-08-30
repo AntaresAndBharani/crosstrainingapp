@@ -218,9 +218,21 @@ object UserCloudSyncManager {
         }
     }
 
-    suspend fun sendPasswordReset(email: String): Result<Unit> = runCatching {
-        withTimeout(10000L) {
-            auth.sendPasswordResetEmail(normalizeEmail(email)).await()
+    private var passwordResetHandlerForTesting: (suspend (String) -> Result<Unit>)? = null
+
+    fun setPasswordResetHandlerForTesting(handler: (suspend (String) -> Result<Unit>)?) {
+        passwordResetHandlerForTesting = handler
+    }
+
+    suspend fun sendPasswordReset(email: String): Result<Unit> {
+        val testHandler = passwordResetHandlerForTesting
+        if (testHandler != null) {
+            return testHandler(normalizeEmail(email))
+        }
+        return runCatching {
+            withTimeout(10000L) {
+                auth.sendPasswordResetEmail(normalizeEmail(email)).await()
+            }
         }
     }
 
