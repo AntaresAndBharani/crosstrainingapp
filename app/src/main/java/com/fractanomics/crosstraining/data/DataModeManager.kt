@@ -119,13 +119,20 @@ open class DataModeManager(context: Context? = null) {
         }
     }
 
+    private var testRepository: Repository? = null
+
+    /** Sets a repository override for unit and integration testing. */
+    fun setRepositoryForTesting(repo: Repository?) {
+        testRepository = repo
+    }
+
     /** Repository currently backing the UI. */
     val current: Repository
-        get() = if (_demoMode.value) demoRepository else realRepository
+        get() = testRepository ?: if (_demoMode.value) demoRepository else realRepository
 
     /** Emits the active repository, switching live when the mode changes. */
     val repositoryFlow: Flow<Repository> =
-        _demoMode.map { demo -> if (demo) demoRepository else realRepository }
+        _demoMode.map { demo -> testRepository ?: if (demo) demoRepository else realRepository }
 
     /** Enable/disable demo mode; seeds the demo database on first use. */
     suspend fun setDemoMode(enabled: Boolean) {

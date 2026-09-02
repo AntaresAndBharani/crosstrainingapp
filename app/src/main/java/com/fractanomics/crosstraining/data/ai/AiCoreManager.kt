@@ -240,7 +240,7 @@ $transcript
             val rawBlocksNode = when {
                 rootNode is Map<*, *> && rootNode.containsKey("blocks") -> rootNode["blocks"]
                 rootNode is List<*> -> rootNode
-                rootNode is Map<*, *> -> listOf(rootNode)
+                rootNode is Map<*, *> && (rootNode.containsKey("name") || rootNode.containsKey("exerciseName") || rootNode.containsKey("title")) -> listOf(rootNode)
                 else -> emptyList<Any>()
             }
 
