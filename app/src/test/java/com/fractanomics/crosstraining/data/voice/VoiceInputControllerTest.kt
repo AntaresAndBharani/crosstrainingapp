@@ -410,4 +410,16 @@ class VoiceInputControllerTest {
         assertEquals(VoiceInputError.CLIENT_ERROR, controller.error.value)
         assertTrue(controller.state.value is VoiceInputState.Error)
     }
+
+    @Test
+    fun `default constructor instantiates controller with default scope and idle state`() {
+        val defaultController = VoiceInputController()
+        assertFalse(defaultController.isListening.value)
+        assertEquals("", defaultController.transcript.value)
+        assertEquals(0.0f, defaultController.confidence.value, 0.001f)
+        assertEquals(0.0f, defaultController.rmsDb.value, 0.001f)
+        assertNull(defaultController.error.value)
+        assertTrue(defaultController.state.value is VoiceInputState.Idle)
+        defaultController.destroy()
+    }
 }

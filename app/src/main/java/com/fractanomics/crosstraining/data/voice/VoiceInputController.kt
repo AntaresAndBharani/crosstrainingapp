@@ -11,12 +11,9 @@ import android.speech.SpeechRecognizer
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
@@ -282,7 +279,7 @@ object DefaultRecognitionResultExtractor : RecognitionResultExtractor {
  */
 class VoiceInputController(
     private val context: Context? = null,
-    private val coroutineScope: CoroutineScope,
+    private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Main),
     private val recognizerFactory: SpeechRecognizerFactory = DefaultSpeechRecognizerFactory,
     private val permissionChecker: MicrophonePermissionChecker = DefaultMicrophonePermissionChecker,
     private val availabilityChecker: SpeechRecognitionAvailabilityChecker = DefaultSpeechRecognitionAvailabilityChecker,
