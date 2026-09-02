@@ -197,4 +197,67 @@ class FitnessSpeechLexiconTest {
         assertEquals("", lexicon.correct(""))
         assertEquals("   ", lexicon.correct("   "))
     }
+
+    @Test
+    fun `corrects dictionary artifacts for reps, squat, and kg units`() {
+        assertEquals("Back Squat 5 reps", lexicon.correct("Back Squat 5 wreps"))
+        assertEquals("Squat 3 reps at 100 kg", lexicon.correct("Squad 3 wreps at 100 K"))
+        assertEquals("Front Squats 5x5", lexicon.correct("Front Squads 5x5"))
+    }
+
+    @Test
+    fun `phoneticDistance computes standard Levenshtein edit distance`() {
+        assertEquals(0, FitnessSpeechLexicon.phoneticDistance("squat", "squat"))
+        assertEquals(1, FitnessSpeechLexicon.phoneticDistance("squat", "squad"))
+        assertEquals(1, FitnessSpeechLexicon.phoneticDistance("reps", "wreps"))
+        assertEquals(3, FitnessSpeechLexicon.phoneticDistance("kitten", "sitting"))
+        assertEquals(5, FitnessSpeechLexicon.phoneticDistance("", "kettlebell".take(5)))
+    }
+
+    @Test
+    fun `rankCandidates ranks fitness vocabulary by phonetic distance ascending`() {
+        val results = lexicon.rankCandidates("wreps", topN = 3)
+        assertTrue(results.isNotEmpty())
+        assertEquals("reps", results.first().term)
+        assertEquals(1, results.first().distance)
+        assertTrue(results.zipWithNext().all { (a, b) -> a.distance <= b.distance })
+    }
+
+    @Test
+    fun `rankCandidates surfaces squat as closest match for the squad artifact`() {
+        val results = lexicon.rankCandidates("squad", topN = 3)
+        assertEquals("Squat", results.first().term)
+        assertEquals(1, results.first().distance)
+    }
+
+    @Test
+    fun `rankCandidates surfaces kg as closest match for the K unit artifact`() {
+        val results = lexicon.rankCandidates("K", topN = 3)
+        assertEquals("kg", results.first().term)
+    }
+
+    @Test
+    fun `bestMatch returns null when nothing is within the distance threshold`() {
+        assertEquals("reps", lexicon.bestMatch("wreps", maxDistance = 2))
+        assertEquals(null, lexicon.bestMatch("xyzxyzxyzxyzxyz", maxDistance = 1))
+    }
+
+    @Test
+    fun `bestMatch respects a custom maxDistance threshold`() {
+        assertEquals(null, lexicon.bestMatch("wreps", maxDistance = 0))
+        assertEquals("reps", lexicon.bestMatch("wreps", maxDistance = 1))
+    }
+
+    @Test
+    fun `offline fitness vocabulary contains at least 500 distinct terms`() {
+        val vocabulary = FitnessSpeechLexicon.CANONICAL_FITNESS_TERMS
+        assertTrue(
+            "Expected at least 500 fitness terms, found ${vocabulary.size}",
+            vocabulary.size >= 500
+        )
+        assertEquals("Vocabulary must contain no duplicates", vocabulary.size, vocabulary.distinct().size)
+        assertTrue(vocabulary.contains("Squat"))
+        assertTrue(vocabulary.contains("kg"))
+        assertTrue(vocabulary.contains("reps"))
+    }
 }
