@@ -25,6 +25,7 @@ import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
@@ -37,7 +38,16 @@ import com.fractanomics.crosstraining.data.firebase.SharedWorkoutPayload
 import com.fractanomics.crosstraining.data.firebase.SyncStatus
 import com.fractanomics.crosstraining.data.firebase.UserCloudSyncManager
 import com.fractanomics.crosstraining.ui.components.PasswordResetErrorMapper
+import com.fractanomics.crosstraining.data.VoiceIngestionState
+import com.fractanomics.crosstraining.data.VoiceParseResult
+import com.fractanomics.crosstraining.data.ai.AiCoreManager
+import com.fractanomics.crosstraining.data.ai.ParsedBlock
+import com.fractanomics.crosstraining.data.voice.VoiceInputController
+import com.fractanomics.crosstraining.data.voice.VoiceInputState
+import com.fractanomics.crosstraining.ui.voice.VoiceWorkoutUiState
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import java.time.LocalDate
 
 /**
@@ -394,6 +404,304 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         metricType: MetricType
     ) = viewModelScope.launch {
         repo.getOrCreateExercise(name, category, metricType)
+    }
+
+    // --- Voice Ingestion Subsystem --------------------------------------------
+
+    private val _voiceIngestionState = MutableStateFlow<VoiceIngestionState>(VoiceIngestionState.Idle)
+    val voiceIngestionState: StateFlow<VoiceIngestionState> = _voiceIngestionState.asStateFlow()
+
+    /**
+     * Exposes UI state mapping [voiceIngestionState] into [VoiceWorkoutUiState] for [VoiceWorkoutIngestionSheet].
+     */
+    val voiceWorkoutUiState: StateFlow<VoiceWorkoutUiState> =
+        _voiceIngestionState.map { state ->
+            when (state) {
+                is VoiceIngestionState.Idle -> VoiceWorkoutUiState(voiceState = VoiceInputState.Idle)
+                is VoiceIngestionState.Listening -> VoiceWorkoutUiState(
+                    voiceState = VoiceInputState.Listening(state.partialTranscript),
+                    transcript = state.partialTranscript,
+                    rmsDb = state.rmsDb,
+                    isListening = true
+                )
+                is VoiceIngestionState.Parsing -> VoiceWorkoutUiState(
+                    voiceState = VoiceInputState.Processing(state.transcript),
+                    transcript = state.transcript,
+                    isProcessing = true
+                )
+                is VoiceIngestionState.Disambiguating -> VoiceWorkoutUiState(
+                    transcript = state.transcript,
+                    parsedBlocks = state.parsedBlocks,
+                    disambiguationCandidates = state.ambiguousBlocks,
+                    isProcessing = false
+                )
+                is VoiceIngestionState.Saving -> VoiceWorkoutUiState(
+                    transcript = state.transcript,
+                    isProcessing = true
+                )
+                is VoiceIngestionState.Complete -> VoiceWorkoutUiState(
+                    isProcessing = false
+                )
+                is VoiceIngestionState.Error -> VoiceWorkoutUiState(
+                    errorMessage = state.message,
+                    transcript = state.lastVoiceText
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, VoiceWorkoutUiState())
+
+    private var voiceInputController: VoiceInputController? = null
+    private var voiceListenerJob: kotlinx.coroutines.Job? = null
+
+    fun setVoiceInputController(controller: VoiceInputController?) {
+        voiceInputController = controller
+    }
+
+    /**
+     * Starts listening via [VoiceInputController] and pipes states into [voiceIngestionState].
+     */
+    fun startVoiceListening(
+        controller: VoiceInputController? = null,
+        sessionDate: LocalDate = LocalDate.now(),
+        customAiManager: AiCoreManager? = null
+    ) {
+        val active = controller ?: voiceInputController
+        if (active == null) {
+            _voiceIngestionState.value = VoiceIngestionState.Error(
+                message = "Voice input controller is not initialized",
+                canRetry = false
+            )
+            return
+        }
+        voiceInputController = active
+
+        val started = active.startListening()
+        if (!started) {
+            val err = active.error.value
+            _voiceIngestionState.value = VoiceIngestionState.Error(
+                message = err?.userMessage ?: "Microphone permission or speech recognition unavailable",
+                canRetry = true
+            )
+            return
+        }
+
+        _voiceIngestionState.value = VoiceIngestionState.Listening()
+
+        voiceListenerJob?.cancel()
+        voiceListenerJob = viewModelScope.launch {
+            active.state.collect { st ->
+                when (st) {
+                    is VoiceInputState.Listening -> {
+                        _voiceIngestionState.value = VoiceIngestionState.Listening(
+                            partialTranscript = st.partialTranscript,
+                            rmsDb = active.rmsDb.value
+                        )
+                    }
+                    is VoiceInputState.Processing -> {
+                        if (st.partialTranscript.isNotBlank() && _voiceIngestionState.value is VoiceIngestionState.Listening) {
+                            processVoiceTranscript(st.partialTranscript, sessionDate, customAiManager)
+                        }
+                    }
+                    is VoiceInputState.Success -> {
+                        processVoiceTranscript(st.transcript, sessionDate, customAiManager)
+                        voiceListenerJob?.cancel()
+                    }
+                    is VoiceInputState.Error -> {
+                        _voiceIngestionState.value = VoiceIngestionState.Error(
+                            message = st.message,
+                            canRetry = true,
+                            lastVoiceText = active.transcript.value
+                        )
+                        voiceListenerJob?.cancel()
+                    }
+                    VoiceInputState.Idle -> {}
+                    VoiceInputState.Initializing -> {
+                        _voiceIngestionState.value = VoiceIngestionState.Listening()
+                    }
+                }
+            }
+        }
+    }
+
+    fun stopVoiceListening() {
+        voiceInputController?.stopListening()
+        voiceListenerJob?.cancel()
+    }
+
+    fun cancelVoiceListening() {
+        voiceInputController?.cancel()
+        voiceListenerJob?.cancel()
+        _voiceIngestionState.value = VoiceIngestionState.Idle
+    }
+
+    /**
+     * Processes transcribed voice text: extracts structured blocks, resolves exercise ambiguity,
+     * and transitions to [VoiceIngestionState.Disambiguating] or auto-commits.
+     */
+    fun processVoiceTranscript(
+        transcript: String,
+        sessionDate: LocalDate = LocalDate.now(),
+        customAiManager: AiCoreManager? = null
+    ): Job = viewModelScope.launch {
+        val trimmed = transcript.trim()
+        if (trimmed.isBlank()) {
+            _voiceIngestionState.value = VoiceIngestionState.Error(
+                message = "No speech was recognized. Please speak clearly into the microphone.",
+                canRetry = true,
+                lastVoiceText = ""
+            )
+            return@launch
+        }
+
+        _voiceIngestionState.value = VoiceIngestionState.Parsing(trimmed)
+
+        try {
+            val parseResult = repo.parseVoiceInput(trimmed, customAiManager)
+
+            if (parseResult.blocks.isEmpty()) {
+                _voiceIngestionState.value = VoiceIngestionState.Error(
+                    message = "Could not parse any workout blocks from speech.",
+                    canRetry = true,
+                    lastVoiceText = trimmed
+                )
+                return@launch
+            }
+
+            if (parseResult.ambiguousExercises.isNotEmpty()) {
+                _voiceIngestionState.value = VoiceIngestionState.Disambiguating(
+                    transcript = trimmed,
+                    parsedBlocks = parseResult.blocks,
+                    ambiguousBlocks = parseResult.ambiguousExercises
+                )
+            } else {
+                commitVoiceSession(
+                    transcript = trimmed,
+                    sessionDate = sessionDate,
+                    disambiguatedExercises = emptyMap(),
+                    parsedBlocks = parseResult.blocks,
+                    customAiManager = customAiManager
+                ).join()
+            }
+        } catch (e: Exception) {
+            _voiceIngestionState.value = VoiceIngestionState.Error(
+                message = e.localizedMessage ?: "Failed to parse workout from speech",
+                canRetry = true,
+                lastVoiceText = trimmed
+            )
+        }
+    }
+
+    /**
+     * Resolves an ambiguous movement name for a given block index.
+     * When all ambiguous blocks are resolved, automatically commits the session to Room.
+     */
+    fun resolveExerciseDisambiguation(
+        blockIndex: Int,
+        exercise: Exercise,
+        sessionDate: LocalDate = LocalDate.now(),
+        customAiManager: AiCoreManager? = null
+    ): Job? {
+        val current = _voiceIngestionState.value
+        if (current !is VoiceIngestionState.Disambiguating) return null
+
+        val updatedResolved = current.resolvedExercises.toMutableMap()
+        updatedResolved[blockIndex] = exercise
+
+        val remainingAmbiguous = current.ambiguousBlocks.filterKeys { it !in updatedResolved }
+
+        return if (remainingAmbiguous.isEmpty()) {
+            commitVoiceSession(
+                transcript = current.transcript,
+                sessionDate = sessionDate,
+                disambiguatedExercises = updatedResolved,
+                parsedBlocks = current.parsedBlocks,
+                customAiManager = customAiManager
+            )
+        } else {
+            _voiceIngestionState.value = current.copy(
+                resolvedExercises = updatedResolved
+            )
+            null
+        }
+    }
+
+    /**
+     * Commits a voice-parsed workout session atomically to Room SQLite.
+     */
+    fun commitVoiceSession(
+        transcript: String,
+        sessionDate: LocalDate = LocalDate.now(),
+        disambiguatedExercises: Map<Int, Exercise> = emptyMap(),
+        parsedBlocks: List<ParsedBlock>? = null,
+        customAiManager: AiCoreManager? = null,
+        onSuccess: ((Session) -> Unit)? = null
+    ): Job = viewModelScope.launch {
+        _voiceIngestionState.value = VoiceIngestionState.Saving(transcript)
+
+        try {
+            val session = repo.createSessionFromVoiceInput(
+                voiceText = transcript,
+                sessionDate = sessionDate,
+                disambiguatedExercises = disambiguatedExercises,
+                parsedBlocks = parsedBlocks,
+                customAiManager = customAiManager
+            )
+            _voiceIngestionState.value = VoiceIngestionState.Complete(
+                session = session,
+                message = "Workout session persisted successfully"
+            )
+            onSuccess?.invoke(session)
+        } catch (e: Exception) {
+            _voiceIngestionState.value = VoiceIngestionState.Error(
+                message = e.localizedMessage ?: "Failed to save workout session",
+                canRetry = true,
+                lastVoiceText = transcript
+            )
+        }
+    }
+
+    /**
+     * Appends a live completed [BlockSet] to the active session from voice dictation.
+     */
+    fun appendBlockSetFromVoice(
+        sessionId: Long,
+        voiceText: String,
+        customAiManager: AiCoreManager? = null,
+        onSuccess: ((BlockSet) -> Unit)? = null
+    ): Job = viewModelScope.launch {
+        _voiceIngestionState.value = VoiceIngestionState.Saving(voiceText)
+
+        try {
+            val set = repo.appendBlockSetFromVoice(
+                sessionId = sessionId,
+                voiceText = voiceText,
+                customAiManager = customAiManager
+            )
+            _voiceIngestionState.value = VoiceIngestionState.Complete(
+                appendedSet = set,
+                message = "Set logged successfully"
+            )
+            onSuccess?.invoke(set)
+        } catch (e: Exception) {
+            _voiceIngestionState.value = VoiceIngestionState.Error(
+                message = e.localizedMessage ?: "Failed to log set from voice",
+                canRetry = true,
+                lastVoiceText = voiceText
+            )
+        }
+    }
+
+    fun retryLastVoiceIngestion(sessionDate: LocalDate = LocalDate.now(), customAiManager: AiCoreManager? = null): Job? {
+        val current = _voiceIngestionState.value
+        return if (current is VoiceIngestionState.Error && current.lastVoiceText.isNotBlank()) {
+            processVoiceTranscript(current.lastVoiceText, sessionDate, customAiManager)
+        } else {
+            _voiceIngestionState.value = VoiceIngestionState.Idle
+            null
+        }
+    }
+
+    fun resetVoiceIngestionState() {
+        _voiceIngestionState.value = VoiceIngestionState.Idle
     }
 
     companion object {

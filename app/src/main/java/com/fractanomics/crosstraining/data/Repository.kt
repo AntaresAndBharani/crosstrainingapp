@@ -1,6 +1,12 @@
 package com.fractanomics.crosstraining.data
 
 import androidx.room.withTransaction
+import com.fractanomics.crosstraining.data.ai.AiCoreManager
+import com.fractanomics.crosstraining.data.ai.ExerciseEntityGrounder
+import com.fractanomics.crosstraining.data.ai.FitnessSpeechLexicon
+import com.fractanomics.crosstraining.data.ai.ParsedBlock
+import com.fractanomics.crosstraining.data.ai.ParsedBlockSet
+import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
@@ -15,7 +21,9 @@ import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
 /**
@@ -35,7 +43,17 @@ data class BlockInsert(
  * saving a session with its sets and optional rep-max, swapping the active
  * cycle).
  */
-class Repository(private val db: AppDatabase) {
+class Repository(
+    private val db: AppDatabase,
+    private val transactionRunner: TransactionRunner? = null,
+    val aiCoreManager: AiCoreManager = AiCoreManager.DEFAULT,
+    val grounder: ExerciseEntityGrounder = ExerciseEntityGrounder.DEFAULT,
+    val lexicon: FitnessSpeechLexicon = FitnessSpeechLexicon.DEFAULT
+) {
+
+    internal suspend fun <R> withDatabaseTransaction(block: suspend () -> R): R {
+        return transactionRunner?.runInTransaction(block) ?: db.withTransaction(block)
+    }
 
     private val cycleDao = db.cycleDao()
     private val exerciseDao = db.exerciseDao()
@@ -67,7 +85,7 @@ class Repository(private val db: AppDatabase) {
     suspend fun snapshotCycleGoals(): List<CycleGoal> = cycleGoalDao.snapshot()
 
     suspend fun saveCycleWithGoals(cycle: Cycle, goals: List<CycleGoal>): Long =
-        db.withTransaction {
+        withDatabaseTransaction {
             val cycleId = if (cycle.id == 0L) cycleDao.insert(cycle) else {
                 cycleDao.update(cycle); cycle.id
             }
@@ -131,7 +149,7 @@ class Repository(private val db: AppDatabase) {
         }
 
     suspend fun saveRoutineWithBlocks(routine: Routine, blocks: List<RoutineBlock>): Long =
-        db.withTransaction {
+        withDatabaseTransaction {
             val existing = if (routine.id == 0L) routineDao.byName(routine.name.trim()) else null
             val targetRoutine = if (existing != null) routine.copy(id = existing.id) else routine
             val routineId = if (targetRoutine.id == 0L) routineDao.insert(targetRoutine) else {
@@ -147,7 +165,7 @@ class Repository(private val db: AppDatabase) {
             routineId
         }
 
-    suspend fun cleanupDuplicateRoutines() = db.withTransaction {
+    suspend fun cleanupDuplicateRoutines() = withDatabaseTransaction {
         val allRoutines = routineDao.getAllOnce()
         val grouped = allRoutines.groupBy { it.name.trim().lowercase() }
         grouped.forEach { (_, list) ->
@@ -181,7 +199,7 @@ class Repository(private val db: AppDatabase) {
      * up here.
      */
     suspend fun saveSession(session: Session, blocks: List<BlockInsert>): Long =
-        db.withTransaction {
+        withDatabaseTransaction {
             val sessionId = sessionDao.insertSession(session)
             blocks.forEachIndexed { blockIndex, item ->
                 val blockId = blockDao.insertBlock(
@@ -215,7 +233,7 @@ class Repository(private val db: AppDatabase) {
      * new rep-maxes in [blocks] are added.
      */
     suspend fun updateSession(session: Session, blocks: List<BlockInsert>) {
-        db.withTransaction {
+        withDatabaseTransaction {
             sessionDao.updateSession(session)
             blockDao.deleteBlocksForSession(session.id)
             blocks.forEachIndexed { blockIndex, item ->
@@ -293,7 +311,7 @@ class Repository(private val db: AppDatabase) {
      * blocks → sets → rep-maxes) so relationships restore intact.
      */
     suspend fun importSnapshot(data: BackupData) {
-        db.withTransaction {
+        withDatabaseTransaction {
             // Clear children before parents to respect foreign keys.
             repMaxDao.deleteAll()
             blockDao.deleteAllSets()
@@ -315,5 +333,434 @@ class Repository(private val db: AppDatabase) {
 
     suspend fun reseedDefaults(force: Boolean = true) {
         SeedData.populate(exerciseDao, routineDao, cycleDao, cycleGoalDao, force)
+    }
+
+    // --- Voice Ingestion & Atomic Persistence ---------------------------------
+
+    /**
+     * Parses spoken or dictated workout text into structured [VoiceParseResult]
+     * using [FitnessSpeechLexicon] for phonetic normalization, [AiCoreManager] for structured extraction,
+     * and [ExerciseEntityGrounder] for detecting ambiguous movements against [ExerciseDao].
+     */
+    suspend fun parseVoiceInput(
+        voiceText: String,
+        customAiManager: AiCoreManager? = null
+    ): VoiceParseResult = withContext(Dispatchers.IO) {
+        val trimmed = voiceText.trim()
+        if (trimmed.isBlank()) {
+            return@withContext VoiceParseResult(transcript = "", blocks = emptyList())
+        }
+
+        val sanitizedText = lexicon.correct(trimmed)
+        val activeAi = customAiManager ?: aiCoreManager
+
+        val parseResult = activeAi.parseWorkoutText(sanitizedText)
+        val validAiBlocks = parseResult.blocks.filter { it.name.isNotBlank() }
+        val blocks = if (validAiBlocks.isNotEmpty()) {
+            validAiBlocks
+        } else {
+            fallbackParseVoiceText(sanitizedText)
+        }
+
+        val allExercises = exerciseDao.getAllOnce()
+        val ambiguousMap = mutableMapOf<Int, List<Exercise>>()
+
+        blocks.forEachIndexed { index, block ->
+            if (block.name.isNotBlank()) {
+                val matches = grounder.resolveExerciseWithConfidence(block.name, allExercises)
+                if (matches.size > 1 && matches.first().confidence < 1.0) {
+                    ambiguousMap[index] = matches.map { it.exercise }
+                }
+            }
+        }
+
+        VoiceParseResult(
+            transcript = sanitizedText,
+            blocks = blocks,
+            ambiguousExercises = ambiguousMap
+        )
+    }
+
+    /**
+     * Atomically creates and persists a complete workout session with its [SessionBlock]s
+     * and [BlockSet]s from spoken text within [withDatabaseTransaction].
+     *
+     * @param voiceText Spoken or transcribed workout dictation.
+     * @param sessionDate Training session date.
+     * @param disambiguatedExercises User-resolved exercise mapping for ambiguous blocks.
+     * @param parsedBlocks Optional pre-parsed blocks (e.g. from UI confirmation sheet).
+     * @param cycleId Optional active cycle to link to.
+     * @param customAiManager Optional AI manager override for testing.
+     * @return The persisted [Session] entity.
+     */
+    suspend fun createSessionFromVoiceInput(
+        voiceText: String,
+        sessionDate: LocalDate = LocalDate.now(),
+        disambiguatedExercises: Map<Int, Exercise> = emptyMap(),
+        parsedBlocks: List<ParsedBlock>? = null,
+        cycleId: Long? = null,
+        customAiManager: AiCoreManager? = null
+    ): Session = withContext(Dispatchers.IO) {
+        val trimmed = voiceText.trim()
+        require(trimmed.isNotBlank()) { "Voice input text cannot be blank" }
+
+        val sanitizedText = lexicon.correct(trimmed)
+        val activeAi = customAiManager ?: aiCoreManager
+
+        val blocksToPersist = if (!parsedBlocks.isNullOrEmpty()) {
+            parsedBlocks
+        } else {
+            val parseResult = activeAi.parseWorkoutText(sanitizedText)
+            val validAiBlocks = parseResult.blocks.filter { it.name.isNotBlank() }
+            if (validAiBlocks.isNotEmpty()) {
+                validAiBlocks
+            } else {
+                fallbackParseVoiceText(sanitizedText)
+            }
+        }
+
+        require(blocksToPersist.isNotEmpty()) {
+            "Could not parse any workout blocks from voice input: \"$voiceText\""
+        }
+
+        withDatabaseTransaction {
+            val resolvedCycleId = cycleId
+                ?: cycleDao.getAllOnce().find { it.isActive }?.id
+                ?: cycleDao.getAllOnce().firstOrNull()?.id
+                ?: saveCycle(Cycle(name = "General Training", startDate = sessionDate, isActive = true))
+
+            val sessionTitle = deriveSessionTitle(blocksToPersist, sanitizedText)
+            val session = Session(
+                id = 0,
+                cycleId = resolvedCycleId,
+                date = sessionDate,
+                title = sessionTitle,
+                notes = sanitizedText
+            )
+            val sessionId = sessionDao.insertSession(session)
+
+            blocksToPersist.forEachIndexed { blockIndex, block ->
+                val resolvedExercise = disambiguatedExercises[blockIndex]
+                    ?: resolveExerciseForBlock(block)
+
+                val blockName = if (disambiguatedExercises.containsKey(blockIndex)) {
+                    disambiguatedExercises[blockIndex]!!.name
+                } else if (block.name.isNotBlank()) {
+                    block.name
+                } else {
+                    resolvedExercise?.name ?: "Block ${blockIndex + 1}"
+                }
+                val sessionBlock = SessionBlock(
+                    id = 0,
+                    sessionId = sessionId,
+                    position = blockIndex,
+                    name = blockName,
+                    kind = block.kind,
+                    format = block.format,
+                    scheme = block.repScheme,
+                    mainExerciseId = resolvedExercise?.id,
+                    description = block.description,
+                    notes = if (block.rpe != null) "RPE ${block.rpe}" else ""
+                )
+                val blockId = blockDao.insertBlock(sessionBlock)
+
+                if (block.sets.isNotEmpty()) {
+                    val sets = block.sets.mapIndexed { setIndex, set ->
+                        BlockSet(
+                            id = 0,
+                            blockId = blockId,
+                            position = setIndex,
+                            reps = set.reps,
+                            weight = set.weight,
+                            metricValue = set.metricValue,
+                            isWarmup = set.isWarmup,
+                            notes = if (set.rpe != null) "RPE ${set.rpe}" else ""
+                        )
+                    }
+                    blockDao.insertSets(sets)
+                } else {
+                    val defaultSet = BlockSet(
+                        id = 0,
+                        blockId = blockId,
+                        position = 0,
+                        reps = 1,
+                        weight = null,
+                        isWarmup = false
+                    )
+                    blockDao.insertSets(listOf(defaultSet))
+                }
+            }
+
+            session.copy(id = sessionId)
+        }
+    }
+
+    /**
+     * Atomically parses and appends a single completed [BlockSet] to the active session block
+     * from voice input during a live workout session.
+     *
+     * @param sessionId The active workout session ID.
+     * @param voiceText Spoken set text (e.g. "Logged 5 back squats at 120 kg, RPE 8").
+     * @param customAiManager Optional AI manager override for testing.
+     * @return The persisted [BlockSet] with its generated ID.
+     */
+    suspend fun appendBlockSetFromVoice(
+        sessionId: Long,
+        voiceText: String,
+        customAiManager: AiCoreManager? = null
+    ): BlockSet = withContext(Dispatchers.IO) {
+        val trimmed = voiceText.trim()
+        require(trimmed.isNotBlank()) { "Voice input text cannot be blank" }
+
+        val sanitizedText = lexicon.correct(trimmed)
+        val activeAi = customAiManager ?: aiCoreManager
+
+        withDatabaseTransaction {
+            val sessionWithBlocks = sessionDao.getByIdOnce(sessionId)
+                ?: throw IllegalArgumentException("Session not found with id: $sessionId")
+
+            val parsedLiveSet = parseLiveVoiceSet(sanitizedText, activeAi)
+
+            val existingBlocks = sessionWithBlocks.blocks.map { it.block }
+            val targetBlock = resolveTargetBlockForSet(sessionId, existingBlocks, parsedLiveSet)
+
+            val existingSets = blockDao.getSetsForBlockOnce(targetBlock.id)
+            val nextPosition = existingSets.size
+
+            val set = BlockSet(
+                id = 0,
+                blockId = targetBlock.id,
+                position = nextPosition,
+                reps = parsedLiveSet.reps,
+                weight = parsedLiveSet.weight,
+                metricValue = parsedLiveSet.metricValue,
+                isWarmup = parsedLiveSet.isWarmup,
+                isFailed = parsedLiveSet.isFailed,
+                notes = parsedLiveSet.notes
+            )
+
+            val insertedId = blockDao.insertSet(set)
+            set.copy(id = insertedId)
+        }
+    }
+
+    private suspend fun resolveExerciseForBlock(block: ParsedBlock): Exercise? {
+        if (block.name.isBlank()) return null
+        val candidates = grounder.resolveExerciseWithConfidence(block.name, exerciseDao)
+        return if (candidates.isNotEmpty()) {
+            candidates.first().exercise
+        } else {
+            getOrCreateExercise(block.name)
+        }
+    }
+
+    private fun deriveSessionTitle(blocks: List<ParsedBlock>, rawText: String): String {
+        return when {
+            blocks.size == 1 -> {
+                val b = blocks.first()
+                if (b.format.isNotBlank()) "${b.name} (${b.format})" else b.name
+            }
+            blocks.size in 2..3 -> {
+                blocks.joinToString(" + ") { it.name.ifBlank { "Workout" } }
+            }
+            else -> "Voice Workout (${blocks.size} blocks)"
+        }
+    }
+
+    private suspend fun resolveTargetBlockForSet(
+        sessionId: Long,
+        existingBlocks: List<SessionBlock>,
+        liveSet: ParsedLiveSet
+    ): SessionBlock {
+        if (!liveSet.exerciseName.isNullOrBlank()) {
+            val grounded = grounder.resolveBestMatch(liveSet.exerciseName, exerciseDao)
+            val match = existingBlocks.find { b ->
+                (grounded != null && b.mainExerciseId == grounded.id) ||
+                b.name.equals(liveSet.exerciseName, ignoreCase = true) ||
+                (grounded != null && b.name.equals(grounded.name, ignoreCase = true))
+            }
+            if (match != null) return match
+
+            val exercise = grounded ?: getOrCreateExercise(liveSet.exerciseName)
+            val newBlock = SessionBlock(
+                id = 0,
+                sessionId = sessionId,
+                position = existingBlocks.size,
+                name = exercise.name,
+                kind = BlockKind.STRENGTH,
+                mainExerciseId = exercise.id
+            )
+            val newBlockId = blockDao.insertBlock(newBlock)
+            return newBlock.copy(id = newBlockId)
+        }
+
+        if (existingBlocks.isNotEmpty()) {
+            return existingBlocks.last()
+        }
+
+        val initialBlock = SessionBlock(
+            id = 0,
+            sessionId = sessionId,
+            position = 0,
+            name = "Workout Block",
+            kind = BlockKind.STRENGTH
+        )
+        val newBlockId = blockDao.insertBlock(initialBlock)
+        return initialBlock.copy(id = newBlockId)
+    }
+
+    private data class ParsedLiveSet(
+        val exerciseName: String? = null,
+        val reps: Int = 1,
+        val weight: Double? = null,
+        val metricValue: Double? = null,
+        val isWarmup: Boolean = false,
+        val isFailed: Boolean = false,
+        val notes: String = ""
+    )
+
+    private suspend fun parseLiveVoiceSet(text: String, aiManager: AiCoreManager): ParsedLiveSet {
+        if (aiManager.client.isAvailable()) {
+            val parseResult = aiManager.parseWorkoutText(text)
+            if (parseResult.blocks.isNotEmpty()) {
+                val block = parseResult.blocks.first()
+                val set = block.sets.firstOrNull()
+                val rpeStr = if (set?.rpe != null) "RPE ${set.rpe}" else if (block.rpe != null) "RPE ${block.rpe}" else ""
+                return ParsedLiveSet(
+                    exerciseName = block.name.takeIf { it.isNotBlank() && !it.equals("Workout Block", ignoreCase = true) },
+                    reps = set?.reps ?: 1,
+                    weight = set?.weight,
+                    metricValue = set?.metricValue,
+                    isWarmup = set?.isWarmup ?: false,
+                    isFailed = false,
+                    notes = rpeStr
+                )
+            }
+        }
+
+        val rpeRegex = Regex("""(?i)\b(?:rpe|r\s*pay)\s*(\d+(?:\.\d+)?)\b""")
+        val rpeMatch = rpeRegex.find(text)
+        val rpeNote = if (rpeMatch != null) "RPE ${rpeMatch.groupValues[1]}" else ""
+
+        val isWarmup = text.contains("warmup", ignoreCase = true) || text.contains("warm up", ignoreCase = true)
+        val isFailed = text.contains("fail", ignoreCase = true) || text.contains("missed", ignoreCase = true)
+
+        val weightRegex = Regex("""(?i)(?:at|@)?\s*(\d+(?:\.\d+)?)\s*(?:kg|lbs|kilos|k)\b""")
+        val weight = weightRegex.find(text)?.groupValues?.get(1)?.toDoubleOrNull()
+
+        val repsWithUnitRegex = Regex("""(?i)\b(\d+)\s*(?:reps?|rep)\b""")
+        val repsWithPrefixRegex = Regex("""(?i)(?:\blogged\s+)?(\d+)\s+(?:reps?\s+)?([a-zA-Z\s]+?)\s+(?:at|@)""")
+        val repsBeforeAtRegex = Regex("""(?i)\b(\d+)\s*(?:at|@)""")
+
+        val repsMatch = repsWithUnitRegex.find(text)
+            ?: repsWithPrefixRegex.find(text)
+            ?: repsBeforeAtRegex.find(text)
+
+        val reps = repsMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
+
+        var exerciseName: String? = null
+        val exMatch = repsWithPrefixRegex.find(text)
+        if (exMatch != null) {
+            val ex = exMatch.groupValues[2].trim()
+            if (ex.isNotBlank() && !ex.equals("reps", ignoreCase = true)) {
+                exerciseName = ex
+            }
+        } else {
+            val candidates = grounder.resolveExercise(text, exerciseDao)
+            if (candidates.isNotEmpty()) {
+                exerciseName = candidates.first().name
+            }
+        }
+
+        return ParsedLiveSet(
+            exerciseName = exerciseName,
+            reps = reps,
+            weight = weight,
+            isWarmup = isWarmup,
+            isFailed = isFailed,
+            notes = rpeNote
+        )
+    }
+
+    private fun fallbackParseVoiceText(sanitizedText: String): List<ParsedBlock> {
+        val complexRegex = Regex("""(?i)(?:(\d+)\s+)?([a-zA-Z\s]+?)\s+\+\s+(?:(\d+)\s+)?([a-zA-Z\s]+?)(?:\s+at\s+(\d+(?:\.\d+)?)\s*(?:kg|lbs|kilos)?)?(?:,\s*(\d+)\s*sets)?(?:\s+on\s+a\s+(\d+)\s*min(?:ute)?\s*timer)?""")
+        val complexMatch = complexRegex.find(sanitizedText)
+        if (complexMatch != null) {
+            val mov1 = complexMatch.groupValues[2].trim()
+            val mov2 = complexMatch.groupValues[4].trim()
+            val weight = complexMatch.groupValues[5].toDoubleOrNull()
+            val numSets = complexMatch.groupValues[6].toIntOrNull() ?: 1
+            val timerMins = complexMatch.groupValues[7].toIntOrNull()
+            val formatStr = if (timerMins != null) "E${timerMins}MOM" else ""
+
+            val sets = List(numSets) {
+                ParsedBlockSet(reps = 1, weight = weight)
+            }
+
+            return listOf(
+                ParsedBlock(
+                    name = "$mov1 + $mov2",
+                    kind = BlockKind.STRENGTH,
+                    format = formatStr,
+                    repScheme = "${numSets}x1",
+                    sets = sets,
+                    movements = listOf(mov1, mov2),
+                    description = sanitizedText
+                )
+            )
+        }
+
+        val emomAmrapRegex = Regex("""(?i)\b(EMOM|AMRAP|E\d+MOM)\s*(\d+)?\s*(?:of\s+)?(?:(\d+)\s+)?([a-zA-Z\s]+)""")
+        val eaMatch = emomAmrapRegex.find(sanitizedText)
+        if (eaMatch != null) {
+            val formatType = eaMatch.groupValues[1].uppercase()
+            val duration = eaMatch.groupValues[2].trim()
+            val reps = eaMatch.groupValues[3].toIntOrNull() ?: 1
+            val exName = eaMatch.groupValues[4].trim()
+            val fullFormat = if (duration.isNotBlank()) "$formatType $duration" else formatType
+
+            return listOf(
+                ParsedBlock(
+                    name = exName.ifBlank { "Metcon" },
+                    kind = BlockKind.METCON,
+                    format = fullFormat,
+                    repScheme = "${reps} reps",
+                    sets = listOf(ParsedBlockSet(reps = reps)),
+                    description = sanitizedText
+                )
+            )
+        }
+
+        val setsxRepsRegex = Regex("""(?i)(?:(\d+)\s*sets?\s*(?:of\s*)?(\d+)|(?:(\d+)\s*[xX*]\s*(\d+)))\s+(.+?)(?:\s+(?:at|@)\s+(\d+(?:\.\d+)?)\s*(?:kg|lbs|kilos)?|$|\s*$)""")
+        val srMatch = setsxRepsRegex.find(sanitizedText)
+        if (srMatch != null) {
+            val numSets = srMatch.groupValues[1].toIntOrNull() ?: srMatch.groupValues[3].toIntOrNull() ?: 1
+            val numReps = srMatch.groupValues[2].toIntOrNull() ?: srMatch.groupValues[4].toIntOrNull() ?: 1
+            val exName = srMatch.groupValues[5].trim()
+            val weight = srMatch.groupValues[6].toDoubleOrNull()
+
+            val sets = List(numSets) {
+                ParsedBlockSet(reps = numReps, weight = weight)
+            }
+
+            return listOf(
+                ParsedBlock(
+                    name = exName,
+                    kind = BlockKind.STRENGTH,
+                    repScheme = "${numSets}x${numReps}",
+                    sets = sets,
+                    description = sanitizedText
+                )
+            )
+        }
+
+        return listOf(
+            ParsedBlock(
+                name = sanitizedText.take(40),
+                kind = BlockKind.STRENGTH,
+                sets = listOf(ParsedBlockSet(reps = 1)),
+                description = sanitizedText
+            )
+        )
     }
 }

@@ -44,3 +44,6 @@ unit-test-summary.md
 # Local pipeline run logs (Windows Task Scheduler wrapper scripts)
 logs/local-pipeline/
 
+# Agent worktrees
+.graph/worktrees/
+

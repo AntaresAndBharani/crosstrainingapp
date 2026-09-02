@@ -18,6 +18,15 @@ interface BlockDao {
     @Insert
     suspend fun insertSets(sets: List<BlockSet>)
 
+    @Insert
+    suspend fun insertSet(set: BlockSet): Long
+
+    @Query("SELECT * FROM session_blocks WHERE sessionId = :sessionId ORDER BY position ASC")
+    suspend fun getBlocksForSessionOnce(sessionId: Long): List<SessionBlock>
+
+    @Query("SELECT * FROM block_sets WHERE blockId = :blockId ORDER BY position ASC")
+    suspend fun getSetsForBlockOnce(blockId: Long): List<BlockSet>
+
     @Query("SELECT * FROM session_blocks")
     suspend fun getAllBlocksOnce(): List<SessionBlock>
 

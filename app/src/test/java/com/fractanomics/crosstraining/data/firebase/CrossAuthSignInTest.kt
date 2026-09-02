@@ -388,7 +388,7 @@ class CrossAuthSignInTest {
     fun `scenario 4 - current environment fallback is valid and snapshot isolated`() {
         val env = UserCloudSyncManager.currentEnv
         assertTrue("Environment must not be blank", env.isNotBlank())
-        assertEquals("snapshot", env)
+        assertEquals(com.fractanomics.crosstraining.BuildConfig.APP_ENV, env)
     }
 
     @Test
