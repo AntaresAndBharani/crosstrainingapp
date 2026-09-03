@@ -10,6 +10,21 @@ object CloudSyncErrorMapper {
     const val SUCCESS_MESSAGE = "Cloud sync completed!"
     const val GENERIC_ERROR_MESSAGE = "Sync failed. Please try again later."
     const val PERMISSION_DENIED_MESSAGE = "Permission denied. Please verify your account credentials."
+    const val SESSION_EXPIRED_MESSAGE = "Session expired. Please sign in again to back up your workouts"
+
+    fun isAuthOrSessionError(message: String?): Boolean {
+        if (message.isNullOrBlank()) return true
+        val lower = message.lowercase()
+        return lower.contains("session expired") ||
+                lower.contains("expired") ||
+                lower.contains("not authenticated") ||
+                lower.contains("unauthenticated") ||
+                lower.contains("re-authentication") ||
+                lower.contains("sign in") ||
+                lower.contains("guest") ||
+                lower.contains("token") ||
+                lower.contains(GUEST_AUTH_PROMPT.lowercase())
+    }
 
     fun isNetworkOrTimeout(error: Throwable?): Boolean {
         if (error == null) return false
@@ -54,6 +69,8 @@ object CloudSyncErrorMapper {
         if (isNetworkOrTimeout(message)) return NETWORK_UNAVAILABLE_MESSAGE
         val lower = message.lowercase()
         return when {
+            lower.contains("session expired") || lower.contains("expired") ->
+                SESSION_EXPIRED_MESSAGE
             lower.contains("permission_denied") || lower.contains("permission denied") || lower.contains("missing or insufficient permissions") ->
                 PERMISSION_DENIED_MESSAGE
             lower.contains("not authenticated") || lower.contains("unauthenticated") || lower.contains("re-authentication") || lower.contains("sign in") ->

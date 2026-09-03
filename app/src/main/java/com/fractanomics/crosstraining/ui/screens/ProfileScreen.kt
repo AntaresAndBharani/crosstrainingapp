@@ -96,6 +96,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.firebase.SyncStatus
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.theme.AppThemeMode
+import androidx.compose.material.icons.filled.Close
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -109,13 +112,63 @@ fun ProfileScreen(
 ) {
     val authUser by viewModel.authUser.collectAsStateWithLifecycle()
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
+    val lastSyncError by viewModel.lastSyncError.collectAsStateWithLifecycle()
+    val legacySessionRequiresReauth by viewModel.legacySessionRequiresReauth.collectAsStateWithLifecycle()
     val currentThemeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val currentUserRole by viewModel.userRole.collectAsStateWithLifecycle()
     val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val credentialManager = remember { CredentialManager.create(context) }
 
     var showAuthModal by remember { mutableStateOf(false) }
     var authModalPrompt by remember { mutableStateOf<String?>(null) }
+    var isCooldownActive by remember { mutableStateOf(false) }
+    var cooldownJob by remember { mutableStateOf<Job?>(null) }
+
+    fun launchSignInAgain() {
+        scope.launch {
+            try {
+                val serverClientId = runCatching {
+                    val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+                    if (resId != 0) context.getString(resId) else null
+                }.getOrNull() ?: "384900244521.apps.googleusercontent.com"
+
+                val googleIdOption = GetGoogleIdOption.Builder()
+                    .setFilterByAuthorizedAccounts(false)
+                    .setServerClientId(serverClientId)
+                    .setAutoSelectEnabled(false)
+                    .build()
+
+                val request = GetCredentialRequest.Builder()
+                    .addCredentialOption(googleIdOption)
+                    .build()
+
+                val result = credentialManager.getCredential(request = request, context = context)
+                val credential = result.credential
+                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+                    viewModel.logInWithGoogle(googleIdTokenCredential.idToken, remember = true) { ok, err ->
+                        if (ok) {
+                            val displayName = googleIdTokenCredential.displayName ?: googleIdTokenCredential.id
+                            scope.launch { snackbar.showSnackbar("Welcome back, $displayName!") }
+                            viewModel.triggerCloudSync { }
+                        } else {
+                            scope.launch { snackbar.showSnackbar(err ?: "Sign in failed") }
+                        }
+                    }
+                } else {
+                    authModalPrompt = "Please sign in again to connect your cloud account"
+                    showAuthModal = true
+                }
+            } catch (e: GetCredentialCancellationException) {
+                // User cancelled sheet explicitly
+            } catch (e: Exception) {
+                authModalPrompt = "Please sign in again to connect your cloud account"
+                showAuthModal = true
+            }
+        }
+    }
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
@@ -143,6 +196,14 @@ fun ProfileScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Legacy Session Security Re-Auth Banner
+            if (legacySessionRequiresReauth) {
+                LegacySessionReauthBanner(
+                    onSignInAgain = { launchSignInAgain() },
+                    onDismiss = { viewModel.dismissLegacyReauthPrompt() }
+                )
+            }
+
             // User Profile Card
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Row(
@@ -368,136 +429,65 @@ fun ProfileScreen(
             }
 
             // Cloud Backup & Sync Card
-            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Icon(
-                                Icons.Filled.CloudSync,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                "Cloud Backup & Sync",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
+            CloudBackupSyncCard(
+                syncState = syncState,
+                lastSyncError = lastSyncError,
+                isCooldownActive = isCooldownActive,
+                onSyncNow = {
+                    if (isCooldownActive) return@CloudBackupSyncCard
+                    if (authUser?.email.isNullOrBlank() || authUser?.isAnonymous == true) {
+                        authModalPrompt = CloudSyncErrorMapper.GUEST_AUTH_PROMPT
+                        showAuthModal = true
+                        scope.launch {
+                            snackbar.showSnackbar(CloudSyncErrorMapper.GUEST_AUTH_PROMPT)
                         }
-                        Box(
-                            modifier = Modifier
-                                .background(
-                                    when (syncState) {
-                                        SyncStatus.SUCCESS -> MaterialTheme.colorScheme.primaryContainer
-                                        SyncStatus.SYNCING -> MaterialTheme.colorScheme.secondaryContainer
-                                        SyncStatus.ERROR -> MaterialTheme.colorScheme.errorContainer
-                                        SyncStatus.IDLE -> MaterialTheme.colorScheme.surfaceVariant
-                                    },
-                                    RoundedCornerShape(6.dp)
-                                )
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                when (syncState) {
-                                    SyncStatus.SYNCING -> CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
-                                    SyncStatus.SUCCESS -> Icon(Icons.Filled.CloudDone, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                                    SyncStatus.ERROR -> Icon(Icons.Filled.Error, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onErrorContainer)
-                                    SyncStatus.IDLE -> Icon(Icons.Filled.CloudSync, contentDescription = null, modifier = Modifier.size(14.dp))
-                                }
-                                Text(
-                                    syncState.name,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-
-                    Text(
-                        "Your exercises, daily routines, training cycles, logged workouts, and rep maxes are synced with Cloud Firestore.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Button(
-                        onClick = {
-                            if (authUser?.email.isNullOrBlank() || authUser?.isAnonymous == true) {
-                                authModalPrompt = CloudSyncErrorMapper.GUEST_AUTH_PROMPT
-                                showAuthModal = true
-                                scope.launch {
-                                    snackbar.showSnackbar(CloudSyncErrorMapper.GUEST_AUTH_PROMPT)
-                                }
-                            } else {
-                                viewModel.triggerCloudSync { result ->
-                                    scope.launch {
-                                        val message = when {
-                                            result.uploadSuccess && result.downloadSuccess ->
-                                                CloudSyncErrorMapper.SUCCESS_MESSAGE
-                                            CloudSyncErrorMapper.isNetworkOrTimeout(result.uploadError) || CloudSyncErrorMapper.isNetworkOrTimeout(result.downloadError) ->
-                                                CloudSyncErrorMapper.NETWORK_UNAVAILABLE_MESSAGE
-                                            !result.uploadSuccess && !result.downloadSuccess -> {
-                                                val upMsg = CloudSyncErrorMapper.mapMessage(result.uploadError)
-                                                val downMsg = CloudSyncErrorMapper.mapMessage(result.downloadError)
-                                                if (upMsg == downMsg) upMsg else "Sync failed: $upMsg"
-                                            }
-                                            !result.uploadSuccess ->
-                                                CloudSyncErrorMapper.mapMessage(result.uploadError)
-                                            else ->
-                                                CloudSyncErrorMapper.mapMessage(result.downloadError)
-                                        }
-                                        snackbar.showSnackbar(message)
+                    } else {
+                        viewModel.triggerCloudSync { result ->
+                            scope.launch {
+                                val message = when {
+                                    result.uploadSuccess && result.downloadSuccess ->
+                                        CloudSyncErrorMapper.SUCCESS_MESSAGE
+                                    CloudSyncErrorMapper.isNetworkOrTimeout(result.uploadError) || CloudSyncErrorMapper.isNetworkOrTimeout(result.downloadError) ->
+                                        CloudSyncErrorMapper.NETWORK_UNAVAILABLE_MESSAGE
+                                    !result.uploadSuccess && !result.downloadSuccess -> {
+                                        val upMsg = CloudSyncErrorMapper.mapMessage(result.uploadError)
+                                        val downMsg = CloudSyncErrorMapper.mapMessage(result.downloadError)
+                                        if (upMsg == downMsg) upMsg else "Sync failed: $upMsg"
                                     }
+                                    !result.uploadSuccess ->
+                                        CloudSyncErrorMapper.mapMessage(result.uploadError)
+                                    else ->
+                                        CloudSyncErrorMapper.mapMessage(result.downloadError)
+                                }
+                                snackbar.showSnackbar(message)
+                            }
+                            if (!result.uploadSuccess || !result.downloadSuccess) {
+                                cooldownJob?.cancel()
+                                cooldownJob = scope.launch {
+                                    isCooldownActive = true
+                                    delay(5000L)
+                                    isCooldownActive = false
                                 }
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = syncState != SyncStatus.SYNCING
-                    ) {
-                        Icon(Icons.Filled.CloudSync, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Sync Now")
+                        }
                     }
-
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.recoverCloudRoutines { count ->
-                                scope.launch {
-                                    snackbar.showSnackbar(if (count > 0) "Recovered $count routines from cloud!" else "No previous routines found in cloud.")
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Filled.CloudDownload, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Search Cloud for Lost Routines")
+                },
+                onSignInAgain = { launchSignInAgain() },
+                onRecoverCloudRoutines = {
+                    viewModel.recoverCloudRoutines { count ->
+                        scope.launch {
+                            snackbar.showSnackbar(if (count > 0) "Recovered $count routines from cloud!" else "No previous routines found in cloud.")
+                        }
                     }
-
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.reseedDefaults {
-                                scope.launch {
-                                    snackbar.showSnackbar("Default routines & exercises restored!")
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Filled.Refresh, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Restore Default Routines")
+                },
+                onReseedDefaults = {
+                    viewModel.reseedDefaults {
+                        scope.launch {
+                            snackbar.showSnackbar("Default routines & exercises restored!")
+                        }
                     }
                 }
-            }
+            )
         }
     }
 
@@ -952,6 +942,250 @@ fun DataModeCard(
                     Spacer(Modifier.width(8.dp))
                     Text("Reset Demo Data")
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Inline security banner displayed when a legacy session requires re-authentication.
+ * Fulfills AC: "Security update: Please sign in again to connect your cloud account"
+ */
+@Composable
+fun LegacySessionReauthBanner(
+    onSignInAgain: () -> Unit,
+    modifier: Modifier = Modifier,
+    onDismiss: (() -> Unit)? = null
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.7f))
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        Icons.Filled.Lock,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        "Security update: Please sign in again to connect your cloud account",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+                if (onDismiss != null) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Dismiss security banner",
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+
+            Button(
+                onClick = onSignInAgain,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                )
+            ) {
+                Icon(
+                    Icons.Filled.AccountCircle,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Sign In Again", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+/**
+ * Stateless Cloud Backup & Sync Card displaying cloud sync state, actionable inline error recovery,
+ * debounced retry with 5-second cooldown, and cloud routine recovery actions.
+ */
+@Composable
+fun CloudBackupSyncCard(
+    syncState: SyncStatus,
+    lastSyncError: String?,
+    isCooldownActive: Boolean,
+    onSyncNow: () -> Unit,
+    onSignInAgain: () -> Unit,
+    onRecoverCloudRoutines: () -> Unit,
+    onReseedDefaults: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    ElevatedCard(modifier = modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.CloudSync,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "Cloud Backup & Sync",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .background(
+                            when (syncState) {
+                                SyncStatus.SUCCESS -> MaterialTheme.colorScheme.primaryContainer
+                                SyncStatus.SYNCING -> MaterialTheme.colorScheme.secondaryContainer
+                                SyncStatus.ERROR -> MaterialTheme.colorScheme.errorContainer
+                                SyncStatus.IDLE -> MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            RoundedCornerShape(6.dp)
+                        )
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        when (syncState) {
+                            SyncStatus.SYNCING -> CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
+                            SyncStatus.SUCCESS -> Icon(Icons.Filled.CloudDone, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                            SyncStatus.ERROR -> Icon(Icons.Filled.Error, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onErrorContainer)
+                            SyncStatus.IDLE -> Icon(Icons.Filled.CloudSync, contentDescription = null, modifier = Modifier.size(14.dp))
+                        }
+                        Text(
+                            syncState.name,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            Text(
+                "Your exercises, daily routines, training cycles, logged workouts, and rep maxes are synced with Cloud Firestore.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // Actionable Inline Error Container
+            if (syncState == SyncStatus.ERROR) {
+                val errorMessage = if (CloudSyncErrorMapper.isAuthOrSessionError(lastSyncError) || lastSyncError.isNullOrBlank()) {
+                    CloudSyncErrorMapper.SESSION_EXPIRED_MESSAGE
+                } else {
+                    lastSyncError
+                }
+
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Error,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .padding(top = 2.dp)
+                            )
+                            Text(
+                                text = errorMessage,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+
+                        Button(
+                            onClick = onSignInAgain,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError
+                            )
+                        ) {
+                            Icon(
+                                Icons.Filled.AccountCircle,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Sign In Again", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            Button(
+                onClick = onSyncNow,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = syncState != SyncStatus.SYNCING && !isCooldownActive
+            ) {
+                Icon(Icons.Filled.CloudSync, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Sync Now")
+            }
+
+            OutlinedButton(
+                onClick = onRecoverCloudRoutines,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Filled.CloudDownload, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Search Cloud for Lost Routines")
+            }
+
+            OutlinedButton(
+                onClick = onReseedDefaults,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Filled.Refresh, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Restore Default Routines")
             }
         }
     }
