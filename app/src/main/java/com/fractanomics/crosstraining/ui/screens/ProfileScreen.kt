@@ -41,9 +41,11 @@ import com.fractanomics.crosstraining.data.model.UserRole
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Switch
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
@@ -104,6 +106,7 @@ fun ProfileScreen(
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
     val currentThemeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val currentUserRole by viewModel.userRole.collectAsStateWithLifecycle()
+    val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     var showAuthModal by remember { mutableStateOf(false) }
@@ -189,6 +192,16 @@ fun ProfileScreen(
                     }
                 }
             }
+
+            // Data Mode Card
+            DataModeCard(
+                demoMode = demoMode,
+                onToggle = { enabled -> viewModel.setDemoMode(enabled) },
+                onResetDemo = {
+                    viewModel.resetDemoData()
+                    scope.launch { snackbar.showSnackbar("Demo data reset") }
+                }
+            )
 
             // App Experience & Role Mode Card
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
@@ -769,4 +782,114 @@ private fun AuthDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+/**
+ * Stateless card for toggling between Real Data (Default) and Demo Data.
+ * Adheres to .agents/rules/03_compose_ui_standards.md §1 (pure stateless composable).
+ */
+@Composable
+fun DataModeCard(
+    demoMode: Boolean,
+    onToggle: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    onResetDemo: (() -> Unit)? = null
+) {
+    ElevatedCard(modifier = modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Storage,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "Data Mode",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (demoMode) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Text(
+                        text = if (demoMode) "DEMO DATA" else "REAL DATA",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (demoMode) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Text(
+                "Switch between your personal database (crosstraining.db) and an isolated sample dataset (crosstraining-demo.db) for testing and exploration.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = if (demoMode) {
+                    MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.25f)
+                } else {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+                },
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (demoMode) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (demoMode) "Demo Data" else "Real Data (Default)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (demoMode) "crosstraining-demo.db active — changes are temporary" else "crosstraining.db active — your personal training logs",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = demoMode,
+                        onCheckedChange = onToggle
+                    )
+                }
+            }
+
+            if (demoMode && onResetDemo != null) {
+                OutlinedButton(
+                    onClick = onResetDemo,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Reset Demo Data")
+                }
+            }
+        }
+    }
 }
