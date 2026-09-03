@@ -242,10 +242,17 @@ object UserCloudSyncManager {
         _syncState.value = SyncStatus.IDLE
     }
 
-    suspend fun uploadUserData(repo: Repository): Result<Unit> = runCatching {
-        _syncState.value = SyncStatus.SYNCING
+    internal var uploadUserDataHandler: (suspend (Repository) -> Result<Unit>)? = null
 
-        withTimeout(20000L) {
+    suspend fun uploadUserData(repo: Repository): Result<Unit> {
+        val testHandler = uploadUserDataHandler
+        if (testHandler != null) {
+            return testHandler(repo)
+        }
+        return runCatching {
+            _syncState.value = SyncStatus.SYNCING
+
+            withTimeout(20000L) {
             ensureAuthenticated()
             val uid = currentUserId
             if (uid.isBlank()) error("User not authenticated")
@@ -377,6 +384,7 @@ object UserCloudSyncManager {
         _syncState.value = SyncStatus.SUCCESS
     }.onFailure {
         _syncState.value = SyncStatus.ERROR
+    }
     }
 
     suspend fun downloadUserData(repo: Repository): Result<Unit> = runCatching {

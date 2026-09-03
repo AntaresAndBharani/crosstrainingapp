@@ -160,7 +160,6 @@ fun AppNavigation(
             snackbar = snackbarHostState,
             onContinueAsGuest = {
                 guestModeAccepted = true
-                viewModel.setDemoMode(true)
             }
         )
     } else {
