@@ -1,4 +1,4 @@
-﻿package com.fractanomics.crosstraining.data.ai
+package com.fractanomics.crosstraining.data.ai
 
 import java.util.Collections
 import kotlin.math.min
@@ -136,7 +136,8 @@ class FitnessSpeechLexicon(
         result = COMPLEX_PLUS_REGEX.replace(result, " + ")
 
         // 7. Standalone unit normalization (e.g. "kilograms", "kilos", "kgs", "k" after numbers -> "kg")
-        result = UNITS_KG_REGEX.replace(result, "kg")
+        result = NUMBER_K_REGEX.replace(result) { match -> "${match.groupValues[1]} kg" }
+        result = UNITS_KG_WORDS_REGEX.replace(result, "kg")
         result = UNITS_LBS_REGEX.replace(result, "lbs")
 
         // 8. Clean up any redundant whitespace
@@ -241,7 +242,8 @@ class FitnessSpeechLexicon(
 
         private val COMPLEX_PLUS_REGEX = Regex("""(?i)\s+\bplus\b\s+""")
 
-        private val UNITS_KG_REGEX = Regex("""(?i)\b(?:kilograms|kilogram|kilos|kilo|kgs)\b|(?<=\d\s*)(?:K|k)\b""")
+        private val NUMBER_K_REGEX = Regex("""(?i)\b(\d+(?:\.\d+)?)\s*[kK]\b""")
+        private val UNITS_KG_WORDS_REGEX = Regex("""(?i)\b(?:kilograms|kilogram|kilos|kilo|kgs)\b""")
         private val UNITS_LBS_REGEX = Regex("""(?i)\b(?:pounds|pound)\b""")
         private val MULTI_SPACE_REGEX = Regex("""[ \t]+""")
 
