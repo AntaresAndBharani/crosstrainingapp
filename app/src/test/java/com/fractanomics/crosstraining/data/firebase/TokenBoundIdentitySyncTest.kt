@@ -9,8 +9,10 @@ import com.fractanomics.crosstraining.data.model.RoutineBlock
 import android.content.SharedPreferences
 import com.fractanomics.crosstraining.data.DataModeManager
 import com.fractanomics.crosstraining.ui.AppViewModel
+import com.fractanomics.crosstraining.ui.CloudSyncResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -439,6 +441,285 @@ class TokenBoundIdentitySyncTest {
         assertTrue(result.isFailure)
         assertEquals(SyncStatus.ERROR, UserCloudSyncManager.syncState.value)
         assertEquals(CloudSyncErrorMapper.GUEST_AUTH_PROMPT, result.exceptionOrNull()?.message)
+    }
+
+    // =========================================================================
+    // Issue #494 / Subtask #492.2: Cold-Start Auth State Await
+    // =========================================================================
+
+    @Test
+    fun awaitAuthState_resolvesAuthenticatedUser_andEmitsUserState() = runTest {
+        // Given an authenticated user whose Firebase Auth token restoration is actively pending on cold start
+        UserCloudSyncManager.setAuthenticatedUser(null)
+        UserCloudSyncManager.asyncAuthUidProviderForTesting = {
+            delay(50)
+            "cold_start_resolved_uid_789"
+        }
+
+        // When awaitAuthState is called
+        val user = UserCloudSyncManager.awaitAuthState(1000L)
+
+        // Then it observes until a valid user resolves and userState emits the authenticated user
+        assertEquals("cold_start_resolved_uid_789", UserCloudSyncManager.userState.value?.uid)
+        assertFalse(UserCloudSyncManager.userState.value?.isAnonymous ?: true)
+    }
+
+    @Test
+    fun awaitAuthState_timesOut_whenResolutionExceedsBudget() = runTest {
+        UserCloudSyncManager.setAuthenticatedUser(null)
+        UserCloudSyncManager.asyncAuthUidProviderForTesting = {
+            delay(1000)
+            "late_uid_never_made_it"
+        }
+
+        val user = UserCloudSyncManager.awaitAuthState(100L)
+
+        assertNull("awaitAuthState must return null on timeout", user)
+        assertNull("userState must remain null when awaitAuthState times out", UserCloudSyncManager.userState.value)
+    }
+
+    @Test
+    fun coldStart_triggerCloudSync_awaitsPendingAuthState_andTransitionsToSuccess() = runTest {
+        // Given an authenticated user whose Firebase Auth token restoration is actively pending on cold start
+        UserCloudSyncManager.setAuthenticatedUser(null)
+        UserCloudSyncManager.asyncAuthUidProviderForTesting = {
+            delay(50)
+            "async_cold_start_uid"
+        }
+
+        val dataMode = DataModeManager(context = null, sharedPreferences = FakeTrackingSharedPreferences())
+        dataMode.setRepositoryForTesting(repo)
+        val viewModel = AppViewModel(dataMode)
+
+        // When the user triggers "Sync Now" immediately upon Profile screen entry
+        var syncResult: CloudSyncResult? = null
+        viewModel.triggerCloudSync { result ->
+            syncResult = result
+        }
+        advanceUntilIdle()
+
+        // Then awaitAuthState observes until non-anonymous user resolves and emits authUser
+        assertEquals("async_cold_start_uid", viewModel.authUser.value?.uid)
+        // And syncState transitions to SUCCESS
+        assertEquals(SyncStatus.SUCCESS, UserCloudSyncManager.syncState.value)
+        assertTrue(syncResult?.isSuccess == true)
+    }
+
+    @Test
+    fun uploadUserData_failsClosed_whenAsyncTokenBindingFailsOrTimesOut() = runTest {
+        val user = AuthUser(uid = "expected_uid_123", email = "athlete@example.com", isAnonymous = false)
+        UserCloudSyncManager.setAuthenticatedUser(user)
+
+        // async provider returns mismatched UID
+        UserCloudSyncManager.asyncAuthUidProviderForTesting = {
+            delay(20)
+            "different_mismatched_uid"
+        }
+
+        val result = UserCloudSyncManager.uploadUserData(repo)
+
+        assertTrue(result.isFailure)
+        assertEquals(SyncStatus.ERROR, UserCloudSyncManager.syncState.value)
+        assertEquals(CloudSyncErrorMapper.GUEST_AUTH_PROMPT, result.exceptionOrNull()?.message)
+    }
+
+    // =========================================================================
+    // Issue #494 / Subtask #492.2: Dual-Read Legacy Cloud Data Migration
+    // =========================================================================
+
+    @Test
+    fun downloadUserData_dualRead_queriesLegacyEmailPath_importsRoutinesAndSessions_andSyncsToNewUid() = runTest {
+        // Given an existing user who previously backed up workouts under legacy path users/{email}
+        val user = AuthUser(uid = "new_firebase_uid_555", email = "veteran@example.com", isAnonymous = false)
+        UserCloudSyncManager.setAuthenticatedUser(user)
+        UserCloudSyncManager.authUidProviderForTesting = { "new_firebase_uid_555" }
+
+        val legacyRoutines = listOf(
+            mapOf(
+                "routine" to mapOf(
+                    "id" to 101,
+                    "name" to "Legacy Cindy",
+                    "description" to "Historical 20-min AMRAP",
+                    "defaultFormat" to "AMRAP"
+                ),
+                "blocks" to listOf(
+                    mapOf(
+                        "name" to "Pull-ups, Push-ups, Squats",
+                        "kind" to "WEIGHTLIFTING",
+                        "format" to "AMRAP",
+                        "setsCount" to 1,
+                        "targetRepsScheme" to "5-10-15"
+                    )
+                )
+            )
+        )
+
+        val legacySessions = listOf(
+            mapOf(
+                "session" to mapOf(
+                    "date" to "2026-08-15",
+                    "title" to "Historical Cindy PR Session",
+                    "notes" to "Migrated from legacy email doc",
+                    "cycleId" to 0
+                ),
+                "blocks" to listOf(
+                    mapOf(
+                        "block" to mapOf(
+                            "name" to "Cindy AMRAP",
+                            "kind" to "WEIGHTLIFTING",
+                            "format" to "AMRAP",
+                            "resultText" to "22 rounds"
+                        ),
+                        "sets" to listOf(
+                            mapOf(
+                                "reps" to 22,
+                                "weight" to 0.0,
+                                "notes" to "Clean reps"
+                            )
+                        )
+                    )
+                )
+            )
+        )
+
+        // When they sign in with a new Firebase UID and trigger cloud sync:
+        // users/{new_firebase_uid_555} is empty, but users/{veteran@example.com} has data
+        UserCloudSyncManager.documentReaderForTesting = { targetUid, collectionName ->
+            when (targetUid) {
+                "new_firebase_uid_555" -> emptyList() // newUid is empty
+                "veteran@example.com" -> when (collectionName) {
+                    "routines" -> legacyRoutines
+                    "sessions" -> legacySessions
+                    else -> emptyList()
+                }
+                else -> emptyList()
+            }
+        }
+
+        val result = UserCloudSyncManager.downloadUserData(repo)
+
+        // Then downloadUserData queries users/{newUid}, finds it empty, queries users/{email}
+        assertTrue("downloadUserData must succeed via dual-read legacy fallback", result.isSuccess)
+        assertEquals(SyncStatus.SUCCESS, UserCloudSyncManager.syncState.value)
+
+        // And detects legacy routines/sessions, imports them into Room
+        val savedRoutines = repo.getAllRoutinesWithBlocksOnce()
+        assertTrue("Legacy routine must be imported into Room", savedRoutines.any { it.routine.name == "Legacy Cindy" })
+
+        val savedSessions = repo.getAllSessionsWithBlocksOnce()
+        assertTrue("Legacy session must be imported into Room", savedSessions.any { it.session.title == "Historical Cindy PR Session" })
+
+        // And syncs them to users/{newUid} with zero data loss
+        assertTrue("Imported routines must be re-uploaded to newUid", writtenDocuments.containsKey("routines"))
+        assertTrue("Imported sessions must be re-uploaded to newUid", writtenDocuments.containsKey("sessions"))
+    }
+
+    @Test
+    fun downloadUserData_doesNotQueryLegacy_whenNewUidAlreadyHasData() = runTest {
+        val user = AuthUser(uid = "existing_uid_777", email = "athlete@example.com", isAnonymous = false)
+        UserCloudSyncManager.setAuthenticatedUser(user)
+        UserCloudSyncManager.authUidProviderForTesting = { "existing_uid_777" }
+
+        var legacyQueried = false
+
+        UserCloudSyncManager.documentReaderForTesting = { targetUid, collectionName ->
+            when (targetUid) {
+                "existing_uid_777" -> when (collectionName) {
+                    "routines" -> listOf(
+                        mapOf(
+                            "routine" to mapOf("name" to "Modern Murph", "description" to "New UID routine"),
+                            "blocks" to emptyList<Map<String, Any>>()
+                        )
+                    )
+                    else -> emptyList()
+                }
+                "athlete@example.com" -> {
+                    legacyQueried = true
+                    emptyList()
+                }
+                else -> emptyList()
+            }
+        }
+
+        val result = UserCloudSyncManager.downloadUserData(repo)
+
+        assertTrue(result.isSuccess)
+        assertFalse("Must NOT query legacy path when newUid is already populated", legacyQueried)
+        val routines = repo.getAllRoutinesWithBlocksOnce()
+        assertTrue(routines.any { it.routine.name == "Modern Murph" })
+    }
+
+    @Test
+    fun recoverAllCloudRoutines_dualRead_queriesLegacyEmailPath_andSyncsToNewUid() = runTest {
+        val user = AuthUser(uid = "fresh_firebase_uid_888", email = "legacy_coach@example.com", isAnonymous = false)
+        UserCloudSyncManager.setAuthenticatedUser(user)
+        UserCloudSyncManager.authUidProviderForTesting = { "fresh_firebase_uid_888" }
+
+        UserCloudSyncManager.recoverRoutinesReaderForTesting = { targetUid ->
+            when (targetUid) {
+                "fresh_firebase_uid_888" -> emptyList()
+                "legacy_coach@example.com" -> listOf(
+                    mapOf(
+                        "routine" to mapOf(
+                            "name" to "Recovered Legacy Fran",
+                            "description" to "Fran from legacy email doc",
+                            "defaultFormat" to "21-15-9"
+                        ),
+                        "blocks" to listOf(
+                            mapOf(
+                                "name" to "Thrusters and Pull-ups",
+                                "kind" to "WEIGHTLIFTING",
+                                "setsCount" to 3
+                            )
+                        )
+                    )
+                )
+                else -> emptyList()
+            }
+        }
+
+        val result = UserCloudSyncManager.recoverAllCloudRoutines(repo)
+
+        assertTrue(result.isSuccess)
+        assertEquals(1, result.getOrNull())
+
+        val routines = repo.getAllRoutinesWithBlocksOnce()
+        assertTrue(routines.any { it.routine.name == "Recovered Legacy Fran" })
+
+        // And re-uploaded to users/{newUid}
+        assertTrue("Recovered routines must be re-uploaded to newUid", writtenDocuments.containsKey("routines"))
+    }
+
+    @Test
+    fun recoverAllCloudRoutines_readsFromNewUidDirectly_whenPopulated() = runTest {
+        val user = AuthUser(uid = "populated_uid_999", email = "coach@example.com", isAnonymous = false)
+        UserCloudSyncManager.setAuthenticatedUser(user)
+        UserCloudSyncManager.authUidProviderForTesting = { "populated_uid_999" }
+
+        var legacyQueried = false
+
+        UserCloudSyncManager.recoverRoutinesReaderForTesting = { targetUid ->
+            when (targetUid) {
+                "populated_uid_999" -> listOf(
+                    mapOf(
+                        "routine" to mapOf("name" to "Direct UID Routine"),
+                        "blocks" to emptyList<Map<String, Any>>()
+                    )
+                )
+                "coach@example.com" -> {
+                    legacyQueried = true
+                    emptyList()
+                }
+                else -> emptyList()
+            }
+        }
+
+        val result = UserCloudSyncManager.recoverAllCloudRoutines(repo)
+
+        assertTrue(result.isSuccess)
+        assertEquals(1, result.getOrNull())
+        assertFalse("Legacy path must not be queried when newUid is populated", legacyQueried)
+        assertTrue(repo.getAllRoutinesWithBlocksOnce().any { it.routine.name == "Direct UID Routine" })
     }
 
     /**

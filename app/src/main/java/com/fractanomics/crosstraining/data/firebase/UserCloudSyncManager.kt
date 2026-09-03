@@ -20,10 +20,12 @@ import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 
 data class AuthUser(
@@ -52,6 +54,9 @@ object UserCloudSyncManager {
         firestore.collection("environments").document(currentEnv).collection("users").document(uid)
 
     internal var authUidProviderForTesting: (() -> String?)? = null
+    internal var asyncAuthUidProviderForTesting: (suspend () -> String?)? = null
+    internal var documentReaderForTesting: (suspend (userId: String, collectionName: String) -> List<Map<String, Any>>?)? = null
+    internal var authStateUserProviderForTesting: (suspend (timeoutMs: Long) -> FirebaseUser?)? = null
 
     val currentUserId: String
         get() {
@@ -286,6 +291,10 @@ object UserCloudSyncManager {
         _syncState.value = status
     }
 
+    fun resetSyncStatus() {
+        _syncState.value = SyncStatus.IDLE
+    }
+
     internal var uploadUserDataHandler: (suspend (Repository) -> Result<Unit>)? = null
     internal var downloadUserDataHandler: (suspend (Repository) -> Result<Unit>)? = null
     internal var recoverAllCloudRoutinesHandler: (suspend (Repository) -> Result<Int>)? = null
@@ -306,31 +315,122 @@ object UserCloudSyncManager {
         remoteCollectionInspectorForTesting = null
         passwordResetHandlerForTesting = null
         authUidProviderForTesting = null
+        asyncAuthUidProviderForTesting = null
         recoverRoutinesReaderForTesting = null
+        documentReaderForTesting = null
+        authStateUserProviderForTesting = null
     }
 
-    internal fun verifyTokenBinding(): Result<Unit> {
-        val user = _userState.value
-        if (user != null && !user.isAnonymous && user.uid.isNotBlank()) {
-            if (authUidProviderForTesting != null) {
-                val testUid = authUidProviderForTesting!!.invoke()
+    suspend fun awaitAuthState(timeoutMs: Long = 3000L): FirebaseUser? {
+        if (authStateUserProviderForTesting != null) {
+            val user = authStateUserProviderForTesting!!.invoke(timeoutMs)
+            if (user != null && !user.isAnonymous) {
+                if (_userState.value == null && !user.email.isNullOrBlank()) {
+                    _userState.value = user.toAuthUser()
+                }
+            }
+            return user
+        }
+
+        if (asyncAuthUidProviderForTesting != null) {
+            val testUid = withTimeoutOrNull(timeoutMs) {
+                asyncAuthUidProviderForTesting!!.invoke()
+            }
+            if (testUid != null && testUid.isNotBlank()) {
+                if (_userState.value == null) {
+                    _userState.value = AuthUser(uid = testUid, email = "athlete@example.com", isAnonymous = false)
+                }
+            }
+            return null
+        }
+
+        val current = runCatching { auth.currentUser }.getOrNull()
+        if (current != null && !current.isAnonymous) {
+            if (_userState.value == null && !current.email.isNullOrBlank()) {
+                _userState.value = current.toAuthUser()
+            }
+            return current
+        }
+
+        val firebaseAuth = runCatching { auth }.getOrNull() ?: return null
+        val deferred = CompletableDeferred<FirebaseUser?>()
+        val listener = FirebaseAuth.AuthStateListener { fa ->
+            val u = fa.currentUser
+            if (u != null && !u.isAnonymous) {
+                if (_userState.value == null && !u.email.isNullOrBlank()) {
+                    _userState.value = u.toAuthUser()
+                }
+                deferred.complete(u)
+            }
+        }
+        return try {
+            firebaseAuth.addAuthStateListener(listener)
+            withTimeoutOrNull(timeoutMs) {
+                deferred.await()
+            }
+        } finally {
+            runCatching { firebaseAuth.removeAuthStateListener(listener) }
+        }
+    }
+
+    internal suspend fun verifyTokenBinding(): Result<Unit> {
+        var user = _userState.value
+
+        if (asyncAuthUidProviderForTesting != null) {
+            val testUid = withTimeoutOrNull(3000L) {
+                asyncAuthUidProviderForTesting!!.invoke()
+            }
+            if (testUid == null) {
+                return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
+            }
+            if (user != null && !user.isAnonymous && user.uid.isNotBlank() && testUid != user.uid) {
+                return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
+            }
+            if (user == null) {
+                _userState.value = AuthUser(uid = testUid, email = "athlete@example.com", isAnonymous = false)
+            }
+            return Result.success(Unit)
+        }
+
+        if (authUidProviderForTesting != null) {
+            val testUid = authUidProviderForTesting!!.invoke()
+            if (user != null && !user.isAnonymous && user.uid.isNotBlank()) {
                 if (testUid == null || testUid != user.uid) {
                     return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
                 }
+            } else if (user == null) {
+                if (testUid == null) {
+                    return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
+                }
+                _userState.value = AuthUser(uid = testUid, email = "athlete@example.com", isAnonymous = false)
+            }
+            return Result.success(Unit)
+        }
+
+        val isFirebaseAvailable = runCatching { FirebaseAuth.getInstance() }.isSuccess
+        if (!isFirebaseAvailable) {
+            if (documentWriterForTesting != null || documentReaderForTesting != null) {
                 return Result.success(Unit)
             }
+            return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
+        }
 
-            val isFirebaseAvailable = runCatching { FirebaseAuth.getInstance() }.isSuccess
-            if (!isFirebaseAvailable) {
-                if (documentWriterForTesting != null) {
-                    return Result.success(Unit)
-                }
-                return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
-            }
+        var currentUser = runCatching { auth.currentUser }.getOrNull()
+        if (currentUser == null || currentUser.isAnonymous) {
+            currentUser = awaitAuthState(3000L)
+        }
 
-            val currentUser = runCatching { auth.currentUser }.getOrNull()
+        user = _userState.value
+        if (user != null && !user.isAnonymous && user.uid.isNotBlank()) {
             if (currentUser == null || currentUser.isAnonymous || currentUser.uid != user.uid) {
                 return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
+            }
+        } else {
+            if (currentUser == null || currentUser.isAnonymous) {
+                return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
+            }
+            if (_userState.value == null) {
+                _userState.value = currentUser.toAuthUser()
             }
         }
         return Result.success(Unit)
@@ -556,158 +656,202 @@ object UserCloudSyncManager {
                 val uid = currentUserId
                 if (uid.isBlank()) error(CloudSyncErrorMapper.GUEST_AUTH_PROMPT)
 
-            val doc = userDoc(uid)
-
-            // 1. Download Exercises
-            val exSnap = doc.collection("data").document("exercises").get().await()
-            if (exSnap.exists()) {
-                @Suppress("UNCHECKED_CAST")
-                val exList = exSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
-                exList.forEach { map ->
-                    val name = map["name"] as? String ?: return@forEach
-                    val category = runCatching { ExerciseCategory.valueOf(map["category"] as String) }.getOrDefault(ExerciseCategory.BARBELL)
-                    val metricType = runCatching { MetricType.valueOf(map["metricType"] as String) }.getOrDefault(MetricType.WEIGHT)
-                    repo.getOrCreateExercise(name, category, metricType)
-                }
-            }
-
-            // 2. Download Routines
-            val routSnap = doc.collection("data").document("routines").get().await()
-            if (routSnap.exists()) {
-                @Suppress("UNCHECKED_CAST")
-                val routList = routSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
-                routList.forEach { rwbMap ->
-                    @Suppress("UNCHECKED_CAST")
-                    val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
-                    val name = rMap["name"] as? String ?: return@forEach
-                    val description = rMap["description"] as? String ?: ""
-                    val defaultFormat = rMap["defaultFormat"] as? String ?: ""
-
-                    @Suppress("UNCHECKED_CAST")
-                    val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
-                    val blocks = bList.mapIndexed { idx, bMap ->
-                        RoutineBlock(
-                            id = 0,
-                            routineId = 0,
-                            position = (bMap["position"] as? Number)?.toInt() ?: idx,
-                            name = bMap["name"] as? String ?: "",
-                            kind = runCatching { BlockKind.valueOf(bMap["kind"] as String) }.getOrDefault(BlockKind.WEIGHTLIFTING),
-                            format = bMap["format"] as? String ?: "",
-                            setsCount = (bMap["setsCount"] as? Number)?.toInt() ?: 1,
-                            targetRepsScheme = bMap["targetRepsScheme"] as? String ?: "",
-                            exerciseIdsCsv = bMap["exerciseIdsCsv"] as? String ?: "",
-                            notes = bMap["notes"] as? String ?: ""
-                        )
+                suspend fun fetchCollection(targetUid: String, collectionName: String): List<Map<String, Any>> {
+                    val testReader = documentReaderForTesting
+                    if (testReader != null) {
+                        return testReader(targetUid, collectionName) ?: emptyList()
                     }
-                    repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
-                }
-            }
-            repo.cleanupDuplicateRoutines()
-
-            // 3. Download Cycle Goals
-            val goalsSnap = doc.collection("data").document("cycle_goals").get().await()
-            if (goalsSnap.exists()) {
-                @Suppress("UNCHECKED_CAST")
-                val goalsList = goalsSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
-                goalsList.forEach { map ->
-                    val cycleId = (map["cycleId"] as? Number)?.toLong() ?: return@forEach
-                    val exerciseId = (map["exerciseId"] as? Number)?.toLong() ?: return@forEach
-                    val targetReps = (map["targetReps"] as? Number)?.toInt() ?: 1
-                    val startWeight = (map["startWeight"] as? Number)?.toDouble() ?: 0.0
-                    val targetWeight = (map["targetWeight"] as? Number)?.toDouble() ?: 0.0
-                    val notes = map["notes"] as? String ?: ""
-                    repo.saveCycleGoal(com.fractanomics.crosstraining.data.model.CycleGoal(cycleId = cycleId, exerciseId = exerciseId, targetReps = targetReps, startWeight = startWeight, targetWeight = targetWeight, notes = notes))
-                }
-            }
-
-            // 4. Download Sessions & Logs (Workouts)
-            val sessSnap = doc.collection("data").document("sessions").get().await()
-            if (sessSnap.exists()) {
-                @Suppress("UNCHECKED_CAST")
-                val sessList = sessSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
-                val existingSessions = repo.getAllSessionsWithBlocksOnce()
-                sessList.forEach { swbMap ->
-                    @Suppress("UNCHECKED_CAST")
-                    val sMap = swbMap["session"] as? Map<String, Any> ?: return@forEach
-                    val dateStr = sMap["date"] as? String ?: return@forEach
-                    val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
-                    val title = sMap["title"] as? String ?: ""
-                    val notes = sMap["notes"] as? String ?: ""
-                    val cycleId = (sMap["cycleId"] as? Number)?.toLong() ?: 0L
-
-                    val alreadyExists = existingSessions.any { it.session.date == date && it.session.title == title }
-                    if (!alreadyExists) {
+                    val isAvailable = runCatching { FirebaseFirestore.getInstance() }.isSuccess
+                    if (!isAvailable) {
+                        return emptyList()
+                    }
+                    val snap = userDoc(targetUid).collection("data").document(collectionName).get().await()
+                    if (snap.exists()) {
                         @Suppress("UNCHECKED_CAST")
-                        val bList = swbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
-                        val blockInserts = bList.mapIndexed { bIdx, bMapRaw ->
-                            @Suppress("UNCHECKED_CAST")
-                            val bMap = bMapRaw["block"] as? Map<String, Any> ?: bMapRaw
-                            val block = SessionBlock(
+                        return snap.get("list") as? List<Map<String, Any>> ?: emptyList()
+                    }
+                    return emptyList()
+                }
+
+                var exList = fetchCollection(uid, "exercises")
+                var routList = fetchCollection(uid, "routines")
+                var sessList = fetchCollection(uid, "sessions")
+                var goalsList = fetchCollection(uid, "cycle_goals")
+                var rmList = fetchCollection(uid, "rep_maxes")
+
+                val isNewUidEmpty = exList.isEmpty() && routList.isEmpty() && sessList.isEmpty() && goalsList.isEmpty() && rmList.isEmpty()
+                val userEmail = _userState.value?.email
+                var isMigratedFromLegacy = false
+
+                // Dual-read fallback: if users/{newUid} is empty, query legacy users/{email}
+                if (isNewUidEmpty && !userEmail.isNullOrBlank() && userEmail != uid) {
+                    val legacyUid = userEmail.replace("/", "_")
+                    var legacyEx = fetchCollection(legacyUid, "exercises")
+                    var legacyRout = fetchCollection(legacyUid, "routines")
+                    var legacySess = fetchCollection(legacyUid, "sessions")
+                    var legacyGoals = fetchCollection(legacyUid, "cycle_goals")
+                    var legacyRm = fetchCollection(legacyUid, "rep_maxes")
+
+                    val normalizedLegacyUid = normalizeEmail(userEmail).replace("/", "_")
+                    if (legacyEx.isEmpty() && legacyRout.isEmpty() && legacySess.isEmpty() && legacyGoals.isEmpty() && legacyRm.isEmpty() && normalizedLegacyUid != legacyUid) {
+                        legacyEx = fetchCollection(normalizedLegacyUid, "exercises")
+                        legacyRout = fetchCollection(normalizedLegacyUid, "routines")
+                        legacySess = fetchCollection(normalizedLegacyUid, "sessions")
+                        legacyGoals = fetchCollection(normalizedLegacyUid, "cycle_goals")
+                        legacyRm = fetchCollection(normalizedLegacyUid, "rep_maxes")
+                    }
+
+                    val hasLegacyData = legacyEx.isNotEmpty() || legacyRout.isNotEmpty() || legacySess.isNotEmpty() || legacyGoals.isNotEmpty() || legacyRm.isNotEmpty()
+                    if (hasLegacyData) {
+                        exList = legacyEx
+                        routList = legacyRout
+                        sessList = legacySess
+                        goalsList = legacyGoals
+                        rmList = legacyRm
+                        isMigratedFromLegacy = true
+                    }
+                }
+
+                // 1. Download Exercises
+                if (exList.isNotEmpty()) {
+                    exList.forEach { map ->
+                        val name = map["name"] as? String ?: return@forEach
+                        val category = runCatching { ExerciseCategory.valueOf(map["category"] as String) }.getOrDefault(ExerciseCategory.BARBELL)
+                        val metricType = runCatching { MetricType.valueOf(map["metricType"] as String) }.getOrDefault(MetricType.WEIGHT)
+                        repo.getOrCreateExercise(name, category, metricType)
+                    }
+                }
+
+                // 2. Download Routines
+                if (routList.isNotEmpty()) {
+                    routList.forEach { rwbMap ->
+                        @Suppress("UNCHECKED_CAST")
+                        val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
+                        val name = rMap["name"] as? String ?: return@forEach
+                        val description = rMap["description"] as? String ?: ""
+                        val defaultFormat = rMap["defaultFormat"] as? String ?: ""
+
+                        @Suppress("UNCHECKED_CAST")
+                        val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
+                        val blocks = bList.mapIndexed { idx, bMap ->
+                            RoutineBlock(
                                 id = 0,
-                                sessionId = 0,
-                                position = (bMap["position"] as? Number)?.toInt() ?: bIdx,
+                                routineId = 0,
+                                position = (bMap["position"] as? Number)?.toInt() ?: idx,
                                 name = bMap["name"] as? String ?: "",
                                 kind = runCatching { BlockKind.valueOf(bMap["kind"] as String) }.getOrDefault(BlockKind.WEIGHTLIFTING),
                                 format = bMap["format"] as? String ?: "",
-                                scheme = bMap["scheme"] as? String ?: "",
-                                mainExerciseId = (bMap["mainExerciseId"] as? Number)?.toLong(),
-                                routineId = (bMap["routineId"] as? Number)?.toLong(),
-                                description = bMap["description"] as? String ?: "",
-                                resultText = bMap["resultText"] as? String ?: "",
-                                resultValue = (bMap["resultValue"] as? Number)?.toDouble(),
+                                setsCount = (bMap["setsCount"] as? Number)?.toInt() ?: 1,
+                                targetRepsScheme = bMap["targetRepsScheme"] as? String ?: "",
+                                exerciseIdsCsv = bMap["exerciseIdsCsv"] as? String ?: "",
                                 notes = bMap["notes"] as? String ?: ""
                             )
-                            @Suppress("UNCHECKED_CAST")
-                            val setList = bMapRaw["sets"] as? List<Map<String, Any>> ?: emptyList()
-                            val sets = setList.mapIndexed { sIdx, sMapItem ->
-                                BlockSet(
-                                    id = 0,
-                                    blockId = 0,
-                                    position = (sMapItem["position"] as? Number)?.toInt() ?: sIdx,
-                                    groupIndex = (sMapItem["groupIndex"] as? Number)?.toInt() ?: 0,
-                                    reps = (sMapItem["reps"] as? Number)?.toInt() ?: 0,
-                                    weight = (sMapItem["weight"] as? Number)?.toDouble() ?: 0.0,
-                                    metricValue = (sMapItem["metricValue"] as? Number)?.toDouble() ?: 0.0,
-                                    isWarmup = sMapItem["isWarmup"] as? Boolean ?: false,
-                                    isFailed = sMapItem["isFailed"] as? Boolean ?: false,
-                                    notes = sMapItem["notes"] as? String ?: ""
-                                )
-                            }
-                            com.fractanomics.crosstraining.data.BlockInsert(block = block, sets = sets)
                         }
-                        repo.saveSession(Session(id = 0, cycleId = cycleId, date = date, title = title, notes = notes), blockInserts)
+                        repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
                     }
+                    repo.cleanupDuplicateRoutines()
+                }
+
+                // 3. Download Cycle Goals
+                if (goalsList.isNotEmpty()) {
+                    goalsList.forEach { map ->
+                        val cycleId = (map["cycleId"] as? Number)?.toLong() ?: return@forEach
+                        val exerciseId = (map["exerciseId"] as? Number)?.toLong() ?: return@forEach
+                        val targetReps = (map["targetReps"] as? Number)?.toInt() ?: 1
+                        val startWeight = (map["startWeight"] as? Number)?.toDouble() ?: 0.0
+                        val targetWeight = (map["targetWeight"] as? Number)?.toDouble() ?: 0.0
+                        val notes = map["notes"] as? String ?: ""
+                        repo.saveCycleGoal(com.fractanomics.crosstraining.data.model.CycleGoal(cycleId = cycleId, exerciseId = exerciseId, targetReps = targetReps, startWeight = startWeight, targetWeight = targetWeight, notes = notes))
+                    }
+                }
+
+                // 4. Download Sessions & Logs (Workouts)
+                if (sessList.isNotEmpty()) {
+                    val existingSessions = repo.getAllSessionsWithBlocksOnce()
+                    sessList.forEach { swbMap ->
+                        @Suppress("UNCHECKED_CAST")
+                        val sMap = swbMap["session"] as? Map<String, Any> ?: return@forEach
+                        val dateStr = sMap["date"] as? String ?: return@forEach
+                        val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
+                        val title = sMap["title"] as? String ?: ""
+                        val notes = sMap["notes"] as? String ?: ""
+                        val cycleId = (sMap["cycleId"] as? Number)?.toLong() ?: 0L
+
+                        val alreadyExists = existingSessions.any { it.session.date == date && it.session.title == title }
+                        if (!alreadyExists) {
+                            @Suppress("UNCHECKED_CAST")
+                            val bList = swbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
+                            val blockInserts = bList.mapIndexed { bIdx, bMapRaw ->
+                                @Suppress("UNCHECKED_CAST")
+                                val bMap = bMapRaw["block"] as? Map<String, Any> ?: bMapRaw
+                                val block = SessionBlock(
+                                    id = 0,
+                                    sessionId = 0,
+                                    position = (bMap["position"] as? Number)?.toInt() ?: bIdx,
+                                    name = bMap["name"] as? String ?: "",
+                                    kind = runCatching { BlockKind.valueOf(bMap["kind"] as String) }.getOrDefault(BlockKind.WEIGHTLIFTING),
+                                    format = bMap["format"] as? String ?: "",
+                                    scheme = bMap["scheme"] as? String ?: "",
+                                    mainExerciseId = (bMap["mainExerciseId"] as? Number)?.toLong(),
+                                    routineId = (bMap["routineId"] as? Number)?.toLong(),
+                                    description = bMap["description"] as? String ?: "",
+                                    resultText = bMap["resultText"] as? String ?: "",
+                                    resultValue = (bMap["resultValue"] as? Number)?.toDouble(),
+                                    notes = bMap["notes"] as? String ?: ""
+                                )
+                                @Suppress("UNCHECKED_CAST")
+                                val setList = bMapRaw["sets"] as? List<Map<String, Any>> ?: emptyList()
+                                val sets = setList.mapIndexed { sIdx, sMapItem ->
+                                    BlockSet(
+                                        id = 0,
+                                        blockId = 0,
+                                        position = (sMapItem["position"] as? Number)?.toInt() ?: sIdx,
+                                        groupIndex = (sMapItem["groupIndex"] as? Number)?.toInt() ?: 0,
+                                        reps = (sMapItem["reps"] as? Number)?.toInt() ?: 0,
+                                        weight = (sMapItem["weight"] as? Number)?.toDouble() ?: 0.0,
+                                        metricValue = (sMapItem["metricValue"] as? Number)?.toDouble() ?: 0.0,
+                                        isWarmup = sMapItem["isWarmup"] as? Boolean ?: false,
+                                        isFailed = sMapItem["isFailed"] as? Boolean ?: false,
+                                        notes = sMapItem["notes"] as? String ?: ""
+                                    )
+                                }
+                                com.fractanomics.crosstraining.data.BlockInsert(block = block, sets = sets)
+                            }
+                            repo.saveSession(Session(id = 0, cycleId = cycleId, date = date, title = title, notes = notes), blockInserts)
+                        }
+                    }
+                }
+
+                // 5. Download Rep Maxes (PR History)
+                if (rmList.isNotEmpty()) {
+                    val existingRms = repo.exportSnapshot().repMaxes
+                    rmList.forEach { map ->
+                        val exerciseId = (map["exerciseId"] as? Number)?.toLong() ?: return@forEach
+                        val reps = (map["reps"] as? Number)?.toInt() ?: return@forEach
+                        val weight = (map["weight"] as? Number)?.toDouble() ?: return@forEach
+                        val dateStr = map["date"] as? String ?: return@forEach
+                        val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
+                        val cycleId = (map["cycleId"] as? Number)?.toLong()
+
+                        val exists = existingRms.any {
+                            it.exerciseId == exerciseId && it.reps == reps && it.weight == weight && it.date == date
+                        }
+                        if (!exists) {
+                            repo.recordRepMax(exerciseId, reps, weight, date, cycleId)
+                        }
+                    }
+                }
+
+                // If migrated from legacy path, re-upload to users/{newUid}
+                if (isMigratedFromLegacy) {
+                    uploadUserData(repo)
                 }
             }
 
-            // 5. Download Rep Maxes (PR History)
-            val rmSnap = doc.collection("data").document("rep_maxes").get().await()
-            if (rmSnap.exists()) {
-                @Suppress("UNCHECKED_CAST")
-                val rmList = rmSnap.get("list") as? List<Map<String, Any>> ?: emptyList()
-                val existingRms = repo.exportSnapshot().repMaxes
-                rmList.forEach { map ->
-                    val exerciseId = (map["exerciseId"] as? Number)?.toLong() ?: return@forEach
-                    val reps = (map["reps"] as? Number)?.toInt() ?: return@forEach
-                    val weight = (map["weight"] as? Number)?.toDouble() ?: return@forEach
-                    val dateStr = map["date"] as? String ?: return@forEach
-                    val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
-                    val cycleId = (map["cycleId"] as? Number)?.toLong()
-
-                    val exists = existingRms.any {
-                        it.exerciseId == exerciseId && it.reps == reps && it.weight == weight && it.date == date
-                    }
-                    if (!exists) {
-                        repo.recordRepMax(exerciseId, reps, weight, date, cycleId)
-                    }
-                }
-            }
+            _syncState.value = SyncStatus.SUCCESS
+        }.onFailure {
+            _syncState.value = SyncStatus.ERROR
         }
-
-        _syncState.value = SyncStatus.SUCCESS
-    }.onFailure {
-        _syncState.value = SyncStatus.ERROR
-    }
     }
 
     suspend fun recoverAllCloudRoutines(repo: Repository): Result<Int> {
@@ -720,15 +864,36 @@ object UserCloudSyncManager {
                 val uid = currentUserId
                 if (uid.isBlank()) return@withTimeout 0
 
-                val routList: List<Map<String, Any>> = if (recoverRoutinesReaderForTesting != null) {
-                    recoverRoutinesReaderForTesting!!.invoke(uid)
-                } else {
-                    val routinesDoc = userDoc(uid).collection("data").document("routines").get().await()
+                suspend fun fetchRoutines(targetUid: String): List<Map<String, Any>> {
+                    if (recoverRoutinesReaderForTesting != null) {
+                        return recoverRoutinesReaderForTesting!!.invoke(targetUid)
+                    }
+                    val isAvailable = runCatching { FirebaseFirestore.getInstance() }.isSuccess
+                    if (!isAvailable) {
+                        return emptyList()
+                    }
+                    val routinesDoc = userDoc(targetUid).collection("data").document("routines").get().await()
                     if (routinesDoc.exists()) {
                         @Suppress("UNCHECKED_CAST")
-                        routinesDoc.get("list") as? List<Map<String, Any>> ?: emptyList()
-                    } else {
-                        emptyList()
+                        return routinesDoc.get("list") as? List<Map<String, Any>> ?: emptyList()
+                    }
+                    return emptyList()
+                }
+
+                var routList = fetchRoutines(uid)
+                var migratedFromLegacy = false
+                val userEmail = _userState.value?.email
+
+                if (routList.isEmpty() && !userEmail.isNullOrBlank() && userEmail != uid) {
+                    val legacyUid = userEmail.replace("/", "_")
+                    var legacyRoutList = fetchRoutines(legacyUid)
+                    val normalizedLegacyUid = normalizeEmail(userEmail).replace("/", "_")
+                    if (legacyRoutList.isEmpty() && normalizedLegacyUid != legacyUid) {
+                        legacyRoutList = fetchRoutines(normalizedLegacyUid)
+                    }
+                    if (legacyRoutList.isNotEmpty()) {
+                        routList = legacyRoutList
+                        migratedFromLegacy = true
                     }
                 }
 
@@ -760,6 +925,11 @@ object UserCloudSyncManager {
                     count++
                 }
                 repo.cleanupDuplicateRoutines()
+
+                if (migratedFromLegacy && count > 0) {
+                    uploadUserData(repo)
+                }
+
                 count
             }
         }
