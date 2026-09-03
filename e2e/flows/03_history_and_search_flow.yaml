@@ -8,6 +8,21 @@ tags:
     visible: "Continue as Guest"
     timeout: 30000
 - tapOn: "Continue as Guest"
+# Self-containment: Log a workout session first so History has a session to search and expand
+- tapOn: "Log"
+- assertVisible: "Log Session"
+- assertVisible: "Select Exercise"
+- tapOn: "Select Exercise"
+- tapOn: "Back Squat"
+- assertVisible: "Add Set"
+- tapOn: "reps_0"
+- inputText: "5"
+- tapOn: "weight_0"
+- inputText: "100"
+- hideKeyboard
+- tapOn: "Save session"
+- assertVisible: "Session saved successfully!"
+# History verification & search
 - tapOn: "History"
 - assertVisible: "Session History"
 - assertVisible: "Search workouts, lifts, or notes..."
