@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **SDLC Pipeline Modernization & Graph Orchestrator Label Harmonization**: Migrated the repository's agentic development taxonomy from the legacy multi-label pipeline (`status:ready-for-architect`, `status:ready`, `type:subtask`, `type:user-story`) to the unified Graph Engineering Orchestrator taxonomy (`needs-triage`, `architect-processed`, `queued`, `ready-for-dev`, `dev-implemented`, `needs-refactor`, `orchestration-failed`); updated `.github/ISSUE_TEMPLATE/user-story.yml` and `subtask.yml` with clean initial labels (`needs-triage` and `queued`); updated `GEMINI.md` to document the external 2-node host daemon lifecycle; removed obsolete in-repo GitHub Actions SDLC workflows and tasks (`architect.yml`, `dev-test.yml`, `three-amigos.yml`, `pr-review.yml`, `merge.yml`, `.claude/`, `.antigravity/tasks/`, `scripts/local-pipeline/`); purged 23 obsolete labels from the GitHub repository.
+
 ### Fixed
 - **Android ICU Regex Look-Behind Crash on App Launch / Post-Authentication**: Fixed a critical crash (`PatternSyntaxException: Look-behind pattern matches must have a bounded maximum length near index 56`) occurring on real Android devices when initializing `FitnessSpeechLexicon` upon entering the authenticated application shell (or Continue as Guest); replaced the unbounded look-behind pattern `(?<=\d\s*)(?:K|k)\b` with look-behind-free patterns `NUMBER_K_REGEX` and `UNITS_KG_WORDS_REGEX` fully compliant with Android's ICU regex engine (`PatternNative`), and expanded unit test coverage for numeric weight suffix formats ("100k", "100 k", "102.5k").
 

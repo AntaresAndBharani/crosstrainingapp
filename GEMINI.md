@@ -26,35 +26,20 @@
    - **Merge to Main:** Merging into `main` automatically tags the release and publishes the official GitHub Release with the release-signed APK (`release.yml`).
    - **Agent Completion Gate:** Development is only complete when local tests pass, E2E artifacts are captured, the PR is opened, AND all remote GitHub Actions CI checks pass (Green).
 
-## Agentic SDLC Pipeline
-Headless Architect (Claude) and Three Amigos (Gemini) run automatically on
-issue label changes (`.github/workflows/architect.yml`,
-`three-amigos.yml`). Full design and rationale live in the
-`AntaresAndBharani/graph-engineering` repo (`docs/definition-node.md`,
-`docs/three-amigos-node.md`, `README.md`) — this is the quick-reference for
-using it here, not a copy of that design.
+## Agentic SDLC Pipeline (Graph Orchestrator)
+The repository is orchestrated externally by the host-based Graph Engineering daemon (`orchestrator`).
+Autonomous governance is driven by a clean 2-node topology (Architect and DevTest) using a unified, standardized GitHub label taxonomy.
 
-- **As PO, draft a User Story** with the `user-story.yml` issue template.
-  When ready, relabel it `status:ready-for-architect` to hand off.
-- **Label meanings:**
-  - `status:definition` — still drafting
-  - `status:ready-for-architect` — PO says go (on a story: decompose; on a
-    subtask: incorporate my answer to a prior `status:needs-po-input`)
-  - `status:needs-po-input` — Architect needs your decision; read the
-    comment, answer, then relabel `status:ready-for-architect`
-  - `status:review` — Architect handed this subtask to Three Amigos
-  - `status:needs-revision` / `status:needs-clarification` — Three Amigos
-    bounced it back to Architect; no action needed from you unless it
-    escalates to `status:needs-po-input`
-  - `status:awaiting-approval` — Three Amigos' own internal marker on a
-    subtask it's cleared for pickup; not something you act on
-  - `status:ready` — Three Amigos sets this on the story automatically on
-    a READY batch verdict (as of 2026-08-25 — no PO relabel step anymore).
-    Dev & Test picks it up from here on its own.
-  - `status:done` — set automatically once every subtask under a story is
-    closed; the story itself is also closed at that point
-- **Nothing gets implemented until Three Amigos clears the batch.** Past
-  that point the whole loop — Dev & Test's implementation, PR Review,
-  fix-up rounds, and Merge — runs without you. You still get pulled in for
-  `status:needs-po-input` escalations (Architect conflicts, round-cap
-  hits) at any stage.
+### Standard Label Taxonomy & Lifecycle
+- `needs-triage`: Applied to newly created User Stories (via `user-story.yml`) to signal the Architect node for triage and INVEST decomposition.
+- `architect-processed`: Applied to the parent User Story by the Architect once decomposed into child subtasks.
+- `queued`: Initial inactive state assigned to newly created child subtasks (via `subtask.yml`).
+- `ready-for-dev`: Active trigger for the DevTest node. DevTest deterministically resolves the lowest open subtask in ascending ID/sequence order under the active User Story.
+- `dev-implemented`: Applied upon PR implementation and successful CI auto-merge into `main`.
+- `needs-refactor`: Flagged when a PR encounters CI failure or structural issues, immediately triggering autonomous remediation by DevTest before any new work is picked up.
+- `orchestration-failed`: Applied if an AI harness exhausts its retry budget or encounters an unrecoverable failure.
+
+### Workflow
+1. **PO Drafts Story:** Create an issue using the User Story template (`labels: ["needs-triage"]`).
+2. **Architect Decomposes:** The Architect node inspects the codebase, creates INVEST subtasks labeled `queued`, links them to the parent, and marks the story `architect-processed`.
+3. **DevTest Implements & Auto-Merges:** DevTest unlocks subtasks in ascending order, creates feature branch `feat/issue-<id>`, verifies local tests, opens PR, and squash-and-merges upon 100% passing remote CI.

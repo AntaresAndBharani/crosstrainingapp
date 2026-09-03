@@ -1,7 +1,7 @@
 name: Subtask
 description: A single, implementable unit of work belonging to a user story. Small enough to finish in one sitting and pick up directly by an implementer (human or AI).
 title: "[Subtask]: "
-labels: ["type:subtask", "status:ready"]
+labels: ["queued"]
 body:
   - type: markdown
     attributes:

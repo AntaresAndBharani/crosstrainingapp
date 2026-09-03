@@ -1,7 +1,7 @@
 name: User Story
 description: A product-level definition of a feature or capability, broken down into subtasks. Written during the definition phase.
 title: "[Story]: "
-labels: ["type:user-story", "status:definition"]
+labels: ["needs-triage"]
 body:
   - type: markdown
     attributes:
