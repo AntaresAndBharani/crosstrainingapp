@@ -57,6 +57,15 @@ import java.time.LocalDate
  * [DataModeManager] so switching between real and demo data updates the whole
  * UI live.
  */
+data class CloudSyncResult(
+    val uploadSuccess: Boolean,
+    val downloadSuccess: Boolean,
+    val uploadError: String? = null,
+    val downloadError: String? = null
+) {
+    val isSuccess: Boolean get() = uploadSuccess && downloadSuccess
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class AppViewModel(private val data: DataModeManager) : ViewModel() {
 
@@ -86,7 +95,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
             if (u != null) {
                 data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
             }
-            UserCloudSyncManager.uploadUserData(repo)
+            UserCloudSyncManager.uploadUserData(data.realRepository)
             onResult(true, null)
         }.onFailure { err ->
             onResult(false, err.localizedMessage)
@@ -100,7 +109,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
             if (u != null) {
                 data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
             }
-            UserCloudSyncManager.downloadUserData(repo)
+            UserCloudSyncManager.downloadUserData(data.realRepository)
             onResult(true, null)
         }.onFailure { err ->
             onResult(false, err.localizedMessage)
@@ -114,7 +123,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
             if (u != null) {
                 data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
             }
-            UserCloudSyncManager.downloadUserData(repo)
+            UserCloudSyncManager.downloadUserData(data.realRepository)
             onResult(true, null)
         }.onFailure { err ->
             onResult(false, err.localizedMessage)
@@ -128,7 +137,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
             if (u != null) {
                 data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
             }
-            UserCloudSyncManager.downloadUserData(repo)
+            UserCloudSyncManager.downloadUserData(data.realRepository)
             onResult(true, null)
         }.onFailure { err ->
             onResult(false, err.localizedMessage)
@@ -152,11 +161,38 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         data.clearAuthSession()
     }
 
-    fun triggerCloudSync(onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
-        val uploadRes = UserCloudSyncManager.uploadUserData(repo)
-        val downloadRes = UserCloudSyncManager.downloadUserData(repo)
-        val success = uploadRes.isSuccess || downloadRes.isSuccess
-        val err = uploadRes.exceptionOrNull()?.localizedMessage ?: downloadRes.exceptionOrNull()?.localizedMessage
+    fun triggerCloudSync(onResult: (CloudSyncResult) -> Unit) = viewModelScope.launch {
+        val uploadRes = UserCloudSyncManager.uploadUserData(data.realRepository)
+        val downloadRes = UserCloudSyncManager.downloadUserData(data.realRepository)
+
+        val uploadOk = uploadRes.isSuccess
+        val downloadOk = downloadRes.isSuccess
+        val uploadErr = uploadRes.exceptionOrNull()?.localizedMessage
+        val downloadErr = downloadRes.exceptionOrNull()?.localizedMessage
+
+        if (!uploadOk || !downloadOk) {
+            UserCloudSyncManager.setSyncStatus(SyncStatus.ERROR)
+        }
+
+        val result = CloudSyncResult(
+            uploadSuccess = uploadOk,
+            downloadSuccess = downloadOk,
+            uploadError = uploadErr,
+            downloadError = downloadErr
+        )
+        onResult(result)
+    }
+
+    @JvmName("triggerCloudSyncLegacy")
+    fun triggerCloudSync(onResult: (Boolean, String?) -> Unit) = triggerCloudSync { res ->
+        val success = res.isSuccess
+        val err = when {
+            !res.uploadSuccess && !res.downloadSuccess ->
+                "Upload failed: ${res.uploadError ?: "Unknown"}; Download failed: ${res.downloadError ?: "Unknown"}"
+            !res.uploadSuccess -> "Upload failed: ${res.uploadError ?: "Unknown"}"
+            !res.downloadSuccess -> "Download failed: ${res.downloadError ?: "Unknown"}"
+            else -> null
+        }
         onResult(success, err)
     }
 
@@ -166,7 +202,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     }
 
     fun recoverCloudRoutines(onResult: (Int) -> Unit) = viewModelScope.launch {
-        val res = UserCloudSyncManager.recoverAllCloudRoutines(repo)
+        val res = UserCloudSyncManager.recoverAllCloudRoutines(data.realRepository)
         onResult(res.getOrDefault(0))
     }
 

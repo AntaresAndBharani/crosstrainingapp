@@ -424,9 +424,15 @@ fun ProfileScreen(
 
                     Button(
                         onClick = {
-                            viewModel.triggerCloudSync { ok, err ->
+                            viewModel.triggerCloudSync { result ->
                                 scope.launch {
-                                    snackbar.showSnackbar(if (ok) "Cloud sync completed!" else (err ?: "Sync error"))
+                                    val message = when {
+                                        result.uploadSuccess && result.downloadSuccess -> "Cloud sync completed!"
+                                        !result.uploadSuccess && !result.downloadSuccess -> "Sync failed: upload and download both failed"
+                                        !result.uploadSuccess -> "Upload failed: ${result.uploadError ?: "Unknown error"}"
+                                        else -> "Download failed: ${result.downloadError ?: "Unknown error"}"
+                                    }
+                                    snackbar.showSnackbar(message)
                                 }
                             }
                         },
