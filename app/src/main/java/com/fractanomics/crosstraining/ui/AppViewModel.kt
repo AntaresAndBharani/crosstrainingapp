@@ -220,18 +220,18 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     fun saveCycle(cycle: Cycle, makeActive: Boolean = false) = viewModelScope.launch {
         val id = repo.saveCycle(cycle)
         if (makeActive) repo.activateCycle(id)
-        UserCloudSyncManager.uploadUserData(repo)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
     }
 
     fun saveCycleWithGoals(cycle: Cycle, goals: List<CycleGoal>, makeActive: Boolean = false) = viewModelScope.launch {
         val id = repo.saveCycleWithGoals(cycle, goals)
         if (makeActive) repo.activateCycle(id)
-        UserCloudSyncManager.uploadUserData(repo)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
     }
 
     fun deleteCycleGoal(goal: CycleGoal) = viewModelScope.launch {
         repo.deleteCycleGoal(goal)
-        UserCloudSyncManager.uploadUserData(repo)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
     }
 
     fun activateCycle(id: Long) = viewModelScope.launch { repo.activateCycle(id) }

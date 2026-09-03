@@ -15,17 +15,21 @@ import com.fractanomics.crosstraining.data.firebase.AuthUser
  * pre-populated demo database (see [DemoData]). The two never mix: demo mode
  * points the UI at another database file, so anything logged while exploring
  * demo data cannot touch the user's history. The chosen mode is persisted so
- * the app reopens where it was left.
+ * Data mode is in-memory and session-scoped, defaulting to real data on every app launch
+ * so demo exploration never persists across launches.
  *
  * Also manages app-level preference persistence, such as [AppThemeMode], [UserRole],
  * and authenticated user session persistence ("Remember Me").
  */
-open class DataModeManager(context: Context? = null) {
+open class DataModeManager(
+    context: Context? = null,
+    sharedPreferences: android.content.SharedPreferences? = null
+) {
 
     private val appContext = context?.applicationContext ?: context
-    private val prefs = appContext?.getSharedPreferences("crosstraining-prefs", Context.MODE_PRIVATE)
+    private val prefs = sharedPreferences ?: appContext?.getSharedPreferences("crosstraining-prefs", Context.MODE_PRIVATE)
 
-    private val realRepository by lazy {
+    private val underlyingRealRepository by lazy {
         val ctx = appContext ?: error("Context required for real repository")
         Repository(AppDatabase.get(ctx))
     }
@@ -34,7 +38,7 @@ open class DataModeManager(context: Context? = null) {
         Repository(AppDatabase.demo(ctx))
     }
 
-    private val _demoMode = MutableStateFlow(prefs?.getBoolean(KEY_DEMO_MODE, false) ?: false)
+    private val _demoMode = MutableStateFlow(false)
     val demoMode: StateFlow<Boolean> = _demoMode
 
     private val _themeMode = MutableStateFlow(
@@ -120,24 +124,29 @@ open class DataModeManager(context: Context? = null) {
     }
 
     private var testRepository: Repository? = null
+    private var testDemoRepository: Repository? = null
 
     /** Sets a repository override for unit and integration testing. */
-    fun setRepositoryForTesting(repo: Repository?) {
+    fun setRepositoryForTesting(repo: Repository?, demoRepo: Repository? = null) {
         testRepository = repo
+        testDemoRepository = demoRepo
     }
+
+    /** Real database repository backing athlete data; falls back to [testRepository] in tests. */
+    val realRepository: Repository
+        get() = testRepository ?: underlyingRealRepository
 
     /** Repository currently backing the UI. */
     val current: Repository
-        get() = testRepository ?: if (_demoMode.value) demoRepository else realRepository
+        get() = if (_demoMode.value) (testDemoRepository ?: testRepository ?: demoRepository) else realRepository
 
     /** Emits the active repository, switching live when the mode changes. */
     val repositoryFlow: Flow<Repository> =
-        _demoMode.map { demo -> testRepository ?: if (demo) demoRepository else realRepository }
+        _demoMode.map { demo -> if (demo) (testDemoRepository ?: testRepository ?: demoRepository) else realRepository }
 
-    /** Enable/disable demo mode; seeds the demo database on first use. */
+    /** Enable/disable demo mode in-memory; seeds the demo database on first use. */
     suspend fun setDemoMode(enabled: Boolean) {
         if (enabled) seedIfNeeded()
-        prefs?.edit()?.putBoolean(KEY_DEMO_MODE, enabled)?.apply()
         _demoMode.value = enabled
     }
 
@@ -152,17 +161,18 @@ open class DataModeManager(context: Context? = null) {
 
     /** Restore the demo database to its pristine generated dataset. */
     suspend fun resetDemoData() {
+        if (appContext == null) return
         demoRepository.importSnapshot(DemoData.snapshot())
         prefs?.edit()?.putInt(KEY_SEED_VERSION, DemoData.SEED_VERSION)?.apply()
     }
 
     private suspend fun seedIfNeeded() {
+        if (appContext == null) return
         val stale = (prefs?.getInt(KEY_SEED_VERSION, 0) ?: 0) < DemoData.SEED_VERSION
         if (stale || demoRepository.exportSnapshot().sessions.isEmpty()) resetDemoData()
     }
 
     private companion object {
-        const val KEY_DEMO_MODE = "demoMode"
         const val KEY_SEED_VERSION = "demoSeedVersion"
         const val KEY_THEME_MODE = "themeMode"
         const val KEY_USER_ROLE = "userRole"
