@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">CrossTraining</string>
+    <string name="default_web_client_id">384900244521.apps.googleusercontent.com</string>
 </resources>

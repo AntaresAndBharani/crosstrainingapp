@@ -83,9 +83,14 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import android.accounts.AccountManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.credentials.CredentialManager
+import androidx.credentials.CustomCredential
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import com.fractanomics.crosstraining.data.firebase.CloudSyncErrorMapper
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.firebase.SyncStatus
@@ -110,6 +115,7 @@ fun ProfileScreen(
     val scope = rememberCoroutineScope()
 
     var showAuthModal by remember { mutableStateOf(false) }
+    var authModalPrompt by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
@@ -424,15 +430,32 @@ fun ProfileScreen(
 
                     Button(
                         onClick = {
-                            viewModel.triggerCloudSync { result ->
+                            if (authUser?.email.isNullOrBlank() || authUser?.isAnonymous == true) {
+                                authModalPrompt = CloudSyncErrorMapper.GUEST_AUTH_PROMPT
+                                showAuthModal = true
                                 scope.launch {
-                                    val message = when {
-                                        result.uploadSuccess && result.downloadSuccess -> "Cloud sync completed!"
-                                        !result.uploadSuccess && !result.downloadSuccess -> "Sync failed: upload and download both failed"
-                                        !result.uploadSuccess -> "Upload failed: ${result.uploadError ?: "Unknown error"}"
-                                        else -> "Download failed: ${result.downloadError ?: "Unknown error"}"
+                                    snackbar.showSnackbar(CloudSyncErrorMapper.GUEST_AUTH_PROMPT)
+                                }
+                            } else {
+                                viewModel.triggerCloudSync { result ->
+                                    scope.launch {
+                                        val message = when {
+                                            result.uploadSuccess && result.downloadSuccess ->
+                                                CloudSyncErrorMapper.SUCCESS_MESSAGE
+                                            CloudSyncErrorMapper.isNetworkOrTimeout(result.uploadError) || CloudSyncErrorMapper.isNetworkOrTimeout(result.downloadError) ->
+                                                CloudSyncErrorMapper.NETWORK_UNAVAILABLE_MESSAGE
+                                            !result.uploadSuccess && !result.downloadSuccess -> {
+                                                val upMsg = CloudSyncErrorMapper.mapMessage(result.uploadError)
+                                                val downMsg = CloudSyncErrorMapper.mapMessage(result.downloadError)
+                                                if (upMsg == downMsg) upMsg else "Sync failed: $upMsg"
+                                            }
+                                            !result.uploadSuccess ->
+                                                CloudSyncErrorMapper.mapMessage(result.uploadError)
+                                            else ->
+                                                CloudSyncErrorMapper.mapMessage(result.downloadError)
+                                        }
+                                        snackbar.showSnackbar(message)
                                     }
-                                    snackbar.showSnackbar(message)
                                 }
                             }
                         },
@@ -481,9 +504,14 @@ fun ProfileScreen(
     if (showAuthModal) {
         AuthDialog(
             viewModel = viewModel,
-            onDismiss = { showAuthModal = false },
+            promptMessage = authModalPrompt,
+            onDismiss = {
+                showAuthModal = false
+                authModalPrompt = null
+            },
             onSuccess = { msg ->
                 showAuthModal = false
+                authModalPrompt = null
                 scope.launch { snackbar.showSnackbar(msg) }
             }
         )
@@ -627,8 +655,11 @@ private data class ThemePreviewConfig(
 private fun AuthDialog(
     viewModel: AppViewModel,
     onDismiss: () -> Unit,
-    onSuccess: (String) -> Unit
+    onSuccess: (String) -> Unit,
+    promptMessage: String? = null
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var selectedTab by remember { mutableIntStateOf(0) } // 0 = Log In, 1 = Sign Up
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -636,30 +667,22 @@ private fun AuthDialog(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
 
-    val googleAccountLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { res ->
-        val accountName = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
-        if (!accountName.isNullOrBlank()) {
-            isLoading = true
-            viewModel.logInWithGoogleAccount(accountName, accountName.substringBefore("@")) { ok, err ->
-                isLoading = false
-                if (ok) {
-                    onSuccess("Welcome, $accountName!")
-                } else {
-                    errorMessage = err ?: "Google account sync failed"
-                }
-            }
-        } else {
-            isLoading = false
-        }
-    }
+    val credentialManager = remember { CredentialManager.create(context) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (selectedTab == 0) "Log In to Account" else "Create New Account") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                if (!promptMessage.isNullOrBlank()) {
+                    Text(
+                        promptMessage,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
                 TabRow(selectedTabIndex = selectedTab) {
                     Tab(
                         selected = selectedTab == 0,
@@ -724,13 +747,47 @@ private fun AuthDialog(
                     enabled = !isLoading,
                     onClick = {
                         errorMessage = null
-                        try {
-                            val intent = AccountManager.newChooseAccountIntent(
-                                null, null, arrayOf("com.google"), null, null, null, null
-                            )
-                            googleAccountLauncher.launch(intent)
-                        } catch (e: Exception) {
-                            errorMessage = "Unable to open Google Account chooser"
+                        isLoading = true
+                        scope.launch {
+                            try {
+                                val serverClientId = runCatching {
+                                    val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+                                    if (resId != 0) context.getString(resId) else null
+                                }.getOrNull() ?: "384900244521.apps.googleusercontent.com"
+
+                                val googleIdOption = GetGoogleIdOption.Builder()
+                                    .setFilterByAuthorizedAccounts(false)
+                                    .setServerClientId(serverClientId)
+                                    .setAutoSelectEnabled(false)
+                                    .build()
+
+                                val request = GetCredentialRequest.Builder()
+                                    .addCredentialOption(googleIdOption)
+                                    .build()
+
+                                val result = credentialManager.getCredential(request = request, context = context)
+                                val credential = result.credential
+                                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                                    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+                                    viewModel.logInWithGoogle(googleIdTokenCredential.idToken, remember = true) { ok, err ->
+                                        isLoading = false
+                                        if (ok) {
+                                            val displayName = googleIdTokenCredential.displayName ?: googleIdTokenCredential.id
+                                            onSuccess("Welcome, $displayName!")
+                                        } else {
+                                            errorMessage = err ?: "Google sign-in failed"
+                                        }
+                                    }
+                                } else {
+                                    isLoading = false
+                                    errorMessage = "Unsupported credential received"
+                                }
+                            } catch (e: GetCredentialCancellationException) {
+                                isLoading = false
+                            } catch (e: Exception) {
+                                isLoading = false
+                                errorMessage = e.localizedMessage ?: "Google sign-in failed"
+                            }
                         }
                     },
                     modifier = Modifier
