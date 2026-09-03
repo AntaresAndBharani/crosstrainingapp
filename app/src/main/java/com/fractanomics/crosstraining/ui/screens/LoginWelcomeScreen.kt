@@ -1,6 +1,12 @@
 package com.fractanomics.crosstraining.ui.screens
 
-import android.accounts.AccountManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.credentials.CredentialManager
+import androidx.credentials.CustomCredential
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -89,25 +95,8 @@ fun LoginWelcomeScreen(
 
     val isSnapshot = runCatching { BuildConfig.APP_ENV }.getOrDefault("snapshot") == "snapshot"
 
-    // Direct single-pass Google System Account Chooser (never shows double popups)
-    val googleAccountLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { res ->
-        val accountName = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
-        if (!accountName.isNullOrBlank()) {
-            isLoading = true
-            viewModel.logInWithGoogleAccount(accountName, accountName.substringBefore("@"), remember = rememberMe) { ok, err ->
-                isLoading = false
-                if (ok) {
-                    scope.launch { snackbar.showSnackbar("Welcome, $accountName!") }
-                } else {
-                    errorMessage = err ?: "Google account synchronization failed"
-                }
-            }
-        } else {
-            isLoading = false
-        }
-    }
+    val context = LocalContext.current
+    val credentialManager = remember { CredentialManager.create(context) }
 
     Box(
         modifier = Modifier
@@ -345,18 +334,52 @@ fun LoginWelcomeScreen(
                 HorizontalDivider(modifier = Modifier.weight(1f))
             }
 
-            // Modern, Elegant Google Sign-In Button (Clean Vector Logo & Single Dialog)
+            // Modern, Elegant Google Sign-In Button via Credential Manager
             OutlinedButton(
                 enabled = !isLoading,
                 onClick = {
                     errorMessage = null
-                    try {
-                        val intent = AccountManager.newChooseAccountIntent(
-                            null, null, arrayOf("com.google"), null, null, null, null
-                        )
-                        googleAccountLauncher.launch(intent)
-                    } catch (e: Exception) {
-                        errorMessage = "Unable to open Google Account selector: ${e.localizedMessage}"
+                    isLoading = true
+                    scope.launch {
+                        try {
+                            val serverClientId = runCatching {
+                                val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+                                if (resId != 0) context.getString(resId) else null
+                            }.getOrNull() ?: "384900244521.apps.googleusercontent.com"
+
+                            val googleIdOption = GetGoogleIdOption.Builder()
+                                .setFilterByAuthorizedAccounts(false)
+                                .setServerClientId(serverClientId)
+                                .setAutoSelectEnabled(false)
+                                .build()
+
+                            val request = GetCredentialRequest.Builder()
+                                .addCredentialOption(googleIdOption)
+                                .build()
+
+                            val result = credentialManager.getCredential(request = request, context = context)
+                            val credential = result.credential
+                            if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                                val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+                                viewModel.logInWithGoogle(googleIdTokenCredential.idToken, remember = rememberMe) { ok, err ->
+                                    isLoading = false
+                                    if (ok) {
+                                        val displayName = googleIdTokenCredential.displayName ?: googleIdTokenCredential.id
+                                        scope.launch { snackbar.showSnackbar("Welcome, $displayName!") }
+                                    } else {
+                                        errorMessage = err ?: "Google sign-in failed"
+                                    }
+                                }
+                            } else {
+                                isLoading = false
+                                errorMessage = "Unsupported credential received"
+                            }
+                        } catch (e: GetCredentialCancellationException) {
+                            isLoading = false
+                        } catch (e: Exception) {
+                            isLoading = false
+                            errorMessage = e.localizedMessage ?: "Google sign-in failed"
+                        }
                     }
                 },
                 modifier = Modifier

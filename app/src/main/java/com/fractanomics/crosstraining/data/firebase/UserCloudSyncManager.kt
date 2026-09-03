@@ -51,13 +51,20 @@ object UserCloudSyncManager {
     private fun userDoc(uid: String) =
         firestore.collection("environments").document(currentEnv).collection("users").document(uid)
 
+    internal var authUidProviderForTesting: (() -> String?)? = null
+
     val currentUserId: String
         get() {
             val user = _userState.value
+            val authUid = authUidProviderForTesting?.invoke()
+                ?: runCatching { auth.currentUser?.uid }.getOrNull()
             if (user != null && user.uid.isNotBlank()) {
+                if (authUid != null && !user.isAnonymous && user.uid != authUid) {
+                    return ""
+                }
                 return user.uid.replace("/", "_")
             }
-            return runCatching { auth.currentUser?.uid?.replace("/", "_") }.getOrNull() ?: ""
+            return authUid?.replace("/", "_") ?: ""
         }
 
     init {
@@ -285,6 +292,8 @@ object UserCloudSyncManager {
     internal var documentWriterForTesting: (suspend (collectionName: String, data: Map<String, Any?>) -> Unit)? = null
     internal var remoteCollectionInspectorForTesting: (suspend (collectionName: String) -> Boolean)? = null
 
+    internal var recoverRoutinesReaderForTesting: (suspend (userId: String) -> List<Map<String, Any>>)? = null
+
     fun resetTestHandlers() {
         uploadUserDataHandler = null
         downloadUserDataHandler = null
@@ -296,6 +305,35 @@ object UserCloudSyncManager {
         documentWriterForTesting = null
         remoteCollectionInspectorForTesting = null
         passwordResetHandlerForTesting = null
+        authUidProviderForTesting = null
+        recoverRoutinesReaderForTesting = null
+    }
+
+    private fun verifyTokenBinding(): Result<Unit> {
+        val user = _userState.value
+        if (user != null && !user.isAnonymous && user.uid.isNotBlank()) {
+            if (authUidProviderForTesting != null) {
+                val testUid = authUidProviderForTesting!!.invoke()
+                if (testUid == null || testUid != user.uid) {
+                    return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
+                }
+                return Result.success(Unit)
+            }
+
+            val isFirebaseAvailable = runCatching { FirebaseAuth.getInstance() }.isSuccess
+            if (!isFirebaseAvailable) {
+                if (documentWriterForTesting != null) {
+                    return Result.success(Unit)
+                }
+                return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
+            }
+
+            val currentUser = runCatching { auth.currentUser }.getOrNull()
+            if (currentUser == null || currentUser.isAnonymous || currentUser.uid != user.uid) {
+                return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
+            }
+        }
+        return Result.success(Unit)
     }
 
     private suspend fun uploadCollectionWithGuard(
@@ -344,9 +382,10 @@ object UserCloudSyncManager {
             _syncState.value = SyncStatus.SYNCING
 
             withTimeout(20000L) {
+                verifyTokenBinding().getOrThrow()
                 ensureAuthenticated()
                 val uid = currentUserId
-                if (uid.isBlank()) error("User not authenticated")
+                if (uid.isBlank()) error(CloudSyncErrorMapper.GUEST_AUTH_PROMPT)
 
                 val doc = if (documentWriterForTesting != null) null else userDoc(uid)
 
@@ -512,9 +551,10 @@ object UserCloudSyncManager {
             _syncState.value = SyncStatus.SYNCING
 
             withTimeout(20000L) {
+                verifyTokenBinding().getOrThrow()
                 ensureAuthenticated()
                 val uid = currentUserId
-                if (uid.isBlank()) error("User not authenticated")
+                if (uid.isBlank()) error(CloudSyncErrorMapper.GUEST_AUTH_PROMPT)
 
             val doc = userDoc(uid)
 
@@ -677,44 +717,52 @@ object UserCloudSyncManager {
         }
         return runCatching {
             withTimeout(15000L) {
-            val querySnap = firestore.collectionGroup("data").get().await()
-            var count = 0
-            for (doc in querySnap.documents) {
-                if (doc.reference.path.contains("environments/$currentEnv") && doc.id == "routines") {
-                    @Suppress("UNCHECKED_CAST")
-                    val routList = doc.get("list") as? List<Map<String, Any>> ?: emptyList()
-                    routList.forEach { rwbMap ->
-                        @Suppress("UNCHECKED_CAST")
-                        val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
-                        val name = rMap["name"] as? String ?: return@forEach
-                        val description = rMap["description"] as? String ?: ""
-                        val defaultFormat = rMap["defaultFormat"] as? String ?: ""
+                val uid = currentUserId
+                if (uid.isBlank()) return@withTimeout 0
 
+                val routList: List<Map<String, Any>> = if (recoverRoutinesReaderForTesting != null) {
+                    recoverRoutinesReaderForTesting!!.invoke(uid)
+                } else {
+                    val routinesDoc = userDoc(uid).collection("data").document("routines").get().await()
+                    if (routinesDoc.exists()) {
                         @Suppress("UNCHECKED_CAST")
-                        val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
-                        val blocks = bList.mapIndexed { idx, bMap ->
-                            RoutineBlock(
-                                id = 0,
-                                routineId = 0,
-                                position = (bMap["position"] as? Number)?.toInt() ?: idx,
-                                name = bMap["name"] as? String ?: "",
-                                kind = runCatching { BlockKind.valueOf(bMap["kind"] as String) }.getOrDefault(BlockKind.WEIGHTLIFTING),
-                                format = bMap["format"] as? String ?: "",
-                                setsCount = (bMap["setsCount"] as? Number)?.toInt() ?: 1,
-                                targetRepsScheme = bMap["targetRepsScheme"] as? String ?: "",
-                                exerciseIdsCsv = bMap["exerciseIdsCsv"] as? String ?: "",
-                                notes = bMap["notes"] as? String ?: ""
-                            )
-                        }
-                        repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
-                        count++
+                        routinesDoc.get("list") as? List<Map<String, Any>> ?: emptyList()
+                    } else {
+                        emptyList()
                     }
                 }
+
+                var count = 0
+                routList.forEach { rwbMap ->
+                    @Suppress("UNCHECKED_CAST")
+                    val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
+                    val name = rMap["name"] as? String ?: return@forEach
+                    val description = rMap["description"] as? String ?: ""
+                    val defaultFormat = rMap["defaultFormat"] as? String ?: ""
+
+                    @Suppress("UNCHECKED_CAST")
+                    val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
+                    val blocks = bList.mapIndexed { idx, bMap ->
+                        RoutineBlock(
+                            id = 0,
+                            routineId = 0,
+                            position = (bMap["position"] as? Number)?.toInt() ?: idx,
+                            name = bMap["name"] as? String ?: "",
+                            kind = runCatching { BlockKind.valueOf(bMap["kind"] as String) }.getOrDefault(BlockKind.WEIGHTLIFTING),
+                            format = bMap["format"] as? String ?: "",
+                            setsCount = (bMap["setsCount"] as? Number)?.toInt() ?: 1,
+                            targetRepsScheme = bMap["targetRepsScheme"] as? String ?: "",
+                            exerciseIdsCsv = bMap["exerciseIdsCsv"] as? String ?: "",
+                            notes = bMap["notes"] as? String ?: ""
+                        )
+                    }
+                    repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
+                    count++
+                }
+                repo.cleanupDuplicateRoutines()
+                count
             }
-            repo.cleanupDuplicateRoutines()
-            count
         }
-    }
     }
 
     private fun FirebaseUser.toAuthUser(): AuthUser = AuthUser(

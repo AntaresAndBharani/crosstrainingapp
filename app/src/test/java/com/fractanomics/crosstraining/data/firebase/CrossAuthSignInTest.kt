@@ -38,6 +38,14 @@ class CrossAuthSignInTest {
 
     @Before
     fun setUp() {
+        UserCloudSyncManager.resetTestHandlers()
+        UserCloudSyncManager.authUidProviderForTesting = { UserCloudSyncManager.userState.value?.uid }
+        UserCloudSyncManager.setAuthenticatedUser(null)
+    }
+
+    @org.junit.After
+    fun tearDown() {
+        UserCloudSyncManager.resetTestHandlers()
         UserCloudSyncManager.setAuthenticatedUser(null)
     }
 
@@ -400,5 +408,37 @@ class CrossAuthSignInTest {
         UserCloudSyncManager.setAuthenticatedUser(null)
         assertEquals("", UserCloudSyncManager.currentUserId)
         assertEquals(null, UserCloudSyncManager.userState.value)
+    }
+
+    // =========================================================================
+    // Scenario 5: Token-Bound Identity Alignment & Scoped Recovery (Issue #486)
+    // =========================================================================
+
+    @Test
+    fun `scenario 5 - token bound identity alignment verifies matching auth UID`() {
+        val user = AuthUser(uid = "auth_user_456", email = "athlete@example.com", isAnonymous = false)
+        UserCloudSyncManager.setAuthenticatedUser(user)
+        UserCloudSyncManager.authUidProviderForTesting = { "auth_user_456" }
+
+        assertEquals("auth_user_456", UserCloudSyncManager.currentUserId)
+    }
+
+    @Test
+    fun `scenario 5 - token bound identity alignment rejects mismatched auth UID`() {
+        val user = AuthUser(uid = "auth_user_456", email = "athlete@example.com", isAnonymous = false)
+        UserCloudSyncManager.setAuthenticatedUser(user)
+        // Simulate Firebase token belonging to a different UID (mismatch)
+        UserCloudSyncManager.authUidProviderForTesting = { "different_uid_789" }
+
+        assertEquals("", UserCloudSyncManager.currentUserId)
+    }
+
+    @Test
+    fun `scenario 5 - authUidProviderForTesting enables deterministic JVM testing of currentUserId`() {
+        // When userState is null but authUidProviderForTesting is configured
+        UserCloudSyncManager.setAuthenticatedUser(null)
+        UserCloudSyncManager.authUidProviderForTesting = { "injected_jvm_uid" }
+
+        assertEquals("injected_jvm_uid", UserCloudSyncManager.currentUserId)
     }
 }
