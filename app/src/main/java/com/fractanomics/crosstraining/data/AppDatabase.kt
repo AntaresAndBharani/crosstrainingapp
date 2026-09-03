@@ -27,6 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.time.LocalDate
 
 @Database(
     entities = [
@@ -133,30 +134,63 @@ abstract class AppDatabase : RoomDatabase() {
                 .build().also { DEMO = it }
             }
 
-        private fun build(context: Context): AppDatabase =
-            Room.databaseBuilder(
+        /**
+         * Provisions a default active training cycle ("General Training") if the database has no cycles.
+         * Ensures fresh and upgraded production installs can immediately log workouts without error.
+         */
+        suspend fun provisionDefaultCycleIfNeeded(database: AppDatabase): Cycle? {
+            val cycleDao = database.cycleDao()
+            val existing = cycleDao.getAllOnce()
+            if (existing.isEmpty()) {
+                val defaultCycle = Cycle(
+                    name = "General Training",
+                    startDate = LocalDate.now(),
+                    isActive = true
+                )
+                val id = cycleDao.insert(defaultCycle)
+                return defaultCycle.copy(id = id)
+            }
+            return null
+        }
+
+        private fun build(context: Context): AppDatabase {
+            lateinit var database: AppDatabase
+            val callback = object : Callback() {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    super.onCreate(db)
+                    // Seed the starter library of common lifts and machines.
+                    CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                        val isProduction = com.fractanomics.crosstraining.BuildConfig.APP_ENV == "production"
+                        SeedData.populate(
+                            database.exerciseDao(),
+                            database.routineDao(),
+                            database.cycleDao(),
+                            database.cycleGoalDao(),
+                            isProduction = isProduction
+                        )
+                        provisionDefaultCycleIfNeeded(database)
+                    }
+                }
+
+                override fun onOpen(db: SupportSQLiteDatabase) {
+                    super.onOpen(db)
+                    CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                        provisionDefaultCycleIfNeeded(database)
+                    }
+                }
+            }
+
+            database = Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 "crosstraining.db"
             )
             .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .fallbackToDestructiveMigrationOnDowngrade()
-            .addCallback(object : Callback() {
-                override fun onCreate(db: SupportSQLiteDatabase) {
-                    super.onCreate(db)
-                    // Seed the starter library of common lifts and machines.
-                    val instance = INSTANCE ?: return
-                    CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-                        val isProduction = com.fractanomics.crosstraining.BuildConfig.APP_ENV == "production"
-                        SeedData.populate(
-                            instance.exerciseDao(),
-                            instance.routineDao(),
-                            instance.cycleDao(),
-                            instance.cycleGoalDao(),
-                            isProduction = isProduction
-                        )
-                    }
-                }
-            }).build()
+            .addCallback(callback)
+            .build()
+
+            return database
+        }
     }
 }

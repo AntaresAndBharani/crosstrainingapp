@@ -23,6 +23,8 @@ import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
@@ -52,7 +54,12 @@ class Repository(
 ) {
 
     internal suspend fun <R> withDatabaseTransaction(block: suspend () -> R): R {
-        return transactionRunner?.runInTransaction(block) ?: db.withTransaction(block)
+        val runner = transactionRunner
+        return if (runner != null) {
+            runner.runInTransaction(block)
+        } else {
+            db.withTransaction(block)
+        }
     }
 
     private val cycleDao = db.cycleDao()
@@ -64,8 +71,14 @@ class Repository(
     private val cycleGoalDao = db.cycleGoalDao()
 
     // --- Cycles ---------------------------------------------------------------
-    val cycles: Flow<List<Cycle>> = cycleDao.observeAll()
-    val activeCycle: Flow<Cycle?> = cycleDao.observeActive()
+    val cycles: Flow<List<Cycle>> = flow {
+        provisionDefaultCycleIfNeeded()
+        emitAll(cycleDao.observeAll())
+    }
+    val activeCycle: Flow<Cycle?> = flow {
+        provisionDefaultCycleIfNeeded()
+        emitAll(cycleDao.observeActive())
+    }
     val cycleGoals: Flow<List<CycleGoal>> = cycleGoalDao.all()
 
     fun cycleGoalsForCycle(cycleId: Long): Flow<List<CycleGoal>> = cycleGoalDao.byCycle(cycleId)
@@ -102,6 +115,45 @@ class Repository(
     suspend fun activateCycle(id: Long) {
         cycleDao.clearActive()
         cycleDao.markActive(id)
+    }
+
+    /**
+     * Startup verification check: if no training cycles exist in the database,
+     * automatically provisions a default active training cycle named "General Training".
+     * Covers both fresh installs and existing installs upgraded from v3.0.147.
+     */
+    suspend fun provisionDefaultCycleIfNeeded(): Cycle? = withDatabaseTransaction {
+        val existing = cycleDao.getAllOnce()
+        if (existing.isEmpty()) {
+            val defaultCycle = Cycle(
+                name = "General Training",
+                startDate = LocalDate.now(),
+                isActive = true
+            )
+            val id = cycleDao.insert(defaultCycle)
+            defaultCycle.copy(id = id)
+        } else {
+            null
+        }
+    }
+
+    /**
+     * Ensures an active or default training cycle exists, provisioning "General Training"
+     * if the database is currently empty.
+     */
+    suspend fun ensureDefaultCycleProvisioned(): Cycle = withDatabaseTransaction {
+        val existing = cycleDao.getAllOnce()
+        if (existing.isEmpty()) {
+            val defaultCycle = Cycle(
+                name = "General Training",
+                startDate = LocalDate.now(),
+                isActive = true
+            )
+            val id = cycleDao.insert(defaultCycle)
+            defaultCycle.copy(id = id)
+        } else {
+            existing.find { it.isActive } ?: existing.first()
+        }
     }
 
     // --- Exercises ------------------------------------------------------------
