@@ -47,3 +47,6 @@ logs/local-pipeline/
 # Agent worktrees
 .graph/worktrees/
 
+# Kotlin compiler cache
+.kotlin/
+

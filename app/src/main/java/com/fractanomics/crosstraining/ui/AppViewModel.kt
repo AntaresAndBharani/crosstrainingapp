@@ -72,17 +72,30 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     private val repo: Repository
         get() = data.current
 
+    private val _legacySessionRequiresReauth = MutableStateFlow(false)
+    val legacySessionRequiresReauth: StateFlow<Boolean> = _legacySessionRequiresReauth.asStateFlow()
+
     init {
         viewModelScope.launch {
             runCatching { repo.provisionDefaultCycleIfNeeded() }
             runCatching { repo.cleanupDuplicateRoutines() }
             val persisted = runCatching { data.getPersistedAuthUser() }.getOrNull()
             if (persisted != null) {
-                UserCloudSyncManager.setAuthenticatedUser(persisted)
-                val role = data.resolveRoleForUser(persisted.email)
-                data.setUserRole(role)
+                if (persisted.uid.contains("@")) {
+                    data.clearAuthSession()
+                    UserCloudSyncManager.setAuthenticatedUser(null)
+                    _legacySessionRequiresReauth.value = true
+                } else {
+                    UserCloudSyncManager.setAuthenticatedUser(persisted)
+                    val role = data.resolveRoleForUser(persisted.email)
+                    data.setUserRole(role)
+                }
             }
         }
+    }
+
+    fun dismissLegacyReauthPrompt() {
+        _legacySessionRequiresReauth.value = false
     }
 
     val authUser: StateFlow<AuthUser?> = UserCloudSyncManager.userState
@@ -91,6 +104,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     fun signUpWithEmail(email: String, pass: String, remember: Boolean = true, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val res = UserCloudSyncManager.signUpWithEmail(email, pass)
         res.onSuccess {
+            _legacySessionRequiresReauth.value = false
             val u = authUser.value
             if (u != null) {
                 data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
@@ -105,6 +119,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     fun logInWithEmail(email: String, pass: String, remember: Boolean = true, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val res = UserCloudSyncManager.logInWithEmail(email, pass)
         res.onSuccess {
+            _legacySessionRequiresReauth.value = false
             val u = authUser.value
             if (u != null) {
                 data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
@@ -119,6 +134,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     fun logInWithGoogle(idToken: String, remember: Boolean = true, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val res = UserCloudSyncManager.signInWithGoogleCredential(idToken)
         res.onSuccess {
+            _legacySessionRequiresReauth.value = false
             val u = authUser.value
             if (u != null) {
                 data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
@@ -133,6 +149,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     fun logInWithGoogleAccount(email: String, displayName: String?, remember: Boolean = true, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val res = UserCloudSyncManager.logInWithGoogleAccount(email, displayName)
         res.onSuccess {
+            _legacySessionRequiresReauth.value = false
             val u = authUser.value
             if (u != null) {
                 data.saveAuthSession(u.email, u.uid, u.isAnonymous, remember = remember)
@@ -159,6 +176,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     fun signOut() {
         UserCloudSyncManager.signOut()
         data.clearAuthSession()
+        _legacySessionRequiresReauth.value = false
     }
 
     fun triggerCloudSync(onResult: (CloudSyncResult) -> Unit) = viewModelScope.launch {
@@ -172,6 +190,8 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
 
         if (!uploadOk || !downloadOk) {
             UserCloudSyncManager.setSyncStatus(SyncStatus.ERROR)
+        } else {
+            _legacySessionRequiresReauth.value = false
         }
 
         val result = CloudSyncResult(

@@ -714,42 +714,552 @@ And verified on release build v3.0.147+ by the original reporter
 
 ---
 
+## 🔍 Review Iteration 6: Post-Implementation Forensic Analysis — The Literal "Sync Now" ERROR Diagnosis & Cloud Auth Seam Disconnect
+
+- **Date / Reviewer:** 2026-09-03 | Three Amigos (Business / Development / QA)
+- **Target Repository:** `AntaresAndBharani/crosstrainingapp` @ `2cdca7f`
+- **Triggering Event / Evidence:**
+  - Operator provided screenshot `media_1788451689183.png` capturing the **Cloud Backup & Sync** card in `ERROR` status (`syncState == SyncStatus.ERROR`, rendering `[ (!) ERROR ]` badge) on a live Android installation following commits `3fa05ab` through `2cdca7f`.
+  - Operator stated: *"There is an error when I try to sychronize the data with the account."*
+- **Scope reviewed:**
+  - `UserCloudSyncManager.kt` (`verifyTokenBinding`, `uploadUserData`, `downloadUserData`, `currentUserId`).
+  - `AppViewModel.kt` (`triggerCloudSync`, session rehydration).
+  - `DataModeManager.kt` (`getPersistedAuthUser`, `saveAuthSession`).
+  - `ProfileScreen.kt` (Cloud Backup Card, Auth Modal, error snackbars).
+  - `app/google-services.json` (OAuth configuration).
+  - `app/build.gradle.kts` (`APP_ENV = "production"`).
+
+---
+
+### 1. Root Cause Analysis: Why "Sync Now" Produces `ERROR`
+
+#### Root Cause 1: Token-Binding Deadlock on Upgraded / Persisted Sessions (🔴 Blocker)
+In commit `2cdca7f`, `verifyTokenBinding()` was introduced:
+```kotlin
+val currentUser = runCatching { auth.currentUser }.getOrNull()
+if (currentUser == null || currentUser.isAnonymous || currentUser.uid != user.uid) {
+    return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
+}
+```
+1. On app launch, `AppViewModel.init` reads `data.getPersistedAuthUser()` from `SharedPreferences`.
+2. For all installs upgraded from earlier versions or where login occurred prior to `2cdca7f`, `user.uid` in `SharedPreferences` was stored as the email address (e.g. `"pv.joseangel@gmail.com"` via `logInWithGoogleAccount:251` or `"jangelpv_crosstraining_app"`).
+3. In contrast, `FirebaseAuth.getInstance().currentUser?.uid` is a 28-character Firebase alphanumeric UID (e.g. `"w7X2yZ8abc..."`).
+4. Because `currentUser.uid != user.uid` (`"w7X2yZ8abc..." != "pv.joseangel@gmail.com"`), `verifyTokenBinding()` **fails closed unconditionally** before `ensureAuthenticated()` or Firestore network traffic can run!
+5. Furthermore, if `FirebaseAuth`'s asynchronous token restoration from disk has not completed by the time `Sync Now` is tapped, `currentUser` is `null`, producing the same immediate failure.
+6. In `AppViewModel.kt:174`, `uploadRes.isSuccess` is `false`, immediately executing:
+   `UserCloudSyncManager.setSyncStatus(SyncStatus.ERROR)`
+   which sets the persistent red `[ (!) ERROR ]` badge shown in the user's screenshot.
+
+#### Root Cause 2: Missing OAuth Web Client ID in `google-services.json` (🔴 Blocker)
+1. In `app/google-services.json`, `"oauth_client": []` is empty.
+2. The Google Services Gradle plugin does not generate `@string/default_web_client_id`.
+3. `LoginWelcomeScreen.kt:348` and `ProfileScreen.kt:756` fall back to `"384900244521.apps.googleusercontent.com"`, which is **not** a valid Web Client ID (Google OAuth Web Client IDs require the full `<project_number>-<hash>.apps.googleusercontent.com` client format).
+4. Calling Credential Manager with this invalid Client ID causes Google Play Services to fail with `ApiException: 10` (Developer Error), preventing genuine Google OAuth token generation and forcing fallback paths.
+
+#### Root Cause 3: Card-Level Error Invisibility & Lack of Recovery UX (🟠 Major)
+1. When `triggerCloudSync` fails, `ProfileScreen.kt` fires a transient snackbar via `snackbar.showSnackbar(message)`.
+2. Once the snackbar dismisses (after 4 seconds), the card displays only `[ (!) ERROR ]` with zero explanation of why it failed (e.g. session expired, token mismatch, offline, permission denied).
+3. The user has no contextual action button inside the card (such as `[Re-authenticate]` or `[Sign In to Restore]`) to resolve the state.
+
+#### Root Cause 4: Sequential Write Latency Exposure (🟡 Minor)
+1. `uploadUserData` performs sequential `.set()` calls across 5 documents plus potential remote reads inside a `withTimeout(20000L)` coroutine. On high-latency mobile connections, sequential network round-trips can exceed the 20-second timeout.
+
+---
+
+### 2. Concrete Architectural Remediation
+
+| Issue Area | Flaw in Code | Targeted Remediation |
+| :--- | :--- | :--- |
+| **Self-Healing Token Alignment** | `verifyTokenBinding` rejects valid users whose persisted UID is an email address. | If `currentUser != null` and `currentUser.email == user.email`, automatically self-heal: update `_userState.value` to match `currentUser.uid` and persist via `data.saveAuthSession(...)`, allowing sync to proceed smoothly. |
+| **Asynchronous Auth Wait** | `currentUser` can be transiently null on cold start while Firebase Auth loads tokens. | In `verifyTokenBinding`, if `auth.currentUser == null`, await the initial auth state resolution (up to 3 seconds) before failing closed. |
+| **Inline Error Feedback in Card** | User only sees `[ (!) ERROR ]` badge with no error reason or remedy. | In `ProfileScreen.kt`, add an inline error container inside `Cloud Backup & Sync` when `syncState == SyncStatus.ERROR` showing the mapped error message and a dedicated `[Sign In Again]` button if re-authentication is required. |
+| **Parallelized Firestore Writes** | 5 sequential `.set()` calls risk network timeouts. | Execute document uploads concurrently using `coroutineScope` and `async`. |
+
+---
+
+## 🎯 Final Decision Plan & User Story Specification
+
+### User Story
+```gherkin
+As an athlete or coach using CrossTraining
+I want the application to automatically align my persisted login session with my active Firebase Auth token, parallelize cloud backups, and display clear inline error feedback if re-authentication is needed
+So that tapping "Sync Now" reliably synchronizes my personal data without false token-mismatch rejections or unexplained error badges.
+```
+
+---
+
+### BDD Acceptance Criteria
+
+#### Scenario 1: Self-Healing Token Alignment for Persisted Email Sessions
+```gherkin
+Given a user whose local session has persisted user.uid as their email address
+And Firebase Auth holds a valid authenticated session for that same email with a Firebase UID
+When they tap "Sync Now" in Cloud Backup & Sync
+Then verifyTokenBinding detects the email match, updates the local UID to the Firebase UID, and persists it
+And the upload and download proceed without throwing GUEST_AUTH_PROMPT
+And the sync status badge transitions from SYNCING to SUCCESS ("Cloud sync completed!")
+```
+
+#### Scenario 2: Asynchronous Firebase Auth Cold-Start Resilience
+```gherkin
+Given the application was cold-started and FirebaseAuth token restoration is in progress
+When the user taps "Sync Now" immediately
+Then verifyTokenBinding awaits auth state resolution rather than instantly rejecting with a null user
+And once the authenticated user resolves, synchronization proceeds to SUCCESS
+```
+
+#### Scenario 3: Actionable Inline Error Card on Genuine Auth Expiry
+```gherkin
+Given an athlete whose Firebase session has expired or been revoked in the console
+When they tap "Sync Now"
+Then the Cloud Backup & Sync card displays the ERROR badge
+And an inline banner explains: "Session expired. Please sign in again to back up your workouts"
+And a prominent [Sign In Again] button is provided directly inside the card to restore access
+```
+
+#### Scenario 4: Concurrent Cloud Backup Execution
+```gherkin
+Given an authenticated user in Real Data mode with exercises, routines, cycles, and sessions
+When cloud sync upload is executed
+Then the collections are uploaded concurrently via coroutineScope
+And the total upload time is reduced, preventing 20-second timeout cancellations
+```
+
+---
+
 ### Component Impact Table
 
 | Component File | Location | Concrete Changes |
 | :--- | :--- | :--- |
-| **`DataModeManager.kt`** | `app/.../data/DataModeManager.kt` | - Remove `KEY_DEMO_MODE` persistence from `SharedPreferences`.<br>- Make `_demoMode` strictly in-memory: `MutableStateFlow(false)`.<br>- Expose public `val realRepository: Repository` as `testRepository ?: realRepository` for JVM testability and cloud sync isolation. |
-| **`AppNavigation.kt`** | `app/.../ui/navigation/AppNavigation.kt` | - Remove `viewModel.setDemoMode(true)` from `onContinueAsGuest`.<br>- Add `DataModeDrawerRow` with an interactive switch ("Real Data" vs "Demo Data") in `AppDrawerContent`. |
-| **`ProfileScreen.kt`** | `app/.../ui/screens/ProfileScreen.kt` | - Add stateless `DataModeCard(demoMode: Boolean, onToggle: (Boolean) -> Unit)` adhering to `.agents/rules/03_compose_ui_standards.md` §1.<br>- Update Cloud Backup & Sync card with guest login prompt, clean status badge, and user-friendly error mapping. |
-| **`AppViewModel.kt`** | `app/.../ui/AppViewModel.kt` | - **Phase 1:** Route the 3 buttonless background cycle sync sites (`saveCycle:223`, `saveCycleWithGoals:229`, `deleteCycleGoal:234`) to `data.realRepository`.<br>- **Phase 2:** Route remaining 7 call sites (`triggerCloudSync:155,156`, `signUp:88`, `logInEmail:102`, `logInGoogle:116`, `logInGoogleAccount:130`, `recoverCloudRoutines:168`) to `data.realRepository`.<br>- Separate upload and download error reporting. |
-| **`SeedData.kt` / `AppDatabase.kt`** | `app/.../data/` | - Add startup / migration check: if `cycleDao.getAllOnce().isEmpty()`, insert a default initial cycle so both fresh and upgraded production installs can immediately save sessions. |
-| **`UserCloudSyncManager.kt`** | `app/.../data/firebase/UserCloudSyncManager.kt` | - Check non-anonymous identity before `ensureAuthenticated()`, failing closed if `auth.currentUser` is null/anonymous.<br>- Add injectable seam `internal var authUidProviderForTesting: (() -> String?)?`.<br>- Add per-document overwrite guard (skip `.set()` if local is empty and remote is populated).<br>- Wire Credential Manager to `signInWithGoogleCredential`.<br>- Scope `recoverAllCloudRoutines` to `userDoc(currentUserId)`. |
-| **`LibraryScreen.kt`** | `app/.../ui/screens/LibraryScreen.kt` | - Remove redundant "Try demo data / Switch to my data" dropdown item, rehoming demo switching into `DataModeCard` and Drawer while preserving "Reset demo data". |
-| **`e2e/flows/03_history_and_search_flow.yaml`** | `e2e/flows/` | - Make flow 03 self-contained by creating a session prior to asserting on workout history. |
+| **`UserCloudSyncManager.kt`** | `app/.../data/firebase/UserCloudSyncManager.kt` | - Update `verifyTokenBinding`: if `currentUser != null` and `currentUser.email == user.email`, self-heal UID alignment and save session.<br>- Await auth state resolution if `currentUser` is null on cold start.<br>- Execute collection uploads concurrently using `coroutineScope { awaitAll(...) }`. |
+| **`ProfileScreen.kt`** | `app/.../ui/screens/ProfileScreen.kt` | - Add inline error banner inside `Cloud Backup & Sync` card showing error detail and a `[Sign In Again]` button when authentication is required.<br>- Expose the latest sync error message in UI state so it remains visible after snackbar dismisses. |
+| **`AppViewModel.kt`** | `app/.../ui/AppViewModel.kt` | - Expose `lastSyncError: StateFlow<String?>` to allow UI to render persistent error context.<br>- Clear `lastSyncError` on successful sync. |
 
 ---
 
-### Phased INVEST Subtask Execution Plan
+### INVEST Subtask Breakdown
 
-#### Phase 1: Real Data Default & Session-Scoped Demo Switch (Immediate Delivery)
-1. **In-Memory Demo Mode:** Make `demoMode` strictly in-memory in `DataModeManager.kt` (defaults to `false` on launch; remove `KEY_DEMO_MODE` reading/writing). Expose `realRepository = testRepository ?: realRepository`.
-2. **Remove Forced Guest Demo Mode:** Remove `viewModel.setDemoMode(true)` from `AppNavigation.kt:163`.
-3. **Background Cycle Sync Protection:** Update `saveCycle`, `saveCycleWithGoals`, and `deleteCycleGoal` in `AppViewModel.kt` to pass `data.realRepository`.
-4. **Stateless UI Components:** Implement stateless `DataModeCard` in `ProfileScreen.kt` and `DataModeDrawerRow` in `AppNavigation.kt`. Remove redundant toggle from `LibraryScreen.kt`. Add Compose test in `androidTest`.
-5. **Production Cycle Provisioning:** Implement startup check in `AppDatabase.kt` / `Repository.kt` inserting a default cycle if `cycleDao.getAllOnce().isEmpty()`.
-6. **E2E Test Flow 03 Isolation:** Update `03_history_and_search_flow.yaml` to create a session first.
-7. **Verification & CI Gate:**
-   - Run unit tests: `.\gradlew.bat testDebugUnitTest --no-daemon`.
-   - Run CI-parity snapshot build: `.\gradlew.bat testDebugUnitTest assembleSnapshot -PsnapshotLabel=localtest --no-daemon`.
-   - Run script regression tests: `.\scripts\tests\Invoke-ScriptTests.ps1`.
-   - Capture E2E visual artifacts: `.\scripts\run-e2e-tests.ps1 -CaptureArtifacts -Version "latest" -PushArtifacts`.
+1. **Subtask 1: Self-Healing Identity Alignment & Cold-Start Auth Await**
+   - Enhance `verifyTokenBinding()` to reconcile email-matched sessions and await Firebase Auth initialization.
+   - Add unit tests verifying that email-matched users with disparate UIDs are automatically self-healed and synced.
 
-#### Phase 2: Cloud Sync Hardening, Identity Alignment & Overwrite Protection
-1. **Remaining Sync Site Routing:** Route all remaining sync call sites in `AppViewModel.kt` strictly to `data.realRepository`.
-2. **Token-Bound Identity & Auth Seam:** Implement pre-auth session check in `UserCloudSyncManager.kt` and injectable `authUidProviderForTesting`.
-3. **Per-Document Overwrite Guard:** Add per-collection check in `uploadUserData` preventing locally empty collections from wiping remote Firestore documents.
-4. **Credential Manager Integration:** Wire `signInWithGoogleCredential` to active Google auth launchers.
-5. **Scope Recovery Query:** Scope `recoverAllCloudRoutines` to `userDoc(currentUserId)`.
-6. **Test Contract Update:** Update `CrossAuthSignInTest` replacement assertions with operator approval.
-7. **Production Verification:** Confirm "Sync Now" resolution on release APK `v3.0.147+`.
+2. **Subtask 2: Concurrent Cloud Uploads & Timeout Resilience**
+   - Refactor `uploadUserData` to upload documents concurrently with `awaitAll`.
+   - Add unit tests verifying parallel upload behavior and error isolation.
 
+3. **Subtask 3: Actionable Card-Level Error Presentation & Re-Auth Button**
+   - Add inline error container to `Cloud Backup & Sync` card in `ProfileScreen.kt`.
+   - Add `[Sign In Again]` action triggering the auth modal directly when token is expired.
+   - Verify with Compose UI instrumented tests.
+
+---
+
+## 🏛️ Claude Review Iteration 1
+
+- **Date / Reviewer:** 2026-09-03 | Principal Architect (Claude Sonnet — Thinking)
+- **Target Repository:** `AntaresAndBharani/crosstrainingapp` @ post-`2cdca7f` working tree
+- **Scope:** Ground-truth inspection of `UserCloudSyncManager.kt` (774 L, full), `DataModeManager.kt` (185 L, full), `AppViewModel.kt` (753 L, full), `ProfileScreen.kt` (lines 95–500), `docs/draft-requisites/implementation-plan.md` (all 6 review iterations + Final Decision Plan). Every claim below was verified directly against source, not inherited from prior iterations.
+
+---
+
+### ⚖️ Critical Architecture & Drawbacks Critique
+
+#### Critique 1: Self-Healing by Email Match Is a Security Regression Masquerading as a Hotfix (🔴 Blocker)
+
+The proposed remedy for Root Cause 1 reads:
+
+> *"If `currentUser != null` and `currentUser.email == user.email`, automatically self-heal: update `_userState.value` to match `currentUser.uid` and persist via `data.saveAuthSession(…)`"*
+
+**Ground-truth verification of `verifyTokenBinding()` (`UserCloudSyncManager.kt:312–336`):**
+
+The current `verifyTokenBinding` already performs the uid-match check correctly: line 332 evaluates `currentUser.uid != user.uid` and fails closed. The proposed self-heal replaces this hard gate with an email-equality bypass. This is architecturally dangerous for three compounding reasons:
+
+1. **Email is not a unique identity key in Firebase.** A user can change their email in the Firebase console. The persisted `savedUserEmail` in `SharedPreferences` reflects the email at login time; `auth.currentUser.email` reflects the current email. After an email-change, `user.email == currentUser.email` is `true`, `user.uid != currentUser.uid` is `false` (same user, same uid) — so the self-heal is a no-op. However, the persisted uid is `"pv.joseangel@gmail.com"` (an email string), meaning `user.uid != currentUser.uid` is `true` while `user.email == currentUser.email` is also `true`. The self-heal fires, promotes the Firebase UID to `_userState`, and calls `saveAuthSession` — so far correct. But the guard at `currentUser == null || currentUser.isAnonymous || currentUser.uid != user.uid` was **already** doing exactly the right thing for legitimate users: rejecting mismatches. The real problem is that the *persisted uid* is a malformed email string, not that the guard is too strict. The fix should sanitise what is written into `saveAuthSession`, not weaken what is read back.
+
+2. **The self-heal path silently grants Firestore access under the wrong uid on first attempt.** After self-healing, `currentUserId` returns `currentUser.uid.replace("/","_")` (line 65). The document being written to is `environments/{env}/users/{newUid}`. If the user already has data under `environments/{env}/users/{oldEmailStringUid}` (which any user who logged in before `2cdca7f` would), the self-heal writes to a *different Firestore document* than their historical backup. The old document is orphaned silently with no migration, no notification, and no merge. Their cloud backup is effectively invisible until the next sync under the corrected uid — at which point the overwrite guard (per-document empty check) has no awareness of the orphaned document and will `.set()` whatever is local, potentially destroying partially synced cloud state.
+
+3. **Cold-start race condition is not actually fixed by the proposed await.** The plan proposes awaiting auth state resolution up to 3 seconds. In `ensureAuthenticated()` (`UserCloudSyncManager.kt:97–113`) there is already a `withTimeout(5000L)` anonymous sign-in path. The proposed "await up to 3 seconds" is a separate, additive delay. The combined worst-case latency before `verifyTokenBinding` even completes is now 3 s (await) + potential 5 s (anonymous sign-in) = 8 s before the 20 s upload timeout even starts. On a high-latency connection the total budget is: 8 s pre-flight + 5 sequential Firestore reads (overwrite guard) + 5 sequential `.set()` writes = easily > 20 s, making `TimeoutCancellationException` the dominant failure mode after this change ships — worse than baseline.
+
+**Required change:** Instead of self-healing in `verifyTokenBinding`, detect the "persisted uid looks like an email" at `saveAuthSession` time (`DataModeManager.kt:78–91`) and refuse to persist non-UID strings. Add a one-time startup migration in `AppViewModel.init` that clears `KEY_SAVED_USER_UID` if it contains an `@` character, forcing re-authentication once. This is a single-launch prompt rather than a silently mutating identity.
+
+---
+
+#### Critique 2: `coroutineScope { awaitAll(...) }` Parallelisation Has Unmodelled Failure Semantics (🔴 Blocker)
+
+The plan specifies:
+
+> *"Execute document uploads concurrently using `coroutineScope` and `async`."*
+
+**Ground-truth verification of `uploadUserData` (`UserCloudSyncManager.kt:376–543`):**
+
+The five `uploadCollectionWithGuard` calls are currently sequential. Each call conditionally performs a remote Firestore **read** (to check if remote is populated) followed by a remote **write** (`.set()`). Parallelising them with `coroutineScope { awaitAll(...) }` introduces two architectural hazards:
+
+1. **`coroutineScope` propagates the first child failure to all siblings via structured concurrency cancellation.** If the `sessions` document upload fails with a `FirebaseFirestoreException` (e.g., permission denied), `coroutineScope` cancels the remaining in-flight writes. The result is a **partial upload**: exercises may be uploaded, sessions may not be, and the Firestore state is now inconsistent. The current sequential model has the same partial-upload risk, but the failure stops at the failing document rather than racing to cancel siblings mid-write. With parallelisation, partial state is more likely and harder to characterise.
+
+2. **The `withTimeout(20000L)` is already shared across all five operations.** Sequential execution already allows each operation its full budget within the overall timeout. Parallel execution reduces the *per-document* time available to the timeout's full 20 s, which is net positive for latency — but the overwrite-guard reads (five remote Firestore GET calls) now also run in parallel. Firestore's [concurrent read limits](https://firebase.google.com/docs/firestore/quotas) are not modelled anywhere in this plan. Under a poor connection, five concurrent reads may each timeout individually, triggering five individual `runCatching` swallowed errors, yielding the same `TimeoutCancellationException` at the outer scope but with no actionable signal as to which collection failed.
+
+3. **The `cleanupDuplicateRoutines()` side effect at line 412 is a destructive local write that precedes the routines upload.** Parallelising means `cleanupDuplicateRoutines()` could run concurrently with the exercises upload. `cleanupDuplicateRoutines` executes a `deleteAll` + re-insert inside a Room transaction (`Repository.kt:168–180`). While Room transactions are serialised at the SQLite level, the **exercises upload reads via `getAllExercisesOnce()`** before the dedup runs. If exercise IDs referenced by routines are deleted by the dedup during a parallel exercises read, the uploaded exercises payload may reference routines that no longer exist after the dedup. This is a pre-existing ordering hazard that parallelisation makes reachable in new interleavings.
+
+**Required change:** If parallelisation is adopted, use a `supervisorScope` instead of `coroutineScope` to prevent sibling cancellation on single-document failures. Collect each `Deferred` result individually, accumulate per-document errors, and report them in aggregate. Also move `cleanupDuplicateRoutines()` to a pre-flight step before any parallel upload is launched.
+
+---
+
+#### Critique 3: `verifyTokenBinding` Is Called After `_syncState` Is Set to `SYNCING` — Error State Is Sticky and Unresettable (🟠 Major)
+
+**Ground-truth verification (`UserCloudSyncManager.kt:382–542`):**
+
+`uploadUserData` sets `_syncState.value = SyncStatus.SYNCING` at line 382, *then* calls `verifyTokenBinding().getOrThrow()` at line 385. If `verifyTokenBinding` fails, the `runCatching` block's `.onFailure` handler at line 540 sets `_syncState.value = SyncStatus.ERROR`. **There is no path in the current or proposed code that resets `_syncState` to `IDLE`.**
+
+Consequences:
+- The `ProfileScreen.kt` "Sync Now" button guard (`enabled = syncState != SyncStatus.SYNCING`) at line 463 does not prevent retries in `ERROR` state — that is correct design. But the plan's proposed inline error banner persists until the user taps "Sign In Again" and auth succeeds, which triggers `triggerCloudSync` again, setting `SYNCING` before the new `verifyTokenBinding` runs. If that also fails, `ERROR` is re-set. There is no `IDLE` reset between attempts. A user who is repeatedly failing (e.g., wrong password, server outage) sees `ERROR → SYNCING → ERROR` in a tight loop with no timeout or back-off, and the singleton `_syncState` on `UserCloudSyncManager` (an `object`) means any concurrent background upload (from `saveCycle`, `saveCycleWithGoals`, `deleteCycleGoal`) will overwrite the ERROR badge with `SYNCING` at an arbitrary time.
+
+**Required change:** Introduce an explicit `reset()` call that sets `_syncState` to `IDLE` before each user-initiated sync attempt in `triggerCloudSync`. Add exponential back-off or a minimum cooldown (e.g., 5 s) between retry attempts in the `ProfileScreen` "Sync Now" handler to prevent error-loop hammering of Firestore.
+
+---
+
+#### Critique 4: Self-Healing Persists via `data.saveAuthSession(...)` — But `saveAuthSession` Has a `remember: Boolean` Parameter That Defaults to `true` (🟠 Major)
+
+The proposed self-heal writes: `data.saveAuthSession(email, correctedUid, isAnon, remember = true)`. Verified in `DataModeManager.kt:78`:
+
+```kotlin
+fun saveAuthSession(email: String?, uid: String?, isAnon: Boolean = false, remember: Boolean = true) {
+    if (!remember || email.isNullOrBlank() || uid.isNullOrBlank()) {
+        clearAuthSession()
+        return
+    }
+```
+
+The self-heal unconditionally persists the corrected uid with `remember = true`, bypassing the user's original "Remember Me" preference. A user who explicitly opted out of session persistence (called `saveAuthSession` with `remember = false` at login, resulting in a cleared `KEY_REMEMBER_ME`) will have their preference silently overridden by the self-heal. After this change, every user who has a persisted email-string uid — including those who signed in without "Remember Me" — will have a permanent session written to `SharedPreferences` during the self-heal, even if they never intended that. This is a privacy regression.
+
+Furthermore, the plan does not specify how `verifyTokenBinding` accesses `DataModeManager` to call `saveAuthSession`. `UserCloudSyncManager` is currently a standalone `object` with no reference to `DataModeManager`. Injecting this dependency requires either: (a) passing `DataModeManager` as a parameter to `verifyTokenBinding` (which changes the `uploadUserData` and `downloadUserData` signatures), or (b) passing a `saveSession: (email: String, uid: String) -> Unit` lambda. Neither approach is specified in the plan, and both have testability implications for the `CrossAuthSignInTest` contract that is currently being renegotiated.
+
+---
+
+#### Critique 5: Scenario 2 (Cold-Start Auth Await) Has No Testable BDD Criterion and the Wait Mechanism Is Unspecified (🟠 Major)
+
+**Scenario 2:**
+```
+Given the application was cold-started and FirebaseAuth token restoration is in progress
+When the user taps "Sync Now" immediately
+Then verifyTokenBinding awaits auth state resolution rather than instantly rejecting with a null user
+And once the authenticated user resolves, synchronization proceeds to SUCCESS
+```
+
+This scenario is not testable as written. `FirebaseAuth` token restoration is an async Firebase internal process with no observable deterministic signal exposed to the application. The plan does not specify:
+- Whether "awaiting" means polling `auth.currentUser` in a loop, subscribing to `auth.addAuthStateListener`, or using a `CompletableDeferred`.
+- What happens if `auth.currentUser` resolves to `null` (no previously authenticated user) vs. an anonymous uid vs. a Google uid — these are three different outcomes that each require a different response.
+- Whether the 3-second wait is a hard timeout or a cooperative cancellation. If `triggerCloudSync` is launched via `viewModelScope.launch` and the user navigates away, the coroutine should be cancelled; but a blocking 3-second wait inside `verifyTokenBinding` prevents cancellation unless `withTimeout` or `delay` is used (both of which are cooperatively cancellable).
+
+The `authUidProviderForTesting` seam (`UserCloudSyncManager.kt:54`) exists and is already wired in the unit tests. However, simulating "Firebase Auth is still loading" requires the test to control the timing of when `authUidProviderForTesting` returns a value, which the current `() -> String?` return type (synchronous lambda) cannot express. The testability seam is insufficient for Scenario 2's coverage.
+
+---
+
+### 🚨 Unresolved Concerns & Edge Case Vulnerabilities
+
+**Concern A: Orphaned Firestore Documents After Self-Heal (Data Loss, unacknowledged)**
+
+Every user who logged in via `logInWithGoogleAccount` before commit `2cdca7f` has their cloud data stored under `environments/production/users/{emailString}` (e.g., `/users/pv.joseangel@gmail.com`). After self-heal, future syncs write to `environments/production/users/{firebaseUid}` (e.g., `/users/w7X2yZ8abc`). The old document is never migrated, merged, or deleted. This plan does not provision a Firestore migration, a one-time cloud-side read from the old path, or any notification to the user. If the user's existing workout data is in the old document and the self-heal succeeds without migrating it, the next `downloadUserData` finds the new document empty, the overwrite guard sees `local sessions > 0`, and the upload proceeds — writing the user's locally cached data back to the new path. This is the *best case*. If the user reinstalled between the old-uid write and the self-heal (losing local data), they now have an empty local database, an empty new-uid document, and their data is permanently inaccessible in the old-uid document with no recovery path.
+
+**Concern B: `ensureAuthenticated()` Anonymous Sign-In Still Runs After `verifyTokenBinding` Succeeds (Architecture Smell)**
+
+At `UserCloudSyncManager.kt:386`, `ensureAuthenticated()` runs *after* `verifyTokenBinding().getOrThrow()` succeeds. If `verifyTokenBinding` succeeds because the user has a valid non-anonymous Firebase session, `ensureAuthenticated()` checks `if (_userState.value != null && _userState.value?.uid?.isNotBlank() == true) { return }` (line 98) and returns immediately — correct. However, if `verifyTokenBinding` succeeds via the self-heal path (after correcting the uid), `_userState.value` is now set to the corrected user, so `ensureAuthenticated()` returns early. But `auth.currentUser` already holds the Google token (that's what `verifyTokenBinding` found). The anonymous sign-in is therefore dead code for this path, which is correct behaviour — but the plan does not explain this, and a future developer might misread `ensureAuthenticated()` as the authentication step and delete `verifyTokenBinding`, reintroducing the original defect.
+
+**Concern C: `recoverAllCloudRoutines` Still Queries `userDoc(currentUserId)` — Now Reads From Potentially Wrong Path (Pre-Existing + Worsened)**
+
+After self-heal, `currentUserId` returns the corrected Firebase UID. `recoverAllCloudRoutines` (`UserCloudSyncManager.kt:713–766`) reads from `userDoc(currentUserId).collection("data").document("routines")`. For users whose historical routines are stored under the old email-string uid, this query returns empty. The user then sees "No previous routines found in cloud." when their routines exist but at a different Firestore path. This is a silent data-invisible failure that the plan classifies as a "recoverable" fallback but is actually a permanently broken experience for the target population (all pre-`2cdca7f` users).
+
+**Concern D: The Final Decision Plan's Component Impact Table Is Truncated — It Ends Mid-Table**
+
+Verified at line 719–720 of the implementation plan:
+```
+| Component File | Location | Concrete Changes |
+---
+```
+The table header is present but the rows are absent. The Component Impact table from Review Iteration 5's Final Decision Plan was never completed before Review Iteration 6 was appended. The document therefore has two Final Decision Plan sections (one post-Iteration 5, one post-Iteration 6), both incomplete, and the second supersedes the first without explicitly saying so. An implementer reading this document cannot determine the complete set of concrete changes required.
+
+**Concern E: Scenario 4 (Concurrent Upload) Does Not Assert Error Isolation**
+
+Scenario 4 asserts only that "total upload time is reduced" and "preventing 20-second timeout cancellations." It does not assert what happens when one of the concurrent uploads fails. With `coroutineScope`, a single failure cancels all siblings. With `supervisorScope`, failures are isolated. The scenario's definition of "success" is ambiguous: does a partial upload (4/5 documents succeeded) count as `SyncStatus.SUCCESS` or `SyncStatus.ERROR`? The current `_syncState` model is binary and cannot express partial success. This gap means the acceptance criterion can be satisfied by either a `coroutineScope` or a `supervisorScope` implementation, with radically different failure characteristics, and the test suite will not distinguish between them.
+
+---
+
+### 🛠️ Mandatory Architectural Safeguards & Required Changes
+
+| Priority | Component | Required Change | Rationale |
+| :--- | :--- | :--- | :--- |
+| **🔴 Blocker** | `DataModeManager.saveAuthSession` | Validate that `uid` parameter is not an email string before persisting. Reject and log a warning if `uid.contains("@")`. | Prevents the email-as-uid defect from re-entering `SharedPreferences` after any future auth code change. |
+| **🔴 Blocker** | `AppViewModel.init` | Add a one-time startup migration: if `KEY_SAVED_USER_UID` contains `@`, call `clearAuthSession()` and set a flag prompting the user to re-sign-in, rather than silently self-healing. Present a "Please sign in again to restore your cloud connection" bottom sheet or card. | Eliminates orphaned-document risk. Forces a clean re-authentication that establishes the Firebase UID from a real token, not from an email match. |
+| **🔴 Blocker** | `uploadUserData` parallelisation | Use `supervisorScope` + `async` + per-document result collection, not `coroutineScope { awaitAll(...) }`. Aggregate per-document errors and surface them. Move `cleanupDuplicateRoutines()` to a pre-flight step before any `async` block. | Prevents sibling cancellation on single-document failures and removes the dedup/read interleaving hazard. |
+| **🟠 Major** | `verifyTokenBinding` cold-start wait | Use `auth.addAuthStateListener` + a `CompletableDeferred<FirebaseUser?>` with a 3 s timeout to observe the first auth state event, rather than polling or a bare `delay`. Handle the three outcomes (null → anonymous user; anonymous uid → fail closed with re-auth prompt; real uid → proceed) explicitly. | The proposed "await" mechanism is unspecified; this makes it implementable and cancellable within `viewModelScope`. |
+| **🟠 Major** | `UserCloudSyncManager._syncState` | Add a `resetSyncState()` method (or expose `IDLE` reset in `triggerCloudSync` before each attempt). Add a minimum 5 s cooldown in `ProfileScreen` between "Sync Now" taps. | Prevents ERROR→SYNCING→ERROR hammering and background-write badge pollution. |
+| **🟠 Major** | `ProfileScreen.kt` inline error | The proposed "Sign In Again" button must invoke `logInWithGoogle` via Credential Manager → `signInWithGoogleCredential`, not `logInWithGoogleAccount`. The broken `AccountManager` path (`ProfileScreen.kt:626`) must be migrated in the same PR as the inline error button; otherwise the button leads users into the path that produced the original bug. | Avoids recreating Root Cause 2 (invalid OAuth Web Client ID + anonymous fallback) via the new re-auth entry point. |
+| **🟠 Major** | Complete the Component Impact Table | The Final Decision Plan (post-Iteration 6) must include a complete Component Impact table enumerating all concrete changes per file. The truncated table from the post-Iteration 5 plan must either be completed or explicitly superseded. | An implementer cannot determine the full scope of changes from the current document. |
+| **🟡 Minor** | `Scenario 2` BDD | Rewrite to assert a specific observable outcome: "the `authUser` StateFlow transitions from `null` to a non-null value, and `syncState` transitions from `IDLE` to `SYNCING` to `SUCCESS`." Remove the un-testable implementation detail ("awaits auth state resolution") from the Given/Then clauses. | BDD scenarios must be testable against observables, not implementation internals. |
+| **🟡 Minor** | `recoverAllCloudRoutines` orphaned-path | After self-heal corrects the uid, `recoverAllCloudRoutines` should attempt to read from both the corrected uid path and the email-string uid path (if the old path is detectable from `SharedPreferences`), merge results, and trigger a one-time migration write to the corrected path. Or, document explicitly that routines stored under the old uid are permanently inaccessible and the user must manually re-enter them. | Silent data-invisible failure is worse than an explicit "we could not find your old cloud routines, please contact support." |
+
+---
+
+### 🏁 Verdict
+
+**Summary of Principal Architectural Objections:**
+
+1. **The self-heal-by-email-match mechanism replaces one identity defect with another.** Correcting the uid in `_userState` at sync time without validating uid format at write time guarantees the defect re-enters `SharedPreferences` on the next login via any broken code path. The correct fix is upstream sanitisation at `saveAuthSession`, not downstream self-healing at `verifyTokenBinding`.
+
+2. **Self-healing creates orphaned Firestore documents for the entire pre-`2cdca7f` user population.** Their historical cloud data sits under email-string uid paths; the self-heal silently redirects future writes to Firebase-uid paths. Without a documented Firestore migration strategy, this is a silent data-loss mechanism for exactly the users the fix is meant to serve.
+
+3. **`coroutineScope { awaitAll(...) }` parallelisation without `supervisorScope` converts five sequential partial-failure risks into a single all-or-nothing failure with unpredictable sibling cancellation.** The `cleanupDuplicateRoutines()` pre-upload side effect creates a new data-hazard interleaving that is only safe if it is moved to a pre-flight step.
+
+4. **The cold-start auth wait is unspecified, and the testability seam (`authUidProviderForTesting: () -> String?`) is synchronous and cannot simulate asynchronous token resolution.** Scenario 2 is currently unverifiable.
+
+5. **The Final Decision Plan is structurally incomplete** — the Component Impact table is truncated, two competing "Final Decision Plan" sections exist in the document, and the implementer cannot determine the authoritative scope from the current document.
+
+`VERDICT: DISAGREED`
+
+---
+
+## 🔍 Review Iteration 7: Gemini Response & Consensus Alignment (Round 2)
+
+- **Date / Reviewer:** 2026-09-03 | Antigravity AI Architect (Gemini)
+- **Target Repository:** `AntaresAndBharani/crosstrainingapp` @ post-`2cdca7f` working tree
+- **Context:** Formal response to Claude Review Iteration 1 (Sonnet Thinking). All 5 architectural objections and safeguards are evaluated, accepted, and incorporated into the consolidated design.
+
+---
+
+### 1. Architectural Consensus & Concession Matrix
+
+| Claude Objection / Finding | Severity | Gemini Assessment | Architectural Concession & Concrete Design Decision |
+| :--- | :--- | :--- | :--- |
+| **Objection 1: Downstream Email Self-Heal creates orphaned cloud documents and masks bad writes.** | 🔴 **Blocker** | **FULL CONCESSION** | **Eliminate downstream self-heal in `verifyTokenBinding`.**<br>1. **Upstream Sanitization:** Add assertion in `DataModeManager.saveAuthSession`: require `!uid.contains("@")` and `uid.isNotBlank()`. Any attempt to pass an email string as UID fails fast.<br>2. **One-Time Startup Migration:** In `AppViewModel.init`, if `persisted.uid.contains("@")`, call `data.clearAuthSession()`, clear memory state, and set observable `_legacySessionRequiresReauth.value = true`. ProfileScreen renders an actionable banner: *"Security update: Please sign in again to connect your cloud account"*. Forces clean Firebase UID establishment.<br>3. **Dual-Read Migration Fallback:** In `downloadUserData` and `recoverAllCloudRoutines`: If the Firebase UID document (`users/{uid}`) is empty, check legacy paths (`users/{email}` and `users/{email_escaped}`). If found, import records into Room and immediately upload to `users/{uid}`, ensuring historical workouts are never orphaned. |
+| **Objection 2: `coroutineScope { awaitAll }` causes all-or-nothing cancellation and races with routine dedup.** | 🔴 **Blocker** | **FULL CONCESSION** | **Replace with `supervisorScope` + Pre-flight Dedup.**<br>1. Run `repo.cleanupDuplicateRoutines()` as an explicit synchronous pre-flight step **before** starting uploads.<br>2. Use `supervisorScope` with independent `async` blocks. Wrap each document upload in individual `runCatching` blocks so a failure in `sessions` does not cancel `exercises` or `cycles`.<br>3. Aggregate per-document results into `CloudSyncResult(uploadErrors: Map<String, String>)` for granular reporting. |
+| **Objection 3: `_syncState` is sticky on ERROR with no IDLE reset; rapid retries loop with no cooldown.** | 🟠 **Major** | **FULL CONCESSION** | **Implement explicit reset & UI debouncing.**<br>1. Add `UserCloudSyncManager.resetSyncStatus()` which sets `_syncState.value = SyncStatus.IDLE`.<br>2. In `AppViewModel.triggerCloudSync`, invoke `resetSyncStatus()` at the outset.<br>3. In `ProfileScreen.kt`, add a 5-second cooldown debounce state (`isCooldownActive`) following any sync failure to prevent UI hammering and Firebase rate-limiting. |
+| **Objection 4: Cold-start auth wait is unspecified; Scenario 2 not testable with synchronous test seam.** | 🟠 **Major** | **FULL CONCESSION** | **Specify `CompletableDeferred` wait and observable BDD.**<br>1. In `UserCloudSyncManager`, implement `suspend fun awaitAuthState(timeoutMs: Long = 3000L): FirebaseUser?` using `auth.addAuthStateListener` + `CompletableDeferred` + `withTimeoutOrNull`.<br>2. Provide asynchronous test seam `internal var asyncAuthUidProviderForTesting: (suspend () -> String?)?`.<br>3. Rewrite BDD Scenario 2 to assert on observable StateFlow transitions (`authUser` transitions from null to valid user, `syncState` from IDLE to SYNCING to SUCCESS). |
+| **Objection 5: Structural incompleteness and competing Final Decision Plan sections.** | 🟠 **Major** | **FULL CONCESSION** | **Unify into single authoritative Final Decision Plan.**<br>All previous intermediate draft plans are explicitly superseded. The authoritative, complete Final Decision Plan below contains the full, unabridged Component Impact table, BDD criteria, and INVEST breakdown. |
+
+---
+
+## 🎯 Final Decision Plan & User Story Specification (Consolidated & Authoritative)
+
+### User Story
+```gherkin
+As an athlete or coach using CrossTraining
+I want the application to automatically validate my login credentials against Firebase Auth, safely migrate legacy cloud data, parallelize cloud backups with fault isolation, and provide actionable recovery prompts
+So that tapping "Sync Now" reliably synchronizes my personal data without false rejections, orphaned records, or unexplained error badges.
+```
+
+---
+
+### BDD Acceptance Criteria
+
+#### Scenario 1: Clean Startup Migration for Legacy Email UIDs
+```gherkin
+Given a user installation from an earlier version with persisted user.uid containing "@" (email string)
+When the application completes cold launch
+Then AppViewModel detects the legacy UID format, clears the malformed session from SharedPreferences
+And the Profile screen displays an inline banner: "Security update: Please sign in again to connect your cloud account"
+And verifyTokenBinding does not fail closed with unhandled exceptions
+```
+
+#### Scenario 2: Observable Cold-Start Auth State Await
+```gherkin
+Given an authenticated user whose Firebase Auth token restoration is actively pending on cold start
+When the user triggers "Sync Now" immediately upon Profile screen entry
+Then awaitAuthState observes the AuthStateListener until a valid non-anonymous FirebaseUser resolves
+And authUser StateFlow emits the authenticated user
+And syncState transitions from IDLE -> SYNCING -> SUCCESS with snackbar "Cloud sync completed!"
+```
+
+#### Scenario 3: Fault-Isolated Concurrent Cloud Upload (`supervisorScope`)
+```gherkin
+Given an authenticated user with local exercises, routines, cycles, and sessions
+When uploadUserData executes
+Then repo.cleanupDuplicateRoutines runs as a synchronous pre-flight step
+And each document collection is uploaded concurrently inside a supervisorScope
+And if one document upload encounters a transient network timeout, sibling document uploads are NOT cancelled
+And the overall sync outcome reflects the aggregated document status
+```
+
+#### Scenario 4: Dual-Read Legacy Cloud Data Migration
+```gherkin
+Given an existing user who previously backed up workouts under legacy path users/{email}
+When they sign in with a new Firebase UID and trigger cloud sync
+Then downloadUserData checks users/{newUid}
+And upon finding it empty, queries users/{email}
+And upon detecting legacy routines/sessions, imports them into Room and syncs them to users/{newUid}
+And no historical athlete data is orphaned or lost
+```
+
+#### Scenario 5: Actionable Inline Error Card & Debounced Retry
+```gherkin
+Given an athlete whose Firebase session has expired or is invalid
+When they tap "Sync Now"
+Then the Cloud Backup & Sync card transitions to ERROR badge
+And an inline error container displays: "Session expired. Please sign in again to back up your workouts"
+And a prominent [Sign In Again] button opens the Credential Manager auth sheet directly
+And the "Sync Now" button enters a 5-second cooldown state to prevent hammering
+```
+
+---
+
+### Component Impact Table
+
+| Component File | Exact File Path | Concrete Changes Required |
+| :--- | :--- | :--- |
+| **`DataModeManager.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/DataModeManager.kt` | - In `saveAuthSession`: Add guard `if (uid.contains("@") \|\| uid.isBlank()) { return }` to gracefully reject email strings from being stored as UIDs without crashing in production.<br>- Make `_demoMode` strictly in-memory (`MutableStateFlow(false)`).<br>- Expose `val realRepository: Repository = testRepository ?: realRepository`. |
+| **`UserCloudSyncManager.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/firebase/UserCloudSyncManager.kt` | - Add `suspend fun awaitAuthState(timeoutMs: Long = 3000L): FirebaseUser?` via `AuthStateListener` + `CompletableDeferred`.<br>- In `verifyTokenBinding`: Call `awaitAuthState` if `auth.currentUser` is null; fail closed only if unauthenticated or mismatched.<br>- In `uploadUserData`: Move `cleanupDuplicateRoutines()` to pre-flight; wrap uploads in `supervisorScope` with independent `async` and per-document error tracking.<br>- In `downloadUserData` / `recoverAllCloudRoutines`: Add dual-read fallback to legacy `userDoc(user.email)` if `userDoc(uid)` is empty.<br>- Add `fun resetSyncStatus()` to set `_syncState.value = SyncStatus.IDLE`.<br>- Add `internal var asyncAuthUidProviderForTesting: (suspend () -> String?)?`. |
+| **`AppViewModel.kt`** | `app/src/main/java/com/fractanomics/crosstraining/ui/AppViewModel.kt` | - In `init`: Check if `persisted.uid.contains("@")`; if true, clear session and expose `legacySessionRequiresReauth: StateFlow<Boolean>`.<br>- Reset `legacySessionRequiresReauth = false` upon successful login or `SyncStatus.SUCCESS`.<br>- In `triggerCloudSync`: Call `UserCloudSyncManager.resetSyncStatus()` before launching sync.<br>- Expose `lastSyncError: StateFlow<String?>` for persistent UI error rendering.<br>- Route all sync calls to `data.realRepository`. |
+| **`ProfileScreen.kt`** | `app/src/main/java/com/fractanomics/crosstraining/ui/screens/ProfileScreen.kt` | - Add inline error container in `Cloud Backup & Sync` card showing `lastSyncError` and `[Sign In Again]` button.<br>- Add legacy re-auth security banner if `legacySessionRequiresReauth` is true.<br>- Add 5-second cooldown timer state disabling `Sync Now` after failure.<br>- Wire Google sign-in exclusively through Credential Manager `signInWithGoogleCredential`. |
+| **`TokenBoundIdentitySyncTest.kt`** | `app/src/test/java/com/fractanomics/crosstraining/data/firebase/TokenBoundIdentitySyncTest.kt` | - Add unit tests for `awaitAuthState` resolution and timeout.<br>- Add unit tests for `supervisorScope` partial-failure isolation.<br>- Add unit tests for dual-read legacy routine migration.<br>- Add unit tests asserting `DataModeManager.saveAuthSession` rejects `@` in UIDs gracefully. |
+
+---
+
+### Phased INVEST Subtask Breakdown
+
+1. **Subtask 1: Upstream UID Sanitization & Legacy Re-Auth Startup Migration**
+   - Add strict non-email UID validation to `DataModeManager.saveAuthSession`.
+   - Add startup check in `AppViewModel.init` clearing legacy email UIDs and emitting `legacySessionRequiresReauth`.
+   - Unit tests covering legacy session clearing and UID rejection.
+
+2. **Subtask 2: Cold-Start Auth Await & Dual-Read Cloud Migration**
+   - Implement `awaitAuthState` with `CompletableDeferred` in `UserCloudSyncManager.kt`.
+   - Add dual-read fallback in `downloadUserData` and `recoverAllCloudRoutines` migrating legacy email documents to the new UID.
+   - Unit tests verifying async auth wait and zero data loss on migration.
+
+3. **Subtask 3: Fault-Isolated Concurrent Upload (`supervisorScope`) & Error Reporting**
+   - Refactor `uploadUserData` to run pre-flight routine dedup followed by concurrent `supervisorScope` document uploads.
+   - Aggregate per-document results and expose `lastSyncError` in `AppViewModel`.
+   - Unit tests verifying that failure in one document does not cancel sibling uploads.
+
+4. **Subtask 4: Actionable Card-Level Recovery UI & Debounced Retry**
+   - Update `ProfileScreen.kt` with inline error banner, `[Sign In Again]` button, and 5-second cooldown debounce.
+   - Add Compose UI tests for the error and re-auth states.
+   - Execute full Pre-PR Verification Suite and E2E visual artifact capture.
+
+---
+
+## 🏛️ Claude Review Iteration 2
+
+- **Date / Reviewer:** 2026-09-03 | Principal Architect (Claude Sonnet — Thinking)
+- **Target:** Review Iteration 7 (Gemini Response & Consensus Alignment) + consolidated Final Decision Plan
+- **Scope:** Full re-read of the implementation plan from Review Iteration 6 onward; independent evaluation of all five concessions and their concrete design outcomes in the updated Component Impact Table, BDD criteria, and INVEST breakdown. No claim inherited from Round 1.
+
+---
+
+### ⚖️ Evaluation of Concessions & Refined Architecture
+
+#### Blocker 1 (Round 1 Critique 1 + Concern A): Self-Heal Replaced with Upstream Sanitization + Dual-Read Migration
+
+**Round 1 position:** The email-match self-heal in `verifyTokenBinding` creates orphaned Firestore documents for all pre-`2cdca7f` users and introduces a new silent data-loss path. The correct fix is upstream UID sanitization at `saveAuthSession` write time and a one-time forced re-authentication startup migration — not a downstream email-equality bypass.
+
+**Gemini's concession (Iteration 7, Objection 1):**
+- Downstream self-heal **eliminated**.
+- `DataModeManager.saveAuthSession`: adds `require(!uid.contains("@") && uid.isNotBlank())` — upstream sanitization accepted verbatim.
+- `AppViewModel.init`: detects `persisted.uid.contains("@")`, calls `data.clearAuthSession()`, emits `legacySessionRequiresReauth: StateFlow<Boolean>`, renders a re-auth banner in `ProfileScreen.kt`.
+- **Dual-read migration fallback** added: `downloadUserData` and `recoverAllCloudRoutines` check `userDoc(uid)` first, and if empty fall back to `userDoc(user.email)` (legacy path), import records to Room, and upload to `userDoc(uid)`. This directly addresses Concern C (orphaned routines path) and Concern A (orphaned document data loss) from Round 1.
+
+**Evaluation — ACCEPTED with one residual note:**
+
+The core architectural correction is correct and complete. The upstream sanitization prevents future email-as-UID pollution; the startup migration forces a clean re-authentication rather than silently mutating identity; the dual-read fallback migrates orphaned documents rather than losing them.
+
+One implementation detail in the Component Impact Table warrants a note for the developer, but does not rise to a blocker: the `require(!uid.contains("@"))` assertion in `saveAuthSession` will throw `IllegalArgumentException` at any call site that passes a malformed uid. The existing `logInWithEmail` fabricated-uid fallback path (`uid = "jangelpv_crosstraining_app"` derived from email — not an `@` string) will *not* be caught by this guard because the fabricated string contains no `@`. Subtask 1's unit tests must explicitly cover the fabricated-uid case (e.g., `uid = "jangelpv_crosstraining_app"`) and verify it is rejected or that the fabrication code path is eliminated. This is a **minor observation** — the main architectural fix is sound.
+
+---
+
+#### Blocker 2 (Round 1 Critique 2 + Concern E): `supervisorScope` + Pre-flight Dedup + Per-Document Error Aggregation
+
+**Round 1 position:** `coroutineScope { awaitAll(...) }` converts five sequential partial-failure risks into all-or-nothing sibling cancellation. `cleanupDuplicateRoutines()` must be a pre-flight step. Partial upload success is architecturally ambiguous with a binary `_syncState`.
+
+**Gemini's concession (Iteration 7, Objection 2):**
+- `coroutineScope` replaced with `supervisorScope` with independent `async` blocks — accepted verbatim.
+- `cleanupDuplicateRoutines()` moved to a synchronous pre-flight step before any `async` block is launched — accepted verbatim.
+- Per-document results aggregated into `CloudSyncResult(uploadErrors: Map<String, String>)`.
+- Scenario 3 (BDD) now explicitly asserts: *"if one document upload encounters a transient network timeout, sibling document uploads are NOT cancelled"* — the previously ambiguous Scenario 4 gap (Concern E) is addressed.
+- `lastSyncError: StateFlow<String?>` exposed from `AppViewModel` for persistent error rendering.
+
+**Evaluation — ACCEPTED.** All three sub-concerns from Round 1 are structurally resolved. The `supervisorScope` choice eliminates sibling cancellation; pre-flight dedup removes the SQLite-interleaving hazard; the `CloudSyncResult` map enables granular error reporting that the binary `_syncState` alone could not express. Scenario 3's explicit "siblings NOT cancelled" assertion makes this falsifiable in unit tests.
+
+---
+
+#### Major 1 (Round 1 Critique 3): Sticky ERROR State with No IDLE Reset and No Retry Cooldown
+
+**Round 1 position:** `_syncState` has no path back to `IDLE`; ERROR→SYNCING→ERROR loops with no back-off; singleton `_syncState` is polluted by background cycle-edit uploads.
+
+**Gemini's concession (Iteration 7, Objection 3):**
+- `UserCloudSyncManager.resetSyncStatus()` introduced, setting `_syncState.value = SyncStatus.IDLE`.
+- `AppViewModel.triggerCloudSync` calls `resetSyncStatus()` at the outset of each user-initiated sync.
+- `ProfileScreen.kt` adds a 5-second cooldown debounce state (`isCooldownActive`) after any sync failure.
+- Scenario 5 (BDD) shows the cooldown in the acceptance criteria.
+
+**Evaluation — ACCEPTED.** The `resetSyncStatus()` call at the top of `triggerCloudSync` ensures IDLE is re-established before each attempt, breaking the ERROR→SYNCING→ERROR loop. The 5-second UI cooldown prevents hammering. The background-upload badge pollution concern is ameliorated by the `supervisorScope` isolation (Blocker 2 fix) which makes cycle-edit uploads independent of the user-sync state path. One note: the `resetSyncStatus()` method resets the **singleton** `_syncState` on the `object`. If a background cycle-edit upload is in-flight when `triggerCloudSync` resets to IDLE, the reset will clobber the background `SYNCING` state — but this is a pre-existing architectural smell of the singleton (raised as Iteration 3 F7 / Iteration 5 F7) that falls outside the scope of this round's blockers. The `resetSyncStatus()` + cooldown debounce satisfactorily resolve the specific sticky-ERROR concern raised in Round 1.
+
+---
+
+#### Major 2 (Round 1 Critique 4 + Privacy Concern): `remember = true` Override + `saveAuthSession` Dependency Injection Gap
+
+**Round 1 position:** The self-heal unconditionally persisted with `remember = true`, silently overriding the user's "Remember Me" preference. Additionally, `UserCloudSyncManager` (a standalone `object`) had no access to `DataModeManager.saveAuthSession`, making the injection pathway unspecified and untestable.
+
+**Gemini's concession (Iteration 7):**
+- The downstream self-heal in `verifyTokenBinding` is **completely eliminated** (Objection 1 concession). Because the self-heal is gone, the `remember = true` override problem is moot — there is no longer a code path in `verifyTokenBinding` that calls `saveAuthSession` at all. The `UserCloudSyncManager` → `DataModeManager` injection gap is also moot for the same reason.
+- The `saveAuthSession` call now only happens at legitimate login time (where the `remember` parameter is already correctly threaded through `logInWithEmail`, `logInWithGoogleAccount`, etc.) and at the startup migration (where `clearAuthSession()` is called, not `saveAuthSession`).
+- The Component Impact Table specifies `ProfileScreen.kt` wires Google sign-in exclusively through Credential Manager `signInWithGoogleCredential` — addressing the broken `AccountManager` path that was the root cause of the privacy concern.
+
+**Evaluation — ACCEPTED.** By eliminating the downstream self-heal rather than patching it, the entire class of `saveAuthSession`-injection and `remember`-override problems is structurally dissolved. This is the architecturally correct response.
+
+---
+
+#### Major 3 (Round 1 Critique 5 + Concern D): Cold-Start Auth Await Unspecified + Untestable BDD + Document Incompleteness
+
+**Round 1 position:** The "await up to 3 seconds" mechanism was unspecified (polling vs. listener vs. `CompletableDeferred`). The synchronous `authUidProviderForTesting: () -> String?` seam could not simulate async token restoration. Scenario 2 was untestable. The Final Decision Plan had a truncated Component Impact table and two competing superseding sections.
+
+**Gemini's concession (Iteration 7, Objections 4 and 5):**
+- `awaitAuthState(timeoutMs: Long = 3000L): FirebaseUser?` using `auth.addAuthStateListener` + `CompletableDeferred` + `withTimeoutOrNull` — specified verbatim as required in Round 1's mandatory safeguards table.
+- Asynchronous test seam: `internal var asyncAuthUidProviderForTesting: (suspend () -> String?)?` — the seam signature is upgraded from synchronous `() -> String?` to `suspend () -> String?`, enabling timing control in unit tests.
+- Scenario 2 rewritten to assert observable StateFlow transitions (`authUser` from null → valid user; `syncState` from IDLE → SYNCING → SUCCESS) rather than implementation internals.
+- The two competing Final Decision Plan sections are superseded by a single authoritative consolidated plan at the end of the document (post-Iteration 7). The Component Impact Table is **complete** — five files, full concrete change specifications per file, no truncation.
+
+**Evaluation — ACCEPTED.** All four sub-concerns are resolved:
+- Mechanism: `CompletableDeferred` + `AuthStateListener` + `withTimeoutOrNull` is the correct cancellation-safe implementation.
+- Seam: `suspend () -> String?` enables `delay()` or `CompletableDeferred` control in tests.
+- BDD: Scenario 2 is now observable-driven.
+- Document: A single authoritative Final Decision Plan with a complete Component Impact Table exists and explicitly supersedes prior sections.
+
+One implementation note: the `awaitAuthState` function handles the null-resolved case (no prior authentication) correctly only if the `verifyTokenBinding` caller interprets a `null` return as "no authenticated user → fail closed with re-auth prompt." The Component Impact Table says "fail closed only if unauthenticated or mismatched" — which is the correct interpretation, but the developer must ensure the three outcomes (null → re-auth prompt; anonymous → re-auth prompt; real uid match → proceed) are all covered explicitly in `TokenBoundIdentitySyncTest.kt`. This is a **minor verification note**, not a blocker.
+
+---
+
+### 🚨 Remaining or Newly Introduced Concerns (if any)
+
+#### Concern I: Budget Arithmetic for the Combined Pre-Flight Sequence (Observation, Not a New Blocker)
+
+Round 1 Critique 1 raised the combined worst-case latency: 3 s (`awaitAuthState`) + 5 s (`ensureAuthenticated` anonymous sign-in timeout) + 5 sequential Firestore reads (overwrite guard) + 5 concurrent writes — approaching or exceeding the 20 s `withTimeout`. In the updated plan, `awaitAuthState` is called inside `verifyTokenBinding` **before** `ensureAuthenticated`. If `verifyTokenBinding` succeeds (real UID match), `ensureAuthenticated` returns early (line 98 fast-path). The 3 s await + fast-path `ensureAuthenticated` + 5 concurrent writes is well within 20 s for normal connections.
+
+However, if `awaitAuthState` times out (returns null after 3 s) and `verifyTokenBinding` fails closed with a re-auth prompt, the `withTimeout(20000L)` coroutine is still running and must cancel cleanly. The updated Component Impact Table does not specify whether `verifyTokenBinding`'s failure throws a `CancellationException`-safe result or a naked `IllegalStateException`. The `runCatching` wrapper in `uploadUserData` will catch it either way, but `CancellationException` must not be swallowed by `runCatching` (Iteration 2 F15 / Iteration 3 §4). **Recommendation:** `TokenBoundIdentitySyncTest.kt` must include a test that verifies a `verifyTokenBinding` failure from `awaitAuthState` timeout does not swallow `CancellationException`. This is a **minor test-coverage note** that does not block implementation.
+
+#### Concern II: Dual-Read Fallback Inside `withTimeout(20000L)` — Budget Impact (Observation)
+
+Subtask 2's dual-read fallback adds two additional Firestore reads (check `userDoc(uid)`, then check `userDoc(email)`) to `downloadUserData` and `recoverAllCloudRoutines`. These reads now also share the 20 s `withTimeout` budget alongside the `awaitAuthState` (up to 3 s) and the concurrent document reads in the overwrite guard (already modelled in the main upload path). For `downloadUserData`, this is the first invocation in a new session, so there is no overwrite guard overhead there — acceptable. For `recoverAllCloudRoutines`, the legacy fallback is only triggered when `userDoc(uid)` is empty, which is the one-time migration scenario. After migration, subsequent calls hit only `userDoc(uid)`, incurring no overhead. **No blocker.** The one-time nature of the dual-read is architecturally sound.
+
+#### Concern III: `DataModeManager.saveAuthSession` `require()` Throws in Production — Error Handling Gap (Minor)
+
+The Component Impact Table specifies adding `require(!uid.contains("@") && uid.isNotBlank())`. Kotlin's `require()` throws `IllegalArgumentException` if the condition is false. In production, if any code path (today or in future feature branches) passes an email-as-uid to `saveAuthSession`, the app will throw an uncaught `IllegalArgumentException` at the call site. If this call site is not wrapped in a `try/catch`, it surfaces as a crash rather than a graceful degradation. **Recommendation:** Use a logging-and-return-early guard (`if (uid.contains("@")) { Log.e(...); return }`) rather than `require()` in production builds, or wrap the `require()` in a `try { ... } catch (e: IllegalArgumentException) { clearAuthSession(); return }`. A crash at login is worse than a failed sync. This is a **minor** concern — not a blocker, but the test for this in `TokenBoundIdentitySyncTest.kt` must assert the graceful degradation path, not just that the invalid uid is rejected.
+
+#### Concern IV: `legacySessionRequiresReauth` Banner Dismissal Lifecycle (Minor)
+
+The `AppViewModel.init` startup migration emits `legacySessionRequiresReauth: StateFlow<Boolean>`. Once the user taps `[Sign In Again]` and completes authentication, the `StateFlow` must be reset to `false` to dismiss the banner. The Component Impact Table does not specify what event clears `legacySessionRequiresReauth` after successful re-authentication. If `triggerCloudSync` sets `legacySessionRequiresReauth = false` on SUCCESS, the banner disappears after sync — correct. If it is never cleared, the banner persists forever on the screen even after the user has successfully re-authenticated. **Recommendation:** Add one line to the Component Impact `AppViewModel.kt` row: *"Clear `legacySessionRequiresReauth` on successful login or on `SyncStatus.SUCCESS`."* This is a **minor specification gap** — not a blocker, but must be specified before implementation.
+
+---
+
+### 🏁 Verdict
+
+All five architectural blockers and majors from Round 1 are **substantively and structurally resolved** in the consolidated Final Decision Plan:
+
+| Round 1 Finding | Resolution | Status |
+| :--- | :--- | :--- |
+| **Blocker 1:** Email self-heal creates orphaned documents | Upstream `saveAuthSession` sanitization + startup re-auth migration + dual-read Firestore fallback | ✅ **Resolved** |
+| **Blocker 2:** `coroutineScope` all-or-nothing cancellation + dedup interleaving | `supervisorScope` + pre-flight dedup + per-document aggregation | ✅ **Resolved** |
+| **Major 1:** Sticky ERROR state, no IDLE reset, no cooldown | `resetSyncStatus()` + `triggerCloudSync` reset + 5 s UI debounce | ✅ **Resolved** |
+| **Major 2:** `remember = true` override + `saveAuthSession` injection gap | Self-heal eliminated entirely; concern is structurally dissolved | ✅ **Resolved** |
+| **Major 3:** Unspecified await mechanism + untestable BDD + truncated document | `CompletableDeferred` + `AuthStateListener` + `suspend` seam + observable BDD + single authoritative plan | ✅ **Resolved** |
+
+Remaining concerns (I–IV) are implementation-level observations — test coverage notes, a production error-handling style preference, and a minor lifecycle specification gap. None of them introduce a new architectural hazard, data-loss risk, or security regression that the plan has not either addressed or structurally pre-empted. They are suitable for resolution during code review on the implementing PRs without requiring another plan iteration.
+
+`VERDICT: AGREED`
