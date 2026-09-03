@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -40,6 +41,7 @@ import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -201,6 +203,7 @@ fun AppNavigation(
                                 restoreState = true
                             }
                         },
+                        onToggleDemoMode = { enabled -> viewModel.setDemoMode(enabled) },
                         onNavigate = { route ->
                             scope.launch { drawerState.close() }
                             navController.navigate(route) {
@@ -375,6 +378,7 @@ private fun AppDrawerContent(
     demoMode: Boolean,
     userRole: UserRole,
     onToggleRole: () -> Unit,
+    onToggleDemoMode: (Boolean) -> Unit,
     onNavigate: (String) -> Unit,
     onCloseDrawer: () -> Unit
 ) {
@@ -480,6 +484,12 @@ private fun AppDrawerContent(
             }
         }
 
+        // Data Mode Quick Switcher Row
+        DataModeDrawerRow(
+            demoMode = demoMode,
+            onToggle = onToggleDemoMode
+        )
+
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
         // Dynamic Drawer Sections based on Active Role
@@ -554,3 +564,59 @@ private fun AppDrawerContent(
         }
     }
 }
+
+/** Quick toggle row in Navigation Drawer for switching between Real Data and Demo Data. */
+@Composable
+fun DataModeDrawerRow(
+    demoMode: Boolean,
+    onToggle: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (demoMode) {
+            MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f)
+        },
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Storage,
+                    contentDescription = null,
+                    tint = if (demoMode) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Column {
+                    Text(
+                        text = if (demoMode) "Demo Data" else "Real Data (Default)",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = if (demoMode) "crosstraining-demo.db" else "crosstraining.db",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Switch(
+                checked = demoMode,
+                onCheckedChange = onToggle
+            )
+        }
+    }
+}
+

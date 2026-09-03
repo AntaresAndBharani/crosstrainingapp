@@ -217,22 +217,8 @@ fun LibraryScreen(
                                 importLauncher.launch(arrayOf("text/*", "application/octet-stream"))
                             }
                         )
-                        HorizontalDivider()
-                        DropdownMenuItem(
-                            text = { Text(if (demoMode) "Switch to my data" else "Try demo data") },
-                            onClick = {
-                                showMenu = false
-                                val enable = !demoMode
-                                viewModel.setDemoMode(enable)
-                                scope.launch {
-                                    snackbar.showSnackbar(
-                                        if (enable) "Demo data active — your real data is untouched"
-                                        else "Back to your data"
-                                    )
-                                }
-                            }
-                        )
                         if (demoMode) {
+                            HorizontalDivider()
                             DropdownMenuItem(
                                 text = { Text("Reset demo data") },
                                 onClick = {
