@@ -101,6 +101,14 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     val authUser: StateFlow<AuthUser?> = UserCloudSyncManager.userState
     val syncState: StateFlow<SyncStatus> = UserCloudSyncManager.syncState
 
+    private val _lastSyncError = MutableStateFlow<String?>(null)
+    val lastSyncError: StateFlow<String?> = _lastSyncError.asStateFlow()
+
+    fun resetSyncStatus() {
+        UserCloudSyncManager.resetSyncStatus()
+        _lastSyncError.value = null
+    }
+
     fun signUpWithEmail(email: String, pass: String, remember: Boolean = true, onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
         val res = UserCloudSyncManager.signUpWithEmail(email, pass)
         res.onSuccess {
@@ -177,30 +185,45 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         UserCloudSyncManager.signOut()
         data.clearAuthSession()
         _legacySessionRequiresReauth.value = false
+        _lastSyncError.value = null
     }
 
-    fun triggerCloudSync(onResult: (CloudSyncResult) -> Unit) = viewModelScope.launch {
-        val uploadRes = UserCloudSyncManager.uploadUserData(data.realRepository)
-        val downloadRes = UserCloudSyncManager.downloadUserData(data.realRepository)
+    fun triggerCloudSync(onResult: (CloudSyncResult) -> Unit): Job {
+        UserCloudSyncManager.resetSyncStatus()
+        _lastSyncError.value = null
+        return viewModelScope.launch {
+            val uploadRes = UserCloudSyncManager.uploadUserData(data.realRepository)
+            val downloadRes = UserCloudSyncManager.downloadUserData(data.realRepository)
 
-        val uploadOk = uploadRes.isSuccess
-        val downloadOk = downloadRes.isSuccess
-        val uploadErr = uploadRes.exceptionOrNull()?.localizedMessage
-        val downloadErr = downloadRes.exceptionOrNull()?.localizedMessage
+            val uploadOk = uploadRes.isSuccess
+            val downloadOk = downloadRes.isSuccess
+            val uploadErr = uploadRes.exceptionOrNull()?.localizedMessage
+            val downloadErr = downloadRes.exceptionOrNull()?.localizedMessage
 
-        if (!uploadOk || !downloadOk) {
-            UserCloudSyncManager.setSyncStatus(SyncStatus.ERROR)
-        } else {
-            _legacySessionRequiresReauth.value = false
+            if (!uploadOk || !downloadOk) {
+                UserCloudSyncManager.setSyncStatus(SyncStatus.ERROR)
+                val err = when {
+                    !uploadOk && !downloadOk ->
+                        "Upload failed: ${uploadErr ?: "Unknown"}; Download failed: ${downloadErr ?: "Unknown"}"
+                    !uploadOk -> "Upload failed: ${uploadErr ?: "Unknown"}"
+                    !downloadOk -> "Download failed: ${downloadErr ?: "Unknown"}"
+                    else -> null
+                }
+                _lastSyncError.value = err
+            } else {
+                UserCloudSyncManager.setSyncStatus(SyncStatus.SUCCESS)
+                _legacySessionRequiresReauth.value = false
+                _lastSyncError.value = null
+            }
+
+            val result = CloudSyncResult(
+                uploadSuccess = uploadOk,
+                downloadSuccess = downloadOk,
+                uploadError = uploadErr,
+                downloadError = downloadErr
+            )
+            onResult(result)
         }
-
-        val result = CloudSyncResult(
-            uploadSuccess = uploadOk,
-            downloadSuccess = downloadOk,
-            uploadError = uploadErr,
-            downloadError = downloadErr
-        )
-        onResult(result)
     }
 
     @JvmName("triggerCloudSyncLegacy")
