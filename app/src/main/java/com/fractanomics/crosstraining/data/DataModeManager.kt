@@ -76,8 +76,14 @@ open class DataModeManager(
 
     /** Save authenticated user session to survive app updates and reboots. */
     fun saveAuthSession(email: String?, uid: String?, isAnon: Boolean = false, remember: Boolean = true) {
-        if (!remember || email.isNullOrBlank() || uid.isNullOrBlank()) {
+        if (!remember || email.isNullOrBlank()) {
             clearAuthSession()
+            return
+        }
+        if (uid.isNullOrBlank() || uid.contains("@")) {
+            runCatching {
+                android.util.Log.w("DataModeManager", "Rejected invalid UID (blank or email string): '$uid'")
+            }
             return
         }
         val determinedRole = resolveRoleForUser(email)

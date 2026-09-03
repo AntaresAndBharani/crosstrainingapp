@@ -99,6 +99,40 @@ class DataModeManagerTest {
         assertEquals(realRepo, manager.realRepository)
     }
 
+    @Test
+    fun saveAuthSession_rejectsMalformedUidContainingAtSign() {
+        val fakePrefs = FakeTrackingSharedPreferences()
+        val manager = DataModeManager(context = null, sharedPreferences = fakePrefs)
+
+        manager.saveAuthSession("athlete@example.com", "athlete@example.com")
+
+        assertFalse("Malformed UID containing @ must not be written", fakePrefs.contains("savedUserUid"))
+        assertFalse("Email must not be written when UID is invalid", fakePrefs.contains("savedUserEmail"))
+    }
+
+    @Test
+    fun saveAuthSession_rejectsBlankUid() {
+        val fakePrefs = FakeTrackingSharedPreferences()
+        val manager = DataModeManager(context = null, sharedPreferences = fakePrefs)
+
+        manager.saveAuthSession("athlete@example.com", "   ")
+
+        assertFalse("Blank UID must not be written", fakePrefs.contains("savedUserUid"))
+        assertFalse("Email must not be written when UID is blank", fakePrefs.contains("savedUserEmail"))
+    }
+
+    @Test
+    fun saveAuthSession_persistsValidUidAndEmail() {
+        val fakePrefs = FakeTrackingSharedPreferences()
+        val manager = DataModeManager(context = null, sharedPreferences = fakePrefs)
+
+        manager.saveAuthSession("athlete@example.com", "valid_firebase_uid_123")
+
+        assertEquals("athlete@example.com", fakePrefs.getString("savedUserEmail", null))
+        assertEquals("valid_firebase_uid_123", fakePrefs.getString("savedUserUid", null))
+        assertTrue(fakePrefs.getBoolean("rememberMe", false))
+    }
+
     /**
      * In-memory SharedPreferences fake to track read/write operations on preference keys.
      */

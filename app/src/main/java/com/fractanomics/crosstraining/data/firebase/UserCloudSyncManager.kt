@@ -309,7 +309,7 @@ object UserCloudSyncManager {
         recoverRoutinesReaderForTesting = null
     }
 
-    private fun verifyTokenBinding(): Result<Unit> {
+    internal fun verifyTokenBinding(): Result<Unit> {
         val user = _userState.value
         if (user != null && !user.isAnonymous && user.uid.isNotBlank()) {
             if (authUidProviderForTesting != null) {
