@@ -609,43 +609,100 @@ class FakeSampleAppDatabase : AppDatabase() {
     }
 
     private val cycleGoalDaoImpl = object : CycleGoalDao {
-        override suspend fun insert(goal: CycleGoal): Long = 1L
-        override suspend fun insertAll(goals: List<CycleGoal>) {}
-        override suspend fun update(goal: CycleGoal) {}
-        override suspend fun delete(goal: CycleGoal) {}
-        override suspend fun deleteByCycle(cycleId: Long) {}
-        override fun all(): Flow<List<CycleGoal>> = flowOf(emptyList())
-        override fun byCycle(cycleId: Long): Flow<List<CycleGoal>> = flowOf(emptyList())
-        override suspend fun snapshot(): List<CycleGoal> = emptyList()
-        override suspend fun deleteAll() {}
+        override suspend fun insert(goal: CycleGoal): Long {
+            val nextId = (cycleGoalsStorage.maxOfOrNull { it.id } ?: 0L) + 1L
+            val created = goal.copy(id = nextId)
+            cycleGoalsStorage.add(created)
+            return nextId
+        }
+        override suspend fun insertAll(goals: List<CycleGoal>) {
+            goals.forEach { insert(it) }
+        }
+        override suspend fun update(goal: CycleGoal) {
+            val idx = cycleGoalsStorage.indexOfFirst { it.id == goal.id }
+            if (idx >= 0) cycleGoalsStorage[idx] = goal
+        }
+        override suspend fun delete(goal: CycleGoal) {
+            cycleGoalsStorage.removeAll { it.id == goal.id }
+        }
+        override suspend fun deleteByCycle(cycleId: Long) {
+            cycleGoalsStorage.removeAll { it.cycleId == cycleId }
+        }
+        override fun all(): Flow<List<CycleGoal>> = flowOf(cycleGoalsStorage)
+        override fun byCycle(cycleId: Long): Flow<List<CycleGoal>> = flowOf(cycleGoalsStorage.filter { it.cycleId == cycleId })
+        override suspend fun snapshot(): List<CycleGoal> = ArrayList(cycleGoalsStorage)
+        override suspend fun deleteAll() {
+            cycleGoalsStorage.clear()
+        }
     }
 
     private val routineDaoImpl = object : RoutineDao {
-        override suspend fun insert(routine: Routine): Long = 1L
-        override suspend fun insertAll(routines: List<Routine>) {}
-        override suspend fun insertBlock(block: RoutineBlock): Long = 1L
-        override suspend fun update(routine: Routine) {}
-        override suspend fun delete(routine: Routine) {}
-        override fun observeAll(): Flow<List<Routine>> = flowOf(emptyList())
-        override fun observeWithBlocks(): Flow<List<RoutineWithBlocks>> = flowOf(emptyList())
-        override suspend fun byId(id: Long): Routine? = null
-        override suspend fun byName(name: String): Routine? = null
-        override suspend fun insertBlocks(blocks: List<RoutineBlock>) {}
-        override suspend fun deleteBlocksForRoutine(routineId: Long) {}
-        override suspend fun getAllOnce(): List<Routine> = emptyList()
-        override suspend fun getAllWithBlocksOnce(): List<RoutineWithBlocks> = emptyList()
-        override suspend fun deleteAll() {}
+        override suspend fun insert(routine: Routine): Long {
+            val nextId = (routinesStorage.maxOfOrNull { it.id } ?: 0L) + 1L
+            val created = routine.copy(id = nextId)
+            routinesStorage.add(created)
+            return nextId
+        }
+        override suspend fun insertAll(routines: List<Routine>) {
+            routines.forEach { insert(it) }
+        }
+        override suspend fun insertBlock(block: RoutineBlock): Long {
+            val nextId = (routineBlocksStorage.maxOfOrNull { it.id } ?: 0L) + 1L
+            val created = block.copy(id = nextId)
+            routineBlocksStorage.add(created)
+            return nextId
+        }
+        override suspend fun update(routine: Routine) {
+            val idx = routinesStorage.indexOfFirst { it.id == routine.id }
+            if (idx >= 0) routinesStorage[idx] = routine
+        }
+        override suspend fun delete(routine: Routine) {
+            routinesStorage.removeAll { it.id == routine.id }
+            routineBlocksStorage.removeAll { it.routineId == routine.id }
+        }
+        override fun observeAll(): Flow<List<Routine>> = flowOf(routinesStorage)
+        override fun observeWithBlocks(): Flow<List<RoutineWithBlocks>> = flowOf(
+            routinesStorage.map { r -> RoutineWithBlocks(r, routineBlocksStorage.filter { it.routineId == r.id }) }
+        )
+        override suspend fun byId(id: Long): Routine? = routinesStorage.find { it.id == id }
+        override suspend fun byName(name: String): Routine? = routinesStorage.find { it.name.equals(name, ignoreCase = true) }
+        override suspend fun insertBlocks(blocks: List<RoutineBlock>) {
+            blocks.forEach { insertBlock(it) }
+        }
+        override suspend fun deleteBlocksForRoutine(routineId: Long) {
+            routineBlocksStorage.removeAll { it.routineId == routineId }
+        }
+        override suspend fun getAllOnce(): List<Routine> = ArrayList(routinesStorage)
+        override suspend fun getAllWithBlocksOnce(): List<RoutineWithBlocks> = routinesStorage.map { r ->
+            RoutineWithBlocks(r, routineBlocksStorage.filter { it.routineId == r.id })
+        }
+        override suspend fun deleteAll() {
+            routinesStorage.clear()
+            routineBlocksStorage.clear()
+        }
     }
 
     private val repMaxDaoImpl = object : RepMaxDao {
-        override suspend fun insert(repMax: RepMax): Long = 1L
-        override suspend fun insertAll(repMaxes: List<RepMax>) {}
-        override suspend fun delete(repMax: RepMax) {}
-        override fun observeAll(): Flow<List<RepMax>> = flowOf(emptyList())
-        override fun observeForExercise(exerciseId: Long): Flow<List<RepMax>> = flowOf(emptyList())
-        override suspend fun getAllOnce(): List<RepMax> = emptyList()
-        override suspend fun deleteAll() {}
-        override suspend fun bestWeight(exerciseId: Long, reps: Int): Double? = null
+        override suspend fun insert(repMax: RepMax): Long {
+            val nextId = (repMaxesStorage.maxOfOrNull { it.id } ?: 0L) + 1L
+            val created = repMax.copy(id = nextId)
+            repMaxesStorage.add(created)
+            return nextId
+        }
+        override suspend fun insertAll(repMaxes: List<RepMax>) {
+            repMaxes.forEach { insert(it) }
+        }
+        override suspend fun delete(repMax: RepMax) {
+            repMaxesStorage.removeAll { it.id == repMax.id }
+        }
+        override fun observeAll(): Flow<List<RepMax>> = flowOf(repMaxesStorage)
+        override fun observeForExercise(exerciseId: Long): Flow<List<RepMax>> = flowOf(repMaxesStorage.filter { it.exerciseId == exerciseId })
+        override suspend fun getAllOnce(): List<RepMax> = ArrayList(repMaxesStorage)
+        override suspend fun deleteAll() {
+            repMaxesStorage.clear()
+        }
+        override suspend fun bestWeight(exerciseId: Long, reps: Int): Double? =
+            repMaxesStorage.filter { it.exerciseId == exerciseId && it.reps == reps }.maxOfOrNull { it.weight }
     }
 
     override fun cycleDao(): CycleDao = cycleDaoImpl

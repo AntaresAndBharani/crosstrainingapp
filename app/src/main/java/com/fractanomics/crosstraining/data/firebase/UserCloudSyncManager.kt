@@ -18,6 +18,7 @@ import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -87,6 +88,9 @@ object UserCloudSyncManager {
     }
 
     suspend fun ensureAuthenticated() {
+        if (_userState.value != null && _userState.value?.uid?.isNotBlank() == true) {
+            return
+        }
         if (auth.currentUser == null) {
             try {
                 withTimeout(5000L) {
@@ -140,81 +144,110 @@ object UserCloudSyncManager {
         return determinedRole
     }
 
-    suspend fun signUpWithEmail(email: String, pass: String): Result<Unit> = runCatching {
-        withTimeout(10000L) {
-            val normalized = normalizeEmail(email)
-            val currentUser = auth.currentUser
-            if (currentUser != null && currentUser.isAnonymous) {
-                val credential = EmailAuthProvider.getCredential(normalized, pass)
-                currentUser.linkWithCredential(credential).await()
-            } else {
-                auth.createUserWithEmailAndPassword(normalized, pass).await()
+    internal var signUpWithEmailHandler: (suspend (String, String) -> Result<Unit>)? = null
+    internal var logInWithEmailHandler: (suspend (String, String) -> Result<Unit>)? = null
+    internal var signInWithGoogleCredentialHandler: (suspend (String) -> Result<Unit>)? = null
+    internal var logInWithGoogleAccountHandler: (suspend (String, String?) -> Result<Unit>)? = null
+
+    suspend fun signUpWithEmail(email: String, pass: String): Result<Unit> {
+        val testHandler = signUpWithEmailHandler
+        if (testHandler != null) {
+            return testHandler(email, pass)
+        }
+        return runCatching {
+            withTimeout(10000L) {
+                val normalized = normalizeEmail(email)
+                val currentUser = auth.currentUser
+                if (currentUser != null && currentUser.isAnonymous) {
+                    val credential = EmailAuthProvider.getCredential(normalized, pass)
+                    currentUser.linkWithCredential(credential).await()
+                } else {
+                    auth.createUserWithEmailAndPassword(normalized, pass).await()
+                }
+                _userState.value = auth.currentUser?.toAuthUser()
+                syncUserProfile(normalized)
             }
-            _userState.value = auth.currentUser?.toAuthUser()
-            syncUserProfile(normalized)
         }
     }
 
-    suspend fun logInWithEmail(emailInput: String, pass: String): Result<Unit> = runCatching {
-        withTimeout(10000L) {
-            val normalized = normalizeEmail(emailInput)
-            val isKnownTestUser = (normalized == "jangelpv@crosstraining.app" && pass == "crossAthlet3") ||
-                    (normalized == "coach@crosstraining.app" && pass == "coach") ||
-                    (normalized == "athlete@crosstraining.app" && pass == "athlete")
+    suspend fun logInWithEmail(emailInput: String, pass: String): Result<Unit> {
+        val testHandler = logInWithEmailHandler
+        if (testHandler != null) {
+            return testHandler(emailInput, pass)
+        }
+        return runCatching {
+            withTimeout(10000L) {
+                val normalized = normalizeEmail(emailInput)
+                val isKnownTestUser = (normalized == "jangelpv@crosstraining.app" && pass == "crossAthlet3") ||
+                        (normalized == "coach@crosstraining.app" && pass == "coach") ||
+                        (normalized == "athlete@crosstraining.app" && pass == "athlete")
 
-            try {
-                auth.signInWithEmailAndPassword(normalized, pass).await()
-                _userState.value = auth.currentUser?.toAuthUser()
-            } catch (e: Exception) {
-                if (isKnownTestUser) {
-                    // Try auto-registration or direct session fallback
-                    try {
-                        val authPass = if (pass.length >= 6) pass else "${pass}1234"
-                        auth.createUserWithEmailAndPassword(normalized, authPass).await()
-                        _userState.value = auth.currentUser?.toAuthUser()
-                    } catch (createErr: Exception) {
-                        ensureAuthenticated()
-                        _userState.value = AuthUser(
-                            uid = auth.currentUser?.uid ?: normalized.replace("@", "_").replace(".", "_"),
-                            email = normalized,
-                            isAnonymous = false
-                        )
+                try {
+                    auth.signInWithEmailAndPassword(normalized, pass).await()
+                    _userState.value = auth.currentUser?.toAuthUser()
+                } catch (e: Exception) {
+                    if (isKnownTestUser) {
+                        // Try auto-registration or direct session fallback
+                        try {
+                            val authPass = if (pass.length >= 6) pass else "${pass}1234"
+                            auth.createUserWithEmailAndPassword(normalized, authPass).await()
+                            _userState.value = auth.currentUser?.toAuthUser()
+                        } catch (createErr: Exception) {
+                            ensureAuthenticated()
+                            _userState.value = AuthUser(
+                                uid = auth.currentUser?.uid ?: normalized.replace("@", "_").replace(".", "_"),
+                                email = normalized,
+                                isAnonymous = false
+                            )
+                        }
+                    } else {
+                        throw e
                     }
+                }
+                syncUserProfile(normalized)
+            }
+        }
+    }
+
+    suspend fun signInWithGoogleCredential(idToken: String): Result<Unit> {
+        val testHandler = signInWithGoogleCredentialHandler
+        if (testHandler != null) {
+            return testHandler(idToken)
+        }
+        return runCatching {
+            withTimeout(10000L) {
+                val credential = GoogleAuthProvider.getCredential(idToken, null)
+                val currentUser = auth.currentUser
+                if (currentUser != null && currentUser.isAnonymous) {
+                    currentUser.linkWithCredential(credential).await()
                 } else {
-                    throw e
+                    auth.signInWithCredential(credential).await()
+                }
+                val user = auth.currentUser?.toAuthUser()
+                _userState.value = user
+                if (user?.email != null) {
+                    syncUserProfile(user.email)
                 }
             }
-            syncUserProfile(normalized)
         }
     }
 
-    suspend fun signInWithGoogleCredential(idToken: String): Result<Unit> = runCatching {
-        withTimeout(10000L) {
-            val credential = GoogleAuthProvider.getCredential(idToken, null)
-            val currentUser = auth.currentUser
-            if (currentUser != null && currentUser.isAnonymous) {
-                currentUser.linkWithCredential(credential).await()
-            } else {
-                auth.signInWithCredential(credential).await()
-            }
-            val user = auth.currentUser?.toAuthUser()
-            _userState.value = user
-            if (user?.email != null) {
-                syncUserProfile(user.email)
-            }
+    suspend fun logInWithGoogleAccount(email: String, displayName: String?): Result<Unit> {
+        val testHandler = logInWithGoogleAccountHandler
+        if (testHandler != null) {
+            return testHandler(email, displayName)
         }
-    }
-
-    suspend fun logInWithGoogleAccount(email: String, displayName: String?): Result<Unit> = runCatching {
-        withTimeout(10000L) {
-            ensureAuthenticated()
-            val user = AuthUser(
-                uid = auth.currentUser?.uid ?: email,
-                email = email,
-                isAnonymous = false
-            )
-            _userState.value = user
-            syncUserProfile(email)
+        return runCatching {
+            withTimeout(10000L) {
+                ensureAuthenticated()
+                val user = AuthUser(
+                    uid = auth.currentUser?.uid ?: email,
+                    email = email,
+                    isAnonymous = false
+                )
+                _userState.value = user
+                syncUserProfile(email)
+            }
         }
     }
 
@@ -242,7 +275,65 @@ object UserCloudSyncManager {
         _syncState.value = SyncStatus.IDLE
     }
 
+    fun setSyncStatus(status: SyncStatus) {
+        _syncState.value = status
+    }
+
     internal var uploadUserDataHandler: (suspend (Repository) -> Result<Unit>)? = null
+    internal var downloadUserDataHandler: (suspend (Repository) -> Result<Unit>)? = null
+    internal var recoverAllCloudRoutinesHandler: (suspend (Repository) -> Result<Int>)? = null
+    internal var documentWriterForTesting: (suspend (collectionName: String, data: Map<String, Any?>) -> Unit)? = null
+    internal var remoteCollectionInspectorForTesting: (suspend (collectionName: String) -> Boolean)? = null
+
+    fun resetTestHandlers() {
+        uploadUserDataHandler = null
+        downloadUserDataHandler = null
+        recoverAllCloudRoutinesHandler = null
+        signUpWithEmailHandler = null
+        logInWithEmailHandler = null
+        signInWithGoogleCredentialHandler = null
+        logInWithGoogleAccountHandler = null
+        documentWriterForTesting = null
+        remoteCollectionInspectorForTesting = null
+        passwordResetHandlerForTesting = null
+    }
+
+    private suspend fun uploadCollectionWithGuard(
+        collectionName: String,
+        docRef: DocumentReference?,
+        payload: List<Map<String, Any?>>,
+        isLocallyEmpty: Boolean
+    ) {
+        if (isLocallyEmpty) {
+            val testInspector = remoteCollectionInspectorForTesting
+            val isPopulated = if (testInspector != null) {
+                testInspector(collectionName)
+            } else if (docRef != null) {
+                try {
+                    val snap = docRef.get().await()
+                    val remoteList = snap.get("list") as? List<*>
+                    snap.exists() && !remoteList.isNullOrEmpty()
+                } catch (e: Exception) {
+                    true // Fail-safe: assume populated to protect remote data
+                }
+            } else {
+                false
+            }
+
+            if (isPopulated) {
+                // Per-document overwrite guard: skip destructive .set() overwrite
+                return
+            }
+        }
+
+        val data = mapOf("list" to payload)
+        val testWriter = documentWriterForTesting
+        if (testWriter != null) {
+            testWriter(collectionName, data)
+        } else {
+            docRef?.set(data)?.await()
+        }
+    }
 
     suspend fun uploadUserData(repo: Repository): Result<Unit> {
         val testHandler = uploadUserDataHandler
@@ -253,147 +344,177 @@ object UserCloudSyncManager {
             _syncState.value = SyncStatus.SYNCING
 
             withTimeout(20000L) {
-            ensureAuthenticated()
-            val uid = currentUserId
-            if (uid.isBlank()) error("User not authenticated")
+                ensureAuthenticated()
+                val uid = currentUserId
+                if (uid.isBlank()) error("User not authenticated")
 
-            val doc = userDoc(uid)
+                val doc = if (documentWriterForTesting != null) null else userDoc(uid)
 
-            // 1. Upload Exercises
-            val exercises = repo.getAllExercisesOnce()
-            val exPayload = exercises.map { ex ->
-                mapOf(
-                    "id" to ex.id,
-                    "name" to ex.name,
-                    "category" to ex.category.name,
-                    "metricType" to ex.metricType.name,
-                    "unit" to ex.unit,
-                    "tracksRepMax" to ex.tracksRepMax
+                // 1. Upload Exercises
+                val exercises = repo.getAllExercisesOnce()
+                val exPayload = exercises.map { ex ->
+                    mapOf(
+                        "id" to ex.id,
+                        "name" to ex.name,
+                        "category" to ex.category.name,
+                        "metricType" to ex.metricType.name,
+                        "unit" to ex.unit,
+                        "tracksRepMax" to ex.tracksRepMax
+                    )
+                }
+                uploadCollectionWithGuard(
+                    collectionName = "exercises",
+                    docRef = doc?.collection("data")?.document("exercises"),
+                    payload = exPayload,
+                    isLocallyEmpty = exercises.isEmpty()
+                )
+
+                // 2. Upload Routines
+                repo.cleanupDuplicateRoutines()
+                val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce().distinctBy { it.routine.name.trim().lowercase() }
+                val routinesPayload = routinesWithBlocks.map { rwb ->
+                    mapOf(
+                        "routine" to mapOf(
+                            "id" to rwb.routine.id,
+                            "name" to rwb.routine.name,
+                            "description" to rwb.routine.description,
+                            "mainExerciseId" to rwb.routine.mainExerciseId,
+                            "defaultFormat" to rwb.routine.defaultFormat
+                        ),
+                        "blocks" to rwb.blocks.map { b ->
+                            mapOf(
+                                "id" to b.id,
+                                "routineId" to b.routineId,
+                                "position" to b.position,
+                                "name" to b.name,
+                                "kind" to b.kind.name,
+                                "format" to b.format,
+                                "setsCount" to b.setsCount,
+                                "targetRepsScheme" to b.targetRepsScheme,
+                                "exerciseIdsCsv" to b.exerciseIdsCsv,
+                                "notes" to b.notes
+                            )
+                        }
+                    )
+                }
+                uploadCollectionWithGuard(
+                    collectionName = "routines",
+                    docRef = doc?.collection("data")?.document("routines"),
+                    payload = routinesPayload,
+                    isLocallyEmpty = routinesWithBlocks.isEmpty()
+                )
+
+                // 3. Upload Sessions & Logs
+                val sessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
+                val sessionsPayload = sessionsWithBlocks.map { swb ->
+                    mapOf(
+                        "session" to mapOf(
+                            "id" to swb.session.id,
+                            "cycleId" to swb.session.cycleId,
+                            "date" to swb.session.date.toString(),
+                            "title" to swb.session.title,
+                            "notes" to swb.session.notes
+                        ),
+                        "blocks" to swb.blocks.map { sb ->
+                            mapOf(
+                                "block" to mapOf(
+                                    "id" to sb.block.id,
+                                    "sessionId" to sb.block.sessionId,
+                                    "position" to sb.block.position,
+                                    "name" to sb.block.name,
+                                    "kind" to sb.block.kind.name,
+                                    "format" to sb.block.format,
+                                    "scheme" to sb.block.scheme,
+                                    "mainExerciseId" to sb.block.mainExerciseId,
+                                    "routineId" to sb.block.routineId,
+                                    "description" to sb.block.description,
+                                    "resultText" to sb.block.resultText,
+                                    "resultValue" to sb.block.resultValue,
+                                    "notes" to sb.block.notes
+                                ),
+                                "sets" to sb.sets.map { st ->
+                                    mapOf(
+                                        "id" to st.id,
+                                        "blockId" to st.blockId,
+                                        "position" to st.position,
+                                        "groupIndex" to st.groupIndex,
+                                        "reps" to st.reps,
+                                        "weight" to st.weight,
+                                        "metricValue" to st.metricValue,
+                                        "isWarmup" to st.isWarmup,
+                                        "isFailed" to st.isFailed,
+                                        "notes" to st.notes
+                                    )
+                                }
+                            )
+                        }
+                    )
+                }
+                uploadCollectionWithGuard(
+                    collectionName = "sessions",
+                    docRef = doc?.collection("data")?.document("sessions"),
+                    payload = sessionsPayload,
+                    isLocallyEmpty = sessionsWithBlocks.isEmpty()
+                )
+
+                // 4. Upload Cycle Goals
+                val cycleGoals = repo.snapshotCycleGoals()
+                val goalsPayload = cycleGoals.map { cg ->
+                    mapOf(
+                        "id" to cg.id,
+                        "cycleId" to cg.cycleId,
+                        "exerciseId" to cg.exerciseId,
+                        "targetReps" to cg.targetReps,
+                        "startWeight" to cg.startWeight,
+                        "targetWeight" to cg.targetWeight,
+                        "notes" to cg.notes
+                    )
+                }
+                uploadCollectionWithGuard(
+                    collectionName = "cycle_goals",
+                    docRef = doc?.collection("data")?.document("cycle_goals"),
+                    payload = goalsPayload,
+                    isLocallyEmpty = cycleGoals.isEmpty()
+                )
+
+                // 5. Upload Rep Maxes (PR History)
+                val repMaxes = repo.exportSnapshot().repMaxes
+                val repMaxesPayload = repMaxes.map { rm ->
+                    mapOf(
+                        "id" to rm.id,
+                        "exerciseId" to rm.exerciseId,
+                        "reps" to rm.reps,
+                        "weight" to rm.weight,
+                        "date" to rm.date.toString(),
+                        "cycleId" to rm.cycleId
+                    )
+                }
+                uploadCollectionWithGuard(
+                    collectionName = "rep_maxes",
+                    docRef = doc?.collection("data")?.document("rep_maxes"),
+                    payload = repMaxesPayload,
+                    isLocallyEmpty = repMaxes.isEmpty()
                 )
             }
-            doc.collection("data").document("exercises").set(mapOf("list" to exPayload)).await()
 
-            // 2. Upload Routines
-            repo.cleanupDuplicateRoutines()
-            val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce().distinctBy { it.routine.name.trim().lowercase() }
-            val routinesPayload = routinesWithBlocks.map { rwb ->
-                mapOf(
-                    "routine" to mapOf(
-                        "id" to rwb.routine.id,
-                        "name" to rwb.routine.name,
-                        "description" to rwb.routine.description,
-                        "mainExerciseId" to rwb.routine.mainExerciseId,
-                        "defaultFormat" to rwb.routine.defaultFormat
-                    ),
-                    "blocks" to rwb.blocks.map { b ->
-                        mapOf(
-                            "id" to b.id,
-                            "routineId" to b.routineId,
-                            "position" to b.position,
-                            "name" to b.name,
-                            "kind" to b.kind.name,
-                            "format" to b.format,
-                            "setsCount" to b.setsCount,
-                            "targetRepsScheme" to b.targetRepsScheme,
-                            "exerciseIdsCsv" to b.exerciseIdsCsv,
-                            "notes" to b.notes
-                        )
-                    }
-                )
-            }
-            doc.collection("data").document("routines").set(mapOf("list" to routinesPayload)).await()
-
-            // 3. Upload Sessions & Logs
-            val sessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
-            val sessionsPayload = sessionsWithBlocks.map { swb ->
-                mapOf(
-                    "session" to mapOf(
-                        "id" to swb.session.id,
-                        "cycleId" to swb.session.cycleId,
-                        "date" to swb.session.date.toString(),
-                        "title" to swb.session.title,
-                        "notes" to swb.session.notes
-                    ),
-                    "blocks" to swb.blocks.map { sb ->
-                        mapOf(
-                            "block" to mapOf(
-                                "id" to sb.block.id,
-                                "sessionId" to sb.block.sessionId,
-                                "position" to sb.block.position,
-                                "name" to sb.block.name,
-                                "kind" to sb.block.kind.name,
-                                "format" to sb.block.format,
-                                "scheme" to sb.block.scheme,
-                                "mainExerciseId" to sb.block.mainExerciseId,
-                                "routineId" to sb.block.routineId,
-                                "description" to sb.block.description,
-                                "resultText" to sb.block.resultText,
-                                "resultValue" to sb.block.resultValue,
-                                "notes" to sb.block.notes
-                            ),
-                            "sets" to sb.sets.map { st ->
-                                mapOf(
-                                    "id" to st.id,
-                                    "blockId" to st.blockId,
-                                    "position" to st.position,
-                                    "groupIndex" to st.groupIndex,
-                                    "reps" to st.reps,
-                                    "weight" to st.weight,
-                                    "metricValue" to st.metricValue,
-                                    "isWarmup" to st.isWarmup,
-                                    "isFailed" to st.isFailed,
-                                    "notes" to st.notes
-                                )
-                            }
-                        )
-                    }
-                )
-            }
-            doc.collection("data").document("sessions").set(mapOf("list" to sessionsPayload)).await()
-
-            // 4. Upload Cycle Goals
-            val cycleGoals = repo.snapshotCycleGoals()
-            val goalsPayload = cycleGoals.map { cg ->
-                mapOf(
-                    "id" to cg.id,
-                    "cycleId" to cg.cycleId,
-                    "exerciseId" to cg.exerciseId,
-                    "targetReps" to cg.targetReps,
-                    "startWeight" to cg.startWeight,
-                    "targetWeight" to cg.targetWeight,
-                    "notes" to cg.notes
-                )
-            }
-            doc.collection("data").document("cycle_goals").set(mapOf("list" to goalsPayload)).await()
-
-            // 5. Upload Rep Maxes (PR History)
-            val repMaxes = repo.exportSnapshot().repMaxes
-            val repMaxesPayload = repMaxes.map { rm ->
-                mapOf(
-                    "id" to rm.id,
-                    "exerciseId" to rm.exerciseId,
-                    "reps" to rm.reps,
-                    "weight" to rm.weight,
-                    "date" to rm.date.toString(),
-                    "cycleId" to rm.cycleId
-                )
-            }
-            doc.collection("data").document("rep_maxes").set(mapOf("list" to repMaxesPayload)).await()
+            _syncState.value = SyncStatus.SUCCESS
+        }.onFailure {
+            _syncState.value = SyncStatus.ERROR
         }
-
-        _syncState.value = SyncStatus.SUCCESS
-    }.onFailure {
-        _syncState.value = SyncStatus.ERROR
-    }
     }
 
-    suspend fun downloadUserData(repo: Repository): Result<Unit> = runCatching {
-        _syncState.value = SyncStatus.SYNCING
+    suspend fun downloadUserData(repo: Repository): Result<Unit> {
+        val testHandler = downloadUserDataHandler
+        if (testHandler != null) {
+            return testHandler(repo)
+        }
+        return runCatching {
+            _syncState.value = SyncStatus.SYNCING
 
-        withTimeout(20000L) {
-            ensureAuthenticated()
-            val uid = currentUserId
-            if (uid.isBlank()) error("User not authenticated")
+            withTimeout(20000L) {
+                ensureAuthenticated()
+                val uid = currentUserId
+                if (uid.isBlank()) error("User not authenticated")
 
             val doc = userDoc(uid)
 
@@ -547,9 +668,15 @@ object UserCloudSyncManager {
     }.onFailure {
         _syncState.value = SyncStatus.ERROR
     }
+    }
 
-    suspend fun recoverAllCloudRoutines(repo: Repository): Result<Int> = runCatching {
-        withTimeout(15000L) {
+    suspend fun recoverAllCloudRoutines(repo: Repository): Result<Int> {
+        val testHandler = recoverAllCloudRoutinesHandler
+        if (testHandler != null) {
+            return testHandler(repo)
+        }
+        return runCatching {
+            withTimeout(15000L) {
             val querySnap = firestore.collectionGroup("data").get().await()
             var count = 0
             for (doc in querySnap.documents) {
@@ -587,6 +714,7 @@ object UserCloudSyncManager {
             repo.cleanupDuplicateRoutines()
             count
         }
+    }
     }
 
     private fun FirebaseUser.toAuthUser(): AuthUser = AuthUser(
