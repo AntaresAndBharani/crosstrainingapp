@@ -152,6 +152,9 @@ class FitnessSpeechLexiconTest {
     fun `handles units and weight normalization`() {
         assertEquals("Deadlift 5x5 at 140 kg", lexicon.correct("Deadlift 5x5 at 140 kilograms"))
         assertEquals("Back Squat 3x8 at 100 kg", lexicon.correct("Back Squat 3x8 at 100 kgs"))
+        assertEquals("Back Squat 3x8 at 100 kg", lexicon.correct("Back Squat 3x8 at 100k"))
+        assertEquals("Back Squat 3x8 at 100 kg", lexicon.correct("Back Squat 3x8 at 100 k"))
+        assertEquals("Back Squat 3x8 at 102.5 kg", lexicon.correct("Back Squat 3x8 at 102.5k"))
         assertEquals("Bench 5x5 at 225 lbs", lexicon.correct("Bench 5x5 at 225 pounds"))
     }
 
