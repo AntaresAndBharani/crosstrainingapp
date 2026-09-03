@@ -25,6 +25,12 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.net.SocketTimeoutException
+import java.time.LocalDate
+import com.fractanomics.crosstraining.data.model.CycleGoal
+import com.fractanomics.crosstraining.data.model.ExerciseCategory
+import com.fractanomics.crosstraining.data.model.MetricType
+import com.fractanomics.crosstraining.data.model.Session
 
 /**
  * Unit & integration tests for Issue #486 and Issue #493 ([Subtask #492.1]):
@@ -720,6 +726,182 @@ class TokenBoundIdentitySyncTest {
         assertEquals(1, result.getOrNull())
         assertFalse("Legacy path must not be queried when newUid is populated", legacyQueried)
         assertTrue(repo.getAllRoutinesWithBlocksOnce().any { it.routine.name == "Direct UID Routine" })
+    }
+
+    // =========================================================================
+    // Issue #495 / Subtask #492.3: Fault-Isolated Concurrent Upload (supervisorScope)
+    // =========================================================================
+
+    @Test
+    fun uploadUserData_runsPreFlightCleanupDuplicateRoutines_synchronouslyBeforeUpload() = runTest {
+        // Given an authenticated user with duplicate routines in the local database
+        val user = AuthUser(uid = "dedup_user_123", email = "dedup@example.com", isAnonymous = false)
+        UserCloudSyncManager.setAuthenticatedUser(user)
+        UserCloudSyncManager.authUidProviderForTesting = { "dedup_user_123" }
+
+        // Seed duplicate routines with distinct IDs directly into DAO
+        db.routineDao().insert(Routine(id = 101L, name = "Fran", description = "Version A"))
+        db.routineDao().insert(Routine(id = 102L, name = "Fran", description = "Version B"))
+
+        val localRoutinesBefore = repo.getAllRoutinesWithBlocksOnce().filter { it.routine.name.equals("Fran", ignoreCase = true) }
+        assertEquals("Duplicate routines should exist locally before pre-flight dedup", 2, localRoutinesBefore.size)
+
+        // When uploadUserData executes
+        val result = UserCloudSyncManager.uploadUserData(repo)
+
+        // Then pre-flight dedup runs synchronously, and routines in database and uploaded are cleaned up
+        assertTrue(result.isSuccess)
+        val localRoutinesAfter = repo.getAllRoutinesWithBlocksOnce().filter { it.routine.name.equals("Fran", ignoreCase = true) }
+        assertEquals("Database must contain only 1 Fran routine after synchronous pre-flight dedup", 1, localRoutinesAfter.size)
+
+        @Suppress("UNCHECKED_CAST")
+        val uploadedRoutines = writtenDocuments["routines"]?.get("list") as? List<Map<String, Any>>
+        assertEquals("Uploaded routines collection must contain only 1 Fran routine", 1, uploadedRoutines?.size)
+    }
+
+    @Test
+    fun uploadUserData_supervisorScope_faultIsolation_doesNotCancelSiblingUploads_whenSingleDocumentTimesOut() = runTest {
+        // Given an authenticated user with local exercises, routines, cycles, and sessions
+        val user = AuthUser(uid = "iso_user_456", email = "iso@example.com", isAnonymous = false)
+        UserCloudSyncManager.setAuthenticatedUser(user)
+        UserCloudSyncManager.authUidProviderForTesting = { "iso_user_456" }
+
+        // Seed data across collections
+        repo.getOrCreateExercise("Thruster", ExerciseCategory.BARBELL, MetricType.WEIGHT)
+        repo.saveRoutineWithBlocks(Routine(name = "Murph", description = "Hero WOD"), emptyList())
+        repo.saveSession(Session(id = 0, cycleId = 1L, date = LocalDate.now(), title = "Murph Session", notes = "Tough"), emptyList())
+        repo.saveCycleGoal(CycleGoal(cycleId = 1L, exerciseId = 1L, targetReps = 5, startWeight = 60.0, targetWeight = 80.0, notes = "Goal"))
+        repo.recordRepMax(1L, 1, 100.0, LocalDate.now(), 1L)
+
+        // Configure documentWriterForTesting: sessions upload encounters a transient network timeout
+        UserCloudSyncManager.documentWriterForTesting = { collectionName, data ->
+            if (collectionName == "sessions") {
+                throw SocketTimeoutException("Simulated transient network timeout for sessions")
+            }
+            writtenDocuments[collectionName] = data
+        }
+
+        // When uploadUserData executes
+        val result = UserCloudSyncManager.uploadUserData(repo)
+
+        // Then sibling document uploads are NOT cancelled and succeed inside supervisorScope
+        assertTrue("Sibling collection 'exercises' must be written despite sessions timeout", writtenDocuments.containsKey("exercises"))
+        assertTrue("Sibling collection 'routines' must be written despite sessions timeout", writtenDocuments.containsKey("routines"))
+        assertTrue("Sibling collection 'cycle_goals' must be written despite sessions timeout", writtenDocuments.containsKey("cycle_goals"))
+        assertTrue("Sibling collection 'rep_maxes' must be written despite sessions timeout", writtenDocuments.containsKey("rep_maxes"))
+        assertFalse("Failed collection 'sessions' must not be in writtenDocuments", writtenDocuments.containsKey("sessions"))
+
+        // And the overall sync outcome reflects the aggregated document status failure
+        assertTrue("Upload outcome must be a failure due to sessions timeout", result.isFailure)
+        assertEquals("Sync status must be ERROR", SyncStatus.ERROR, UserCloudSyncManager.syncState.value)
+        val errorMessage = result.exceptionOrNull()?.message.orEmpty()
+        assertTrue("Aggregated error must indicate failure on sessions", errorMessage.contains("sessions"))
+    }
+
+    @Test
+    fun uploadUserData_supervisorScope_allCollectionsUploadConcurrently_andReportsSuccess() = runTest {
+        val user = AuthUser(uid = "all_success_789", email = "success@example.com", isAnonymous = false)
+        UserCloudSyncManager.setAuthenticatedUser(user)
+        UserCloudSyncManager.authUidProviderForTesting = { "all_success_789" }
+
+        repo.getOrCreateExercise("Deadlift", ExerciseCategory.BARBELL, MetricType.WEIGHT)
+        repo.saveRoutineWithBlocks(Routine(name = "Grace", description = "Clean and Jerk"), emptyList())
+        repo.saveSession(Session(id = 0, cycleId = 1L, date = LocalDate.now(), title = "Grace Session", notes = "Fast"), emptyList())
+        repo.saveCycleGoal(CycleGoal(cycleId = 1L, exerciseId = 1L, targetReps = 3, startWeight = 140.0, targetWeight = 160.0, notes = "Goal"))
+        repo.recordRepMax(1L, 3, 140.0, LocalDate.now(), 1L)
+
+        val result = UserCloudSyncManager.uploadUserData(repo)
+
+        assertTrue("Upload must succeed", result.isSuccess)
+        assertEquals(SyncStatus.SUCCESS, UserCloudSyncManager.syncState.value)
+        assertTrue(writtenDocuments.containsKey("exercises"))
+        assertTrue(writtenDocuments.containsKey("routines"))
+        assertTrue(writtenDocuments.containsKey("sessions"))
+        assertTrue(writtenDocuments.containsKey("cycle_goals"))
+        assertTrue(writtenDocuments.containsKey("rep_maxes"))
+    }
+
+    // =========================================================================
+    // Issue #495 / Subtask #492.3: Explicit IDLE State Reset & Error Reporting
+    // =========================================================================
+
+    @Test
+    fun triggerCloudSync_explicitIdleStateReset_resetsSyncStatusToIdleBeforeNewAttemptLaunches() = runTest {
+        // Given a previous sync attempt that resulted in an ERROR status
+        UserCloudSyncManager.setSyncStatus(SyncStatus.ERROR)
+        assertEquals(SyncStatus.ERROR, UserCloudSyncManager.syncState.value)
+
+        val dataMode = DataModeManager(context = null, sharedPreferences = FakeTrackingSharedPreferences())
+        dataMode.setRepositoryForTesting(repo)
+        val viewModel = AppViewModel(dataMode)
+
+        UserCloudSyncManager.uploadUserDataHandler = { _ -> Result.success(Unit) }
+        UserCloudSyncManager.downloadUserDataHandler = { Result.success(Unit) }
+
+        // When triggerCloudSync is invoked
+        viewModel.triggerCloudSync { result ->
+            assertTrue(result.isSuccess)
+        }
+
+        // Then UserCloudSyncManager.resetSyncStatus() resets syncState to IDLE before the new attempt launches
+        assertEquals("syncState must be reset to IDLE immediately upon triggerCloudSync invocation", SyncStatus.IDLE, UserCloudSyncManager.syncState.value)
+
+        advanceUntilIdle()
+        assertEquals("Final status should be SUCCESS", SyncStatus.SUCCESS, UserCloudSyncManager.syncState.value)
+    }
+
+    @Test
+    fun resetSyncStatus_explicitlyResetsStateToIdleAndClearsLastSyncError() = runTest {
+        val dataMode = DataModeManager(context = null, sharedPreferences = FakeTrackingSharedPreferences())
+        dataMode.setRepositoryForTesting(repo)
+        val viewModel = AppViewModel(dataMode)
+
+        // Given a previous sync attempt that failed with an error
+        UserCloudSyncManager.uploadUserDataHandler = { Result.failure(RuntimeException("Upload connection dropped")) }
+        UserCloudSyncManager.downloadUserDataHandler = { Result.success(Unit) }
+
+        viewModel.triggerCloudSync { result ->
+            assertFalse(result.isSuccess)
+        }
+        advanceUntilIdle()
+
+        assertEquals(SyncStatus.ERROR, UserCloudSyncManager.syncState.value)
+        assertTrue(viewModel.lastSyncError.value?.contains("Upload connection dropped") == true)
+
+        // When resetSyncStatus is called
+        viewModel.resetSyncStatus()
+
+        // Then syncState is IDLE and lastSyncError is null
+        assertEquals(SyncStatus.IDLE, UserCloudSyncManager.syncState.value)
+        assertNull(viewModel.lastSyncError.value)
+    }
+
+    @Test
+    fun appViewModel_exposesLastSyncError_reflectingFailureAndClearingOnSuccess() = runTest {
+        val dataMode = DataModeManager(context = null, sharedPreferences = FakeTrackingSharedPreferences())
+        dataMode.setRepositoryForTesting(repo)
+        val viewModel = AppViewModel(dataMode)
+
+        // 1. Initial state: lastSyncError is null
+        assertNull(viewModel.lastSyncError.value)
+
+        // 2. Simulated failure
+        UserCloudSyncManager.uploadUserDataHandler = { Result.failure(RuntimeException("Network error 503")) }
+        UserCloudSyncManager.downloadUserDataHandler = { Result.success(Unit) }
+
+        viewModel.triggerCloudSync { }
+        advanceUntilIdle()
+
+        assertEquals(SyncStatus.ERROR, viewModel.syncState.value)
+        assertTrue("lastSyncError must reflect failure message", viewModel.lastSyncError.value?.contains("Network error 503") == true)
+
+        // 3. Subsequent success clears lastSyncError
+        UserCloudSyncManager.uploadUserDataHandler = { Result.success(Unit) }
+        viewModel.triggerCloudSync { }
+        advanceUntilIdle()
+
+        assertEquals(SyncStatus.SUCCESS, viewModel.syncState.value)
+        assertNull("lastSyncError must be cleared to null on success", viewModel.lastSyncError.value)
     }
 
     /**

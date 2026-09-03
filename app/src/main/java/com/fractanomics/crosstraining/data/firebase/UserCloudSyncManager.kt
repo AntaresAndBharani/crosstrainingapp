@@ -21,8 +21,10 @@ import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -487,153 +489,193 @@ object UserCloudSyncManager {
                 val uid = currentUserId
                 if (uid.isBlank()) error(CloudSyncErrorMapper.GUEST_AUTH_PROMPT)
 
-                val doc = if (documentWriterForTesting != null) null else userDoc(uid)
-
-                // 1. Upload Exercises
-                val exercises = repo.getAllExercisesOnce()
-                val exPayload = exercises.map { ex ->
-                    mapOf(
-                        "id" to ex.id,
-                        "name" to ex.name,
-                        "category" to ex.category.name,
-                        "metricType" to ex.metricType.name,
-                        "unit" to ex.unit,
-                        "tracksRepMax" to ex.tracksRepMax
-                    )
-                }
-                uploadCollectionWithGuard(
-                    collectionName = "exercises",
-                    docRef = doc?.collection("data")?.document("exercises"),
-                    payload = exPayload,
-                    isLocallyEmpty = exercises.isEmpty()
-                )
-
-                // 2. Upload Routines
+                // 1. Explicit synchronous pre-flight step
                 repo.cleanupDuplicateRoutines()
-                val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce().distinctBy { it.routine.name.trim().lowercase() }
-                val routinesPayload = routinesWithBlocks.map { rwb ->
-                    mapOf(
-                        "routine" to mapOf(
-                            "id" to rwb.routine.id,
-                            "name" to rwb.routine.name,
-                            "description" to rwb.routine.description,
-                            "mainExerciseId" to rwb.routine.mainExerciseId,
-                            "defaultFormat" to rwb.routine.defaultFormat
-                        ),
-                        "blocks" to rwb.blocks.map { b ->
-                            mapOf(
-                                "id" to b.id,
-                                "routineId" to b.routineId,
-                                "position" to b.position,
-                                "name" to b.name,
-                                "kind" to b.kind.name,
-                                "format" to b.format,
-                                "setsCount" to b.setsCount,
-                                "targetRepsScheme" to b.targetRepsScheme,
-                                "exerciseIdsCsv" to b.exerciseIdsCsv,
-                                "notes" to b.notes
+
+                val doc = if (documentWriterForTesting != null) null else userDoc(uid)
+                val collectionErrors = mutableMapOf<String, Throwable>()
+
+                // 2. Fault-isolated concurrent uploads inside supervisorScope
+                supervisorScope {
+                    val taskExercises = async {
+                        runCatching {
+                            val exercises = repo.getAllExercisesOnce()
+                            val exPayload = exercises.map { ex ->
+                                mapOf(
+                                    "id" to ex.id,
+                                    "name" to ex.name,
+                                    "category" to ex.category.name,
+                                    "metricType" to ex.metricType.name,
+                                    "unit" to ex.unit,
+                                    "tracksRepMax" to ex.tracksRepMax
+                                )
+                            }
+                            uploadCollectionWithGuard(
+                                collectionName = "exercises",
+                                docRef = doc?.collection("data")?.document("exercises"),
+                                payload = exPayload,
+                                isLocallyEmpty = exercises.isEmpty()
                             )
                         }
-                    )
-                }
-                uploadCollectionWithGuard(
-                    collectionName = "routines",
-                    docRef = doc?.collection("data")?.document("routines"),
-                    payload = routinesPayload,
-                    isLocallyEmpty = routinesWithBlocks.isEmpty()
-                )
+                    }
 
-                // 3. Upload Sessions & Logs
-                val sessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
-                val sessionsPayload = sessionsWithBlocks.map { swb ->
-                    mapOf(
-                        "session" to mapOf(
-                            "id" to swb.session.id,
-                            "cycleId" to swb.session.cycleId,
-                            "date" to swb.session.date.toString(),
-                            "title" to swb.session.title,
-                            "notes" to swb.session.notes
-                        ),
-                        "blocks" to swb.blocks.map { sb ->
-                            mapOf(
-                                "block" to mapOf(
-                                    "id" to sb.block.id,
-                                    "sessionId" to sb.block.sessionId,
-                                    "position" to sb.block.position,
-                                    "name" to sb.block.name,
-                                    "kind" to sb.block.kind.name,
-                                    "format" to sb.block.format,
-                                    "scheme" to sb.block.scheme,
-                                    "mainExerciseId" to sb.block.mainExerciseId,
-                                    "routineId" to sb.block.routineId,
-                                    "description" to sb.block.description,
-                                    "resultText" to sb.block.resultText,
-                                    "resultValue" to sb.block.resultValue,
-                                    "notes" to sb.block.notes
-                                ),
-                                "sets" to sb.sets.map { st ->
-                                    mapOf(
-                                        "id" to st.id,
-                                        "blockId" to st.blockId,
-                                        "position" to st.position,
-                                        "groupIndex" to st.groupIndex,
-                                        "reps" to st.reps,
-                                        "weight" to st.weight,
-                                        "metricValue" to st.metricValue,
-                                        "isWarmup" to st.isWarmup,
-                                        "isFailed" to st.isFailed,
-                                        "notes" to st.notes
-                                    )
-                                }
+                    val taskRoutines = async {
+                        runCatching {
+                            val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce().distinctBy { it.routine.name.trim().lowercase() }
+                            val routinesPayload = routinesWithBlocks.map { rwb ->
+                                mapOf(
+                                    "routine" to mapOf(
+                                        "id" to rwb.routine.id,
+                                        "name" to rwb.routine.name,
+                                        "description" to rwb.routine.description,
+                                        "mainExerciseId" to rwb.routine.mainExerciseId,
+                                        "defaultFormat" to rwb.routine.defaultFormat
+                                    ),
+                                    "blocks" to rwb.blocks.map { b ->
+                                        mapOf(
+                                            "id" to b.id,
+                                            "routineId" to b.routineId,
+                                            "position" to b.position,
+                                            "name" to b.name,
+                                            "kind" to b.kind.name,
+                                            "format" to b.format,
+                                            "setsCount" to b.setsCount,
+                                            "targetRepsScheme" to b.targetRepsScheme,
+                                            "exerciseIdsCsv" to b.exerciseIdsCsv,
+                                            "notes" to b.notes
+                                        )
+                                    }
+                                )
+                            }
+                            uploadCollectionWithGuard(
+                                collectionName = "routines",
+                                docRef = doc?.collection("data")?.document("routines"),
+                                payload = routinesPayload,
+                                isLocallyEmpty = routinesWithBlocks.isEmpty()
                             )
                         }
-                    )
-                }
-                uploadCollectionWithGuard(
-                    collectionName = "sessions",
-                    docRef = doc?.collection("data")?.document("sessions"),
-                    payload = sessionsPayload,
-                    isLocallyEmpty = sessionsWithBlocks.isEmpty()
-                )
+                    }
 
-                // 4. Upload Cycle Goals
-                val cycleGoals = repo.snapshotCycleGoals()
-                val goalsPayload = cycleGoals.map { cg ->
-                    mapOf(
-                        "id" to cg.id,
-                        "cycleId" to cg.cycleId,
-                        "exerciseId" to cg.exerciseId,
-                        "targetReps" to cg.targetReps,
-                        "startWeight" to cg.startWeight,
-                        "targetWeight" to cg.targetWeight,
-                        "notes" to cg.notes
-                    )
-                }
-                uploadCollectionWithGuard(
-                    collectionName = "cycle_goals",
-                    docRef = doc?.collection("data")?.document("cycle_goals"),
-                    payload = goalsPayload,
-                    isLocallyEmpty = cycleGoals.isEmpty()
-                )
+                    val taskSessions = async {
+                        runCatching {
+                            val sessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
+                            val sessionsPayload = sessionsWithBlocks.map { swb ->
+                                mapOf(
+                                    "session" to mapOf(
+                                        "id" to swb.session.id,
+                                        "cycleId" to swb.session.cycleId,
+                                        "date" to swb.session.date.toString(),
+                                        "title" to swb.session.title,
+                                        "notes" to swb.session.notes
+                                    ),
+                                    "blocks" to swb.blocks.map { sb ->
+                                        mapOf(
+                                            "block" to mapOf(
+                                                "id" to sb.block.id,
+                                                "sessionId" to sb.block.sessionId,
+                                                "position" to sb.block.position,
+                                                "name" to sb.block.name,
+                                                "kind" to sb.block.kind.name,
+                                                "format" to sb.block.format,
+                                                "scheme" to sb.block.scheme,
+                                                "mainExerciseId" to sb.block.mainExerciseId,
+                                                "routineId" to sb.block.routineId,
+                                                "description" to sb.block.description,
+                                                "resultText" to sb.block.resultText,
+                                                "resultValue" to sb.block.resultValue,
+                                                "notes" to sb.block.notes
+                                            ),
+                                            "sets" to sb.sets.map { st ->
+                                                mapOf(
+                                                    "id" to st.id,
+                                                    "blockId" to st.blockId,
+                                                    "position" to st.position,
+                                                    "groupIndex" to st.groupIndex,
+                                                    "reps" to st.reps,
+                                                    "weight" to st.weight,
+                                                    "metricValue" to st.metricValue,
+                                                    "isWarmup" to st.isWarmup,
+                                                    "isFailed" to st.isFailed,
+                                                    "notes" to st.notes
+                                                )
+                                            }
+                                        )
+                                    }
+                                )
+                            }
+                            uploadCollectionWithGuard(
+                                collectionName = "sessions",
+                                docRef = doc?.collection("data")?.document("sessions"),
+                                payload = sessionsPayload,
+                                isLocallyEmpty = sessionsWithBlocks.isEmpty()
+                            )
+                        }
+                    }
 
-                // 5. Upload Rep Maxes (PR History)
-                val repMaxes = repo.exportSnapshot().repMaxes
-                val repMaxesPayload = repMaxes.map { rm ->
-                    mapOf(
-                        "id" to rm.id,
-                        "exerciseId" to rm.exerciseId,
-                        "reps" to rm.reps,
-                        "weight" to rm.weight,
-                        "date" to rm.date.toString(),
-                        "cycleId" to rm.cycleId
-                    )
+                    val taskGoals = async {
+                        runCatching {
+                            val cycleGoals = repo.snapshotCycleGoals()
+                            val goalsPayload = cycleGoals.map { cg ->
+                                mapOf(
+                                    "id" to cg.id,
+                                    "cycleId" to cg.cycleId,
+                                    "exerciseId" to cg.exerciseId,
+                                    "targetReps" to cg.targetReps,
+                                    "startWeight" to cg.startWeight,
+                                    "targetWeight" to cg.targetWeight,
+                                    "notes" to cg.notes
+                                )
+                            }
+                            uploadCollectionWithGuard(
+                                collectionName = "cycle_goals",
+                                docRef = doc?.collection("data")?.document("cycle_goals"),
+                                payload = goalsPayload,
+                                isLocallyEmpty = cycleGoals.isEmpty()
+                            )
+                        }
+                    }
+
+                    val taskRepMaxes = async {
+                        runCatching {
+                            val repMaxes = repo.exportSnapshot().repMaxes
+                            val repMaxesPayload = repMaxes.map { rm ->
+                                mapOf(
+                                    "id" to rm.id,
+                                    "exerciseId" to rm.exerciseId,
+                                    "reps" to rm.reps,
+                                    "weight" to rm.weight,
+                                    "date" to rm.date.toString(),
+                                    "cycleId" to rm.cycleId
+                                )
+                            }
+                            uploadCollectionWithGuard(
+                                collectionName = "rep_maxes",
+                                docRef = doc?.collection("data")?.document("rep_maxes"),
+                                payload = repMaxesPayload,
+                                isLocallyEmpty = repMaxes.isEmpty()
+                            )
+                        }
+                    }
+
+                    val resExercises = taskExercises.await()
+                    val resRoutines = taskRoutines.await()
+                    val resSessions = taskSessions.await()
+                    val resGoals = taskGoals.await()
+                    val resRepMaxes = taskRepMaxes.await()
+
+                    resExercises.exceptionOrNull()?.let { collectionErrors["exercises"] = it }
+                    resRoutines.exceptionOrNull()?.let { collectionErrors["routines"] = it }
+                    resSessions.exceptionOrNull()?.let { collectionErrors["sessions"] = it }
+                    resGoals.exceptionOrNull()?.let { collectionErrors["cycle_goals"] = it }
+                    resRepMaxes.exceptionOrNull()?.let { collectionErrors["rep_maxes"] = it }
                 }
-                uploadCollectionWithGuard(
-                    collectionName = "rep_maxes",
-                    docRef = doc?.collection("data")?.document("rep_maxes"),
-                    payload = repMaxesPayload,
-                    isLocallyEmpty = repMaxes.isEmpty()
-                )
+
+                if (collectionErrors.isNotEmpty()) {
+                    val errorDetails = collectionErrors.entries.joinToString("; ") { (name, err) ->
+                        "$name: ${err.message ?: err.javaClass.simpleName}"
+                    }
+                    error("Upload failed for collections: $errorDetails")
+                }
             }
 
             _syncState.value = SyncStatus.SUCCESS
