@@ -26,7 +26,7 @@ import androidx.compose.ui.unit.dp
 import java.util.Locale
 
 /** A single point on a [LineChart]. */
-data class ChartPoint(val label: String, val value: Float)
+data class ChartPoint(val label: String, val value: Float? = null)
 
 /** A named series for [MultiLineChart]. Series are aligned by point index. */
 data class ChartSeries(val name: String, val points: List<ChartPoint>, val color: Color)
@@ -102,7 +102,13 @@ private fun ChartCanvas(series: List<ChartSeries>, modifier: Modifier = Modifier
         val plotW = size.width - leftPad - rightPad
         val plotH = size.height - topPad - botPad
 
-        val values = visible.flatMap { s -> s.points.map { it.value } }
+        val values = visible.flatMap { s -> s.points.mapNotNull { it.value } }
+        if (values.isEmpty()) {
+            // Draw empty axis lines and return early with zero NaN propagation
+            drawLine(axisColor, Offset(leftPad, topPad), Offset(leftPad, topPad + plotH), 1.5f * density)
+            drawLine(axisColor, Offset(leftPad, topPad + plotH), Offset(leftPad + plotW, topPad + plotH), 1.5f * density)
+            return@Canvas
+        }
         var minV = values.min()
         var maxV = values.max()
         if (minV == maxV) { minV -= 1f; maxV += 1f }
@@ -127,13 +133,23 @@ private fun ChartCanvas(series: List<ChartSeries>, modifier: Modifier = Modifier
             pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f * density, 6f * density))
         )
 
-        // Series lines + dots
+        // Series lines + dots (gap-aware)
         visible.forEach { s ->
-            val pts = s.points.mapIndexed { i, p -> Offset(xAt(i), yAt(p.value)) }
-            for (i in 1 until pts.size) {
-                drawLine(s.color, pts[i - 1], pts[i], strokeWidth = 3f * density, cap = StrokeCap.Round)
+            var lastPoint: Offset? = null
+            s.points.forEachIndexed { i, p ->
+                val v = p.value
+                if (v != null) {
+                    val currentOffset = Offset(xAt(i), yAt(v))
+                    if (lastPoint != null) {
+                        drawLine(s.color, lastPoint!!, currentOffset, strokeWidth = 3f * density, cap = StrokeCap.Round)
+                    }
+                    drawCircle(s.color, radius = 4f * density, center = currentOffset)
+                    lastPoint = currentOffset
+                } else {
+                    // Gap encountered: break the polyline cleanly across null gaps
+                    lastPoint = null
+                }
             }
-            pts.forEach { drawCircle(s.color, radius = 4f * density, center = it) }
         }
 
         // Labels
