@@ -266,6 +266,36 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         data.repositoryFlow.flatMapLatest { it.allSessions }.stateInDefault(emptyList())
     val repMaxes: StateFlow<List<RepMax>> =
         data.repositoryFlow.flatMapLatest { it.allRepMaxes }.stateInDefault(emptyList())
+    val weightEntries: StateFlow<List<com.fractanomics.crosstraining.data.model.WeightEntry>> =
+        data.repositoryFlow.flatMapLatest { it.weightEntries }.stateInDefault(emptyList())
+    val weightUnit: StateFlow<String> = data.weightUnit
+
+    fun setWeightUnit(unit: String) {
+        data.setWeightUnit(unit)
+    }
+
+    fun saveWeightEntry(
+        weightKg: Double,
+        date: LocalDate = LocalDate.now(),
+        notes: String = ""
+    ) = viewModelScope.launch {
+        repo.saveWeightEntry(weightKg = weightKg, date = date, notes = notes)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun deleteWeightEntry(date: LocalDate) = viewModelScope.launch {
+        repo.deleteWeightEntry(date = date)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun undoDeleteWeightEntry(
+        date: LocalDate,
+        weightKg: Double,
+        notes: String = ""
+    ) = viewModelScope.launch {
+        repo.saveWeightEntry(weightKg = weightKg, date = date, notes = notes)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
 
     private fun <T> kotlinx.coroutines.flow.Flow<T>.stateInDefault(initial: T): StateFlow<T> =
         stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), initial)

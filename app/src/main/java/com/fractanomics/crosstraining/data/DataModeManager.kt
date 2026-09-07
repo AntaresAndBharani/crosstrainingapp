@@ -49,6 +49,11 @@ open class DataModeManager(
     )
     val themeMode: StateFlow<AppThemeMode> = _themeMode
 
+    private val _weightUnit = MutableStateFlow(
+        prefs?.getString(KEY_WEIGHT_UNIT, "kg") ?: "kg"
+    )
+    val weightUnit: StateFlow<String> = _weightUnit
+
     private val _userRole = MutableStateFlow(
         runCatching {
             val saved = prefs?.getString(KEY_USER_ROLE, null)
@@ -66,6 +71,13 @@ open class DataModeManager(
     fun setThemeMode(mode: AppThemeMode) {
         prefs?.edit()?.putString(KEY_THEME_MODE, mode.name)?.apply()
         _themeMode.value = mode
+    }
+
+    /** Set and persist the preferred body weight unit ("kg" or "lbs"). */
+    fun setWeightUnit(unit: String) {
+        val normalized = if (unit.equals("lbs", ignoreCase = true)) "lbs" else "kg"
+        prefs?.edit()?.putString(KEY_WEIGHT_UNIT, normalized)?.apply()
+        _weightUnit.value = normalized
     }
 
     /** Set and persist the app user role (Athlete vs Coach). */
@@ -181,6 +193,7 @@ open class DataModeManager(
     private companion object {
         const val KEY_SEED_VERSION = "demoSeedVersion"
         const val KEY_THEME_MODE = "themeMode"
+        const val KEY_WEIGHT_UNIT = "weightUnit"
         const val KEY_USER_ROLE = "userRole"
         const val KEY_SAVED_USER_EMAIL = "savedUserEmail"
         const val KEY_SAVED_USER_UID = "savedUserUid"
