@@ -1,1039 +1,369 @@
-# 📋 Implementation Plan & Refinement Lifecycle: Cloud Backup & Sync Error Resolution & Global Real/Demo Data Switch
+# 📋 Implementation Plan & Refinement Lifecycle: Athlete Body Weight Tracker & Progress Correlation
 
 ## 📝 Initial Draft Proposal
 
-### Background & User Requisites
-1. **Cloud Backup & Sync Error:**
-   When tapping **"Sync Now"** under *Cloud Backup & Sync* in the Profile Screen, the app displays an error. We need to diagnose, isolate, and eliminate this failure so that cloud synchronization is robust, reliable, and provides clear, actionable feedback.
-2. **Global Switch for Real Data vs. Demo Data:**
-   Every user (including Guests, Athletes, and Coaches) must have access to a prominent switch to toggle between **Real Data** and **Demo Data**.
-3. **Real Data as Absolute Default:**
-   **By default, the active database must always be Real Data for everyone.** A user should only see demo data if they explicitly toggle the switch to Demo Data. Entering as a Guest must never force Demo Data.
+### Phase 1: Functional & CX Review (Product Owner)
+
+#### Workflow Analysis & Screen Architecture
+Integrating a dedicated Body Weight Tracker into `crosstrainingapp` enables athletes to correlate body mass trends with strength progression and conditioning benchmarks.
+
+```
+[Progress Screen / Navigation]
+           │
+           ├──► [Weight Overview Tab / Dashboard]
+           │         ├── Metric KPI Card (Current Weight & Delta %)
+           │         ├── Granularity Filter Chips (7D | 30D | 90D | 1Y | All)
+           │         ├── Interactive Weight Line Chart (Canvas-based)
+           │         └── Weight History List (Chronological Cards)
+           │
+           └──► [Log Weight Bottom Sheet] (Triggered via FAB / Edit Action)
+                     ├── Decimal Keypad / Numeric Input (Pre-filled with last log)
+                     ├── Date Picker with Fast Toggles (Today | Yesterday)
+                     └── Action Buttons (Save / Delete if editing)
+```
+
+* **Friction Points & Solutions**:
+  * **Friction**: Manually typing the date every morning slows down logging.  
+    **Solution**: Default date to current local day, offering one-tap chips for "Today" and "Yesterday" alongside a date picker.
+  * **Friction**: Fluctuations in daily hydration can cause false impressions of progress.  
+    **Solution**: Display moving average lines (e.g., 7-day rolling average) overlaid on top of raw daily data.
+  * **Friction**: Cluttered bottom navigation.  
+    **Solution**: Anchor the Weight Tracker directly as a sub-tab or top-level segment inside `ProgressScreen.kt` alongside Performance and 1RM tracking.
+
+#### Edge Cases
+* **Multiple Entries on the Same Date**: When an athlete logs weight twice on the same calendar day, seamlessly upsert the entry for that date while preserving history.
+* **Sparse / Missing Data Intervals**: When filtering across wide intervals with missed days, interpolate the trend line gracefully without dropping to zero.
+* **Radical Outliers / Typing Errors**: If an input deviates by more than 15% from the 7-day average, show a non-blocking confirmation warning.
+* **Zero or Negative Values**: Block save action; disable CTA until input matches a valid decimal format.
+* **Offline Logging**: Save directly to local Room database immediately. Enqueue cloud synchronization via the existing background sync worker.
+
+#### Acceptance Criteria (BDD)
+* **Scenario 1: Add a new weight entry**: Given the user opens the "Log Weight" sheet, when they enter a valid weight (e.g., `82.4`) and tap "Save", then the entry is saved to Room DB, the bottom sheet dismisses, the KPI card updates to `82.4 kg`, and the chart animates to include the new point.
+* **Scenario 2: Granularity filtering and percentage change**: Given weight records exist spanning at least 30 days, when the user selects the "30D" chip filter, then the chart aggregates entries into the 30-day window, displays the start-to-end delta, and renders the percentage change.
+* **Scenario 3: Edit and delete an existing weight entry**: Given an entry exists in the weight history list, when the user taps an entry item and edits the value or taps "Delete", then the entry is updated or removed from the database, with an undo Snackbar.
+
+---
+
+### Phase 2: Architectural & Implementation Draft (Software Architect)
+
+#### Proposed Codebase Impact
+* **Room Database**: Increment `version` in `AppDatabase.kt`, register `WeightEntry` entity, add `WeightDao`.
+* **Data Models**: `WeightEntry.kt` representing timestamped bodyweight records.
+* **DAO Layer**: `WeightDao.kt` for CRUD operations and date-bounded queries.
+* **Repository**: `Repository.kt` exposing reactive `Flow<List<WeightEntry>>` and CRUD suspend functions.
+* **Analytics Engine**: `WeightAnalytics.kt` pure Kotlin aggregator for 7D rolling averages and deltas.
+* **ViewModel**: `WeightTrackerViewModel.kt` or integration into `AppViewModel.kt`.
+* **UI Screens & Components**: Integration into `ProgressScreen.kt`, `WeightEntryBottomSheet.kt`, `WeightSummaryCard.kt`.
 
 ---
 
 ## 🔍 Review Iteration 1: 3-Amigos Critical Architectural Review
 
-- **Date / Author:** 2026-09-03 | Antigravity AI Architect
-- **Target Repository:** `AntaresAndBharani/crosstrainingapp` (`c:\Users\rogal\workspaces\ws-gym\crosstrainingapp`)
+- **Date / Author:** 2026-09-07 | Antigravity AI Architect
+- **Target Repository:** `AntaresAndBharani/crosstrainingapp` @ `efd0450`
+- **Scope Reviewed:** `AppDatabase.kt` (lines 1–197), `Converters.kt`, `ProgressScreen.kt` (lines 1–150), `LineChart.kt` (lines 1–160), `UserCloudSyncManager.kt` (lines 450–600), `DataModeManager.kt`, `DemoData.kt`, `Repository.kt`.
 
 ### 1. Verdict Matrix
 
-| Proposal Item | Proposed Behavior | Ground Truth Codebase Analysis | Verdict | Architectural Rationale & Adjustments |
+| Feature Component | Proposed Plan | Ground Truth Codebase Analysis | Verdict | Architectural Rationale & Required Adjustments |
 | :--- | :--- | :--- | :--- | :--- |
-| **P1: Real Data by Default** | All users (logged in or guest) start in Real Data mode by default. | `AppNavigation.kt` (L163) explicitly forces `viewModel.setDemoMode(true)` on `onContinueAsGuest`. `DataModeManager.kt` persists this in prefs, locking returning users into demo mode. | **APPROVE** | Remove forced `setDemoMode(true)` from `onContinueAsGuest`. *(Corrected in Iteration 2: `_demoMode` already defaults to `false` at `DataModeManager.kt:37` — the defect is the **persisted** `demoMode=true` pref, so a one-time migration must clear it for users already locked in.)* Ensure login/signup calls `setDemoMode(false)`. |
-| **P2: Global Data Mode Switch** | Provide a visible switch accessible to everyone to toggle Real vs Demo data. | Demo toggle is currently buried in `LibraryScreen.kt` 3-dots overflow menu (`DropdownMenuItem`, L221-234). *(Corrected in Iteration 2: Movement Library **is** reachable from the drawer for both roles (`AppNavigation.kt:111`) — this is a discoverability defect, not inaccessibility. `ProfileScreen.kt` contains no `demoMode` reference at all.)* | **APPROVE** | Place a dedicated **Data Mode Card** in `ProfileScreen.kt` with a Material 3 `Switch` ("Real Data" vs "Demo Data"), and add a quick toggle row in `AppNavigation.kt` (`AppDrawerContent`) under the role switcher. |
-| **P3: Fix "Sync Now" Error** | Resolve errors occurring when clicking "Sync Now". | 1) Guests click "Sync Now" -> `ensureAuthenticated()` fails anonymous auth or Firestore rejects unauthenticated request with `PERMISSION_DENIED`.<br>2) Google picker sets local email in `_userState` without Firebase Auth token, causing `PERMISSION_DENIED`.<br>3) If in Demo Mode, sync targets `demoRepository` instead of real database. | **MODIFY** | 1) Gate "Sync Now": If in Demo Mode, disable sync and explain why. If in Guest Mode, prompt user to log in/sign up to enable cloud backup.<br>2) If authenticated, gracefully map Firestore and network errors.<br>3) Always sync `realRepository`, never pollute cloud with demo fixtures. |
+| **Room Schema & Migration** | Increment DB version, add `WeightEntry`, use automated or explicit migration. | `AppDatabase.kt` is currently at `version = 5`. `Converters.kt` converts `LocalDate` to `Long` via `toEpochDay()`, meaning the column in SQLite must be `INTEGER NOT NULL`, and `weightKg` is `REAL NOT NULL`. Both `crosstraining.db` and `crosstraining-demo.db` must receive `MIGRATION_5_6`. | **MODIFY** | Provide explicit, concrete `MIGRATION_5_6` in `AppDatabase.kt` with exact SQL: `CREATE TABLE IF NOT EXISTS weight_entries (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, weightKg REAL NOT NULL, date INTEGER NOT NULL, notes TEXT, createdAtMillis INTEGER NOT NULL)` and unique index on `date`. Register in both `get()` and `getDemo()`. |
+| **DAO & Concurrency** | Use `@Insert(onConflict = OnConflictStrategy.REPLACE)`. | `OnConflictStrategy.REPLACE` on an auto-increment primary key causes a DELETE + INSERT in SQLite, which mutates the primary key `id` on updates. Room 2.6.1 is installed in `libs.versions.toml`. | **MODIFY** | Use Room 2.6.1's native `@Upsert` annotation on `WeightDao.upsert(entry: WeightEntry): Long`. This performs a true SQL `UPSERT` without primary key churn. |
+| **Cloud Backup & Sync** | "Enqueue cloud synchronization via the existing background sync worker." | Cloud sync is executed by `UserCloudSyncManager.kt` via `supervisorScope` across explicit Firestore document paths (`exercises`, `routines`, `cycles`, `sessions`, `rep_maxes`). Weight entries are completely unmentioned in `UserCloudSyncManager.kt`. | **MODIFY** | Add `weight_entries` collection to `UserCloudSyncManager.uploadUserData` and `downloadUserData` under `userDoc(uid).collection("data").document("weight_entries")`. Route sync strictly to `data.realRepository`. |
+| **Demo Mode Isolation** | None specified. | In `crosstrainingapp`, demo mode uses `crosstraining-demo.db` (`DataModeManager`). If demo mode has zero weight entries, the Weight Tracker will be completely blank and non-demonstrable in demo mode. | **MODIFY** | Add 30-day realistic sample weight trend in `DemoData.kt` (`seedDemoData`) so athletes previewing demo mode can immediately experience the weight tracking and chart features. |
+| **Unit System (kg vs. lbs)** | Hardcoded `weightKg: Double` with no unit switching. | While athletes in some regions track in `kg`, athletes in the US and UK track in `lbs`. The app already supports imperial and metric across exercises and timers. | **MODIFY** | Store canonical `weightKg: Double` in Room and Firestore. Expose a user unit preference (`kg` vs. `lbs`) in UI settings and provide a one-tap toggle on the Weight Tracker card to view and input in lbs with automatic conversion ($1\text{ kg} \approx 2.20462\text{ lbs}$). |
+| **Progress Screen Gating** | Embed as sub-tab in `ProgressScreen.kt`. | `ProgressScreen.kt` line 118 has an early return: `if (exercises.isEmpty()) { EmptyState(...); return@Scaffold }`. An athlete who wants to track body weight before logging any exercises would be blocked from viewing the weight tracker! | **MODIFY** | Lift the `exercises.isEmpty()` guard so that `ProgressMode.BODY_WEIGHT` renders independently of whether exercises have been created. |
+| **Chart Visualization** | "Adapt canvas point mapping for date-stamped weight float values." | `MultiLineChart.kt` already exists in `com.fractanomics.crosstraining.ui.components` and accepts `List<ChartSeries>`. It renders canvas points and lines with zero external dependencies. | **APPROVE** | Reuse `MultiLineChart` directly: Series 1 = Daily weight logs (`ChartPoint(label, value)` in accent color), Series 2 = 7-Day Moving Average trend line in primary color. |
 
 ---
 
 ### 2. Identified Weak Points & Anti-Patterns
 
-1. **Anti-Pattern 1: Unauthenticated Firestore Writes (Security & Auth Mismatch)**
-   In `LoginWelcomeScreen.kt`, the Google sign-in flow uses Android's local `AccountManager` to obtain an email address and calls `logInWithGoogleAccount(email)`. In `UserCloudSyncManager.kt:208` this calls `ensureAuthenticated()` (an **anonymous** sign-in) and then overwrites `_userState` with `uid = auth.currentUser?.uid ?: email` — so the session carries no Google ID token, and if anonymous auth is unavailable the uid degrades to the raw email string. `currentUserId` then addresses `environments/{env}/users/{email}` with a mismatched or absent auth token, which Firestore rules reject with `PERMISSION_DENIED: Missing or insufficient permissions`. *(Iteration 2: a correct ID-token path already exists — `signInWithGoogleCredential` at `UserCloudSyncManager.kt:191`, wrapped by `AppViewModel.logInWithGoogle` at L109 — but **no UI calls it**; both `LoginWelcomeScreen.kt:99` and `ProfileScreen.kt:626` use the broken `AccountManager` path. The project's Firestore rules are not committed to this repo, so the `PERMISSION_DENIED` diagnosis remains unverified.)*
+1. **Anti-Pattern 1: Unchecked Room Migration Type Mismatch (`LocalDate` as `TEXT` vs `INTEGER`)**
+   Because `Converters.kt` implements `@TypeConverter fun toEpochDay(date: LocalDate?): Long?`, Room maps `LocalDate` to SQLite `INTEGER`. If the migration SQL uses `TEXT` for the `date` column, Room's schema validation throws `IllegalStateException: Migration didn't properly handle: weight_entries` on app startup, crashing existing installs.
+   *Remedy:* Specify the exact `MIGRATION_5_6` DDL with `date INTEGER NOT NULL`.
 
-2. **Anti-Pattern 2: Unchecked Guest Sync Execution**
-   In `ProfileScreen.kt`, the "Cloud Backup & Sync Card" displays a fully enabled **"Sync Now"** button even when `authUser?.email` is null (Guest mode). When clicked, `uploadUserData` invokes `ensureAuthenticated()`. *(Corrected in Iteration 2: `ensureAuthenticated()` at `UserCloudSyncManager.kt:89-102` swallows **every** exception and never throws. The throw is `error("User not authenticated")` at `UserCloudSyncManager.kt:251` (upload) and `:388` (download), reached when `currentUserId` is blank.)* If anonymous authentication is disabled on the Firebase project (`virgymia-c2cc7` — unverified; auth providers and rules are console-side only), `currentUserId` is blank and that `IllegalStateException` surfaces as a raw error message in the snackbar.
+2. **Anti-Pattern 2: Skipping Cloud Synchronization**
+   If `weight_entries` is added solely to the local Room database without Firestore serialization in `UserCloudSyncManager.kt`, athletes who switch devices or reinstall the app will lose all historical bodyweight entries while their routines and sessions survive.
+   *Remedy:* Add `weight_entries` as a first-class collection in `UserCloudSyncManager.kt` using the established `supervisorScope` pattern with overwrite protection.
 
-3. **Anti-Pattern 3: Forcing Demo Mode on Guest Users**
-   In `AppNavigation.kt`:
+3. **Anti-Pattern 3: Primary Key Mutation on Duplicate Day Logging**
+   Using `@Insert(onConflict = OnConflictStrategy.REPLACE)` on SQLite tables with `@PrimaryKey(autoGenerate = true)` triggers a full row deletion and re-insertion with a new auto-increment ID whenever an athlete logs weight for the same date twice.
+   *Remedy:* Use Room 2.6.1's `@Upsert` to perform an in-place SQLite `INSERT ... ON CONFLICT DO UPDATE`.
+
+4. **Anti-Pattern 4: Empty State Gating in ProgressScreen**
+   Currently, `ProgressScreen.kt` guards the entire screen content with:
    ```kotlin
-   onContinueAsGuest = {
-       guestModeAccepted = true
-       viewModel.setDemoMode(true) // <-- ANTI-PATTERN: Forces demo data on all guests!
+   if (exercises.isEmpty()) {
+       EmptyState("Add exercises and log sessions to see progress here.", Modifier.padding(pad))
+       return@Scaffold
    }
    ```
-   Guests who want to try the app and log their real workouts are immediately thrown into the pre-populated demo database (`crosstraining-demo.db`) with sample Olympic weightlifting cycles and fake PRs, causing confusion about where their real data lives.
-
-4. **Anti-Pattern 4: Syncing the Active Repository Blindly**
-   In `AppViewModel.kt`:
-   ```kotlin
-   fun triggerCloudSync(onResult: (Boolean, String?) -> Unit) = viewModelScope.launch {
-       val uploadRes = UserCloudSyncManager.uploadUserData(repo) // repo = data.current
-       val downloadRes = UserCloudSyncManager.downloadUserData(repo)
-   ```
-   Because `repo` points to `data.current`, if a user enters Demo Mode and clicks "Sync Now", the app attempts to overwrite the user's Firestore cloud backup with disposable demo data, or downloads cloud workouts into the disposable `crosstraining-demo.db`.
+   If an athlete starts in Real Data mode and taps Progress to log their body weight, they are blocked by an empty exercise message.
+   *Remedy:* Restructure `ProgressScreen.kt` so the filter chips (`By exercise`, `By routine`, `Cycle goals`, `Body weight`) are always reachable, and the empty state only applies when the selected mode has no data.
 
 ---
 
 ### 3. Edge Cases & Resilience Invariants
 
-- **Invariant 1: Cloud Sync ONLY Operates on Real Data**
-  Cloud Firestore must never receive demo records or overwrite real athlete logs with disposable sample data. If `demoMode` is active, the Sync button must be disabled with a clear notice: *"Switch to Real Data to sync your personal workouts"*.
-- **Invariant 2: Offline Resilience**
-  If a user has no internet connection, clicking "Sync Now" must not show a cryptic timeout or stack trace. It should report: *"Network unavailable. Your data is saved locally on this device."*
-- **Invariant 3: Live Flow Re-binding**
-  When toggling between Real Data and Demo Data via the switch, all UI screens (Log, History, Cycles, Library, Progress) must update instantly via `DataModeManager.repositoryFlow` without requiring an application restart.
-- **Invariant 4: Safe Guest Prompting**
-  If an unauthenticated guest clicks "Sync Now", the app must open the Authentication modal (`showAuthModal = true`), enabling seamless login or signup without data loss.
+* **Invariant 1: Cloud Sync Isolation**: Cloud backup of weight entries must only operate on `data.realRepository`. Demo weight entries from `crosstraining-demo.db` must never be uploaded to Firestore.
+* **Invariant 2: Biological Smoothing (7-Day SMA)**: Daily body weight fluctuates by 1–2% due to water retention and glycogen. The dashboard must always calculate a 7-day Simple Moving Average:
+  $$\text{SMA}_7(t) = \frac{1}{N} \sum_{i=0}^{N-1} W(t - i) \quad (N \le 7)$$
+  over available prior logs within a 7-day window.
+* **Invariant 3: Reasonable Weight Range Validation**: Prevent typographical blunders (e.g. typing 750 instead of 75.0, or 0.8 instead of 80) by enforcing valid human ranges:
+  - Metric: $20.0\text{ kg} \le W \le 350.0\text{ kg}$
+  - Imperial: $44.0\text{ lbs} \le W \le 770.0\text{ lbs}$
+  Input outside this range disables the Save CTA and displays an inline guidance tip.
+* **Invariant 4: Calendar Date Normalization**: All weight entries are indexed strictly on `LocalDate` to prevent timezone offsets from fragmenting daily weigh-ins into duplicate days.
 
 ---
-
-*(Note: The consolidated Final Decision Plan has been updated and moved to the end of this document per the living document standard).*
-
----
-
-## 🔍 Review Iteration 2: 3-Amigos Critical Review — Root-Cause Evidence, Regression Blast Radius & Data-Loss Exposure
-
-- **Date / Reviewer:** 2026-09-03 | Three Amigos (Business / Development / QA)
-- **Target Repository:** `AntaresAndBharani/crosstrainingapp` (`c:\Users\rogal\workspaces\ws-gym\crosstrainingapp`) @ `25a9739`
-- **Scope reviewed:** Every claim in Iteration 1 re-tested against source. Files read in full or in the relevant range: `DataModeManager.kt`, `UserCloudSyncManager.kt` (588 L), `AppViewModel.kt`, `AppNavigation.kt`, `ProfileScreen.kt`, `LibraryScreen.kt`, `LoginWelcomeScreen.kt`, `AppDatabase.kt`, `SeedData.kt`, `DemoData.kt`, `app/build.gradle.kts`, `app/google-services.json`, all six `e2e/flows/*.yaml`, `e2e/flow-mapping.json`, `scripts/run-e2e-tests.ps1`, `.agents/rules/02_testing_verification.md`.
-- **Verdict:** ❌ **REWORK REQUIRED** — 4 blockers. P1 (Real Data default) is correct but incomplete; P3 (Sync Now fix) rests on an unverified root cause and prescribes a remedy that routes users into the very auth path Iteration 1 itself diagnosed as broken.
-
-### 0. What Iteration 1 got right (re-verified, not inherited)
-
-| Iteration 1 claim | Verification | Status |
-| :--- | :--- | :--- |
-| `AppNavigation.kt` L163 forces `setDemoMode(true)` on guest | `AppNavigation.kt:161-164`, exact text confirmed | ✅ Confirmed |
-| Demo toggle lives in `LibraryScreen.kt` overflow menu | `LibraryScreen.kt:221-234` (`DropdownMenuItem`, "Try demo data") | ✅ Confirmed |
-| `ProfileScreen.kt` sync card is enabled for guests | `ProfileScreen.kt:421` — `enabled = syncState != SyncStatus.SYNCING` is the **only** guard; the file contains no `demoMode` reference at all | ✅ Confirmed |
-| `triggerCloudSync` syncs `data.current` | `AppViewModel.kt:63-64, 154-156` | ✅ Confirmed |
-| Databases are `crosstraining.db` / `crosstraining-demo.db` | `AppDatabase.kt:129, 140` | ✅ Confirmed |
-| `showAuthModal` exists, so Invariant 4 is mechanically feasible | `ProfileScreen.kt:109, 462` | ✅ Confirmed |
-| `Invoke-ScriptTests.ps1` and AVD `Pixel_10_API_35` exist | `scripts/tests/Invoke-ScriptTests.ps1`; `scripts/run-e2e-tests.ps1:18` | ✅ Confirmed |
-
-### 1. Findings
-
-| # | Severity | Perspective | Finding | Evidence | Recommended action |
-| :-- | :--- | :--- | :--- | :--- | :--- |
-| 1 | 🔴 **Blocker** | QA / Dev | **Removing `setDemoMode(true)` breaks E2E flow 03.** All six Maestro flows enter through `Continue as Guest` and therefore currently land in the pre-seeded demo DB. Flow 03 then does `tapOn: "Workout Session"` and `assertVisible: "Back Squat"`. `SeedData.populate` seeds **zero** `Session` rows, so on a real DB there is no session card to tap. Iteration 1's verification section never mentions E2E at all. | `e2e/flows/03_history_and_search_flow.yaml:10-16`; `SeedData.kt` contains 0 `Session(` constructions, `DemoData.kt:203` generates them; `HistoryScreen.kt:275` supplies the "Workout Session" fallback label | Rework flow 03 to create a session first (or to toggle demo data explicitly) **in the same change**. Re-run flows 02/04/06 against a real DB. **Body edit applied** — added to Subtask 4. |
-| 2 | 🔴 **Blocker** | Dev / Business | **The root cause of the "Sync Now" error was never established.** Iteration 1 offers three hypotheses, none reproduced, none instrumented. At least three *unexamined* causes are more likely for a real athlete: (a) the entire session history is written into **one** Firestore document (`data/sessions`) as a single array — Firestore's hard limit is 1 MiB per document, plausibly reached at roughly 150–250 logged sessions; (b) the full re-upload of exercises + routines + sessions + goals + rep-maxes is wrapped in a single `withTimeout(20000L)`; (c) uid/identity mismatch (Finding 4). The plan's deliverable is exception-to-string mapping, which renames the failure without fixing it. | `UserCloudSyncManager.kt:245-377` — five sequential `.set(...).await()` calls, with `sessionsPayload` written whole to one document at `:344`; timeout at `:247` | Before any code: reproduce on the affected account, capture the exception class, message and Firestore error code, attach them to this plan. Only then decide between UI gating and sharding `data/sessions` into per-session documents. |
-| 3 | 🔴 **Blocker** | Dev | **Irreversible cloud overwrite with no recovery path.** `triggerCloudSync` runs **upload before download**, and every upload is a full `.set()` replacement, not a merge. A user who reinstalls, enters as Guest (which after this plan lands in an *empty* real DB), signs in, has the download fail (timeout, or Finding 2), and then taps "Sync Now" overwrites their entire Firestore backup with empty arrays. No versioning, no server-side history, no confirmation prompt. This plan makes "Sync Now" more prominent and explicitly funnels guests toward it. | `AppViewModel.kt:154-160` (upload then download); `UserCloudSyncManager.kt:267, 296, 344, 359, 377` all use `.set(...)`; the pre-existing "Search Cloud for Lost Routines" button suggests this has already bitten someone | Invert to download-then-upload, or refuse to upload when the local dataset is empty or materially smaller than the remote one, or write a timestamped backup document before overwriting. Must be settled before Subtask 3 ships. |
-| 4 | 🔴 **Blocker** | Dev / Business | **Scenario 4 routes guests into the broken auth path.** Anti-Pattern 1 correctly identifies the `AccountManager` Google flow as a root cause — then Scenario 4's remedy is "tap Sync Now → auth modal opens". That modal calls `logInWithGoogleAccount`, i.e. exactly the broken flow. Meanwhile the correct ID-token path, `signInWithGoogleCredential`, **already exists and is dead code**: nothing in `app/src/main` calls `AppViewModel.logInWithGoogle`. No subtask in the plan fixes this. | `UserCloudSyncManager.kt:191` (correct path) vs `:208` (used path); call sites `LoginWelcomeScreen.kt:99` and `ProfileScreen.kt:626`; `AppViewModel.kt:109` has zero callers | Add a subtask migrating both Google entry points to Credential Manager → `signInWithGoogleCredential(idToken)`, or descope Google sign-in and remove it from the guest prompt. **Body edit applied** — Anti-Pattern 1 corrected. |
-| 5 | 🟠 Major | Dev | **No migration for users already locked into demo mode.** Iteration 1's fix is "default `_demoMode` to `false`" — but it *already is* `false`. The persisted pref is the trap: every existing user who ever tapped "Continue as Guest" has `demoMode=true` in `crosstraining-prefs` and will still open into demo data after this ships. Requisite 3 would be unmet for exactly the population that reported it. | `DataModeManager.kt:37` (`prefs?.getBoolean(KEY_DEMO_MODE, false)`) and `:140` (persists on set) | Add a one-time keyed migration (e.g. `demoModeMigratedV2`) that clears `KEY_DEMO_MODE`. **Body edit applied** — P1 row. |
-| 6 | 🟠 Major | Dev | **Demo data can still reach the cloud through five ungated call sites.** Anti-Pattern 4 and the Component Impact table guard only `triggerCloudSync`. `signUpWithEmail` uploads `repo`; `logInWithEmail`, `logInWithGoogle` and `logInWithGoogleAccount` download into `repo`; `recoverCloudRoutines` writes into `repo` — all resolve to `data.current`. Sign up while in demo mode and Invariant 1 is violated on the very first sync, before the user ever sees the gated button. | `AppViewModel.kt:63-64, 87, 102, 116, 130, 165` | Route all cloud sync through an explicit real-repository accessor (as the `DataModeManager` row already hints) instead of gating each button. **Body edit applied** — AppViewModel row. |
-| 7 | 🟠 Major | Dev / Security | **`recoverAllCloudRoutines` reads every user's data.** The "Search Cloud for Lost Routines" button — which sits inside the very card this plan redesigns — issues `firestore.collectionGroup("data").get()` filtered only by environment path, **not by uid**, and imports every matching `routines` document into the local DB. If it succeeds, user A ingests user B's routines. The plan leaves it ungated and unmentioned. Note the pincer: if the rules were per-uid (as Anti-Pattern 1 assumes) this button could never work; if they are permissive enough for it to work, the `PERMISSION_DENIED` diagnosis is wrong. Both cannot be true. | `UserCloudSyncManager.kt:543-548`; button at `ProfileScreen.kt:428-437` | Scope the query to `userDoc(currentUserId)`, or remove the button. Either way commit the Firestore rules to the repo so this is reviewable. |
-| 8 | 🟠 Major | QA | **The plan's headline acceptance criterion is not testable by the tests it proposes.** Subtask 1 says "add unit tests verifying guest launch and login always default to Real Data", but that behaviour lives in a `@Composable` lambda and in `SharedPreferences`. The project has **no Robolectric** — unit-test deps are only `junit` and `kotlinx-coroutines-test` — and just two `androidTest` files exist. Worse, `testOptions.unitTests.isReturnDefaultValues = true` means a JVM test constructing `DataModeManager` gets `prefs == null` and `demoMode == false` *unconditionally*, so such a test passes whether or not the bug is fixed. | `app/build.gradle.kts:101-105, 139-144`; `app/src/androidTest` contains 2 files; `DataModeManager.kt:26, 37` | Add Robolectric, or make `DataModeManager` take an injectable prefs abstraction, or state plainly that Scenario 1 is verifiable only by instrumented/E2E means. |
-| 9 | 🟠 Major | QA | **Verification steps violate the repo's own mandatory gate.** `.agents/rules/02_testing_verification.md` §2 requires `testDebugUnitTest assembleSnapshot -PsnapshotLabel=localtest --no-daemon` before any PR, plus E2E artifact capture when UI components change. Subtask 4 listed neither, despite this being a heavily UI-bearing change. | `.agents/rules/02_testing_verification.md` §2 vs Iteration 1 Subtask 4 | **Body edit applied** — both commands added to Subtask 4. |
-| 10 | 🟠 Major | Dev | **`triggerCloudSync` reports success when the backup failed.** The success rule is `uploadRes.isSuccess \|\| downloadRes.isSuccess`, and `_syncState` is set independently by each call, so a failed upload followed by a successful download yields a green `SUCCESS` badge and "Cloud sync completed!". Scenario 5 layers friendly error text on top of a success rule that hides the error entirely. | `AppViewModel.kt:158-159`; `ProfileScreen.kt:414-418`; `UserCloudSyncManager.kt:378-381` | Report upload and download outcomes separately. **Body edit applied** — AppViewModel row. |
-| 11 | 🟠 Major | Business | **The plan deletes the first-run experience without replacing it.** Forcing demo mode on guests was almost certainly deliberate: there is a dedicated demo database, a `DemoBanner`, a "DEMO ACTIVE" drawer badge and a versioned `DemoData.SEED_VERSION`. After this change a first-time guest sees an empty History, an empty Progress chart and no cycles. Requisite 3 is satisfied; onboarding regresses. No alternative (empty-state CTA, first-run prompt) is proposed, and no stakeholder beyond the requester is cited. | `AppNavigation.kt:323-337` (`DemoBanner`) and `:542-556` ("DEMO ACTIVE"); `DemoData.kt:25` (`SEED_VERSION = 3`) | Pair the change with an empty-state "Explore demo data" CTA on Log/History so demo becomes opt-in rather than absent. |
-| 12 | 🟡 Minor | Dev / Product | **Three toggles for one flag.** The plan adds a Profile card and a drawer row but never says what happens to the existing `LibraryScreen` overflow toggle, which is also the only home of "Reset demo data". `LibraryScreen.kt` is absent from the Component Impact table even though the plan's own P2 row names it. | `LibraryScreen.kt:221-243`; Component Impact table | Decide explicitly: remove the Library toggle and rehome "Reset demo data" into the new Profile card, or document why three entry points are intended. |
-| 13 | 🟡 Minor | Dev | **Invariant 3 ("instantly", "without restart") is unachievable on the first toggle into Demo.** `setDemoMode(true)` calls `seedIfNeeded()`, which may run `importSnapshot` — a full `deleteAll` plus re-insert inside a DB transaction. A Material 3 `Switch` with no busy state will appear frozen, or will visually desync from the actual mode, while that runs. | `DataModeManager.kt:138-162`; `Repository.kt:313-325`; `AppViewModel.kt:201` | Expose a `switching` state and disable the switch (or show progress) until `demoMode` actually flips. |
-| 14 | 🟡 Minor | Dev | **Cross-device sync corrupts entity links.** Local Room autoincrement IDs (`exerciseId`, `cycleId`, `routineId`, `mainExerciseId`) are uploaded raw and re-applied verbatim on the receiving device, where they identify different rows. Session dedup is `date == date && title == title`, so two same-titled workouts on one day collapse into one. Requisite 1 asks for sync that is "robust, reliable"; this plan does not make it so. | `UserCloudSyncManager.kt:450` (`saveCycleGoal` with source-device IDs), `:468` (dedup rule), `:520+` (rep-max `exerciseId`) | Out of scope for this plan — but say so explicitly, and soften the user story from "securely synced" to what is actually delivered. |
-| 15 | 🟡 Minor | Dev | `runCatching` wraps the suspend bodies of `uploadUserData` / `downloadUserData`, and `ensureAuthenticated` catches bare `Exception`, so `TimeoutCancellationException` and structured-concurrency cancellation are swallowed and resurfaced as ordinary failures. Any error-mapping layer built on top will mis-classify cancellations as network errors. | `UserCloudSyncManager.kt:89-102, 245, 382` | Rethrow `CancellationException` before mapping. |
-| 16 | 🟡 Minor | QA | `e2e/flow-mapping.json` is stale: it keys rules on `ProfileSettingsScreen.kt` and `CoachScreen.kt`, neither of which exists, and has no rule for `ProfileScreen.kt`. The delta safety net saves it (unmatched file → full suite), so behaviour is safe, but the mapping cannot be trusted as documentation. | `e2e/flow-mapping.json` (patterns for `ProfileSettingsScreen.kt`, `CoachScreen.kt`); `scripts/run-e2e-tests.ps1:174-178` | Repoint the settings/theme rule at `ProfileScreen.kt` while that file is being touched anyway. |
-| 17 | 🟢 Non-issue | Dev | "Demo data could leak into the real DB when toggling." It cannot: the two are separate Room database files, and `resetDemoData` only ever targets `demoRepository`. Iteration 1's Invariant 1 is sound for the *local* direction. | `AppDatabase.kt:124-140`; `DataModeManager.kt:32-35, 153-157` | None. |
-| 18 | 🟢 Non-issue | QA | "Adding a Profile card might skip E2E selection." It does not — an unmatched changed file triggers the full six-flow suite via the delta safety net. | `scripts/run-e2e-tests.ps1:174-181` | None. |
-
-### 2. Concerns & drawbacks
-
-**2.1 The plan treats a diagnosis as if it were evidence.**
-Iteration 1 is written with high confidence — a section headed "Ground Truth Codebase Analysis", and `PERMISSION_DENIED: Missing or insufficient permissions` quoted as though observed — but nothing in it was reproduced. There is no `firestore.rules` and no `firebase.json` anywhere in the repository; the security rules and the enabled auth providers are console-side only. Every P3 conclusion is therefore downstream of an assumption about configuration no reviewer can inspect, and two of Iteration 1's own claims contradict each other under scrutiny (Finding 7). **Verdict: Blocker.** The cheapest, highest-value next step is one reproduction with a captured stack trace — not four subtasks of code.
-
-**2.2 "Robust, reliable sync" has been quietly redefined as "nicer error text".**
-Requisite 1 asks to "diagnose, isolate, and eliminate this failure". The deliverable is gating plus exception-to-string mapping. If the true cause is the 1 MiB document ceiling or the 20 s timeout (Finding 2), the user's experience after this plan is the same failure with better wording — and their data still is not backed up. Meanwhile every mechanism that actually makes sync unreliable — monolithic documents, destructive `set()`, raw local IDs across devices, an unscoped cross-tenant recovery query — remains untouched. **Verdict: Blocker on the acceptance criteria as written.** Scenario 5 can pass in full while requisite 1 remains unmet.
-
-**2.3 Coupling a one-line UX fix to an undiagnosed bug.**
-Requisite 3 is genuinely a one-line deletion plus a pref migration (Finding 5). Requisite 2 is a contained UI addition. Requisite 1 is an open investigation. The INVEST breakdown presents four subtasks as independent, but Subtask 3 depends on both 1 and 2, and all of them are gated behind an unknown. **Verdict: Major.** Ship Subtask 1 plus the migration on its own — it satisfies the user's most emphatic requisite ("By default, the active database must always be Real Data for everyone") within a day — and keep the sync investigation as a separate, evidence-led change.
-
-**2.4 Irreversibility is nowhere acknowledged.**
-The plan contains no rollback story. Two operations inside its blast radius are unrecoverable: overwriting the Firestore backup with an empty dataset (Finding 3), and `importSnapshot`'s `deleteAll` on demo-mode entry — harmless today, but this plan puts a one-tap switch in front of it for every user, including Coaches who may have been editing demo content for planning. **Verdict: Blocker for the first, Minor for the second** — but both belong in the plan rather than being discovered in production.
-
-**2.5 Nothing here is observable in production.**
-Every acceptance criterion is a UI assertion on an emulator. There is no counter, log or crash-reporting hook that would tell anyone whether sync success rates improved after this ships — and because debug/snapshot builds write to `environments/snapshot` while release writes to `environments/production`, emulator validation cannot even observe the failing population. **Verdict: Major.** Define at least one production-observable signal before declaring requisite 1 "eliminated".
-
-### 3. Open questions for the author
-
-1. **What is the literal error?** A screenshot or logcat of the failing "Sync Now", with the account, build variant and dataset size. This single answer determines whether Subtask 3 is the right work at all.
-2. **Where do the Firestore security rules live, and can they be committed to this repo?** Without them, Anti-Pattern 1 and Finding 7 cannot both be resolved.
-3. **Is anonymous auth enabled on `virgymia-c2cc7`?** The plan asserts behaviour conditional on this and never checks it.
-4. **Should guests be able to sync at all?** Data written under an anonymous uid is unrecoverable after uninstall. Scenario 4 says "sign in first", which is the safer answer — confirm that is intentional and permanent.
-5. **Is the demo-on-first-run experience being deliberately retired** (Finding 11), and if so what replaces it?
-6. **Does the `LibraryScreen` overflow toggle stay?** If it goes, where does "Reset demo data" live?
-
-### 4. Unverified claims
-
-- **`PERMISSION_DENIED` originating from Firestore security rules** — no `firestore.rules` or `firebase.json` exists anywhere in the repository; the rules are console-side. Unverifiable from source, and in tension with `recoverAllCloudRoutines` being expected to work (Finding 7).
-- **"Anonymous authentication is disabled on the Firebase project"** — `app/google-services.json` confirms the project is `virgymia-c2cc7`, but enabled auth providers are not represented in that file. Stated as a conditional in Iteration 1; still a conditional.
-- **"Sync targets `demoRepository` instead of the real database" as a cause of the observed error** — mechanically true (`AppViewModel.kt:63-64`), but it would produce *wrong data*, not an error dialog. It does not explain the reported symptom and should not be listed as a cause of it.
-- **The 1 MiB document-limit hypothesis (Finding 2a)** — inferred from the payload shape, not measured. It needs the affected account's session count to confirm or eliminate.
-- **Whether E2E flows 02, 04 and 06 survive the real-data default** — flow 04's assertions (`Back Squat`, `Clean & Jerk`, `Barbell`) do appear in `SeedData.kt:41,47`, so it will probably pass; flows 02 and 06 were not executed. Only flow 03 is confirmed broken (Finding 1). No build or test run was performed as part of this review.
-
-### 5. Body edits applied in this iteration
-
-| Location | Change | Finding |
-| :--- | :--- | :--- |
-| Verdict Matrix, P1 row | Noted that `_demoMode` already defaults to `false` (`DataModeManager.kt:37`); the defect is the persisted pref, and a one-time migration is required | 5 |
-| Verdict Matrix, P2 row | Corrected "Inaccessible from primary navigation" — Movement Library is in the drawer for both roles (`AppNavigation.kt:111`); this is a discoverability defect, not inaccessibility | — |
-| Anti-Pattern 1 | Corrected the mechanism (`ensureAuthenticated()` *is* called; the uid degrades to the raw email) and recorded that `signInWithGoogleCredential` already exists but is dead code | 4 |
-| Anti-Pattern 2 | Corrected the throw site: `ensureAuthenticated()` swallows every exception; the throw is `error("User not authenticated")` at `UserCloudSyncManager.kt:251` / `:388` | — |
-| Component Impact, `AppViewModel.kt` row | Listed all six `data.current` sync call sites; flagged the `isSuccess \|\| isSuccess` rule; struck the already-implemented `setDemoMode` handler | 6, 10 |
-| INVEST Subtask 4 | Added the mandatory CI-parity command and E2E artifact capture per `.agents/rules/02_testing_verification.md` §2; added the flow 03 regression and the snapshot-vs-production environment caveat | 1, 9 |
-
-*No earlier review iteration was modified. All Iteration 1 corrections are inline and explicitly marked.*
-
----
-
-## 🔍 Review Iteration 3: 3-Amigos Critical Review — Ungated Background Writes, a Source-Verifiable Root Cause, and a Verification Plan That Is Blind by Construction
-
-- **Date / Reviewer:** 2026-09-03 | Three Amigos (Business / Development / QA)
-- **Target Repository:** `AntaresAndBharani/crosstrainingapp` (`c:\Users\rogal\workspaces\ws-gym\crosstrainingapp`) @ `25a9739`
-- **Scope reviewed:** Every load-bearing claim of Iterations 1 **and 2** re-tested against source; no conclusion inherited. Files read: `DataModeManager.kt` (full), `UserCloudSyncManager.kt` (full), `AppViewModel.kt`, `AppNavigation.kt`, `ProfileScreen.kt`, `LibraryScreen.kt`, `LoginWelcomeScreen.kt`, `SessionEditor.kt`, `HistoryScreen.kt`, `SeedData.kt`, `AppDatabase.kt`, `Repository.kt`, `app/build.gradle.kts`, `app/google-services.json`, `.agents/rules/02_*` and `03_*`, all six `e2e/flows/*.yaml`, `e2e/flow-mapping.json`, `scripts/run-e2e-tests.ps1`, `app/src/test/**`, `app/src/androidTest/**`.
-- **Executed in this pass (Iteration 2 ran nothing):** `.\gradlew.bat testDebugUnitTest --no-daemon` → **269 tests, 0 failures, 0 errors** at `25a9739`. Baseline is green. No emulator/Maestro run was performed.
-- **Verdict:** ❌ **REWORK REQUIRED** — 4 blockers, 6 majors. Iteration 2's diagnosis was largely correct but understated the blast radius in one direction (UI gating cannot reach the writes that matter) and overstated it in another (flow 03), and **one of its own headline remedies would cause data loss if implemented as written**.
-
-### 0. Iteration 2 re-tested, not inherited
-
-| Iteration 2 claim | Independent verification | Status |
-| :--- | :--- | :--- |
-| `_demoMode` defaults to `false`; the persisted pref is the trap (F5) | `DataModeManager.kt:37`, `:140`. Also confirmed `guestModeAccepted` is a bare `remember{}` (`AppNavigation.kt:144`), so returning guests re-enter through the welcome screen and are re-locked by the pref | ✅ Confirmed |
-| `signInWithGoogleCredential` exists and is dead code (F4) | `UserCloudSyncManager.kt:191`; sole caller `AppViewModel.kt:110`; `logInWithGoogle` has **zero** callers in `app/src/main`. Credential Manager deps are **already declared** (`app/build.gradle.kts:124-127`), so the correct path costs no new dependency | ✅ Confirmed (and cheaper than stated) |
-| `recoverAllCloudRoutines` is unscoped by uid (F7) | `UserCloudSyncManager.kt:545` `collectionGroup("data")`, filtered only by `doc.reference.path.contains("environments/$currentEnv")` and `doc.id == "routines"` | ✅ Confirmed |
-| No Robolectric; `isReturnDefaultValues = true` defeats a `DataModeManager` unit test (F8) | Zero `robolectric` references repo-wide; `app/build.gradle.kts:101-103`, `:139-140`. The three Compose tests live in `app/src/androidTest`, not `app/src/test` — F8's "two androidTest files" is exact | ✅ Confirmed |
-| `uploadRes.isSuccess \|\| downloadRes.isSuccess` hides a failed upload (F10) | `AppViewModel.kt:157`; `_syncState` overwritten independently at `UserCloudSyncManager.kt:377-380` then `:538-541` | ✅ Confirmed |
-| `flow-mapping.json` names non-existent screens and has no `ProfileScreen.kt` rule (F16) | Confirmed — but the recommended fix is a trap, see Finding 6 below | ⚠️ Confirmed, remedy rejected |
-| Demo data cannot leak into the real **local** DB (F17, non-issue) | `AppDatabase.kt:124-140`; `DataModeManager.kt:32-35` | ✅ Still a non-issue **locally** — but the *cloud* is the shared surface, see Finding 1 |
-| Firestore rules absent from the repo | Re-confirmed: no `firestore.rules`, no `firebase.json`, no `*.rules` anywhere | ✅ Confirmed |
-| "Six `data.current` cloud-sync call sites" (F6) | ❌ **Wrong — there are nine.** See Finding 1 | ❌ Corrected |
-| "Flow 03 fails the moment `setDemoMode(true)` is removed" (F1) | ❌ **Overstated — conditional.** See Finding 5 | ❌ Corrected |
-| "Invert to download-then-upload" (F3 remedy) | ❌ **Would cause data loss.** See Finding 4 | ❌ Rejected |
-
-### 1. Findings
-
-| # | Severity | Perspective | Finding | Evidence | Recommended action |
-| :-- | :--- | :--- | :--- | :--- | :--- |
-| 1 | 🔴 **Blocker** | Dev / Business | **Three cloud uploads fire with no button, so UI gating cannot protect anything.** Iteration 2 counted six `data.current` sync call sites. There are **nine**. `saveCycle`, `saveCycleWithGoals` and `deleteCycleGoal` each call `uploadUserData(repo)` as a silent side effect of an ordinary cycle edit. Every upload is a full `.set()` replacement of all five documents. Therefore: a user in Demo Mode who edits *any* cycle overwrites their entire real Firestore backup with demo fixtures — no "Sync Now" tap, no snackbar, no confirmation, no undo. Invariant 1 ("Cloud sync ONLY operates on real data") is violated by the plan's own accepted design, because the plan gates buttons and these paths have no button. **This plan makes it worse:** it promotes a buried overflow toggle into a one-tap switch on the Profile screen *and* the drawer, for every user, multiplying the traffic through this exact path. | `AppViewModel.kt:223, 229, 234` (`uploadUserData(repo)` with `repo` = `data.current`, `:63-64`); `UserCloudSyncManager.kt:267, 297, 345, 360, 374` all `.set(...)`; toggle at `LibraryScreen.kt:221-234` | Do **not** gate at the UI. Change what is passed: give `DataModeManager` a `realRepository` accessor and route all nine sites through it, so demo mode is structurally incapable of reaching Firestore. Then, and only then, add the switch. **Body edit applied** — `AppViewModel.kt` row corrected to nine sites. |
-| 2 | 🔴 **Blocker** | Dev | **A root cause the plan never lists, and it is verifiable from source without console access.** `currentUserId` is read from `_userState`, which is rehydrated from `SharedPreferences` at launch — completely decoupled from whether FirebaseAuth holds a matching token. Three code paths therefore produce a uid that no token can ever match: (a) launch rehydration (`AppViewModel.kt:69-71`) sets `_userState` to the saved uid, then `ensureAuthenticated()` signs in **anonymously** and deliberately does *not* overwrite it (`:94`), so writes go to `users/{savedUid}` under an anon token; (b) `logInWithGoogleAccount` sets `uid = auth.currentUser?.uid ?: email`; (c) worst, `logInWithEmail`'s fallback fabricates `uid = "jangelpv_crosstraining_app"` from the email string when Firebase sign-in fails for a known test user — and `jangelpv` is this app's own primary athlete identity on the non-routable domain `@crosstraining.app`. That fabricated uid is then **persisted** via `saveAuthSession`, making the failure permanent and reproducible on every launch, which matches the reported symptom far better than the 1 MiB hypothesis. | `UserCloudSyncManager.kt:53-60` (`currentUserId`), `:89-102` (`ensureAuthenticated` anon fallback, `_userState` preserved), `:176-181` (fabricated uid), `:212`; `normalizeEmail` `:82`; `AppViewModel.kt:100` persists it | Before writing any error-mapping code, log `auth.currentUser?.uid` **alongside** `currentUserId` on the affected device and compare. If they differ, the fix is identity binding, not exception strings — and it is a one-file change. |
-| 3 | 🔴 **Blocker** | Dev / QA | **The identity fix collides with a locked-in test contract, and the plan budgets nothing for it.** `CrossAuthSignInTest` asserts precisely the decoupling in Finding 2: `setAuthenticatedUser(AuthUser(uid="user_123", …))` ⇒ `currentUserId == "user_123"`, with no Firebase session in play. `.agents/rules/02_testing_verification.md` §4 forbids `@Developer` from modifying or deleting existing test assertions. So the correct fix to Anti-Pattern 1 cannot be shipped without an explicit, human-approved renegotiation of the issue-#457 contract (`ef5e087`). No subtask acknowledges this. | `app/src/test/java/com/fractanomics/crosstraining/data/firebase/CrossAuthSignInTest.kt:48-74`; `.agents/rules/02_testing_verification.md` §4 | Add an explicit subtask: "renegotiate the `currentUserId` contract in `CrossAuthSignInTest`", with the user's sign-off, **before** any auth change. Otherwise the fix→verify loop deadlocks. |
-| 4 | 🔴 **Blocker** | Dev | **Iteration 2's own remedy for its Blocker 3 would destroy data.** F3 recommends "invert to download-then-upload". Verified: `downloadUserData` has no tombstones and dedups sessions by `date == date && title == title`, so it *re-inserts* anything present in the cloud but absent locally. Upload-first is what makes local deletions propagate today (upload writes the post-delete set, download then finds nothing new). Inverting the order permanently resurrects every session, routine and rep-max the user has ever deleted, on every sync. The remedy trades a rare empty-overwrite for a guaranteed, recurring un-delete. | `AppViewModel.kt:155-156`; `UserCloudSyncManager.kt:469-470` (dedup), `:531-533`, `:433` — none of the download paths delete | Reject "invert the order". Use the other two options F3 offered instead: refuse to upload when the local dataset is empty or materially smaller than the remote one, and/or write a timestamped backup document before `.set()`. Order stays upload-first. |
-| 5 | 🟠 Major | QA | **The flow-03 blocker is conditional, and the condition is an undocumented inter-flow dependency.** Only flows 01 and 05 use `clearState: true`; the runner installs with `adb install -r`, and `$Flow` defaults to the whole directory, so flows execute 01→06 against carried-over state. Flow 02 saves a title-less session whose block main exercise is Back Squat; `HistoryScreen` renders a blank title as "Workout Session" and its search matches on the block's main-exercise name. So in a **full-suite** run flow 03 will most likely still pass on a real DB — and fail when run in isolation or via `-Tags history`. The plan's prescribed command runs the full suite, so it would report green while a targeted CI run goes red. | `e2e/flows/*.yaml` (`clearState` only in 01, 05); `scripts/run-e2e-tests.ps1:17, 106`; `SessionEditor.kt:534` (`title = title.trim()`, blank in flow 02); `HistoryScreen.kt:275, 96-101` | Make flow 03 self-contained (create its own session, or assert on seeded routines instead). Not verified by execution — settle it with `.\scripts\run-e2e-tests.ps1 -Flow "e2e/flows/03_history_and_search_flow.yaml"`. **Body edit applied** — Subtask 4 bullet corrected. |
-| 6 | 🟠 Major | QA | **Adopting Iteration 2's F16 remedy would remove the safety net for this very change.** F16 recommends repointing the `settings`/`theme` rule at `ProfileScreen.kt`. Do that, and a `ProfileScreen.kt`-only edit resolves to tags `[settings, theme]` → **flow 05 only**. Flow 05 exercises the theme radio list and nothing else — not the new Data Mode card, not the sync card, not guest gating. Today the unmatched-file fallback runs all six flows; the "fix" would silently narrow it to one. | `e2e/flow-mapping.json` (`ProfileSettingsScreen.kt` rule); `scripts/run-e2e-tests.ps1:174-181`; `e2e/flows/05_theme_mode_flow.yaml` | If the rule is added at all, tag `ProfileScreen.kt` as `core`, not `settings`. Also list flow 05 as affected: inserting a Data Mode card above the theme section changes its scroll geometry. |
-| 7 | 🟠 Major | Dev / QA | **`SyncStatus` is process-global state mutated by writes the user never associated with syncing.** `UserCloudSyncManager` is an `object`; `_syncState` is a singleton flow set by *every* `uploadUserData`, including the three background cycle-edit uploads in Finding 1. Consequences: the "Sync Now" button (`enabled = syncState != SYNCING`) can be disabled by an unrelated background save; the red ERROR badge in the Cloud Backup card can be showing the result of a cycle edit from minutes ago; and Scenario 5's acceptance criteria are non-deterministic because they assert on a badge any concurrent write can repaint. This may itself be part of the reported symptom. | `UserCloudSyncManager.kt:36, 44-45, 246, 377-380`; `ProfileScreen.kt:421` (button `enabled`), `:379-403` (badge) | Give user-initiated sync its own state, or scope `_syncState` per operation. Required before Scenario 5 can be written as a falsifiable test. |
-| 8 | 🟠 Major | Business / QA | **The plan's headline regression cannot be observed by any verification step it lists.** `SeedData.populate` returns immediately after inserting exercises when `APP_ENV == "production"`, so a release-build real DB has **no cycle and no routines**. `SessionEditor` refuses to save without a cycle. Remove demo-on-guest and a production first-run user lands on Log Session, taps Save, and is stopped by "Create and select a cycle first (Cycles tab)." — the app's primary action is blocked out of the box. Debug/snapshot builds seed the cycle, so the emulator, every Maestro flow and every listed command will show this working. Iteration 2's F11 described this as "empty History and Progress"; it is stronger than that. | `SeedData.kt:77` (`if (isProduction) return`); `AppDatabase.kt:150-157`; `app/build.gradle.kts:69, 72, 77`; `SessionEditor.kt:520-523` | Either seed a default cycle in production too, or ship an empty-state first-run flow that creates one. Add an explicit acceptance criterion for **release-variant** first run; state plainly that snapshot E2E does not cover it. |
-| 9 | 🟠 Major | Dev / Security | **The "Google sign-in" the plan funnels guests into never creates a Google identity at all.** `logInWithGoogleAccount` calls `ensureAuthenticated()`, which returns early when an anonymous user already exists, then attaches an email to that **anonymous** uid with no credential. The session is anonymous in Firebase and non-anonymous in the app (`isAnonymous = false`, `:214`), and `saveAuthSession` persists that lie. Anonymous accounts are unrecoverable after uninstall, so Scenario 4's "sign in to protect your data" promise is, on this path, false. `signInWithGoogleCredential` does the right thing (`linkWithCredential` preserves the anon uid, `:195-196`) and is unreachable. This is not an open question — it is a verified data-loss mechanism. | `UserCloudSyncManager.kt:208-219` vs `:191-206`; `AppViewModel.kt:128` | Migrate both entry points (`LoginWelcomeScreen.kt:99`, `ProfileScreen.kt:626`) to Credential Manager → `signInWithGoogleCredential`, or remove "Continue with Google" from the guest prompt. Deps are already present. |
-| 10 | 🟠 Major | Dev | **"Sync Now" mutates local data before it uploads.** `uploadUserData` calls `repo.cleanupDuplicateRoutines()`, which **deletes** rows inside a transaction, then `distinctBy` name. A sync that subsequently times out or is denied has still destroyed local routines the user never asked to merge. An operation the plan presents as a backup is a destructive local write. | `UserCloudSyncManager.kt:270-271`; `Repository.kt:168-180` | Move dedup out of the upload path, or make it explicit and undoable. At minimum acknowledge it in the plan's blast radius. |
-| 11 | 🟡 Minor | QA | **Zero regression coverage on the entire surface being changed.** No test in `app/src/test` or `app/src/androidTest` references `DataModeManager`, `demoMode`, `uploadUserData` or `triggerCloudSync`. The 269-test suite is green and completely blind to every behaviour this plan alters, so "all tests pass" will carry no information about it. | Baseline run this pass: 269 tests / 0 failures; grep over both test source sets returns no match for the four symbols | State in Subtask 4 that a green unit suite is *not* evidence for this change, and name which criteria are instrumented-only. |
-| 12 | 🟡 Minor | Dev | **The plan's UI additions contradict the repo's own Compose standard, and complying would solve Iteration 2's Finding 8.** `.agents/rules/03_compose_ui_standards.md` §1 requires a stateful route plus a **stateless** `(uiState, onAction)` screen. `ProfileScreen` currently threads `viewModel` straight into child composables (`AuthDialog(viewModel = viewModel)`), and the plan adds two more viewModel-coupled widgets to it. Extracting a stateless `DataModeCard(demoMode, onToggle)` would both satisfy the rule and make Scenario 2 testable with the Compose test infrastructure that already exists in `androidTest`. | `.agents/rules/03_compose_ui_standards.md` §1; `ProfileScreen.kt:463`; existing pattern in `ResetPasswordDialogComposeTest.kt` | Add "stateless `DataModeCard` + Compose UI test" to Subtask 2. |
-| 13 | 🟢 Non-issue | Dev | "Robolectric may exist, since there are Compose tests." Re-tested: all three Compose tests are in `app/src/androidTest`, and `robolectric` appears nowhere in the version catalog, gradle files or sources. Iteration 2's F8 stands as written. | `find app/src/androidTest`; repo-wide grep for `robolectric` → only a comment in `VoiceInputController.kt:157` | None. |
-| 14 | 🟢 Non-issue | Dev | "Removing `viewModel.setDemoMode(true)` alone satisfies Requisite 3." Re-tested independently of Iteration 2: it does not. `guestModeAccepted` is a non-persisted `remember{}` (`AppNavigation.kt:144`), so returning guests always pass back through the welcome screen — but `KEY_DEMO_MODE` persists, so they are re-locked into demo on every launch. The one-time migration in F5 is genuinely mandatory. | `AppNavigation.kt:144, 162`; `DataModeManager.kt:37, 140, 165` | None — confirms F5. |
-
-### 2. Concerns & drawbacks
-
-**2.1 The plan gates the wrong layer, and Iteration 2 only half-caught it.**
-Iterations 1 and 2 both frame the demo/cloud problem as "which buttons should be disabled". Finding 1 shows that three of the nine cloud writes have no button to disable: they are side effects of saving or deleting a cycle goal. Every acceptance criterion in Scenario 3 can pass — the Sync Now button correctly greyed out, the amber notice correctly displayed — while the user's real Firestore backup is being overwritten with demo fixtures by a cycle edit two screens away. Gating is not a weaker version of the right fix; it is a fix that produces a false sense of safety. **Verdict: Blocker.** The repository handed to cloud sync must be `realRepository` unconditionally, at all nine sites, before any switch becomes prominent.
-
-**2.2 Iteration 2's strongest hypothesis is its weakest, and its most useful one is missing.**
-The 1 MiB document-ceiling theory (F2a) is plausible but unmeasured and would require ~200+ logged sessions. Finding 2 identifies a mechanism that needs no console access, no measurement and no assumption about security rules: the uid the app writes to is read from `SharedPreferences` and is structurally free to disagree with the token FirebaseAuth actually holds — and one code path *fabricates* a uid from an email string and persists it. That hypothesis predicts exactly what was reported: a specific user, failing every time, immediately. **Verdict: Blocker on the ordering of work.** One logcat line comparing `auth.currentUser?.uid` with `currentUserId` discriminates between the two hypotheses in under a minute, and determines whether Subtask 3 is a UI task or a one-file auth task.
-
-**2.3 A review remedy was accepted without being tested — and it destroys data.**
-Iteration 2 correctly flagged the destructive `.set()` and correctly demanded a recovery path, then recommended inverting the sync order. Finding 4 shows that inversion converts a conditional data-loss bug into an unconditional one: since no download path deletes and session dedup is `(date, title)`, download-first resurrects every deleted item on every sync, forever. The irony is instructive — Iteration 2's §2.4 says "irreversibility is nowhere acknowledged", and its own remedy introduces an irreversible one. **Verdict: Blocker.** This is the single most important thing to *not* implement from Iteration 2.
-
-**2.4 The verification plan is structurally incapable of observing the regression the plan creates.**
-Iteration 2 added the CI-parity command and the E2E artifact capture, and noted that snapshot builds write to a different Firestore environment. It missed that the same `APP_ENV` split also governs **seeding**: `if (isProduction) return` means the real DB in a release build has exercises and nothing else. So the emulator run, all six Maestro flows and the mandatory gate will all exercise a first-run state that no production user will ever have — one that has an active cycle and three routines. The one regression this change is most likely to cause (a first-run user who cannot save a workout) is invisible to every command listed. Add Finding 11 — no test anywhere touches `demoMode` or `uploadUserData` — and the plan's Definition of Done reduces to "the parts we did not change still work". **Verdict: Major, bordering Blocker.** Either seed production, or add a release-variant manual acceptance step and say plainly that automation does not cover it.
-
-**2.5 A cheaper design that dissolves three findings at once was never considered.**
-Requisites 2 and 3 are both satisfied — and Findings 1, 5 and 14 all shrink or disappear — if demo mode simply stops being persistent. Make it session-scoped: default off on every launch, never written to `SharedPreferences`, cleared on process death. Then there is no pref migration to write, no population locked into demo, no returning-guest trap, and the window in which a background cycle upload can reach the cloud with demo data shrinks to a single session instead of forever. The plan instead keeps persistence and adds a migration key, a Profile card, a drawer row and gating logic across two screens — more surface, more state, more tests, for a strictly worse invariant. **Verdict: Major.** At minimum, record why persistence is required; "the app reopens where it was left" (`DataModeManager.kt:17-18`) is a code comment, not a requirement anyone asked for.
-
-**2.6 The plan still has no rollback and now has a test-contract deadlock.**
-Beyond Iteration 2's §2.4: Finding 3 means the correct auth fix cannot be merged without renegotiating assertions that a previous, already-merged issue deliberately locked in. Under the repo's own rule §4 the developer role is forbidden from touching them, and under the 3-attempt cap this loop will stall on attempt one. **Verdict: Major.** Resolve the contract question with the user *before* Subtask 3 starts, not inside the fix loop.
-
-### 3. Open questions for the author
-
-1. **Does `auth.currentUser?.uid` equal `currentUserId` on the failing device?** One logcat line. It decides whether Subtask 3 is UI work or auth work, and it supersedes Iteration 2's question 1 in usefulness.
-2. **Which build variant is the affected user running — release or snapshot?** Finding 8 and Iteration 2's environment caveat both hinge on it, and it is not recorded anywhere in this plan.
-3. **Does demo mode need to persist across launches at all?** (§2.5) A "no" removes the migration, the trap and most of the blast radius.
-4. **May the `currentUserId` assertions in `CrossAuthSignInTest` be renegotiated?** (Finding 3) Without a yes, the auth fix cannot be implemented under `.agents/rules/02` §4.
-5. **Should saving a cycle upload to the cloud at all?** (Finding 1) Three silent full-replacement uploads on ordinary edits look unintentional. If they are intentional they need debouncing and gating; if not, deleting them is a smaller change than the whole of Subtask 3.
-
-### 4. Unverified claims
-
-- **Everything downstream of Firestore security rules.** Re-confirmed absent (no `firestore.rules`, `firebase.json` or `*.rules` in the repo). Finding 2 and Iteration 2's F7 remain a matched pair: if rules are per-uid, `recoverAllCloudRoutines` cannot work; if they are permissive, `PERMISSION_DENIED` needs a different explanation. Both still cannot be true.
-- **Whether anonymous auth is enabled on `virgymia-c2cc7`.** Still console-side; `app/google-services.json` confirms only the project ID.
-- **The 1 MiB session-document hypothesis.** Still unmeasured, and now competing with a cheaper hypothesis (Finding 2).
-- **Flow 03's actual outcome on a real DB.** Reasoned from source (Finding 5); **not executed**. No emulator or Maestro run was performed in this pass. `.\scripts\run-e2e-tests.ps1 -Flow "e2e/flows/03_history_and_search_flow.yaml"` settles it.
-- **Finding 8's production first-run behaviour.** Derived from `SeedData.kt:77` and `AppDatabase.kt:150`; not confirmed on a release-variant install.
-- **What the user actually sees.** After three iterations, the literal error string from the failing "Sync Now" is still not in this document. That remains the cheapest missing artifact in the whole plan.
-
-### 5. Body edits applied in this iteration
-
-| Location | Change | Finding |
-| :--- | :--- | :--- |
-| Component Impact, `AppViewModel.kt` row | Corrected "six" call sites to **nine**; added `saveCycle` (L223), `saveCycleWithGoals` (L229) and `deleteCycleGoal` (L234) as buttonless background uploads; corrected the cited line numbers (L88 / L155-156 / L168) | 1 |
-| INVEST Subtask 4, flow-03 bullet | Corrected the certainty of the flow-03 failure: qualified it as conditional on full-suite ordering (only flows 01/05 use `clearState`; `adb install -r`), with the mechanism by which flow 02's title-less session satisfies flow 03 | 5 |
-
-*No earlier review iteration was modified. Iteration 2's findings that survived re-testing are listed in §0 with independent evidence rather than inherited.*
-
----
-
-## 🔍 Review Iteration 4: 3-Amigos Synthesis & Architect Resolution Matrix
-
-- **Date / Author:** 2026-09-03 | Antigravity AI Architect
-- **Target Repository:** `AntaresAndBharani/crosstrainingapp` (`c:\Users\rogal\workspaces\ws-gym\crosstrainingapp`)
-- **Status:** Consolidated Resolution Plan responding directly to Review Iteration 3 findings and operator guidance.
-
-### 1. Direct Resolution of Iteration 3 Findings
-
-| Finding / Concern | Iteration 3 Diagnosis | Final Resolution & Architectural Design |
-| :--- | :--- | :--- |
-| **Finding 1: Buttonless Background Uploads** (🔴 Blocker) | 3 background uploads (`saveCycle`, `saveCycleWithGoals`, `deleteCycleGoal`) plus 6 other sites call `uploadUserData(repo)` passing `data.current`. If user edits a demo cycle, demo fixtures overwrite real Firestore backup. UI gating cannot reach this. | **Structural Isolation Adopted:** `DataModeManager` exposes an explicit `val realRepository: Repository`. All nine cloud sync call sites in `AppViewModel` must pass `data.realRepository` unconditionally. `demoRepository` is made structurally incapable of interacting with Firestore. |
-| **Finding 2: Auth UID / Token Desync** (🔴 Blocker) | `currentUserId` is decoupled from `FirebaseAuth` token; fallback paths fabricate UIDs (e.g. `jangelpv_crosstraining_app`) and persist them, causing permanent `PERMISSION_DENIED` on Firestore writes. | **Strict Token-Bound Identity:** In `UserCloudSyncManager`, ensure `currentUserId` matches `auth.currentUser?.uid` strictly. Refuse sync if the auth token does not match the active session identity. Wire Credential Manager to `signInWithGoogleCredential` (already declared in Gradle) rather than the broken `AccountManager` email-only path. |
-| **Finding 3: Test Contract in `CrossAuthSignInTest`** (🔴 Blocker) | Issue #457 locked in `currentUserId` decoupling without an active Firebase session. Changing `currentUserId` directly conflicts with existing assertions. | **Formal Contract Renegotiation:** The test contract will be updated with operator sign-off to require an authenticated token/UID match rather than an unverified mock string, preventing identity drift while preserving cross-auth profile deduplication invariants. |
-| **Finding 4: Sync Order Inversion Hazard** (🔴 Blocker) | Iteration 2's suggestion to "download before upload" resurrects all deleted local entities on every sync because `downloadUserData` lacks tombstones. | **Inversion Rejected:** Retain **upload-first** order to preserve local deletions. Add an **Empty-Database Overwrite Guard**: If local database has 0 sessions and remote Firestore has >0 sessions, abort the destructive `.set()` and prompt the user to restore their cloud backup. |
-| **Finding 2.5: Session-Scoped Demo Mode** (💡 Major Opportunity) | Persisting `demoMode` in `SharedPreferences` creates a returning-guest trap, requires complex migrations, and expands the blast radius. | **Session-Scoped Demo Mode Adopted:** Remove `KEY_DEMO_MODE` persistence completely. `_demoMode` is held strictly in memory as a `MutableStateFlow(false)`. The app unconditionally starts in **Real Data** on every launch. Toggling to Demo Data is temporary for that app session only. This 100% fulfills Requisite 3 without any preference migration. |
-| **Finding 8: Production Seeding Gap** (🟠 Major) | `SeedData.populate` aborts on `isProduction`, leaving real DB with 0 cycles. A new user cannot save a workout out of the box. | **First-Run Production Seeding:** Ensure a minimal initial cycle (e.g. "General Training") is created if no active cycle exists, allowing first-run users to immediately log a workout without hitting the "Create cycle first" blocker. |
-| **Finding 12: Compose UI Standards** (🟡 Minor) | Adding viewModel-coupled cards directly to `ProfileScreen.kt` violates `.agents/rules/03_compose_ui_standards.md` §1. | **Stateless Composable:** Implement `DataModeCard(demoMode: Boolean, onToggle: (Boolean) -> Unit)` as a pure stateless composable, and add an instrumented Compose test in `app/src/androidTest`. |
-
----
-
-### 2. Answers to the 5 Open Review Questions
-
-1. **Does `auth.currentUser?.uid` equal `currentUserId` on the failing device?**
-   - **Answer / Resolution:** In the current code, they frequently diverge because `currentUserId` falls back to `user.uid` (which can be a raw email string or fabricated shorthand from `SharedPreferences`) while `auth.currentUser` is either null or an anonymous token. We are establishing strict token-binding so `currentUserId` is derived directly from the verified `FirebaseAuth` session.
-
-2. **Which build variant is the affected user running — release or snapshot?**
-   - **Answer / Resolution:** The user reported this on the **Release APK (`v3.0.147`)** downloaded from the GitHub Release, which targets `environments/production`.
-
-3. **Does demo mode need to persist across launches at all?**
-   - **Answer / Resolution:** **NO.** We formally adopt the reviewer's proposal: Demo Mode will be **session-scoped (in-memory only)**. It will always default to `false` (Real Data) on every cold start. This permanently eliminates the returning-guest trap and requires zero preference migrations.
-
-4. **May the `currentUserId` assertions in `CrossAuthSignInTest` be renegotiated?**
-   - **Answer / Resolution:** **YES.** By logging this in the plan and obtaining operator confirmation, we formally approve updating the mock setup in `CrossAuthSignInTest` so it validates token-bound identities without deadlocking under `.agents/rules/02` §4.
-
-5. **Should saving a cycle upload to the cloud at all?**
-   - **Answer / Resolution:** Cycle edits should only sync if the user is authenticated and Real Data is active. To eliminate silent full-document overwrite hazards, we route all cycle saves strictly to `data.realRepository` and debounce/guard them against unauthenticated execution.
-
----
-
-### 3. Decoupled Workstream Strategy
-
-To guarantee rapid, zero-risk delivery while eliminating regression hazards:
-
-- **Workstream 1: Real Data Default & Session-Scoped Demo Switch (Immediate Delivery)**
-  - Make `demoMode` strictly in-memory (defaults to `false` on every launch).
-  - Remove forced `setDemoMode(true)` from `AppNavigation.kt` `onContinueAsGuest`.
-  - Add stateless `DataModeCard` in `ProfileScreen.kt` and quick toggle in Navigation Drawer.
-  - Fix production first-run cycle initialization so new guests can immediately log workouts.
-  - Update Maestro flow 03 to be self-contained.
-  - Verify with unit tests, CI parity (`assembleSnapshot`), and E2E artifact capture.
-
-- **Workstream 2: Cloud Sync Hardening & Identity Alignment**
-  - Route all 9 sync call sites strictly through `data.realRepository`.
-  - Enforce token-bound UID resolution and integrate Credential Manager for Google Sign-In.
-### 2. Concerns & drawbacks
-
-**2.1 The plan treats a diagnosis as if it were evidence.**
-Iteration 1 is written with high confidence — a section headed "Ground Truth Codebase Analysis", and `PERMISSION_DENIED: Missing or insufficient permissions` quoted as though observed — but nothing in it was reproduced. There is no `firestore.rules` and no `firebase.json` anywhere in the repository; the security rules and the enabled auth providers are console-side only. Every P3 conclusion is therefore downstream of an assumption about configuration no reviewer can inspect, and two of Iteration 1's own claims contradict each other under scrutiny (Finding 7). **Verdict: Blocker.** The cheapest, highest-value next step is one reproduction with a captured stack trace — not four subtasks of code.
-
-**2.2 "Robust, reliable sync" has been quietly redefined as "nicer error text".**
-Requisite 1 asks to "diagnose, isolate, and eliminate this failure". The deliverable is gating plus exception-to-string mapping. If the true cause is the 1 MiB document ceiling or the 20 s timeout (Finding 2), the user's experience after this plan is the same failure with better wording — and their data still is not backed up. Meanwhile every mechanism that actually makes sync unreliable — monolithic documents, destructive `set()`, raw local IDs across devices, an unscoped cross-tenant recovery query — remains untouched. **Verdict: Blocker on the acceptance criteria as written.** Scenario 5 can pass in full while requisite 1 remains unmet.
-
-**2.3 Coupling a one-line UX fix to an undiagnosed bug.**
-Requisite 3 is genuinely a one-line deletion plus a pref migration (Finding 5). Requisite 2 is a contained UI addition. Requisite 1 is an open investigation. The INVEST breakdown presents four subtasks as independent, but Subtask 3 depends on both 1 and 2, and all of them are gated behind an unknown. **Verdict: Major.** Ship Subtask 1 plus the migration on its own — it satisfies the user's most emphatic requisite ("By default, the active database must always be Real Data for everyone") within a day — and keep the sync investigation as a separate, evidence-led change.
-
-**2.4 Irreversibility is nowhere acknowledged.**
-The plan contains no rollback story. Two operations inside its blast radius are unrecoverable: overwriting the Firestore backup with an empty dataset (Finding 3), and `importSnapshot`'s `deleteAll` on demo-mode entry — harmless today, but this plan puts a one-tap switch in front of it for every user, including Coaches who may have been editing demo content for planning. **Verdict: Blocker for the first, Minor for the second** — but both belong in the plan rather than being discovered in production.
-
-**2.5 Nothing here is observable in production.**
-Every acceptance criterion is a UI assertion on an emulator. There is no counter, log or crash-reporting hook that would tell anyone whether sync success rates improved after this ships — and because debug/snapshot builds write to `environments/snapshot` while release writes to `environments/production`, emulator validation cannot even observe the failing population. **Verdict: Major.** Define at least one production-observable signal before declaring requisite 1 "eliminated".
-
-### 3. Open questions for the author
-
-1. **What is the literal error?** A screenshot or logcat of the failing "Sync Now", with the account, build variant and dataset size. This single answer determines whether Subtask 3 is the right work at all.
-2. **Where do the Firestore security rules live, and can they be committed to this repo?** Without them, Anti-Pattern 1 and Finding 7 cannot both be resolved.
-3. **Is anonymous auth enabled on `virgymia-c2cc7`?** The plan asserts behaviour conditional on this and never checks it.
-4. **Should guests be able to sync at all?** Data written under an anonymous uid is unrecoverable after uninstall. Scenario 4 says "sign in first", which is the safer answer — confirm that is intentional and permanent.
-5. **Is the demo-on-first-run experience being deliberately retired** (Finding 11), and if so what replaces it?
-6. **Does the `LibraryScreen` overflow toggle stay?** If it goes, where does "Reset demo data" live?
-
-### 4. Unverified claims
-
-- **`PERMISSION_DENIED` originating from Firestore security rules** — no `firestore.rules` or `firebase.json` exists anywhere in the repository; the rules are console-side. Unverifiable from source, and in tension with `recoverAllCloudRoutines` being expected to work (Finding 7).
-- **"Anonymous authentication is disabled on the Firebase project"** — `app/google-services.json` confirms the project is `virgymia-c2cc7`, but enabled auth providers are not represented in that file. Stated as a conditional in Iteration 1; still a conditional.
-- **"Sync targets `demoRepository` instead of the real database" as a cause of the observed error** — mechanically true (`AppViewModel.kt:63-64`), but it would produce *wrong data*, not an error dialog. It does not explain the reported symptom and should not be listed as a cause of it.
-- **The 1 MiB document-limit hypothesis (Finding 2a)** — inferred from the payload shape, not measured. It needs the affected account's session count to confirm or eliminate.
-- **Whether E2E flows 02, 04 and 06 survive the real-data default** — flow 04's assertions (`Back Squat`, `Clean & Jerk`, `Barbell`) do appear in `SeedData.kt:41,47`, so it will probably pass; flows 02 and 06 were not executed. Only flow 03 is confirmed broken (Finding 1). No build or test run was performed as part of this review.
-
-### 5. Body edits applied in this iteration
-
-| Location | Change | Finding |
-| :--- | :--- | :--- |
-| Verdict Matrix, P1 row | Noted that `_demoMode` already defaults to `false` (`DataModeManager.kt:37`); the defect is the persisted pref, and a one-time migration is required | 5 |
-| Verdict Matrix, P2 row | Corrected "Inaccessible from primary navigation" — Movement Library is in the drawer for both roles (`AppNavigation.kt:111`); this is a discoverability defect, not inaccessibility | — |
-| Anti-Pattern 1 | Corrected the mechanism (`ensureAuthenticated()` *is* called; the uid degrades to the raw email) and recorded that `signInWithGoogleCredential` already exists but is dead code | 4 |
-| Anti-Pattern 2 | Corrected the throw site: `ensureAuthenticated()` swallows every exception; the throw is `error("User not authenticated")` at `UserCloudSyncManager.kt:251` / `:388` | — |
-| Component Impact, `AppViewModel.kt` row | Listed all six `data.current` sync call sites; flagged the `isSuccess \|\| isSuccess` rule; struck the already-implemented `setDemoMode` handler | 6, 10 |
-| INVEST Subtask 4 | Added the mandatory CI-parity command and E2E artifact capture per `.agents/rules/02_testing_verification.md` §2; added the flow 03 regression and the snapshot-vs-production environment caveat | 1, 9 |
-
-*No earlier review iteration was modified. All Iteration 1 corrections are inline and explicitly marked.*
-
----
-
-## 🔍 Review Iteration 3: 3-Amigos Critical Review — Ungated Background Writes, a Source-Verifiable Root Cause, and a Verification Plan That Is Blind by Construction
-
-- **Date / Reviewer:** 2026-09-03 | Three Amigos (Business / Development / QA)
-- **Target Repository:** `AntaresAndBharani/crosstrainingapp` (`c:\Users\rogal\workspaces\ws-gym\crosstrainingapp`) @ `25a9739`
-- **Scope reviewed:** Every load-bearing claim of Iterations 1 **and 2** re-tested against source; no conclusion inherited. Files read: `DataModeManager.kt` (full), `UserCloudSyncManager.kt` (full), `AppViewModel.kt`, `AppNavigation.kt`, `ProfileScreen.kt`, `LibraryScreen.kt`, `LoginWelcomeScreen.kt`, `SessionEditor.kt`, `HistoryScreen.kt`, `SeedData.kt`, `AppDatabase.kt`, `Repository.kt`, `app/build.gradle.kts`, `app/google-services.json`, `.agents/rules/02_*` and `03_*`, all six `e2e/flows/*.yaml`, `e2e/flow-mapping.json`, `scripts/run-e2e-tests.ps1`, `app/src/test/**`, `app/src/androidTest/**`.
-- **Executed in this pass (Iteration 2 ran nothing):** `.\gradlew.bat testDebugUnitTest --no-daemon` → **269 tests, 0 failures, 0 errors** at `25a9739`. Baseline is green. No emulator/Maestro run was performed.
-- **Verdict:** ❌ **REWORK REQUIRED** — 4 blockers, 6 majors. Iteration 2's diagnosis was largely correct but understated the blast radius in one direction (UI gating cannot reach the writes that matter) and overstated it in another (flow 03), and **one of its own headline remedies would cause data loss if implemented as written**.
-
-### 0. Iteration 2 re-tested, not inherited
-
-| Iteration 2 claim | Independent verification | Status |
-| :--- | :--- | :--- |
-| `_demoMode` defaults to `false`; the persisted pref is the trap (F5) | `DataModeManager.kt:37`, `:140`. Also confirmed `guestModeAccepted` is a bare `remember{}` (`AppNavigation.kt:144`), so returning guests re-enter through the welcome screen and are re-locked by the pref | ✅ Confirmed |
-| `signInWithGoogleCredential` exists and is dead code (F4) | `UserCloudSyncManager.kt:191`; sole caller `AppViewModel.kt:110`; `logInWithGoogle` has **zero** callers in `app/src/main`. Credential Manager deps are **already declared** (`app/build.gradle.kts:124-127`), so the correct path costs no new dependency | ✅ Confirmed (and cheaper than stated) |
-| `recoverAllCloudRoutines` is unscoped by uid (F7) | `UserCloudSyncManager.kt:545` `collectionGroup("data")`, filtered only by `doc.reference.path.contains("environments/$currentEnv")` and `doc.id == "routines"` | ✅ Confirmed |
-| No Robolectric; `isReturnDefaultValues = true` defeats a `DataModeManager` unit test (F8) | Zero `robolectric` references repo-wide; `app/build.gradle.kts:101-103`, `:139-140`. The three Compose tests live in `app/src/androidTest`, not `app/src/test` — F8's "two androidTest files" is exact | ✅ Confirmed |
-| `uploadRes.isSuccess \|\| downloadRes.isSuccess` hides a failed upload (F10) | `AppViewModel.kt:157`; `_syncState` overwritten independently at `UserCloudSyncManager.kt:377-380` then `:538-541` | ✅ Confirmed |
-| `flow-mapping.json` names non-existent screens and has no `ProfileScreen.kt` rule (F16) | Confirmed — but the recommended fix is a trap, see Finding 6 below | ⚠️ Confirmed, remedy rejected |
-| Demo data cannot leak into the real **local** DB (F17, non-issue) | `AppDatabase.kt:124-140`; `DataModeManager.kt:32-35` | ✅ Still a non-issue **locally** — but the *cloud* is the shared surface, see Finding 1 |
-| Firestore rules absent from the repo | Re-confirmed: no `firestore.rules`, no `firebase.json`, no `*.rules` anywhere | ✅ Confirmed |
-| "Six `data.current` cloud-sync call sites" (F6) | ❌ **Wrong — there are nine.** See Finding 1 | ❌ Corrected |
-| "Flow 03 fails the moment `setDemoMode(true)` is removed" (F1) | ❌ **Overstated — conditional.** See Finding 5 | ❌ Corrected |
-| "Invert to download-then-upload" (F3 remedy) | ❌ **Would cause data loss.** See Finding 4 | ❌ Rejected |
-
-### 1. Findings
-
-| # | Severity | Perspective | Finding | Evidence | Recommended action |
-| :-- | :--- | :--- | :--- | :--- | :--- |
-| 1 | 🔴 **Blocker** | Dev / Business | **Three cloud uploads fire with no button, so UI gating cannot protect anything.** Iteration 2 counted six `data.current` sync call sites. There are **nine**. `saveCycle`, `saveCycleWithGoals` and `deleteCycleGoal` each call `uploadUserData(repo)` as a silent side effect of an ordinary cycle edit. Every upload is a full `.set()` replacement of all five documents. Therefore: a user in Demo Mode who edits *any* cycle overwrites their entire real Firestore backup with demo fixtures — no "Sync Now" tap, no snackbar, no confirmation, no undo. Invariant 1 ("Cloud sync ONLY operates on real data") is violated by the plan's own accepted design, because the plan gates buttons and these paths have no button. **This plan makes it worse:** it promotes a buried overflow toggle into a one-tap switch on the Profile screen *and* the drawer, for every user, multiplying the traffic through this exact path. | `AppViewModel.kt:223, 229, 234` (`uploadUserData(repo)` with `repo` = `data.current`, `:63-64`); `UserCloudSyncManager.kt:267, 297, 345, 360, 374` all `.set(...)`; toggle at `LibraryScreen.kt:221-234` | Do **not** gate at the UI. Change what is passed: give `DataModeManager` a `realRepository` accessor and route all nine sites through it, so demo mode is structurally incapable of reaching Firestore. Then, and only then, add the switch. **Body edit applied** — `AppViewModel.kt` row corrected to nine sites. |
-| 2 | 🔴 **Blocker** | Dev | **A root cause the plan never lists, and it is verifiable from source without console access.** `currentUserId` is read from `_userState`, which is rehydrated from `SharedPreferences` at launch — completely decoupled from whether FirebaseAuth holds a matching token. Three code paths therefore produce a uid that no token can ever match: (a) launch rehydration (`AppViewModel.kt:69-71`) sets `_userState` to the saved uid, then `ensureAuthenticated()` signs in **anonymously** and deliberately does *not* overwrite it (`:94`), so writes go to `users/{savedUid}` under an anon token; (b) `logInWithGoogleAccount` sets `uid = auth.currentUser?.uid ?: email`; (c) worst, `logInWithEmail`'s fallback fabricates `uid = "jangelpv_crosstraining_app"` from the email string when Firebase sign-in fails for a known test user — and `jangelpv` is this app's own primary athlete identity on the non-routable domain `@crosstraining.app`. That fabricated uid is then **persisted** via `saveAuthSession`, making the failure permanent and reproducible on every launch, which matches the reported symptom far better than the 1 MiB hypothesis. | `UserCloudSyncManager.kt:53-60` (`currentUserId`), `:89-102` (`ensureAuthenticated` anon fallback, `_userState` preserved), `:176-181` (fabricated uid), `:212`; `normalizeEmail` `:82`; `AppViewModel.kt:100` persists it | Before writing any error-mapping code, log `auth.currentUser?.uid` **alongside** `currentUserId` on the affected device and compare. If they differ, the fix is identity binding, not exception strings — and it is a one-file change. |
-| 3 | 🔴 **Blocker** | Dev / QA | **The identity fix collides with a locked-in test contract, and the plan budgets nothing for it.** `CrossAuthSignInTest` asserts precisely the decoupling in Finding 2: `setAuthenticatedUser(AuthUser(uid="user_123", …))` ⇒ `currentUserId == "user_123"`, with no Firebase session in play. `.agents/rules/02_testing_verification.md` §4 forbids `@Developer` from modifying or deleting existing test assertions. So the correct fix to Anti-Pattern 1 cannot be shipped without an explicit, human-approved renegotiation of the issue-#457 contract (`ef5e087`). No subtask acknowledges this. | `app/src/test/java/com/fractanomics/crosstraining/data/firebase/CrossAuthSignInTest.kt:48-74`; `.agents/rules/02_testing_verification.md` §4 | Add an explicit subtask: "renegotiate the `currentUserId` contract in `CrossAuthSignInTest`", with the user's sign-off, **before** any auth change. Otherwise the fix→verify loop deadlocks. |
-| 4 | 🔴 **Blocker** | Dev | **Iteration 2's own remedy for its Blocker 3 would destroy data.** F3 recommends "invert to download-then-upload". Verified: `downloadUserData` has no tombstones and dedups sessions by `date == date && title == title`, so it *re-inserts* anything present in the cloud but absent locally. Upload-first is what makes local deletions propagate today (upload writes the post-delete set, download then finds nothing new). Inverting the order permanently resurrects every session, routine and rep-max the user has ever deleted, on every sync. The remedy trades a rare empty-overwrite for a guaranteed, recurring un-delete. | `AppViewModel.kt:155-156`; `UserCloudSyncManager.kt:469-470` (dedup), `:531-533`, `:433` — none of the download paths delete | Reject "invert the order". Use the other two options F3 offered instead: refuse to upload when the local dataset is empty or materially smaller than the remote one, and/or write a timestamped backup document before `.set()`. Order stays upload-first. |
-| 5 | 🟠 Major | QA | **The flow-03 blocker is conditional, and the condition is an undocumented inter-flow dependency.** Only flows 01 and 05 use `clearState: true`; the runner installs with `adb install -r`, and `$Flow` defaults to the whole directory, so flows execute 01→06 against carried-over state. Flow 02 saves a title-less session whose block main exercise is Back Squat; `HistoryScreen` renders a blank title as "Workout Session" and its search matches on the block's main-exercise name. So in a **full-suite** run flow 03 will most likely still pass on a real DB — and fail when run in isolation or via `-Tags history`. The plan's prescribed command runs the full suite, so it would report green while a targeted CI run goes red. | `e2e/flows/*.yaml` (`clearState` only in 01, 05); `scripts/run-e2e-tests.ps1:17, 106`; `SessionEditor.kt:534` (`title = title.trim()`, blank in flow 02); `HistoryScreen.kt:275, 96-101` | Make flow 03 self-contained (create its own session, or assert on seeded routines instead). Not verified by execution — settle it with `.\scripts\run-e2e-tests.ps1 -Flow "e2e/flows/03_history_and_search_flow.yaml"`. **Body edit applied** — Subtask 4 bullet corrected. |
-| 6 | 🟠 Major | QA | **Adopting Iteration 2's F16 remedy would remove the safety net for this very change.** F16 recommends repointing the `settings`/`theme` rule at `ProfileScreen.kt`. Do that, and a `ProfileScreen.kt`-only edit resolves to tags `[settings, theme]` → **flow 05 only**. Flow 05 exercises the theme radio list and nothing else — not the new Data Mode card, not the sync card, not guest gating. Today the unmatched-file fallback runs all six flows; the "fix" would silently narrow it to one. | `e2e/flow-mapping.json` (`ProfileSettingsScreen.kt` rule); `scripts/run-e2e-tests.ps1:174-181`; `e2e/flows/05_theme_mode_flow.yaml` | If the rule is added at all, tag `ProfileScreen.kt` as `core`, not `settings`. Also list flow 05 as affected: inserting a Data Mode card above the theme section changes its scroll geometry. |
-| 7 | 🟠 Major | Dev / QA | **`SyncStatus` is process-global state mutated by writes the user never associated with syncing.** `UserCloudSyncManager` is an `object`; `_syncState` is a singleton flow set by *every* `uploadUserData`, including the three background cycle-edit uploads in Finding 1. Consequences: the "Sync Now" button (`enabled = syncState != SYNCING`) can be disabled by an unrelated background save; the red ERROR badge in the Cloud Backup card can be showing the result of a cycle edit from minutes ago; and Scenario 5's acceptance criteria are non-deterministic because they assert on a badge any concurrent write can repaint. This may itself be part of the reported symptom. | `UserCloudSyncManager.kt:36, 44-45, 246, 377-380`; `ProfileScreen.kt:421` (button `enabled`), `:379-403` (badge) | Give user-initiated sync its own state, or scope `_syncState` per operation. Required before Scenario 5 can be written as a falsifiable test. |
-| 8 | 🟠 Major | Business / QA | **The plan's headline regression cannot be observed by any verification step it lists.** `SeedData.populate` returns immediately after inserting exercises when `APP_ENV == "production"`, so a release-build real DB has **no cycle and no routines**. `SessionEditor` refuses to save without a cycle. Remove demo-on-guest and a production first-run user lands on Log Session, taps Save, and is stopped by "Create and select a cycle first (Cycles tab)." — the app's primary action is blocked out of the box. Debug/snapshot builds seed the cycle, so the emulator, every Maestro flow and every listed command will show this working. Iteration 2's F11 described this as "empty History and Progress"; it is stronger than that. | `SeedData.kt:77` (`if (isProduction) return`); `AppDatabase.kt:150-157`; `app/build.gradle.kts:69, 72, 77`; `SessionEditor.kt:520-523` | Either seed a default cycle in production too, or ship an empty-state first-run flow that creates one. Add an explicit acceptance criterion for **release-variant** first run; state plainly that snapshot E2E does not cover it. |
-| 9 | 🟠 Major | Dev / Security | **The "Google sign-in" the plan funnels guests into never creates a Google identity at all.** `logInWithGoogleAccount` calls `ensureAuthenticated()`, which returns early when an anonymous user already exists, then attaches an email to that **anonymous** uid with no credential. The session is anonymous in Firebase and non-anonymous in the app (`isAnonymous = false`, `:214`), and `saveAuthSession` persists that lie. Anonymous accounts are unrecoverable after uninstall, so Scenario 4's "sign in to protect your data" promise is, on this path, false. `signInWithGoogleCredential` does the right thing (`linkWithCredential` preserves the anon uid, `:195-196`) and is unreachable. This is not an open question — it is a verified data-loss mechanism. | `UserCloudSyncManager.kt:208-219` vs `:191-206`; `AppViewModel.kt:128` | Migrate both entry points (`LoginWelcomeScreen.kt:99`, `ProfileScreen.kt:626`) to Credential Manager → `signInWithGoogleCredential`, or remove "Continue with Google" from the guest prompt. Deps are already present. |
-| 10 | 🟠 Major | Dev | **"Sync Now" mutates local data before it uploads.** `uploadUserData` calls `repo.cleanupDuplicateRoutines()`, which **deletes** rows inside a transaction, then `distinctBy` name. A sync that subsequently times out or is denied has still destroyed local routines the user never asked to merge. An operation the plan presents as a backup is a destructive local write. | `UserCloudSyncManager.kt:270-271`; `Repository.kt:168-180` | Move dedup out of the upload path, or make it explicit and undoable. At minimum acknowledge it in the plan's blast radius. |
-| 11 | 🟡 Minor | QA | **Zero regression coverage on the entire surface being changed.** No test in `app/src/test` or `app/src/androidTest` references `DataModeManager`, `demoMode`, `uploadUserData` or `triggerCloudSync`. The 269-test suite is green and completely blind to every behaviour this plan alters, so "all tests pass" will carry no information about it. | Baseline run this pass: 269 tests / 0 failures; grep over both test source sets returns no match for the four symbols | State in Subtask 4 that a green unit suite is *not* evidence for this change, and name which criteria are instrumented-only. |
-| 12 | 🟡 Minor | Dev | **The plan's UI additions contradict the repo's own Compose standard, and complying would solve Iteration 2's Finding 8.** `.agents/rules/03_compose_ui_standards.md` §1 requires a stateful route plus a **stateless** `(uiState, onAction)` screen. `ProfileScreen` currently threads `viewModel` straight into child composables (`AuthDialog(viewModel = viewModel)`), and the plan adds two more viewModel-coupled widgets to it. Extracting a stateless `DataModeCard(demoMode, onToggle)` would both satisfy the rule and make Scenario 2 testable with the Compose test infrastructure that already exists in `androidTest`. | `.agents/rules/03_compose_ui_standards.md` §1; `ProfileScreen.kt:463`; existing pattern in `ResetPasswordDialogComposeTest.kt` | Add "stateless `DataModeCard` + Compose UI test" to Subtask 2. |
-| 13 | 🟢 Non-issue | Dev | "Robolectric may exist, since there are Compose tests." Re-tested: all three Compose tests are in `app/src/androidTest`, and `robolectric` appears nowhere in the version catalog, gradle files or sources. Iteration 2's F8 stands as written. | `find app/src/androidTest`; repo-wide grep for `robolectric` → only a comment in `VoiceInputController.kt:157` | None. |
-| 14 | 🟢 Non-issue | Dev | "Removing `viewModel.setDemoMode(true)` alone satisfies Requisite 3." Re-tested independently of Iteration 2: it does not. `guestModeAccepted` is a non-persisted `remember{}` (`AppNavigation.kt:144`), so returning guests always pass back through the welcome screen — but `KEY_DEMO_MODE` persists, so they are re-locked into demo on every launch. The one-time migration in F5 is genuinely mandatory. | `AppNavigation.kt:144, 162`; `DataModeManager.kt:37, 140, 165` | None — confirms F5. |
-
-### 2. Concerns & drawbacks
-
-**2.1 The plan gates the wrong layer, and Iteration 2 only half-caught it.**
-Iterations 1 and 2 both frame the demo/cloud problem as "which buttons should be disabled". Finding 1 shows that three of the nine cloud writes have no button to disable: they are side effects of saving or deleting a cycle goal. Every acceptance criterion in Scenario 3 can pass — the Sync Now button correctly greyed out, the amber notice correctly displayed — while the user's real Firestore backup is being overwritten with demo fixtures by a cycle edit two screens away. Gating is not a weaker version of the right fix; it is a fix that produces a false sense of safety. **Verdict: Blocker.** The repository handed to cloud sync must be `realRepository` unconditionally, at all nine sites, before any switch becomes prominent.
-
-**2.2 Iteration 2's strongest hypothesis is its weakest, and its most useful one is missing.**
-The 1 MiB document-ceiling theory (F2a) is plausible but unmeasured and would require ~200+ logged sessions. Finding 2 identifies a mechanism that needs no console access, no measurement and no assumption about security rules: the uid the app writes to is read from `SharedPreferences` and is structurally free to disagree with the token FirebaseAuth actually holds — and one code path *fabricates* a uid from an email string and persists it. That hypothesis predicts exactly what was reported: a specific user, failing every time, immediately. **Verdict: Blocker on the ordering of work.** One logcat line comparing `auth.currentUser?.uid` with `currentUserId` discriminates between the two hypotheses in under a minute, and determines whether Subtask 3 is a UI task or a one-file auth task.
-
-**2.3 A review remedy was accepted without being tested — and it destroys data.**
-Iteration 2 correctly flagged the destructive `.set()` and correctly demanded a recovery path, then recommended inverting the sync order. Finding 4 shows that inversion converts a conditional data-loss bug into an unconditional one: since no download path deletes and session dedup is `(date, title)`, download-first resurrects every deleted item on every sync, forever. The irony is instructive — Iteration 2's §2.4 says "irreversibility is nowhere acknowledged", and its own remedy introduces an irreversible one. **Verdict: Blocker.** This is the single most important thing to *not* implement from Iteration 2.
-
-**2.4 The verification plan is structurally incapable of observing the regression the plan creates.**
-Iteration 2 added the CI-parity command and the E2E artifact capture, and noted that snapshot builds write to a different Firestore environment. It missed that the same `APP_ENV` split also governs **seeding**: `if (isProduction) return` means the real DB in a release build has exercises and nothing else. So the emulator run, all six Maestro flows and the mandatory gate will all exercise a first-run state that no production user will ever have — one that has an active cycle and three routines. The one regression this change is most likely to cause (a first-run user who cannot save a workout) is invisible to every command listed. Add Finding 11 — no test anywhere touches `demoMode` or `uploadUserData` — and the plan's Definition of Done reduces to "the parts we did not change still work". **Verdict: Major, bordering Blocker.** Either seed production, or add a release-variant manual acceptance step and say plainly that automation does not cover it.
-
-**2.5 A cheaper design that dissolves three findings at once was never considered.**
-Requisites 2 and 3 are both satisfied — and Findings 1, 5 and 14 all shrink or disappear — if demo mode simply stops being persistent. Make it session-scoped: default off on every launch, never written to `SharedPreferences`, cleared on process death. Then there is no pref migration to write, no population locked into demo, no returning-guest trap, and the window in which a background cycle upload can reach the cloud with demo data shrinks to a single session instead of forever. The plan instead keeps persistence and adds a migration key, a Profile card, a drawer row and gating logic across two screens — more surface, more state, more tests, for a strictly worse invariant. **Verdict: Major.** At minimum, record why persistence is required; "the app reopens where it was left" (`DataModeManager.kt:17-18`) is a code comment, not a requirement anyone asked for.
-
-**2.6 The plan still has no rollback and now has a test-contract deadlock.**
-Beyond Iteration 2's §2.4: Finding 3 means the correct auth fix cannot be merged without renegotiating assertions that a previous, already-merged issue deliberately locked in. Under the repo's own rule §4 the developer role is forbidden from touching them, and under the 3-attempt cap this loop will stall on attempt one. **Verdict: Major.** Resolve the contract question with the user *before* Subtask 3 starts, not inside the fix loop.
-
-### 3. Open questions for the author
-
-1. **Does `auth.currentUser?.uid` equal `currentUserId` on the failing device?** One logcat line. It decides whether Subtask 3 is UI work or auth work, and it supersedes Iteration 2's question 1 in usefulness.
-2. **Which build variant is the affected user running — release or snapshot?** Finding 8 and Iteration 2's environment caveat both hinge on it, and it is not recorded anywhere in this plan.
-3. **Does demo mode need to persist across launches at all?** (§2.5) A "no" removes the migration, the trap and most of the blast radius.
-4. **May the `currentUserId` assertions in `CrossAuthSignInTest` be renegotiated?** (Finding 3) Without a yes, the auth fix cannot be implemented under `.agents/rules/02` §4.
-5. **Should saving a cycle upload to the cloud at all?** (Finding 1) Three silent full-replacement uploads on ordinary edits look unintentional. If they are intentional they need debouncing and gating; if not, deleting them is a smaller change than the whole of Subtask 3.
-
-### 4. Unverified claims
-
-- **Everything downstream of Firestore security rules.** Re-confirmed absent (no `firestore.rules`, `firebase.json` or `*.rules` in the repo). Finding 2 and Iteration 2's F7 remain a matched pair: if rules are per-uid, `recoverAllCloudRoutines` cannot work; if they are permissive, `PERMISSION_DENIED` needs a different explanation. Both still cannot be true.
-- **Whether anonymous auth is enabled on `virgymia-c2cc7`.** Still console-side; `app/google-services.json` confirms only the project ID.
-- **The 1 MiB session-document hypothesis.** Still unmeasured, and now competing with a cheaper hypothesis (Finding 2).
-- **Flow 03's actual outcome on a real DB.** Reasoned from source (Finding 5); **not executed**. No emulator or Maestro run was performed in this pass. `.\scripts\run-e2e-tests.ps1 -Flow "e2e/flows/03_history_and_search_flow.yaml"` settles it.
-- **Finding 8's production first-run behaviour.** Derived from `SeedData.kt:77` and `AppDatabase.kt:150`; not confirmed on a release-variant install.
-- **What the user actually sees.** After three iterations, the literal error string from the failing "Sync Now" is still not in this document. That remains the cheapest missing artifact in the whole plan.
-
-### 5. Body edits applied in this iteration
-
-| Location | Change | Finding |
-| :--- | :--- | :--- |
-| Component Impact, `AppViewModel.kt` row | Corrected "six" call sites to **nine**; added `saveCycle` (L223), `saveCycleWithGoals` (L229) and `deleteCycleGoal` (L234) as buttonless background uploads; corrected the cited line numbers (L88 / L155-156 / L168) | 1 |
-| INVEST Subtask 4, flow-03 bullet | Corrected the certainty of the flow-03 failure: qualified it as conditional on full-suite ordering (only flows 01/05 use `clearState`; `adb install -r`), with the mechanism by which flow 02's title-less session satisfies flow 03 | 5 |
-
-*No earlier review iteration was modified. Iteration 2's findings that survived re-testing are listed in §0 with independent evidence rather than inherited.*
-
----
-
-## 🔍 Review Iteration 4: 3-Amigos Synthesis & Architect Resolution Matrix
-
-- **Date / Author:** 2026-09-03 | Antigravity AI Architect
-- **Target Repository:** `AntaresAndBharani/crosstrainingapp` (`c:\Users\rogal\workspaces\ws-gym\crosstrainingapp`)
-- **Status:** Consolidated Resolution Plan responding directly to Review Iteration 3 findings and operator guidance.
-
-### 1. Direct Resolution of Iteration 3 Findings
-
-| Finding / Concern | Iteration 3 Diagnosis | Final Resolution & Architectural Design |
-| :--- | :--- | :--- |
-| **Finding 1: Buttonless Background Uploads** (🔴 Blocker) | 3 background uploads (`saveCycle`, `saveCycleWithGoals`, `deleteCycleGoal`) plus 6 other sites call `uploadUserData(repo)` passing `data.current`. If user edits a demo cycle, demo fixtures overwrite real Firestore backup. UI gating cannot reach this. | **Structural Isolation Adopted:** `DataModeManager` exposes an explicit `val realRepository: Repository`. All nine cloud sync call sites in `AppViewModel` must pass `data.realRepository` unconditionally. `demoRepository` is made structurally incapable of interacting with Firestore. |
-| **Finding 2: Auth UID / Token Desync** (🔴 Blocker) | `currentUserId` is decoupled from `FirebaseAuth` token; fallback paths fabricate UIDs (e.g. `jangelpv_crosstraining_app`) and persist them, causing permanent `PERMISSION_DENIED` on Firestore writes. | **Strict Token-Bound Identity:** In `UserCloudSyncManager`, ensure `currentUserId` matches `auth.currentUser?.uid` strictly. Refuse sync if the auth token does not match the active session identity. Wire Credential Manager to `signInWithGoogleCredential` (already declared in Gradle) rather than the broken `AccountManager` email-only path. |
-| **Finding 3: Test Contract in `CrossAuthSignInTest`** (🔴 Blocker) | Issue #457 locked in `currentUserId` decoupling without an active Firebase session. Changing `currentUserId` directly conflicts with existing assertions. | **Formal Contract Renegotiation:** The test contract will be updated with operator sign-off to require an authenticated token/UID match rather than an unverified mock string, preventing identity drift while preserving cross-auth profile deduplication invariants. |
-| **Finding 4: Sync Order Inversion Hazard** (🔴 Blocker) | Iteration 2's suggestion to "download before upload" resurrects all deleted local entities on every sync because `downloadUserData` lacks tombstones. | **Inversion Rejected:** Retain **upload-first** order to preserve local deletions. Add an **Empty-Database Overwrite Guard**: If local database has 0 sessions and remote Firestore has >0 sessions, abort the destructive `.set()` and prompt the user to restore their cloud backup. |
-| **Finding 2.5: Session-Scoped Demo Mode** (💡 Major Opportunity) | Persisting `demoMode` in `SharedPreferences` creates a returning-guest trap, requires complex migrations, and expands the blast radius. | **Session-Scoped Demo Mode Adopted:** Remove `KEY_DEMO_MODE` persistence completely. `_demoMode` is held strictly in memory as a `MutableStateFlow(false)`. The app unconditionally starts in **Real Data** on every launch. Toggling to Demo Data is temporary for that app session only. This 100% fulfills Requisite 3 without any preference migration. |
-| **Finding 8: Production Seeding Gap** (🟠 Major) | `SeedData.populate` aborts on `isProduction`, leaving real DB with 0 cycles. A new user cannot save a workout out of the box. | **First-Run Production Seeding:** Ensure a minimal initial cycle (e.g. "General Training") is created if no active cycle exists, allowing first-run users to immediately log a workout without hitting the "Create cycle first" blocker. |
-| **Finding 12: Compose UI Standards** (🟡 Minor) | Adding viewModel-coupled cards directly to `ProfileScreen.kt` violates `.agents/rules/03_compose_ui_standards.md` §1. | **Stateless Composable:** Implement `DataModeCard(demoMode: Boolean, onToggle: (Boolean) -> Unit)` as a pure stateless composable, and add an instrumented Compose test in `app/src/androidTest`. |
-
----
-
-### 2. Answers to the 5 Open Review Questions
-
-1. **Does `auth.currentUser?.uid` equal `currentUserId` on the failing device?**
-   - **Answer / Resolution:** In the current code, they frequently diverge because `currentUserId` falls back to `user.uid` (which can be a raw email string or fabricated shorthand from `SharedPreferences`) while `auth.currentUser` is either null or an anonymous token. We are establishing strict token-binding so `currentUserId` is derived directly from the verified `FirebaseAuth` session.
-
-2. **Which build variant is the affected user running — release or snapshot?**
-   - **Answer / Resolution:** The user reported this on the **Release APK (`v3.0.147`)** downloaded from the GitHub Release, which targets `environments/production`.
-
-3. **Does demo mode need to persist across launches at all?**
-   - **Answer / Resolution:** **NO.** We formally adopt the reviewer's proposal: Demo Mode will be **session-scoped (in-memory only)**. It will always default to `false` (Real Data) on every cold start. This permanently eliminates the returning-guest trap and requires zero preference migrations.
-
-4. **May the `currentUserId` assertions in `CrossAuthSignInTest` be renegotiated?**
-   - **Answer / Resolution:** **YES.** By logging this in the plan and obtaining operator confirmation, we formally approve updating the mock setup in `CrossAuthSignInTest` so it validates token-bound identities without deadlocking under `.agents/rules/02` §4.
-
-5. **Should saving a cycle upload to the cloud at all?**
-   - **Answer / Resolution:** Cycle edits should only sync if the user is authenticated and Real Data is active. To eliminate silent full-document overwrite hazards, we route all cycle saves strictly to `data.realRepository` and debounce/guard them against unauthenticated execution.
-
----
-
-### 3. Decoupled Workstream Strategy
-
-To guarantee rapid, zero-risk delivery while eliminating regression hazards:
-
-- **Workstream 1: Real Data Default & Session-Scoped Demo Switch (Immediate Delivery)**
-  - Make `demoMode` strictly in-memory (defaults to `false` on every launch).
-  - Remove forced `setDemoMode(true)` from `AppNavigation.kt` `onContinueAsGuest`.
-  - Add stateless `DataModeCard` in `ProfileScreen.kt` and quick toggle in Navigation Drawer.
-  - Fix production first-run cycle initialization so new guests can immediately log workouts.
-  - Update Maestro flow 03 to be self-contained.
-  - Verify with unit tests, CI parity (`assembleSnapshot`), and E2E artifact capture.
-
-- **Workstream 2: Cloud Sync Hardening & Identity Alignment**
-  - Route all 9 sync call sites strictly through `data.realRepository`.
-  - Enforce token-bound UID resolution and integrate Credential Manager for Google Sign-In.
-  - Add empty-database overwrite guard in `uploadUserData`.
-  - Update `CrossAuthSignInTest` contract.
-
----
-
-## 🔍 Review Iteration 5: 3-Amigos Critical Review — Convergence Pass: Is This Implementable As Written?
-
-- **Date / Reviewer:** 2026-09-03 | Three Amigos (Business / Development / QA)
-- **Target Repository:** `AntaresAndBharani/crosstrainingapp` @ `25a9739` (working tree clean apart from this document)
-- **Scope reviewed:** Every standing blocker from Iterations 2 and 3, re-tested against source rather than inherited; then Iteration 4's Resolution Matrix, BDD scenarios, Component Impact table and two-phase plan read as an executable specification. Files re-read: `DataModeManager.kt` (full), `AppViewModel.kt`, `UserCloudSyncManager.kt` (identity / upload / download / recover ranges), `SeedData.kt`, `AppDatabase.kt`, `Repository.kt`, `ProfileScreen.kt`, `CrossAuthSignInTest.kt` (full), `AppViewModelVoiceIngestionTest.kt`, `.agents/rules/02_testing_verification.md`, all six `e2e/flows/*.yaml`, `e2e/flow-mapping.json`, `scripts/run-e2e-tests.ps1`.
-- **Executed in this pass:** `.\gradlew.bat testDebugUnitTest --tests "*CrossAuthSignInTest*" --no-daemon` → **green**. No emulator / Maestro run.
-- **Verdict:** ✅ **APPROVE WITH CHANGES** — Iteration 4 structurally resolved all four standing blockers. What remains is specification, not architecture. **Phase 1 may start once change #1 is written in. Phase 2 must not start until changes #3–#5 are written in.**
-
-### 0. Standing blockers from Iterations 2 and 3 — closed out
-
-| Standing item | Re-tested this pass | Status in the plan |
-| :--- | :--- | :--- |
-| **Nine `uploadUserData` call sites** (Iter 3 F1) | Grep over `app/src`: `uploadUserData` / `downloadUserData` appear at `AppViewModel.kt:88, 102, 116, 130, 155, 156, 223, 229, 234`, plus `recoverAllCloudRoutines` at `:168`. `repo` is `data.current` (`:63-64`). Precisely: **nine functions, ten call sites** — Iteration 3's "nine" counted functions, and Iteration 4's enumeration is complete (it does include `recoverCloudRoutines`). | ✅ **Resolved.** Structural isolation via `data.realRepository` gates the correct layer. One implementation gap remains — Finding 5. **Body edit applied.** |
-| **`currentUserId` / FirebaseAuth divergence** (Iter 3 F2) | Re-confirmed at source: `currentUserId` (`UserCloudSyncManager.kt:53-59`) returns `_userState.value.uid` and **never consults `auth` on that branch**; `_userState` is rehydrated from `SharedPreferences` (`AppViewModel.kt:67-72`; `DataModeManager.kt:100-110`); the fabricated-uid fallback is live at `:176-181`. | ⚠️ **Diagnosis accepted, remedy under-specified** — Finding 2. |
-| **Collision with the `CrossAuthSignInTest` contract** (Iter 3 F3) | Read in full and **executed**: green. It passes *because* of that early return — assertions at `:58, :72, :85, :398` all obtain a uid with no Firebase session in play. Operator sign-off to renegotiate is recorded (Iter 4, Q4). | ⚠️ **Approved in principle, unimplementable as worded** — Finding 2(b). |
-| **Download-then-upload inversion** (Iter 2 F3 remedy / Iter 3 F4) | Re-confirmed: no download path deletes; session dedup is `(date, title)`. Inverting would resurrect deleted rows on every sync. | ✅ **Resolved and correctly rejected.** Upload-first retained. Guard scope needs widening — Finding 3. |
-| **E2E flow 03** (Iter 2 F1 / Iter 3 F5) | `e2e/flows/03_history_and_search_flow.yaml` has no `clearState` and depends on flow 02's session. Iteration 4 makes it self-contained. | ✅ **Resolved.** Drop the alternative it offers ("or toggle demo mode") — that would stop flow 03 exercising the real-data default which is the whole point of Phase 1. |
-| **Demo-mode pref migration** (Iter 2 F5 / Iter 3 F14) | `KEY_DEMO_MODE` is read at exactly one place (`DataModeManager.kt:37`) and written at one (`:140`). Deleting persistence means the stale `true` is simply never read again. | ✅ **Resolved and dissolved.** Session-scoping removes the migration entirely; the claim checks out. |
-| **`isSuccess \|\| isSuccess` masks a failed upload** (Iter 2 F10) | Still live at `AppViewModel.kt:157`. | ✅ **Resolved in plan** (Component Impact: "Separate upload and download error reporting"). |
-
-### 1. Findings
-
-| # | Severity | Perspective | Finding | Evidence | Recommended action |
-| :-- | :--- | :--- | :--- | :--- | :--- |
-| 1 | 🔴 **Blocker** | Dev | **The production-seeding fix as specified cannot reach the population this change creates.** On the production path `SeedData.populate` is invoked from exactly one place: the `onCreate` callback in `AppDatabase.build()`, which fires **once**, when `crosstraining.db` is first created. Every existing `v3.0.147` install already has that file — exercises only, no cycle (`SeedData.kt:77`). Phase 1 is precisely what drops those users out of demo mode into that cycle-less DB, so a fix in `SeedData` / `onCreate` reaches only *fresh* installs and leaves the actual affected users unable to save a workout. Scenario 4's "Given a fresh production install" encodes the same blind spot. | `AppDatabase.kt:145-160` (`addCallback(onCreate)`); `SeedData.kt:77`; `Repository.kt:334-336` — `reseedDefaults` forwards `isProduction=false` and is the only existing production path that creates a cycle, but it is `force=true` and sits behind the "restore defaults" button at `ProfileScreen.kt:443` | Provision at start-up or via a Room migration: if `cycleDao.getAllOnce().isEmpty()`, insert one minimal cycle. Extend Scenario 4 with a second Given: *an existing production install upgraded to this build*. **Body edits applied** — Component Impact `SeedData`/`AppDatabase` row and Phase 1 step 4. |
-| 2 | 🔴 **Blocker** | Dev / QA | **"`currentUserId` matches `auth.currentUser?.uid` strictly" is unimplementable as worded, in two independent ways.** **(a) Ordering makes the guard vacuous.** `uploadUserData` calls `ensureAuthenticated()` *before* reading `currentUserId`, and `ensureAuthenticated()` signs in anonymously. After that, strict equality is trivially satisfied by the anonymous uid — so a returning real user whose Firebase session is gone silently backs up to an orphan anonymous document while the card reports SUCCESS. That is a *new* silent-failure path introduced by the fix. **(b) There is no JVM seam.** `currentUserId`'s `_userState` branch returns before touching `auth`, which is the only reason `CrossAuthSignInTest` passes on the JVM (executed this pass: green). Bind it strictly and `FirebaseAuth.getInstance()` throws in unit tests, the existing `runCatching` swallows it, and every assertion collapses to `""` — including `:85`, which tests slash sanitisation, a behaviour unrelated to identity binding. "Update the test contract" would then mean deleting coverage, which `.agents/rules/02` §4 forbids. | `UserCloudSyncManager.kt:53-59, 89-101, 248-250, 385-387`; `CrossAuthSignInTest.kt:48-86, 394-403`; `.agents/rules/02_testing_verification.md` §4 | Specify the guard precisely: *before* `ensureAuthenticated()`, if `_userState` holds a non-anonymous identity and `auth.currentUser` is null or anonymous, fail closed with a "please sign in again" result. Add an injectable seam (e.g. `internal var authUidProviderForTesting: (() -> String?)?`) so the renegotiated assertions can assert something, and name the replacement assertions in Phase 2 step 4. |
-| 3 | 🟠 Major | Dev | **The overwrite guard is narrower than the destructive surface it protects.** Upload `.set()`s five separate documents; the guard is specified on session count alone. Local routines, exercises, cycle goals or rep-maxes can each be empty while their remote counterpart is populated — e.g. a login where `downloadUserData` failed — and those documents are still wiped. The guard also introduces a remote **read** that `uploadUserData` does not currently perform, inside the existing `withTimeout(20000L)`, and it will now execute on the three buttonless cycle-edit uploads. | `UserCloudSyncManager.kt:248` (timeout), `:267, 297, 345, 360, 374` (five `.set()`s); `AppViewModel.kt:223, 229, 234` | Make it per-document: skip the `.set()` for any collection that is locally empty while remotely non-empty, instead of aborting the whole sync on sessions alone. State the added read cost and whether the 20 s budget still holds. |
-| 4 | 🟠 Major | Business / QA | **Requisite 1 — the requirement that opened this document — has no acceptance criterion.** Scenarios 1–5 cover cold start, toggle, isolation, first-run logging and the overwrite guard. **None asserts that "Sync Now" succeeds, or that a failure produces a specific message.** The `ProfileScreen.kt` row promises "friendly error presentation" with nothing testable behind it, and Iteration 1's Invariant 2 (offline message) and Invariant 4 (guest prompt) have silently disappeared from the final plan without being marked out of scope. Guest sync is now *ungated*: a guest tapping "Sync Now" still reaches `ensureAuthenticated()` and, under Finding 2(a), uploads successfully to an anonymous document that is unrecoverable after uninstall. After five iterations the literal error string is still not in this document, so the only possible evidence that Requisite 1 is met is the original reporter on a release build. | BDD section, Scenarios 1–5; Component Impact `ProfileScreen.kt` row; `UserCloudSyncManager.kt:208-219`; `ProfileScreen.kt:412-425` (`enabled = syncState != SYNCING` is still the only guard) | Add a Scenario 6: a successful sync plus at least one mapped-error case; and a release-build acceptance step, *"confirmed by the original reporter on `v3.0.147`+"*. Either restore Invariants 2 and 4 or record them as descoped. |
-| 5 | 🟠 Major | Dev / QA | **Routing sync to `data.realRepository` makes the isolation rule impossible to unit-test.** `current` honours `setRepositoryForTesting`; `realRepository` is `by lazy { … error("Context required for real repository") }`. Expose it as-is and every JVM test that constructs `DataModeManager(null)` throws the moment a sync path executes — so Scenario 3, the acceptance criterion for the plan's own headline blocker, becomes device-only. | `DataModeManager.kt:28-31, 122-131`; `AppViewModelVoiceIngestionTest.kt:75-77` | Expose it as `testRepository ?: realRepository`. One line, and it makes Scenario 3 assertable in `app/src/test`. **Body edit applied** — noted on the `AppViewModel.kt` row. |
-| 6 | 🟡 Minor | Dev / Product | **Three toggles, still unanswered.** `LibraryScreen.kt:226` keeps its own `setDemoMode`, and `:240` remains the only home of "Reset demo data". Iteration 2 F12 asked this; Iteration 4 does not answer it, and `LibraryScreen.kt` is still absent from the Component Impact table. | `LibraryScreen.kt:221-243`; Component Impact table | Decide in Phase 1: remove the Library toggle and rehome "Reset demo data" into the new `DataModeCard`, or state that three entry points are intended. |
-| 7 | 🟡 Minor | Dev / Security | **`recoverAllCloudRoutines` is still unscoped, and Iteration 4 dropped it silently.** It remains a `collectionGroup("data")` query filtered only by environment path, and `recoverCloudRoutines` is one of the nine routed functions, with its button inside the very card being redesigned. Routing it to `realRepository` fixes *which local DB it writes to*, not *whose cloud data it reads*. | `UserCloudSyncManager.kt:545`; `ProfileScreen.kt:428-440` | Scope to `userDoc(currentUserId)` in Phase 2, or record it as knowingly deferred with a rationale. |
-| 8 | 🟢 Non-issue | QA | **E2E flow selection needs no action** (closing Iter 2 F16 / Iter 3 F6). Re-tested in the runner: any rule tagged `core` sets `$TriggerFullSuite`, and so does an unmatched file. `DataModeManager.kt`, `AppViewModel.kt`, `SeedData.kt`, `AppDatabase.kt` and `ui/navigation/**` are all tagged `core`; `ProfileScreen.kt` matches no rule. Both phases therefore run all six flows regardless. Iteration 4 was right to drop the mapping edit — and Iteration 3 was right that *making* it would have narrowed coverage. | `scripts/run-e2e-tests.ps1:163-166, 174-176`; `e2e/flow-mapping.json` | None. |
-
-### 2. The two trade-offs the plan still does not acknowledge
-
-**2.1 Phase 1 ships the regression that Phase 2 is supposed to prevent.**
-The phases are presented as independently deliverable, but Phase 1 makes the demo toggle prominent on two screens while the three buttonless `uploadUserData(repo)` calls at `AppViewModel.kt:223, 229, 234` still pass `data.current`. Between Phase 1 and Phase 2, a user who flips the new switch to Demo Data and edits a cycle overwrites their real Firestore backup with demo fixtures — the exact hazard Iteration 3 F1 raised, made *more* likely by Phase 1's own UX improvement. **Verdict: an ordering defect, not a design defect.** Move the one-line `repo` → `data.realRepository` change at those three sites into Phase 1, ahead of the switch. It depends on neither identity binding nor the overwrite guard.
-
-**2.2 Session-scoped demo mode is the right call, and it costs something nobody has priced.**
-Adopting it dissolves the migration, the returning-guest trap and most of the blast radius — this reviewer agrees it is the best decision in the document. But a coach who spends a session building demo content for planning loses the mode on every cold start, and `refreshDemoIfStale()` at `AppViewModel.kt:195` becomes a permanent no-op (`_demoMode` is always `false` at start-up), so stale demo data is refreshed only by the `seedIfNeeded()` call inside `setDemoMode(true)` — still correct, but now the only path. **Verdict: Minor, accept and record.** One line stating that demo content is explicitly disposable per session closes it.
-
-### 3. The changes required, in execution order
-
-1. **(Phase 1, Blocker)** Respecify production cycle provisioning as a start-up / migration check on `cycleDao.getAllOnce().isEmpty()`, not `onCreate` seeding; extend Scenario 4 to the upgraded-existing-install case. *(Body edits already applied — see §5.)*
-2. **(Phase 1, Major)** Move the three buttonless `uploadUserData` sites (`AppViewModel.kt:223, 229, 234`) to `data.realRepository` **in Phase 1**, before the switch becomes prominent (§2.1); and expose `realRepository` as `testRepository ?: realRepository` (Finding 5).
-3. **(Phase 2, Blocker)** Rewrite the token-binding rule: check the persisted non-anonymous identity against `auth.currentUser` **before** `ensureAuthenticated()` and fail closed with a re-sign-in prompt; add an injectable auth-uid seam and name the replacement `CrossAuthSignInTest` assertions (Finding 2).
-4. **(Phase 2, Major)** Widen the overwrite guard from "sessions == 0" to per-document "locally empty, remotely non-empty" (Finding 3).
-5. **(Both phases, Major)** Add Scenario 6 for Requisite 1 — a successful sync plus one mapped-error case — and a release-build acceptance step confirmed by the original reporter; explicitly descope or restore Invariants 2 and 4 (Finding 4).
-6. **(Minor)** Decide the `LibraryScreen` toggle's fate (Finding 6) and record `recoverAllCloudRoutines` as fixed or deferred (Finding 7).
-
-With items 1–5 written into the body, this plan is implementable as specified, and this reviewer would sign it off without a further iteration.
-
-### 4. Unverified claims
-
-- **Everything downstream of the Firestore security rules.** Re-confirmed absent from the repo for a third consecutive iteration. Finding 2's remedy is correct regardless of what the rules say, so this no longer blocks — but the `recoverAllCloudRoutines` pincer (Iter 2 F7) still cannot be resolved from source.
-- **The literal "Sync Now" error.** Still not in this document. Iteration 4 answered the *variant* question (release `v3.0.147`) but not the *error* question. Finding 4's acceptance step is a substitute, not a resolution.
-- **Flow 03 and the full E2E suite against a real-data default.** Reasoned from source; **not executed**. No emulator run was performed in this pass.
-- **Finding 1's production first-run behaviour.** Derived from `AppDatabase.kt:145-160` and `SeedData.kt:77`; not confirmed on a release-variant install.
-
-### 5. Body edits applied in this iteration
-
-| Location | Change | Finding |
-| :--- | :--- | :--- |
-| Component Impact, `AppViewModel.kt` row | Corrected "nine cloud sync calls" to **nine functions across ten call sites**, with exact line numbers; noted the `realRepository` test-seam requirement | §0 row 1, 5 |
-| Component Impact, `SeedData.kt` / `AppDatabase.kt` row | Corrected "provisioned on production first-run": `onCreate` fires once at DB creation and never reaches existing installs, so provisioning must be a start-up / migration check | 1 |
-| Phased INVEST plan, Phase 1 step 4 | The same correction, stated as the executable instruction | 1 |
-
-*No earlier review iteration was modified. Every Iteration 2 and 3 conclusion reported in §0 was re-derived from source in this pass; one was re-scoped (nine functions / ten call sites) and one was executed (`CrossAuthSignInTest`).*
-
----
-
-## 🎯 Final Decision Plan & User Story Specification
-
-### User Story
-```gherkin
-As an athlete or coach using CrossTraining
-I want the application to unconditionally start in my real, personal database across every app launch with an intuitive switch to preview demo data
-And I want cloud synchronization to be strictly isolated to my real database with token-bound identity, empty-collection overwrite protection, and clear status feedback
-So that my workout logs and PR history are protected, unambiguous, and securely synced without risk of corruption from demo fixtures or empty overwrites.
-```
-
----
-
-### Architecture & Data Flow
-
-```
-+-----------------------------------------------------------------------------------------------+
-|                                     AppNavigation Shell                                       |
-|                                                                                               |
-|  [Cold Launch / Guest Mode] --------> Unconditionally Defaults to REAL DATA (crosstraining.db)|
-|                                       (demoMode is session-scoped, in-memory MutableStateFlow)|
-|                                                                                               |
-|  +------------------------+             +--------------------------------------------------+  |
-|  |  Navigation Drawer     |             |  Profile Screen                                  |  |
-|  |  [DataModeDrawerRow]   | <---------> |  [Stateless DataModeCard]                        |  |
-|  |  - Real Data (Default) |             |  - "My Real Data (Default)" vs "Demo Data"       |  |
-|  |  - Demo Data           |             +--------------------------------------------------+  |
-|  +-----------+------------+                                      |                            |
-|              | (toggles in-memory StateFlow)                     |                            |
-|              v                                                   v                            |
-|  +-----------------------------------------------------------------------------------------+  |
-|  |                                    DataModeManager                                      |  |
-|  |  - demoMode: StateFlow<Boolean> (In-memory ONLY, Default = FALSE, never saved to prefs)  |  |
-|  |  - current: Repository (switches UI live between realRepository and demoRepository)     |  |
-|  |  - realRepository: Repository (testRepository ?: realRepository, exposed for sync)     |  |
-|  +-----------------------------------------------------------------------------------------+  |
-|                                         |                                                     |
-|                                         | (UI flows rebind live)                              |
-|                                         v                                                     |
-|  +-----------------------------------------------------------------------------------------+  |
-|  |                                       UI Screens                                        |  |
-|  |   (Log, History, Cycles, Library, Progress rebind to active repository)                 |  |
-|  +-----------------------------------------------------------------------------------------+  |
-|                                                                                               |
-|  +-----------------------------------------------------------------------------------------+  |
-|  |                         Cloud Sync Engine (AppViewModel & SyncManager)                  |  |
-|  |                                                                                         |  |
-|  |  STRUCTURAL ISOLATION RULE:                                                             |  |
-|  |  All 9 sync functions (10 call sites):                                                  |  |
-|  |  - Phase 1: saveCycle, saveCycleWithGoals, deleteCycleGoal                              |  |
-|  |  - Phase 2: triggerCloudSync (upload & download), signUp, logIn, logInGoogle, recover   |  |
-|  |  pass `data.realRepository` UNCONDITIONALLY. Demo fixtures cannot reach Firestore.      |  |
-|  |                                                                                         |  |
-|  |  PER-DOCUMENT OVERWRITE GUARD:                                                          |  |
-|  |  Before .set(), uploadUserData verifies remote collection state. If a local collection |  |
-|  |  is empty while the remote collection is non-empty, .set() is skipped for that doc.    |  |
-|  |                                                                                         |  |
-|  |  TOKEN-BOUND IDENTITY & SEAM:                                                           |  |
-|  |  Before ensureAuthenticated(), if _userState is non-anonymous and auth.currentUser is   |  |
-|  |  null or anonymous, fails closed with re-authentication prompt.                         |  |
-|  |  Injectable authUidProviderForTesting enables JVM test coverage without Firebase Auth. |  |
-|  |                                                                                         |  |
-|  |  PRODUCTION STARTUP CYCLE PROVISIONING:                                                 |  |
-|  |  On app launch, if cycleDao.getAllOnce().isEmpty(), inserts a default training cycle,   |  |
-|  |  protecting both fresh installs and upgraded v3.0.147 installs from logging blocks.    |  |
-|  +-----------------------------------------------------------------------------------------+  |
-+-----------------------------------------------------------------------------------------------+
-```
-
----
-
-### BDD Acceptance Criteria
-
-#### Scenario 1: Cold Start & Guest Launch Always Opens in Real Data
-```gherkin
-Given a user launches the app or taps "Continue as Guest" on the Welcome Screen
-When the main screen mounts
-Then the active data mode is "Real Data" (demoMode is false in-memory)
-And no yellow "Demo data" banner is displayed
-And the database points to the athlete's personal Room database (crosstraining.db)
-And closing the app and reopening it always resets to Real Data
-```
-
-#### Scenario 2: Dynamic Live Toggle via Stateless DataModeCard & Drawer
-```gherkin
-Given any user on the Profile Screen or in the Navigation Drawer
-When they locate the "Data Mode" section
-Then they see a switch clearly indicating "Real Data (Default)" is active
-When the user flips the switch to "Demo Data"
-Then the UI instantly re-binds to crosstraining-demo.db and the yellow demo banner appears
-When the user flips the switch back to "Real Data"
-Then the yellow banner disappears and their personal real database is restored
-```
-
-#### Scenario 3: Structural Isolation of Cloud Sync from Demo Fixtures
-```gherkin
-Given the user has toggled Data Mode to "Demo Data"
-When they edit or save a training cycle, or add/delete cycle goals
-Then the local demo cycle is updated in crosstraining-demo.db
-And the background cloud sync task passes realRepository, preventing demo fixtures from reaching Firestore
-And tapping "Sync Now" in Profile Screen informs the user: "Cloud Sync operates on your Real Data"
-```
-
-#### Scenario 4: First-Run Workout Logging on Fresh and Upgraded Production Installs
-```gherkin
-Given a production install with an existing or fresh cycle-less database (upgraded from v3.0.147 or fresh install)
-When the application launches and the athlete navigates to the Log Session screen
-Then a default initial training cycle is automatically provisioned
-And the athlete can log and save their workout immediately without hitting "Create and select a cycle first"
-```
-
-#### Scenario 5: Per-Document Cloud Backup Overwrite Protection
-```gherkin
-Given an athlete signs into an existing cloud account on a new device with partially populated local tables
-When cloud sync is triggered
-Then uploadUserData inspects remote collection state before uploading
-And for any document that is locally empty but remotely populated, the destructive .set() overwrite is skipped
-And the remote cloud data is preserved intact
-```
-
-#### Scenario 6: Robust "Sync Now" Execution and Error Feedback (Requisite 1)
-```gherkin
-Given an authenticated user in Real Data mode with a matching Firebase token
-When they tap "Sync Now" in the Profile Screen
-Then uploadUserData and downloadUserData execute against realRepository
-And upon completion, the sync state updates to SUCCESS with "Cloud sync completed!"
-When an unauthenticated guest taps "Sync Now"
-Then the authentication modal opens with "Please sign in to back up workouts to the cloud"
-When network connectivity is unavailable
-Then the snackbar displays "Network unavailable. Your data is saved locally on this device"
-And no unhandled runtime exceptions or raw Firestore error codes are displayed
-And verified on release build v3.0.147+ by the original reporter
-```
-
----
-
-## 🔍 Review Iteration 6: Post-Implementation Forensic Analysis — The Literal "Sync Now" ERROR Diagnosis & Cloud Auth Seam Disconnect
-
-- **Date / Reviewer:** 2026-09-03 | Three Amigos (Business / Development / QA)
-- **Target Repository:** `AntaresAndBharani/crosstrainingapp` @ `2cdca7f`
-- **Triggering Event / Evidence:**
-  - Operator provided screenshot `media_1788451689183.png` capturing the **Cloud Backup & Sync** card in `ERROR` status (`syncState == SyncStatus.ERROR`, rendering `[ (!) ERROR ]` badge) on a live Android installation following commits `3fa05ab` through `2cdca7f`.
-  - Operator stated: *"There is an error when I try to sychronize the data with the account."*
-- **Scope reviewed:**
-  - `UserCloudSyncManager.kt` (`verifyTokenBinding`, `uploadUserData`, `downloadUserData`, `currentUserId`).
-  - `AppViewModel.kt` (`triggerCloudSync`, session rehydration).
-  - `DataModeManager.kt` (`getPersistedAuthUser`, `saveAuthSession`).
-  - `ProfileScreen.kt` (Cloud Backup Card, Auth Modal, error snackbars).
-  - `app/google-services.json` (OAuth configuration).
-  - `app/build.gradle.kts` (`APP_ENV = "production"`).
-
----
-
-### 1. Root Cause Analysis: Why "Sync Now" Produces `ERROR`
-
-#### Root Cause 1: Token-Binding Deadlock on Upgraded / Persisted Sessions (🔴 Blocker)
-In commit `2cdca7f`, `verifyTokenBinding()` was introduced:
-```kotlin
-val currentUser = runCatching { auth.currentUser }.getOrNull()
-if (currentUser == null || currentUser.isAnonymous || currentUser.uid != user.uid) {
-    return Result.failure(IllegalStateException(CloudSyncErrorMapper.GUEST_AUTH_PROMPT))
-}
-```
-1. On app launch, `AppViewModel.init` reads `data.getPersistedAuthUser()` from `SharedPreferences`.
-2. For all installs upgraded from earlier versions or where login occurred prior to `2cdca7f`, `user.uid` in `SharedPreferences` was stored as the email address (e.g. `"pv.joseangel@gmail.com"` via `logInWithGoogleAccount:251` or `"jangelpv_crosstraining_app"`).
-3. In contrast, `FirebaseAuth.getInstance().currentUser?.uid` is a 28-character Firebase alphanumeric UID (e.g. `"w7X2yZ8abc..."`).
-4. Because `currentUser.uid != user.uid` (`"w7X2yZ8abc..." != "pv.joseangel@gmail.com"`), `verifyTokenBinding()` **fails closed unconditionally** before `ensureAuthenticated()` or Firestore network traffic can run!
-5. Furthermore, if `FirebaseAuth`'s asynchronous token restoration from disk has not completed by the time `Sync Now` is tapped, `currentUser` is `null`, producing the same immediate failure.
-6. In `AppViewModel.kt:174`, `uploadRes.isSuccess` is `false`, immediately executing:
-   `UserCloudSyncManager.setSyncStatus(SyncStatus.ERROR)`
-   which sets the persistent red `[ (!) ERROR ]` badge shown in the user's screenshot.
-
-#### Root Cause 2: Missing OAuth Web Client ID in `google-services.json` (🔴 Blocker)
-1. In `app/google-services.json`, `"oauth_client": []` is empty.
-2. The Google Services Gradle plugin does not generate `@string/default_web_client_id`.
-3. `LoginWelcomeScreen.kt:348` and `ProfileScreen.kt:756` fall back to `"384900244521.apps.googleusercontent.com"`, which is **not** a valid Web Client ID (Google OAuth Web Client IDs require the full `<project_number>-<hash>.apps.googleusercontent.com` client format).
-4. Calling Credential Manager with this invalid Client ID causes Google Play Services to fail with `ApiException: 10` (Developer Error), preventing genuine Google OAuth token generation and forcing fallback paths.
-
-#### Root Cause 3: Card-Level Error Invisibility & Lack of Recovery UX (🟠 Major)
-1. When `triggerCloudSync` fails, `ProfileScreen.kt` fires a transient snackbar via `snackbar.showSnackbar(message)`.
-2. Once the snackbar dismisses (after 4 seconds), the card displays only `[ (!) ERROR ]` with zero explanation of why it failed (e.g. session expired, token mismatch, offline, permission denied).
-3. The user has no contextual action button inside the card (such as `[Re-authenticate]` or `[Sign In to Restore]`) to resolve the state.
-
-#### Root Cause 4: Sequential Write Latency Exposure (🟡 Minor)
-1. `uploadUserData` performs sequential `.set()` calls across 5 documents plus potential remote reads inside a `withTimeout(20000L)` coroutine. On high-latency mobile connections, sequential network round-trips can exceed the 20-second timeout.
-
----
-
-### 2. Concrete Architectural Remediation
-
-| Issue Area | Flaw in Code | Targeted Remediation |
-| :--- | :--- | :--- |
-| **Self-Healing Token Alignment** | `verifyTokenBinding` rejects valid users whose persisted UID is an email address. | If `currentUser != null` and `currentUser.email == user.email`, automatically self-heal: update `_userState.value` to match `currentUser.uid` and persist via `data.saveAuthSession(...)`, allowing sync to proceed smoothly. |
-| **Asynchronous Auth Wait** | `currentUser` can be transiently null on cold start while Firebase Auth loads tokens. | In `verifyTokenBinding`, if `auth.currentUser == null`, await the initial auth state resolution (up to 3 seconds) before failing closed. |
-| **Inline Error Feedback in Card** | User only sees `[ (!) ERROR ]` badge with no error reason or remedy. | In `ProfileScreen.kt`, add an inline error container inside `Cloud Backup & Sync` when `syncState == SyncStatus.ERROR` showing the mapped error message and a dedicated `[Sign In Again]` button if re-authentication is required. |
-| **Parallelized Firestore Writes** | 5 sequential `.set()` calls risk network timeouts. | Execute document uploads concurrently using `coroutineScope` and `async`. |
-
----
-
-## 🎯 Final Decision Plan & User Story Specification
-
-### User Story
-```gherkin
-As an athlete or coach using CrossTraining
-I want the application to automatically align my persisted login session with my active Firebase Auth token, parallelize cloud backups, and display clear inline error feedback if re-authentication is needed
-So that tapping "Sync Now" reliably synchronizes my personal data without false token-mismatch rejections or unexplained error badges.
-```
-
----
-
-### BDD Acceptance Criteria
-
-#### Scenario 1: Self-Healing Token Alignment for Persisted Email Sessions
-```gherkin
-Given a user whose local session has persisted user.uid as their email address
-And Firebase Auth holds a valid authenticated session for that same email with a Firebase UID
-When they tap "Sync Now" in Cloud Backup & Sync
-Then verifyTokenBinding detects the email match, updates the local UID to the Firebase UID, and persists it
-And the upload and download proceed without throwing GUEST_AUTH_PROMPT
-And the sync status badge transitions from SYNCING to SUCCESS ("Cloud sync completed!")
-```
-
-#### Scenario 2: Asynchronous Firebase Auth Cold-Start Resilience
-```gherkin
-Given the application was cold-started and FirebaseAuth token restoration is in progress
-When the user taps "Sync Now" immediately
-Then verifyTokenBinding awaits auth state resolution rather than instantly rejecting with a null user
-And once the authenticated user resolves, synchronization proceeds to SUCCESS
-```
-
-#### Scenario 3: Actionable Inline Error Card on Genuine Auth Expiry
-```gherkin
-Given an athlete whose Firebase session has expired or been revoked in the console
-When they tap "Sync Now"
-Then the Cloud Backup & Sync card displays the ERROR badge
-And an inline banner explains: "Session expired. Please sign in again to back up your workouts"
-And a prominent [Sign In Again] button is provided directly inside the card to restore access
-```
-
-#### Scenario 4: Concurrent Cloud Backup Execution
-```gherkin
-Given an authenticated user in Real Data mode with exercises, routines, cycles, and sessions
-When cloud sync upload is executed
-Then the collections are uploaded concurrently via coroutineScope
-And the total upload time is reduced, preventing 20-second timeout cancellations
-```
-
----
-
-### Component Impact Table
-
-| Component File | Location | Concrete Changes |
-| :--- | :--- | :--- |
-| **`UserCloudSyncManager.kt`** | `app/.../data/firebase/UserCloudSyncManager.kt` | - Update `verifyTokenBinding`: if `currentUser != null` and `currentUser.email == user.email`, self-heal UID alignment and save session.<br>- Await auth state resolution if `currentUser` is null on cold start.<br>- Execute collection uploads concurrently using `coroutineScope { awaitAll(...) }`. |
-| **`ProfileScreen.kt`** | `app/.../ui/screens/ProfileScreen.kt` | - Add inline error banner inside `Cloud Backup & Sync` card showing error detail and a `[Sign In Again]` button when authentication is required.<br>- Expose the latest sync error message in UI state so it remains visible after snackbar dismisses. |
-| **`AppViewModel.kt`** | `app/.../ui/AppViewModel.kt` | - Expose `lastSyncError: StateFlow<String?>` to allow UI to render persistent error context.<br>- Clear `lastSyncError` on successful sync. |
-
----
-
-### INVEST Subtask Breakdown
-
-1. **Subtask 1: Self-Healing Identity Alignment & Cold-Start Auth Await**
-   - Enhance `verifyTokenBinding()` to reconcile email-matched sessions and await Firebase Auth initialization.
-   - Add unit tests verifying that email-matched users with disparate UIDs are automatically self-healed and synced.
-
-2. **Subtask 2: Concurrent Cloud Uploads & Timeout Resilience**
-   - Refactor `uploadUserData` to upload documents concurrently with `awaitAll`.
-   - Add unit tests verifying parallel upload behavior and error isolation.
-
-3. **Subtask 3: Actionable Card-Level Error Presentation & Re-Auth Button**
-   - Add inline error container to `Cloud Backup & Sync` card in `ProfileScreen.kt`.
-   - Add `[Sign In Again]` action triggering the auth modal directly when token is expired.
-   - Verify with Compose UI instrumented tests.
 
 ---
 
 ## 🏛️ Claude Review Iteration 1
 
-- **Date / Reviewer:** 2026-09-03 | Principal Architect (Claude Sonnet — Thinking)
-- **Target Repository:** `AntaresAndBharani/crosstrainingapp` @ post-`2cdca7f` working tree
-- **Scope:** Ground-truth inspection of `UserCloudSyncManager.kt` (774 L, full), `DataModeManager.kt` (185 L, full), `AppViewModel.kt` (753 L, full), `ProfileScreen.kt` (lines 95–500), `docs/draft-requisites/implementation-plan.md` (all 6 review iterations + Final Decision Plan). Every claim below was verified directly against source, not inherited from prior iterations.
-
----
+- **Date / Author:** 2026-09-07 | Claude (Principal Architect) — Round 1 Architectural Cross-Review
+- **Baseline:** `main` @ `efd0450`
+- **Ground truth inspected:** `data/AppDatabase.kt` (197 L), `data/Converters.kt`, `data/Backup.kt`, `data/Repository.kt` (818 L), `data/DataModeManager.kt` (190 L), `data/DemoData.kt` (274 L), `data/firebase/UserCloudSyncManager.kt` (985 L), `ui/AppViewModel.kt` (795 L), `ui/screens/ProgressScreen.kt` (917 L), `ui/components/LineChart.kt` (159 L), `gradle/libs.versions.toml`, `app/src/{test,androidTest,snapshot}`.
 
 ### ⚖️ Critical Architecture & Drawbacks Critique
 
-#### Critique 1: Self-Healing by Email Match Is a Security Regression Masquerading as a Hotfix (🔴 Blocker)
+**C1. The headline remedy of Review Iteration 1 — `@Upsert` — is itself the defect. (BLOCKING)**
+Iteration 1 asserts that Room 2.6.1's `@Upsert` "performs a true SQL `UPSERT` without primary key churn". It does not. Room's `@Upsert` is not compiled to `INSERT … ON CONFLICT(date) DO UPDATE`; it generates an `EntityUpsertionAdapter` that attempts `INSERT OR ABORT`, catches `SQLiteConstraintException`, and then falls back to an **`UPDATE … WHERE id = ?` keyed on the primary key**. The proposed entity has a surrogate `@PrimaryKey(autoGenerate = true) id: Long = 0` plus a *separate* unique index on `date`. Therefore a second weigh-in for an existing date arrives as `id = 0`, the insert aborts on the `date` index, and the fallback update matches **zero rows**. The write is silently discarded with a returned rowid of `-1`. BDD Scenario 2 ("Overwrite / Update Same-Day Weigh-In") fails outright, and it fails *quietly* — no exception, no toast, the UI's optimistic state diverges from the database until the next Flow emission reverts it. `@Upsert` only resolves conflicts on the primary key; it has never handled conflicts on secondary unique indices.
 
-The proposed remedy for Root Cause 1 reads:
+**C2. The migration is unverifiable by construction. (BLOCKING)**
+`AppDatabase.kt:41` sets `exportSchema = false`. There is no `app/schemas/` directory, no `room.schemaLocation` KSP argument in the Gradle config, and no `androidx.room:room-testing` entry in `gradle/libs.versions.toml`. `MigrationTestHelper` therefore cannot be instantiated. Subtask 1's deliverable "Unit tests for DAO operations and migration" and the `WeightTrackerUnitTest.kt` line item "Room DAO upsert on same date" are **not buildable against the current project**: `src/test/` is plain JVM JUnit 4 with no Robolectric, so it cannot open a Room database at all. Compounding this, `build()` and `demo()` register only `fallbackToDestructiveMigrationOnDowngrade()` — there is no upgrade fallback. Any divergence between the hand-written `MIGRATION_5_6` DDL and Room's generated identity hash throws `IllegalStateException: Migration didn't properly handle: weight_entries` at `Room.build()` on **every launch**, producing an unrecoverable crash loop on shipped installs. The plan ships a migration into production with the verification loop entirely absent and does not acknowledge it.
 
-> *"If `currentUser != null` and `currentUser.email == user.email`, automatically self-heal: update `_userState.value` to match `currentUser.uid` and persist via `data.saveAuthSession(…)`"*
+**C3. The chart component was approved without reading its contract. (BLOCKING)**
+Iteration 1 marks Chart Visualization **APPROVE** — "Reuse `MultiLineChart` directly". Three properties of `LineChart.kt` invalidate that:
 
-**Ground-truth verification of `verifyTokenBinding()` (`UserCloudSyncManager.kt:312–336`):**
+- **The X axis is ordinal, not temporal.** `ChartCanvas` computes `xAt(i) = leftPad + plotW * i / (xCount - 1)` (`LineChart.kt:110-112`). Points are spaced by *array index*, not by date. A three-week gap between weigh-ins renders identically to consecutive days. This directly contradicts Phase 1's edge case "Sparse / Missing Data Intervals … interpolate the trend line gracefully" and makes every visual trend on non-daily data misleading.
+- **Series are index-aligned, and the plan guarantees misalignment.** The KDoc at `LineChart.kt:31-32` and `:52-54` is explicit: "Series are matched by point index, so they should be built from the same ordered date list." `WeightAnalytics.calculate7DayMovingAverage` is specified to return `List<Pair<LocalDate, Float>>` — a different type *and* a different length from the raw entry list (any leading-edge warm-up or gap handling changes the count). Two series of unequal length are drawn over the same normalized 0..1 X span, so the SMA-7 trendline is silently stretched and offset relative to the raw points it is supposed to smooth. There is no runtime check; the chart just draws a wrong picture.
+- **It is neither interactive nor animated.** `ChartCanvas` has no `pointerInput`, no tooltip, no `animate*AsState`. Phase 1 specifies an "Interactive Weight Line Chart (Canvas-based)" and BDD Scenario 1 asserts "the chart animates to include the new point". Both are unimplementable against the approved component, and the Component Impact Table budgets **zero** work for `LineChart.kt`. An acceptance criterion that cannot pass is worse than a missing one.
 
-The current `verifyTokenBinding` already performs the uid-match check correctly: line 332 evaluates `currentUser.uid != user.uid` and fails closed. The proposed self-heal replaces this hard gate with an email-equality bypass. This is architecturally dangerous for three compounding reasons:
+**C4. Demo seeding targets a function that does not exist, and misses the version gate. (BLOCKING)**
+Iteration 1 instructs seeding into "`DemoData.kt` (`seedDemoData`)". `DemoData` has no such function. It is a pure snapshot builder: `DemoData.snapshot()` (`DemoData.kt:27`) returns a `BackupData`, which `DataModeManager.resetDemoData()` (`DataModeManager.kt:170-173`) feeds to `Repository.importSnapshot()`. The real change surface is four files the plan never names: `BackupData` (`Backup.kt:16-24`), `DemoData.Builder.build()` (`DemoData.kt:71-78`), and `Repository.exportSnapshot()/importSnapshot()` (`Repository.kt:350-384`). Critically, `DemoData.SEED_VERSION` (`DemoData.kt:26`, currently `3`) **must** be bumped: `seedIfNeeded()` (`DataModeManager.kt:176-179`) re-seeds only when `savedVersion < SEED_VERSION` or sessions are empty. Without the bump, every existing install's demo database keeps its current contents and the Weight Tracker is permanently blank in demo mode — the exact failure the demo-data requirement exists to prevent.
 
-1. **Email is not a unique identity key in Firebase.** A user can change their email in the Firebase console. The persisted `savedUserEmail` in `SharedPreferences` reflects the email at login time; `auth.currentUser.email` reflects the current email. After an email-change, `user.email == currentUser.email` is `true`, `user.uid != currentUser.uid` is `false` (same user, same uid) — so the self-heal is a no-op. However, the persisted uid is `"pv.joseangel@gmail.com"` (an email string), meaning `user.uid != currentUser.uid` is `true` while `user.email == currentUser.email` is also `true`. The self-heal fires, promotes the Firebase UID to `_userState`, and calls `saveAuthSession` — so far correct. But the guard at `currentUser == null || currentUser.isAnonymous || currentUser.uid != user.uid` was **already** doing exactly the right thing for legitimate users: rejecting mismatches. The real problem is that the *persisted uid* is a malformed email string, not that the guard is too strict. The fix should sanitise what is written into `saveAuthSession`, not weaken what is read back.
+**C5. Local backup/restore is omitted, and the omission is actively destructive. (BLOCKING)**
+`BackupCsv` (`Backup.kt:27-222`) is the app's only local export path, wired through `AppViewModel:411` / `:429`. The plan does not mention it. Two distinct failures follow:
 
-2. **The self-heal path silently grants Firestore access under the wrong uid on first attempt.** After self-healing, `currentUserId` returns `currentUser.uid.replace("/","_")` (line 65). The document being written to is `environments/{env}/users/{newUid}`. If the user already has data under `environments/{env}/users/{oldEmailStringUid}` (which any user who logged in before `2cdca7f` would), the self-heal writes to a *different Firestore document* than their historical backup. The old document is orphaned silently with no migration, no notification, and no merge. Their cloud backup is effectively invisible until the next sync under the corrected uid — at which point the overwrite guard (per-document empty check) has no awareness of the orphaned document and will `.set()` whatever is local, potentially destroying partially synced cloud state.
+- *Silent data loss:* an athlete exports a backup, reinstalls, restores — routines, sessions and rep-maxes return; the entire weight history is gone, with no warning.
+- *Cross-profile contamination:* `importSnapshot()` clears seven tables before reinserting (`Repository.kt:367-374`). If `weight_entries` is not added to that clear phase, restoring backup **B** over profile **A** wipes everything *except* weight — A's body-weight history silently survives into B's restored dataset and is then merged into B's chart, SMA, and cloud upload. The same defect corrupts demo mode: `resetDemoData()` uses the identical path, so demo weight rows accumulate across re-seeds and leak into the "pristine" dataset.
 
-3. **Cold-start race condition is not actually fixed by the proposed await.** The plan proposes awaiting auth state resolution up to 3 seconds. In `ensureAuthenticated()` (`UserCloudSyncManager.kt:97–113`) there is already a `withTimeout(5000L)` anonymous sign-in path. The proposed "await up to 3 seconds" is a separate, additive delay. The combined worst-case latency before `verifyTokenBinding` even completes is now 3 s (await) + potential 5 s (anonymous sign-in) = 8 s before the 20 s upload timeout even starts. On a high-latency connection the total budget is: 8 s pre-flight + 5 sequential Firestore reads (overwrite guard) + 5 sequential `.set()` writes = easily > 20 s, making `TimeoutCancellationException` the dominant failure mode after this change ships — worse than baseline.
+**C6. The Firestore path in the plan and in BDD Scenario 5 is wrong.**
+`userDoc()` resolves to `environments/{currentEnv}/users/{uid}` (`UserCloudSyncManager.kt:55-56`). The plan's Component Impact Table and the data-flow diagram both specify `users/{uid}/data/weight_entries`, and BDD Scenario 5 asserts that path verbatim. Written as stated, the acceptance test validates a location the app never writes to. The environment-scoped path also means the new document requires a corresponding Firestore **security rule** update — not mentioned anywhere in the plan, and a missing rule surfaces only as a `PERMISSION_DENIED` inside the `runCatching` of the upload task, i.e. as a degraded partial sync rather than a hard failure.
 
-**Required change:** Instead of self-healing in `verifyTokenBinding`, detect the "persisted uid looks like an email" at `saveAuthSession` time (`DataModeManager.kt:78–91`) and refuse to persist non-UID strings. Add a one-time startup migration in `AppViewModel.init` that clears `KEY_SAVED_USER_UID` if it contains an `@` character, forcing re-authentication once. This is a single-launch prompt rather than a silently mutating identity.
+**C7. Cloud sync semantics are whole-document overwrite, so multi-device use destroys history.**
+`uploadCollectionWithGuard` (`UserCloudSyncManager.kt:441-475`) performs `docRef.set(mapOf("list" to payload))` — a **full replacement** of the collection document. Its only protection is the narrow case "local is entirely empty AND remote is populated". For weight this is uniquely dangerous: the data is append-only, low-volume, and generated independently on each device. Phone logs Mon–Wed, tablet logs Thu–Fri; whichever syncs second replaces the other's document wholesale and the losing days are gone from both cloud and (after the next download) local. BDD Scenario 5's claim that a new device "restores the weight history seamlessly" is only true for the single-device, first-install case. Body weight has a perfect idempotent merge key — the calendar date — and the plan mandates no merge at all.
 
----
+**C8. The legacy dual-read emptiness probe will be left stale.**
+`downloadUserData` computes `isNewUidEmpty` from exactly five hard-coded lists (`UserCloudSyncManager.kt:723`) and `hasLegacyData` from the same five (`:744`). Adding weight to *upload* without adding it to *both predicates* creates a real regression path: an athlete who has logged only body weight under their new UID is classified as empty, the legacy `users/{email}` document is dual-read, and legacy data is substituted. The plan's `downloadUserData` line item says only "Restore weight entries list" and is silent on both predicates.
 
-#### Critique 2: `coroutineScope { awaitAll(...) }` Parallelisation Has Unmodelled Failure Semantics (🔴 Blocker)
+**C9. `ProgressMode` has an `else` catch-all — the compiler will not catch the missing branch.**
+`ProgressScreen.kt:173-181` ends its `when (progressMode)` with `else -> { ExerciseProgress(...) }`. Adding `BODY_WEIGHT` to the enum compiles cleanly and silently renders the exercise chart under the "Body weight" chip. There is no exhaustiveness error to backstop the wiring step, and a UI test that merely asserts "a chart is displayed" would pass.
 
-The plan specifies:
-
-> *"Execute document uploads concurrently using `coroutineScope` and `async`."*
-
-**Ground-truth verification of `uploadUserData` (`UserCloudSyncManager.kt:376–543`):**
-
-The five `uploadCollectionWithGuard` calls are currently sequential. Each call conditionally performs a remote Firestore **read** (to check if remote is populated) followed by a remote **write** (`.set()`). Parallelising them with `coroutineScope { awaitAll(...) }` introduces two architectural hazards:
-
-1. **`coroutineScope` propagates the first child failure to all siblings via structured concurrency cancellation.** If the `sessions` document upload fails with a `FirebaseFirestoreException` (e.g., permission denied), `coroutineScope` cancels the remaining in-flight writes. The result is a **partial upload**: exercises may be uploaded, sessions may not be, and the Firestore state is now inconsistent. The current sequential model has the same partial-upload risk, but the failure stops at the failing document rather than racing to cancel siblings mid-write. With parallelisation, partial state is more likely and harder to characterise.
-
-2. **The `withTimeout(20000L)` is already shared across all five operations.** Sequential execution already allows each operation its full budget within the overall timeout. Parallel execution reduces the *per-document* time available to the timeout's full 20 s, which is net positive for latency — but the overwrite-guard reads (five remote Firestore GET calls) now also run in parallel. Firestore's [concurrent read limits](https://firebase.google.com/docs/firestore/quotas) are not modelled anywhere in this plan. Under a poor connection, five concurrent reads may each timeout individually, triggering five individual `runCatching` swallowed errors, yielding the same `TimeoutCancellationException` at the outer scope but with no actionable signal as to which collection failed.
-
-3. **The `cleanupDuplicateRoutines()` side effect at line 412 is a destructive local write that precedes the routines upload.** Parallelising means `cleanupDuplicateRoutines()` could run concurrently with the exercises upload. `cleanupDuplicateRoutines` executes a `deleteAll` + re-insert inside a Room transaction (`Repository.kt:168–180`). While Room transactions are serialised at the SQLite level, the **exercises upload reads via `getAllExercisesOnce()`** before the dedup runs. If exercise IDs referenced by routines are deleted by the dedup during a parallel exercises read, the uploaded exercises payload may reference routines that no longer exist after the dedup. This is a pre-existing ordering hazard that parallelisation makes reachable in new interleavings.
-
-**Required change:** If parallelisation is adopted, use a `supervisorScope` instead of `coroutineScope` to prevent sibling cancellation on single-document failures. Collect each `Deferred` result individually, accumulate per-document errors, and report them in aggregate. Also move `cleanupDuplicateRoutines()` to a pre-flight step before any parallel upload is launched.
-
----
-
-#### Critique 3: `verifyTokenBinding` Is Called After `_syncState` Is Set to `SYNCING` — Error State Is Sticky and Unresettable (🟠 Major)
-
-**Ground-truth verification (`UserCloudSyncManager.kt:382–542`):**
-
-`uploadUserData` sets `_syncState.value = SyncStatus.SYNCING` at line 382, *then* calls `verifyTokenBinding().getOrThrow()` at line 385. If `verifyTokenBinding` fails, the `runCatching` block's `.onFailure` handler at line 540 sets `_syncState.value = SyncStatus.ERROR`. **There is no path in the current or proposed code that resets `_syncState` to `IDLE`.**
-
-Consequences:
-- The `ProfileScreen.kt` "Sync Now" button guard (`enabled = syncState != SyncStatus.SYNCING`) at line 463 does not prevent retries in `ERROR` state — that is correct design. But the plan's proposed inline error banner persists until the user taps "Sign In Again" and auth succeeds, which triggers `triggerCloudSync` again, setting `SYNCING` before the new `verifyTokenBinding` runs. If that also fails, `ERROR` is re-set. There is no `IDLE` reset between attempts. A user who is repeatedly failing (e.g., wrong password, server outage) sees `ERROR → SYNCING → ERROR` in a tight loop with no timeout or back-off, and the singleton `_syncState` on `UserCloudSyncManager` (an `object`) means any concurrent background upload (from `saveCycle`, `saveCycleWithGoals`, `deleteCycleGoal`) will overwrite the ERROR badge with `SYNCING` at an arbitrary time.
-
-**Required change:** Introduce an explicit `reset()` call that sets `_syncState` to `IDLE` before each user-initiated sync attempt in `triggerCloudSync`. Add exponential back-off or a minimum cooldown (e.g., 5 s) between retry attempts in the `ProfileScreen` "Sync Now" handler to prevent error-loop hammering of Firestore.
-
----
-
-#### Critique 4: Self-Healing Persists via `data.saveAuthSession(...)` — But `saveAuthSession` Has a `remember: Boolean` Parameter That Defaults to `true` (🟠 Major)
-
-The proposed self-heal writes: `data.saveAuthSession(email, correctedUid, isAnon, remember = true)`. Verified in `DataModeManager.kt:78`:
-
-```kotlin
-fun saveAuthSession(email: String?, uid: String?, isAnon: Boolean = false, remember: Boolean = true) {
-    if (!remember || email.isNullOrBlank() || uid.isNullOrBlank()) {
-        clearAuthSession()
-        return
-    }
-```
-
-The self-heal unconditionally persists the corrected uid with `remember = true`, bypassing the user's original "Remember Me" preference. A user who explicitly opted out of session persistence (called `saveAuthSession` with `remember = false` at login, resulting in a cleared `KEY_REMEMBER_ME`) will have their preference silently overridden by the self-heal. After this change, every user who has a persisted email-string uid — including those who signed in without "Remember Me" — will have a permanent session written to `SharedPreferences` during the self-heal, even if they never intended that. This is a privacy regression.
-
-Furthermore, the plan does not specify how `verifyTokenBinding` accesses `DataModeManager` to call `saveAuthSession`. `UserCloudSyncManager` is currently a standalone `object` with no reference to `DataModeManager`. Injecting this dependency requires either: (a) passing `DataModeManager` as a parameter to `verifyTokenBinding` (which changes the `uploadUserData` and `downloadUserData` signatures), or (b) passing a `saveSession: (email: String, uid: String) -> Unit` lambda. Neither approach is specified in the plan, and both have testability implications for the `CrossAuthSignInTest` contract that is currently being renegotiated.
-
----
-
-#### Critique 5: Scenario 2 (Cold-Start Auth Await) Has No Testable BDD Criterion and the Wait Mechanism Is Unspecified (🟠 Major)
-
-**Scenario 2:**
-```
-Given the application was cold-started and FirebaseAuth token restoration is in progress
-When the user taps "Sync Now" immediately
-Then verifyTokenBinding awaits auth state resolution rather than instantly rejecting with a null user
-And once the authenticated user resolves, synchronization proceeds to SUCCESS
-```
-
-This scenario is not testable as written. `FirebaseAuth` token restoration is an async Firebase internal process with no observable deterministic signal exposed to the application. The plan does not specify:
-- Whether "awaiting" means polling `auth.currentUser` in a loop, subscribing to `auth.addAuthStateListener`, or using a `CompletableDeferred`.
-- What happens if `auth.currentUser` resolves to `null` (no previously authenticated user) vs. an anonymous uid vs. a Google uid — these are three different outcomes that each require a different response.
-- Whether the 3-second wait is a hard timeout or a cooperative cancellation. If `triggerCloudSync` is launched via `viewModelScope.launch` and the user navigates away, the coroutine should be cancelled; but a blocking 3-second wait inside `verifyTokenBinding` prevents cancellation unless `withTimeout` or `delay` is used (both of which are cooperatively cancellable).
-
-The `authUidProviderForTesting` seam (`UserCloudSyncManager.kt:54`) exists and is already wired in the unit tests. However, simulating "Firebase Auth is still loading" requires the test to control the timing of when `authUidProviderForTesting` returns a value, which the current `() -> String?` return type (synchronous lambda) cannot express. The testability seam is insufficient for Scenario 2's coverage.
-
----
+**C10. Iteration 1 understates the `ProgressScreen` gating problem.**
+The `if (exercises.isEmpty()) { … return@Scaffold }` guard at `:118-121` is correctly identified, but two further gates are missed: (a) the `FilterChip` row itself conditionally hides chips behind `routines.isNotEmpty()` and `cycles.isNotEmpty()` (`:130-146`), so the "Body weight" chip must be added *unconditionally* or it inherits the same class of bug; (b) `progressMode` is held in `remember { mutableStateOf(...) }` (`:98`), **not** `rememberSaveable`. An athlete mid-weigh-in who rotates the device or returns after process death is silently thrown back to `BY_EXERCISE` — tolerable for the existing tabs, unacceptable for a tab that owns a data-entry flow.
 
 ### 🚨 Unresolved Concerns & Edge Case Vulnerabilities
 
-**Concern A: Orphaned Firestore Documents After Self-Heal (Data Loss, unacknowledged)**
+**V1. The SMA-7 definition is mathematically underdetermined on real data.** `SMA₇(t) = (1/N) Σ W(t−i), N ≤ 7` leaves `W(t−i)` **undefined** for any missed day, which is the normal case. The spec never states whether the window is *7 calendar days* or *the last 7 logged entries*, nor whether `N` is the window width or the count of available samples. Those readings produce different numbers on identical data. Worse, at the leading edge `N = 1` makes the "smoothed" line exactly equal to the raw line — the SMA visually collapses onto the noise it exists to remove, directly defeating Invariant 2's stated rationale (1–2% daily hydration swing). No minimum-sample threshold, no gap policy, no "insufficient data" state is specified.
 
-Every user who logged in via `logInWithGoogleAccount` before commit `2cdca7f` has their cloud data stored under `environments/production/users/{emailString}` (e.g., `/users/pv.joseangel@gmail.com`). After self-heal, future syncs write to `environments/production/users/{firebaseUid}` (e.g., `/users/w7X2yZ8abc`). The old document is never migrated, merged, or deleted. This plan does not provision a Firestore migration, a one-time cloud-side read from the old path, or any notification to the user. If the user's existing workout data is in the old document and the self-heal succeeds without migrating it, the next `downloadUserData` finds the new document empty, the overwrite guard sees `local sessions > 0`, and the upload proceeds — writing the user's locally cached data back to the new path. This is the *best case*. If the user reinstalled between the old-uid write and the self-heal (losing local data), they now have an empty local database, an empty new-uid document, and their data is permanently inaccessible in the old-uid document with no recovery path.
+**V2. The ±15% outlier warning is both undefined and near-useless.** It is specified against "the 7-day average" — which V1 leaves undefined — with no stated behavior for the first-ever entry (no average exists) or for a resumed log after a long gap. And 15% of 80 kg is 12 kg: a genuine fat-finger such as `88.4` for `78.4` (12.7%) passes unchallenged, while the rule fires only on errors the range validation (V3) already catches.
 
-**Concern B: `ensureAuthenticated()` Anonymous Sign-In Still Runs After `verifyTokenBinding` Succeeds (Architecture Smell)**
+**V3. The metric and imperial validation bounds are not equivalent, and the conversion contract is missing.** `20.0 kg` = `44.09 lbs`, but the stated imperial floor is `44.0 lbs` = `19.958 kg`. `770 lbs` = `349.27 kg` against a `350.0 kg` ceiling. If validation runs on the canonical kg value (as the storage model implies), the documented imperial floor is rejected; if it runs pre-conversion, the two unit modes admit materially different real weights. Separately, no rounding or precision contract is defined for the lbs↔kg round trip: displaying a stored kg value at one decimal, converting to lbs for edit, and converting back accumulates drift on every re-save — at exactly the 0.1 kg resolution the feature is built to measure.
 
-At `UserCloudSyncManager.kt:386`, `ensureAuthenticated()` runs *after* `verifyTokenBinding().getOrThrow()` succeeds. If `verifyTokenBinding` succeeds because the user has a valid non-anonymous Firebase session, `ensureAuthenticated()` checks `if (_userState.value != null && _userState.value?.uid?.isNotBlank() == true) { return }` (line 98) and returns immediately — correct. However, if `verifyTokenBinding` succeeds via the self-heal path (after correcting the uid), `_userState.value` is now set to the corrected user, so `ensureAuthenticated()` returns early. But `auth.currentUser` already holds the Google token (that's what `verifyTokenBinding` found). The anonymous sign-in is therefore dead code for this path, which is correct behaviour — but the plan does not explain this, and a future developer might misread `ensureAuthenticated()` as the authentication step and delete `verifyTokenBinding`, reintroducing the original defect.
+**V4. `LocalDate.now()` is device-timezone-dependent, which Invariant 4 does not actually solve.** Normalizing storage to `LocalDate` prevents *offset* fragmentation but not *day-boundary* fragmentation: an athlete who flies east loses a calendar day, one who flies west gets a duplicate "today" that already has an entry. With `date` as a uniqueness key this is not cosmetic — it is a write conflict that lands squarely on the broken C1 upsert path.
 
-**Concern C: `recoverAllCloudRoutines` Still Queries `userDoc(currentUserId)` — Now Reads From Potentially Wrong Path (Pre-Existing + Worsened)**
+**V5. No downsampling for the "All" / "1Y" timeframes.** `ChartCanvas` draws one `drawLine` plus one `drawCircle` per point with no decimation. Three years of daily logs is ~1,100 points across a ~360 dp canvas: sub-pixel X spacing, ~2,200 draw calls per frame, and overlapping 4 dp dots that render as a solid band. The chart also labels only the first and last X positions (`:148-155`), so a multi-year view is an unreadable smear with two dates under it.
 
-After self-heal, `currentUserId` returns the corrected Firebase UID. `recoverAllCloudRoutines` (`UserCloudSyncManager.kt:713–766`) reads from `userDoc(currentUserId).collection("data").document("routines")`. For users whose historical routines are stored under the old email-string uid, this query returns empty. The user then sees "No previous routines found in cloud." when their routines exist but at a different Firestore path. This is a silent data-invisible failure that the plan classifies as a "recoverable" fallback but is actually a permanently broken experience for the target population (all pre-`2cdca7f` users).
+**V6. Undo has an unbounded race against sync.** BDD Scenario 4 deletes immediately and offers a 4-second undo. `AppViewModel` triggers `uploadUserData(data.realRepository)` from several call sites (`:120, :195, :303, :309, :314`). A sync firing inside the undo window uploads the post-delete state; the subsequent undo restores locally but — given C7's whole-document overwrite — the restored row is only reconciled if another upload happens to follow. Deletion should be deferred until the snackbar dismisses, not executed optimistically.
 
-**Concern D: The Final Decision Plan's Component Impact Table Is Truncated — It Ends Mid-Table**
+**V7. `createdAtMillis` is a column with no consumer.** It appears in the entity and the DDL but in no query, sort order, sync payload, or UI element anywhere in the plan. Either give it a defined purpose — the natural one being a last-write-wins tiebreaker for the date-keyed cloud merge required by C7 — or remove it rather than migrating a dead column into production.
 
-Verified at line 719–720 of the implementation plan:
-```
-| Component File | Location | Concrete Changes |
----
-```
-The table header is present but the rows are absent. The Component Impact table from Review Iteration 5's Final Decision Plan was never completed before Review Iteration 6 was appended. The document therefore has two Final Decision Plan sections (one post-Iteration 5, one post-Iteration 6), both incomplete, and the second supersedes the first without explicitly saying so. An implementer reading this document cannot determine the complete set of concrete changes required.
+**V8. Schema conventions diverge, and the index annotation is a validation trap.** Every other entity in this schema uses non-null `notes TEXT NOT NULL DEFAULT ''` (see `MIGRATION_1_2`, `MIGRATION_4_5` in `AppDatabase.kt:63-108`); the plan introduces a nullable `notes: String?`. More dangerously, the entity field list omits the `@Index(unique = true)` annotation while the DDL creates a unique index. Room validates indices as part of the identity hash: an index present in SQLite but absent from the entity fails validation exactly as harshly as a missing one, and the index name must match Room's generated form `index_weight_entries_date` **exactly**.
 
-**Concern E: Scenario 4 (Concurrent Upload) Does Not Assert Error Isolation**
+**V9. `WeightAnalytics.kt` is placed in the wrong layer and narrows precision.** Siting a pure-domain aggregator at `ui/weight/WeightAnalytics.kt` contradicts the established `data/` ↔ `ui/` split and makes it awkward to unit-test without the Compose toolchain. Its return type `List<Pair<LocalDate, Float>>` also narrows `Double` storage to `Float` — 24 bits of mantissa applied to values whose meaningful deltas are 0.1 kg.
 
-Scenario 4 asserts only that "total upload time is reduced" and "preventing 20-second timeout cancellations." It does not assert what happens when one of the concurrent uploads fails. With `coroutineScope`, a single failure cancels all siblings. With `supervisorScope`, failures are isolated. The scenario's definition of "success" is ambiguous: does a partial upload (4/5 documents succeeded) count as `SyncStatus.SUCCESS` or `SyncStatus.ERROR`? The current `_syncState` model is binary and cannot express partial success. This gap means the acceptance criterion can be satisfied by either a `coroutineScope` or a `supervisorScope` implementation, with radically different failure characteristics, and the test suite will not distinguish between them.
+**V10. Demo-mode isolation (Invariant 1) is already satisfied and is not a real risk; the plan over-weights it.** Every sync call site in `AppViewModel` (`:120, :135, :150, :165, :195, :196, :248, :303, :309, :314`) already passes `data.realRepository` explicitly, and `demoRepository` is a distinct `Repository` over `crosstraining-demo.db`. Invariant 1 requires *no new work* beyond not regressing it. The genuine, unaddressed demo-mode risk is C4/C5 — leakage through `importSnapshot`, not through Firestore.
 
----
+**V11. Firestore's 1 MiB per-document ceiling applies.** The whole collection is stored as a single `list` array in one document. Weight entries are small, but the plan should record the bound and the resulting retention/paging behavior rather than leaving an unbounded append-only array in a fixed-size document.
+
+**V12. No entry point is specified for the log action.** `ProgressScreen`'s `Scaffold` (`:99-116`) declares no `floatingActionButton`, and the screen already consumes `outerPadding.calculateBottomPadding()` for the bottom navigation bar. Phase 1 specifies "Triggered via FAB". Adding a mode-conditional FAB and its interaction with the bottom-nav inset is unspecified work not reflected in any subtask.
 
 ### 🛠️ Mandatory Architectural Safeguards & Required Changes
 
-| Priority | Component | Required Change | Rationale |
-| :--- | :--- | :--- | :--- |
-| **🔴 Blocker** | `DataModeManager.saveAuthSession` | Validate that `uid` parameter is not an email string before persisting. Reject and log a warning if `uid.contains("@")`. | Prevents the email-as-uid defect from re-entering `SharedPreferences` after any future auth code change. |
-| **🔴 Blocker** | `AppViewModel.init` | Add a one-time startup migration: if `KEY_SAVED_USER_UID` contains `@`, call `clearAuthSession()` and set a flag prompting the user to re-sign-in, rather than silently self-healing. Present a "Please sign in again to restore your cloud connection" bottom sheet or card. | Eliminates orphaned-document risk. Forces a clean re-authentication that establishes the Firebase UID from a real token, not from an email match. |
-| **🔴 Blocker** | `uploadUserData` parallelisation | Use `supervisorScope` + `async` + per-document result collection, not `coroutineScope { awaitAll(...) }`. Aggregate per-document errors and surface them. Move `cleanupDuplicateRoutines()` to a pre-flight step before any `async` block. | Prevents sibling cancellation on single-document failures and removes the dedup/read interleaving hazard. |
-| **🟠 Major** | `verifyTokenBinding` cold-start wait | Use `auth.addAuthStateListener` + a `CompletableDeferred<FirebaseUser?>` with a 3 s timeout to observe the first auth state event, rather than polling or a bare `delay`. Handle the three outcomes (null → anonymous user; anonymous uid → fail closed with re-auth prompt; real uid → proceed) explicitly. | The proposed "await" mechanism is unspecified; this makes it implementable and cancellable within `viewModelScope`. |
-| **🟠 Major** | `UserCloudSyncManager._syncState` | Add a `resetSyncState()` method (or expose `IDLE` reset in `triggerCloudSync` before each attempt). Add a minimum 5 s cooldown in `ProfileScreen` between "Sync Now" taps. | Prevents ERROR→SYNCING→ERROR hammering and background-write badge pollution. |
-| **🟠 Major** | `ProfileScreen.kt` inline error | The proposed "Sign In Again" button must invoke `logInWithGoogle` via Credential Manager → `signInWithGoogleCredential`, not `logInWithGoogleAccount`. The broken `AccountManager` path (`ProfileScreen.kt:626`) must be migrated in the same PR as the inline error button; otherwise the button leads users into the path that produced the original bug. | Avoids recreating Root Cause 2 (invalid OAuth Web Client ID + anonymous fallback) via the new re-auth entry point. |
-| **🟠 Major** | Complete the Component Impact Table | The Final Decision Plan (post-Iteration 6) must include a complete Component Impact table enumerating all concrete changes per file. The truncated table from the post-Iteration 5 plan must either be completed or explicitly superseded. | An implementer cannot determine the full scope of changes from the current document. |
-| **🟡 Minor** | `Scenario 2` BDD | Rewrite to assert a specific observable outcome: "the `authUser` StateFlow transitions from `null` to a non-null value, and `syncState` transitions from `IDLE` to `SYNCING` to `SUCCESS`." Remove the un-testable implementation detail ("awaits auth state resolution") from the Given/Then clauses. | BDD scenarios must be testable against observables, not implementation internals. |
-| **🟡 Minor** | `recoverAllCloudRoutines` orphaned-path | After self-heal corrects the uid, `recoverAllCloudRoutines` should attempt to read from both the corrected uid path and the email-string uid path (if the old path is detectable from `SharedPreferences`), merge results, and trigger a one-time migration write to the corrected path. Or, document explicitly that routines stored under the old uid are permanently inaccessible and the user must manually re-enter them. | Silent data-invisible failure is worse than an explicit "we could not find your old cloud routines, please contact support." |
+**M1 — Replace the surrogate key with a natural date primary key.** Define `@Entity(tableName = "weight_entries") data class WeightEntry(@PrimaryKey val date: LocalDate, val weightKg: Double, val notes: String = "", val updatedAtMillis: Long)`. This dissolves C1 entirely: with `date` as the primary key, `@Upsert`'s update-by-PK fallback is *correct*, no separate unique index exists to trip the identity hash (V8), same-day re-logging is genuinely idempotent, and the cloud merge in M6 gets a stable cross-device key for free. Delete and undo key on `date` rather than a rowid that changes. DDL becomes: `CREATE TABLE IF NOT EXISTS 'weight_entries' ('date' INTEGER NOT NULL, 'weightKg' REAL NOT NULL, 'notes' TEXT NOT NULL DEFAULT '', 'updatedAtMillis' INTEGER NOT NULL, PRIMARY KEY('date'))` (using Room's backtick quoting). If a surrogate `id` is retained for any reason, `@Upsert` **must** be replaced by an explicit `@Transaction` that reads `getEntryByDate(date)` and dispatches to `@Update` or `@Insert`.
 
----
+**M2 — Enable schema export before writing the migration.** Set `exportSchema = true`, add the `room.schemaLocation` KSP argument pointing at `app/schemas`, commit the generated `6.json`, and add `androidx.room:room-testing` to the version catalog. Then add a real `MigrationTestHelper` test in `src/androidTest/` that opens a v5 database, runs `MIGRATION_5_6`, and validates. Without this, C2 stands and the migration ships unverified. Move the DAO tests from `src/test/` to `src/androidTest/` (in-memory `Room.inMemoryDatabaseBuilder`) or add Robolectric — as written they cannot compile.
+
+**M3 — Register `MIGRATION_5_6` in both builders, by their real names.** The demo builder is `AppDatabase.demo(context)` (`AppDatabase.kt:130`), **not** `getDemo()` as Iteration 1 states. Both `build()` (`:181`) and `demo()` (`:136`) must have the migration appended to their `addMigrations(...)` chains; omitting either crashes that database on first open after upgrade.
+
+**M4 — Make `BackupData` the single source of truth for the new table.** Add `weightEntries: List<WeightEntry> = emptyList()` to `BackupData`; emit it from `DemoData.Builder.build()`; read it in `Repository.exportSnapshot()`; **clear it in `importSnapshot()`'s delete phase** and reinsert it; add a `#weightEntries` section to `BackupCsv.encode`/`decode` (the section-dispatch parser ignores unknown sections, so old v2 files still decode — but bump the header to `#crosstraining-backup-v3` for clarity). Bump `DemoData.SEED_VERSION` from `3` to `4`. All five of these are required together; any one omitted reproduces C4 or C5.
+
+**M5 — Correct the Firestore path everywhere and add the security rule.** The document is `environments/{currentEnv}/users/{uid}/data/weight_entries`. Fix the Component Impact Table, the ASCII data-flow diagram, and BDD Scenario 5. Add the matching rule to the Firestore ruleset as an explicit deliverable in Subtask 3.
+
+**M6 — Specify date-keyed merge, not whole-document replace, for weight sync.** `downloadUserData` must union remote and local entries keyed on `date`, resolving collisions by the later `updatedAtMillis`, and `uploadUserData` must publish the merged result. Add `weightList` to **both** `isNewUidEmpty` (`:723`) and `hasLegacyData` (`:744`). Serialize `date` as an epoch-day `Long` for consistency with `Converters`, not as `date.toString()` (the `rep_maxes` payload at `:646` uses `toString()`; do not propagate that inconsistency into a field used as a merge key).
+
+**M7 — Pin the SMA-7 contract in the plan text, with an explicit gap policy.** Mandate: window = the closed calendar interval `[t−6, t]`; `N` = the count of *logged* entries within that window; emit no SMA point where `N < 3`; never interpolate missing days into the raw series. State this as a testable invariant and add table-driven unit tests for the sparse, single-entry, and leading-edge cases. Re-express the ±15% outlier check against this defined average and specify its behavior when no average exists.
+
+**M8 — Give the chart a temporal X axis and equal-length series, or budget the work.** Either (a) extend `ChartCanvas` with an optional numeric X position per point so date gaps render proportionally and unequal-length series align correctly, and add the `pointerInput` tap-to-inspect the UX requires — an explicit change to `LineChart.kt` that must appear in the Component Impact Table and gain its own subtask; or (b) formally downgrade Phase 1's "Interactive" chart and BDD Scenario 1's "chart animates" to match what the existing component does, and require `WeightAnalytics` to emit an SMA series **padded to exactly the same length and date ordering as the raw series** (index-parallel) with a unit test asserting `raw.size == sma.size`. Option (b) is acceptable for v1; leaving the contradiction unresolved is not. Additionally, decimate to ≤ 120 rendered points for the `1Y`/`All` timeframes (V5).
+
+**M9 — Fix the `when` exhaustiveness and the gating in `ProgressScreen`.** Replace `else ->` with an explicit `ProgressMode.BY_EXERCISE ->` branch so the compiler enforces the new case (C9). Render the chip row and the mode dispatch *above* the `exercises.isEmpty()` guard, scope the empty state to the selected mode, add the "Body weight" chip unconditionally, and promote `progressMode` to `rememberSaveable`.
+
+**M10 — Define one canonical validation predicate in kg.** Validate `20.0 ≤ weightKg ≤ 350.0` on the converted canonical value only; derive the displayed imperial bounds from it (`44.1 … 771.6 lbs`) rather than hard-coding a second, inconsistent pair. Fix the conversion factor and rounding contract explicitly: round only at the display boundary, never round-trip through the stored value, and persist full `Double` precision.
+
+**M11 — Relocate `WeightAnalytics` and preserve precision.** Move to `data/analytics/WeightAnalytics.kt` (or `data/`, matching the existing layering) and return `Double`, not `Float`.
+
+**M12 — Sequence the subtasks to match the real dependency graph.** Subtask 1 cannot be verified until M2 lands, so schema-export enablement must precede it as Subtask 0. `BackupData`/CSV/`SEED_VERSION` (M4) belongs in Subtask 1 alongside the schema, not deferred into the demo-data subtask, because `importSnapshot` correctness is a data-integrity property of the schema change itself.
 
 ### 🏁 Verdict
 
-**Summary of Principal Architectural Objections:**
-
-1. **The self-heal-by-email-match mechanism replaces one identity defect with another.** Correcting the uid in `_userState` at sync time without validating uid format at write time guarantees the defect re-enters `SharedPreferences` on the next login via any broken code path. The correct fix is upstream sanitisation at `saveAuthSession`, not downstream self-healing at `verifyTokenBinding`.
-
-2. **Self-healing creates orphaned Firestore documents for the entire pre-`2cdca7f` user population.** Their historical cloud data sits under email-string uid paths; the self-heal silently redirects future writes to Firebase-uid paths. Without a documented Firestore migration strategy, this is a silent data-loss mechanism for exactly the users the fix is meant to serve.
-
-3. **`coroutineScope { awaitAll(...) }` parallelisation without `supervisorScope` converts five sequential partial-failure risks into a single all-or-nothing failure with unpredictable sibling cancellation.** The `cleanupDuplicateRoutines()` pre-upload side effect creates a new data-hazard interleaving that is only safe if it is moved to a pre-flight step.
-
-4. **The cold-start auth wait is unspecified, and the testability seam (`authUidProviderForTesting: () -> String?`) is synchronous and cannot simulate asynchronous token resolution.** Scenario 2 is currently unverifiable.
-
-5. **The Final Decision Plan is structurally incomplete** — the Component Impact table is truncated, two competing "Final Decision Plan" sections exist in the document, and the implementer cannot determine the authoritative scope from the current document.
+The plan is directionally correct — the feature is well-scoped from a product standpoint, the entity model is close, and Review Iteration 1 caught the migration type mismatch and the `ProgressScreen` gating. But it is not implementable as written. Its single most emphasized technical remedy (`@Upsert`) silently discards data against the schema it proposes (**C1**); its central migration cannot be tested because schema export is disabled and `room-testing` is absent (**C2**); the chart it approves for reuse cannot express dates or align series of unequal length, making two stated acceptance criteria unpassable (**C3**); its demo-data instruction names a function that does not exist and omits the `SEED_VERSION` gate that governs whether the seed ever runs (**C4**); and it is entirely silent on `BackupData`/`BackupCsv`, where the omission does not merely lose data but leaks one profile's weight history into another's restore (**C5**). The Firestore path is stated incorrectly in three places including a BDD assertion (**C6**), and the sync model is a whole-document overwrite that destroys multi-device history for exactly the kind of append-only data this feature produces (**C7**).
 
 `VERDICT: DISAGREED`
 
 ---
 
-## 🔍 Review Iteration 7: Gemini Response & Consensus Alignment (Round 2)
+## 🔍 Review Iteration 2: Gemini Response & Full Architectural Concession Matrix (Round 2)
 
-- **Date / Reviewer:** 2026-09-03 | Antigravity AI Architect (Gemini)
-- **Target Repository:** `AntaresAndBharani/crosstrainingapp` @ post-`2cdca7f` working tree
-- **Context:** Formal response to Claude Review Iteration 1 (Sonnet Thinking). All 5 architectural objections and safeguards are evaluated, accepted, and incorporated into the consolidated design.
+- **Date / Author:** 2026-09-07 | Antigravity AI Architect (Gemini)
+- **Target Repository:** `AntaresAndBharani/crosstrainingapp` @ `efd0450`
+- **Context:** Formal response to Claude Review Iteration 1. All 10 critiques (C1–C10), 12 vulnerabilities (V1–V12), and 12 mandatory safeguards (M1–M12) have been thoroughly verified against the codebase and are **fully conceded and incorporated without exception**.
 
 ---
 
-### 1. Architectural Consensus & Concession Matrix
+### 1. Architectural Concession & Concrete Design Decision Matrix
 
-| Claude Objection / Finding | Severity | Gemini Assessment | Architectural Concession & Concrete Design Decision |
+| Finding / Mandatory Safeguard | Severity | Gemini Assessment | Architectural Concession & Concrete Implementation |
 | :--- | :--- | :--- | :--- |
-| **Objection 1: Downstream Email Self-Heal creates orphaned cloud documents and masks bad writes.** | 🔴 **Blocker** | **FULL CONCESSION** | **Eliminate downstream self-heal in `verifyTokenBinding`.**<br>1. **Upstream Sanitization:** Add assertion in `DataModeManager.saveAuthSession`: require `!uid.contains("@")` and `uid.isNotBlank()`. Any attempt to pass an email string as UID fails fast.<br>2. **One-Time Startup Migration:** In `AppViewModel.init`, if `persisted.uid.contains("@")`, call `data.clearAuthSession()`, clear memory state, and set observable `_legacySessionRequiresReauth.value = true`. ProfileScreen renders an actionable banner: *"Security update: Please sign in again to connect your cloud account"*. Forces clean Firebase UID establishment.<br>3. **Dual-Read Migration Fallback:** In `downloadUserData` and `recoverAllCloudRoutines`: If the Firebase UID document (`users/{uid}`) is empty, check legacy paths (`users/{email}` and `users/{email_escaped}`). If found, import records into Room and immediately upload to `users/{uid}`, ensuring historical workouts are never orphaned. |
-| **Objection 2: `coroutineScope { awaitAll }` causes all-or-nothing cancellation and races with routine dedup.** | 🔴 **Blocker** | **FULL CONCESSION** | **Replace with `supervisorScope` + Pre-flight Dedup.**<br>1. Run `repo.cleanupDuplicateRoutines()` as an explicit synchronous pre-flight step **before** starting uploads.<br>2. Use `supervisorScope` with independent `async` blocks. Wrap each document upload in individual `runCatching` blocks so a failure in `sessions` does not cancel `exercises` or `cycles`.<br>3. Aggregate per-document results into `CloudSyncResult(uploadErrors: Map<String, String>)` for granular reporting. |
-| **Objection 3: `_syncState` is sticky on ERROR with no IDLE reset; rapid retries loop with no cooldown.** | 🟠 **Major** | **FULL CONCESSION** | **Implement explicit reset & UI debouncing.**<br>1. Add `UserCloudSyncManager.resetSyncStatus()` which sets `_syncState.value = SyncStatus.IDLE`.<br>2. In `AppViewModel.triggerCloudSync`, invoke `resetSyncStatus()` at the outset.<br>3. In `ProfileScreen.kt`, add a 5-second cooldown debounce state (`isCooldownActive`) following any sync failure to prevent UI hammering and Firebase rate-limiting. |
-| **Objection 4: Cold-start auth wait is unspecified; Scenario 2 not testable with synchronous test seam.** | 🟠 **Major** | **FULL CONCESSION** | **Specify `CompletableDeferred` wait and observable BDD.**<br>1. In `UserCloudSyncManager`, implement `suspend fun awaitAuthState(timeoutMs: Long = 3000L): FirebaseUser?` using `auth.addAuthStateListener` + `CompletableDeferred` + `withTimeoutOrNull`.<br>2. Provide asynchronous test seam `internal var asyncAuthUidProviderForTesting: (suspend () -> String?)?`.<br>3. Rewrite BDD Scenario 2 to assert on observable StateFlow transitions (`authUser` transitions from null to valid user, `syncState` from IDLE to SYNCING to SUCCESS). |
-| **Objection 5: Structural incompleteness and competing Final Decision Plan sections.** | 🟠 **Major** | **FULL CONCESSION** | **Unify into single authoritative Final Decision Plan.**<br>All previous intermediate draft plans are explicitly superseded. The authoritative, complete Final Decision Plan below contains the full, unabridged Component Impact table, BDD criteria, and INVEST breakdown. |
+| **M1: Surrogate PK breaks `@Upsert` silently (C1, V8)** | 🔴 **Blocker** | **FULL CONCESSION** | **Adopt natural `date` primary key.** Eliminate `id: Long`. Define `@Entity(tableName = "weight_entries") data class WeightEntry(@PrimaryKey val date: LocalDate, val weightKg: Double, val notes: String = "", val updatedAtMillis: Long)`. `@Upsert` fallback `UPDATE ... WHERE date = ?` is now 100% correct, no secondary index needed, eliminates identity-hash traps, and gives a stable cross-device key for free. |
+| **M2: Migration unverified; schema export disabled (C2)** | 🔴 **Blocker** | **FULL CONCESSION** | **Enable schema export & instrumented migration verification.**<br>1. In `app/build.gradle.kts`, configure KSP argument: `ksp { arg("room.schemaLocation", "$projectDir/schemas") }`.<br>2. Set `exportSchema = true` in `AppDatabase.kt`.<br>3. Add `androidx-room-testing` to `gradle/libs.versions.toml`.<br>4. Write `AppDatabaseMigrationTest.kt` in `app/src/androidTest/` using `MigrationTestHelper` opening a v5 DB, executing `MIGRATION_5_6`, and asserting table integrity and seed read/write. |
+| **M3: Builder names & migration registration (M3)** | 🔴 **Blocker** | **FULL CONCESSION** | Register `MIGRATION_5_6` in both `AppDatabase.build(context)` (`AppDatabase.kt:181`) and `AppDatabase.demo(context)` (`AppDatabase.kt:136`). |
+| **M4: `BackupData`, `BackupCsv` & `SEED_VERSION` missing (C4, C5)** | 🔴 **Blocker** | **FULL CONCESSION** | **Integrate snapshot and backup lifecycle.**<br>1. Add `weightEntries: List<WeightEntry> = emptyList()` to `BackupData` (`Backup.kt:16`).<br>2. Add `db.weightDao().deleteAll()` to `Repository.importSnapshot()` delete phase before reinserting (strictly preventing cross-profile leaks and demo accumulation).<br>3. In `BackupCsv.kt`, implement `#weightEntries` CSV section encoding/decoding and bump file header to `#crosstraining-backup-v3`.<br>4. In `DemoData.kt`, populate `weightEntries` in `DemoData.Builder.build()` and bump `DemoData.SEED_VERSION` from `3` to `4` (`DemoData.kt:26`) so existing installs execute the seed. |
+| **M5: Firestore path & security rules (C6)** | 🟠 **Major** | **FULL CONCESSION** | Correct path to `environments/{currentEnv}/users/{uid}/data/weight_entries` across all diagrams, tables, and BDD assertions. Deliver Firestore security rule for `data/weight_entries` in Subtask 3. |
+| **M6: Cloud sync whole-document overwrite vs date-keyed merge (C7, C8)** | 🔴 **Blocker** | **FULL CONCESSION** | **Implement date-keyed merge in `UserCloudSyncManager`.**<br>1. In `downloadUserData`: Merge remote weight entries with local Room records keyed on `date`, resolving collisions using `updatedAtMillis` (last-write-wins). Serialize/deserialize `date` as epoch-day `Long`.<br>2. In `uploadUserData`: Upload the merged union back to Firestore.<br>3. Add `weightList` to both `isNewUidEmpty` (`:723`) and `hasLegacyData` (`:744`) to prevent false legacy fallbacks. |
+| **M7: SMA-7 mathematical contract & gap policy (V1, V2)** | 🟠 **Major** | **FULL CONCESSION** | **Pin exact mathematical contract in `WeightAnalytics`:**<br>- For any target date $t$, window is closed calendar interval $[t - 6, t]$.<br>- $N$ is the count of *logged entries* within that 7-day interval.<br>- Emit SMA point if and only if $N \ge 3$; otherwise omit.<br>- Do not synthesize or interpolate phantom daily entries into raw series.<br>- Outlier warning evaluates $|W(t) - \text{SMA}_7(t)| / \text{SMA}_7(t) > 0.15$ only when $N \ge 3$. |
+| **M8: Chart ordinality & index-parallel series alignment (C3, V5)** | 🔴 **Blocker** | **FULL CONCESSION** | **Adopt index-parallel aligned series & decimation:**<br>1. Downgrade unsupported interactive/animation claims to match Canvas `LineChart.kt`.<br>2. `WeightAnalytics` emits an SMA series strictly index-parallel to raw entries (same size, matching dates), passing `Float.NaN` or omitting lines where $N < 3$, with a unit test asserting `raw.size == sma.size`.<br>3. Decimate points to $\le 120$ points for 1Y/All timeframes. |
+| **M9: `ProgressScreen` exhaustiveness & gating (C9, C10)** | 🟠 **Major** | **FULL CONCESSION** | Replace `else ->` in `ProgressScreen.kt:when(progressMode)` with explicit `ProgressMode.BY_EXERCISE ->`. Hoist `FilterChip` row above `exercises.isEmpty()`. Add "Body weight" chip unconditionally. Promote `progressMode` to `rememberSaveable`. |
+| **M10: Canonical validation in kg & precision (V3)** | 🟡 **Minor** | **FULL CONCESSION** | Enforce single canonical validation $20.0 \le \text{weightKg} \le 350.0$. Imperial values converted to kg before validation; displayed bounds derived ($44.1 \dots 771.6\text{ lbs}$). Full `Double` precision preserved; round only for UI display. |
+| **M11: Relocate `WeightAnalytics` to data layer (V9)** | 🟡 **Minor** | **FULL CONCESSION** | Relocate to `data/analytics/WeightAnalytics.kt` and operate on `Double`. |
+| **M12: Subtask resequencing (M12)** | 🟠 **Major** | **FULL CONCESSION** | Sequence: Subtask 0 (Schema export & verification harness) $\to$ Subtask 1 (Room Schema, BackupData, BackupCsv & SEED_VERSION 4) $\to$ Subtask 2 (WeightAnalytics & DemoData) $\to$ Subtask 3 (Cloud Sync date-keyed merge) $\to$ Subtask 4 (ProgressScreen UI & BottomSheet). |
+
+---
+
+*(Intermediate plan superseded by Claude Review Iteration 2 and Gemini Review Iteration 3 below)*
+
+
+---
+
+## 🏛️ Claude Review Iteration 2
+
+- **Date / Author:** 2026-09-07 | Claude (Principal Architect) — Round 2 Architectural Cross-Review
+- **Baseline:** `main` @ `efd0450`
+- **Scope of this round:** Review Iteration 2 concession matrix + the consolidated Final Decision Plan, re-verified line-by-line against `LineChart.kt` (159 L), `Backup.kt` (222 L), `Repository.kt:345-384`, `AppDatabase.kt:32-45,132,188`, `DemoData.kt:25-71`, `UserCloudSyncManager.kt:441-475,700-760`, `ProgressScreen.kt:90-185`, `DataModeManager.kt:26-30`, `app/build.gradle.kts`, `gradle/libs.versions.toml`, `app/src/androidTest/**`, and a repository-wide search for `*.rules` / `firebase.json`.
+
+### ⚖️ Evaluation of Concessions & Refined Architecture
+
+Ten of the twelve safeguards are conceded correctly, and — unusually — the concessions are technically accurate rather than merely agreeable. Verified individually:
+
+**M1 (natural `date` primary key) — ACCEPTED, and it is the load-bearing fix.** With `@PrimaryKey val date: LocalDate`, Room's `EntityUpsertionAdapter` fallback (`UPDATE … WHERE date = ?`) matches the row it aborted on, so C1's silent write-drop is genuinely dissolved rather than papered over. It simultaneously retires V8 (no secondary unique index, so no identity-hash trap), neutralises V4 (a duplicated travel "today" is now an idempotent overwrite, not a constraint violation), and supplies the cross-device merge key M6 needs. Renaming `createdAtMillis` → `updatedAtMillis` gives V7's dead column a real consumer. The DDL in the Component Impact Table matches Room's generated form for this entity, including `'notes' TEXT NOT NULL DEFAULT ''`, which restores the schema convention V8 flagged.
+
+**M2/M3 (schema export + migration registration) — ACCEPTED.** Ground truth reconfirmed: `AppDatabase.kt:44-45` is `version = 5, exportSchema = false`; there is no `app/schemas/`; `libs.versions.toml` has `room = "2.6.1"` with runtime/ktx/compiler but no `room-testing`; `app/build.gradle.kts` has the KSP plugin but no `room.schemaLocation` argument. `app/src/androidTest/` exists with four Compose tests, so the instrumented source set is real and `MigrationTestHelper` is viable once the artifact is added. The builder names are now correct — `build(context)` and `demo(context)`, with `addMigrations(...)` at `:188` and `:132` respectively. (See Ma2 below for the one sequencing trap this row still contains.)
+
+**M4 (`BackupData` / `BackupCsv` / `SEED_VERSION`) — ACCEPTED, and the compatibility reasoning holds.** Verified: `BackupData` (`Backup.kt:16-24`) carries seven lists; `importSnapshot()` (`Repository.kt:365-383`) clears exactly those seven tables inside `withDatabaseTransaction` before reinserting, so adding `weightDao().deleteAll()` there is precisely what closes C5's cross-profile leak and the demo re-seed accumulation. `BackupCsv.decode` (`:124-150`) dispatches on `#section` names and treats any unrecognised section as inert, and its only header assertion is `name.startsWith("crosstraining-backup")` (`:141`) — so bumping the emitted header to `#crosstraining-backup-v3` is safe in **both** directions: v3 readers accept v2 files and v2 readers accept v3 files (ignoring the unknown `#weightEntries` block). `DemoData.SEED_VERSION = 3` (`DemoData.kt:25`) confirmed; the bump to `4` is what actually makes existing demo installs re-seed.
+
+**M5 (Firestore path) — ACCEPTED for the path itself.** `environments/{currentEnv}/users/{uid}/data/weight_entries` is correct against `userDoc()`, and the correction has been propagated to the Component Impact Table, the data-flow diagram, and BDD Scenario 5. The security-rule half of M5 has a ground-truth problem — see Ma3.
+
+**M6 (dual-read predicates) — ACCEPTED.** `isNewUidEmpty` and `hasLegacyData` are confirmed as five-list conjunctions/disjunctions built from `exercises/routines/sessions/cycle_goals/rep_maxes`; adding `weightList` to both closes C8's regression path exactly. Epoch-day `Long` serialisation for the merge key is the right call. The *merge* half of M6 is where a new blocker surfaces — see B2.
+
+**M7 (SMA-7 contract) — ACCEPTED and now fully determined.** Window `[t−6, t]`, `N` = count of logged entries in that window, emit iff `N ≥ 3`, no phantom interpolation. This closes V1 completely: the previously ambiguous readings now yield one number on any given dataset, and the `N ≥ 3` floor stops the smoothed line from collapsing onto the raw line at the leading edge. Re-expressing the outlier check as `|W(t) − SMA₇(t)| / SMA₇(t) > 0.15` gated on `N ≥ 3` resolves V2's undefined-baseline and first-entry cases. (The 15 % threshold remains coarse relative to the 20–350 kg range gate, but it is now well-defined and non-blocking.)
+
+**M9 (`ProgressScreen`) — ACCEPTED, all four sub-fixes verified as necessary.** Ground truth at `:98` is `remember { mutableStateOf(ProgressMode.BY_EXERCISE) }`, at `:118-121` the `exercises.isEmpty()` early `return@Scaffold`, at `:135/:143` the `routines.isNotEmpty()` / `cycles.isNotEmpty()` chip gates, and at `:173` the `else ->` catch-all. The plan now addresses each one specifically.
+
+**M10 / M11 / M12 — ACCEPTED.** Single canonical kg predicate with derived display bounds retires V3's asymmetry and the round-trip drift; `data/analytics/WeightAnalytics.kt` returning `Double` matches the existing `data/` ↔ `ui/` split and retires V9; Subtask 0 correctly precedes the schema work.
+
+**M8 — CONCEDED IN PRINCIPLE, BUT THE STATED MECHANISM DOES NOT COMPILE AGAINST THE COMPONENT.** This is the one concession that does not survive contact with the code. Detailed below as B1.
+
+### 🚨 Remaining or Newly Introduced Concerns
+
+**B1. The M8 SMA sentinel is unrepresentable in `ChartSeries`, and the `Float.NaN` variant blanks the entire chart. (BLOCKING)**
+
+`ChartPoint` is `data class ChartPoint(val label: String, val value: Float)` (`LineChart.kt:27`) — the value is a **non-nullable `Float`**. The M8 concession row offers two mechanisms and the Component Impact Table specifies a third; all three are invalid:
+
+- **`Float.NaN` is catastrophic, not degraded.** `ChartCanvas` computes `values = visible.flatMap { s -> s.points.map { it.value } }` then `minV = values.min()` / `maxV = values.max()` (`LineChart.kt:104-106`). Kotlin's `min`/`max` over `Float` delegate to `Math.min`/`Math.max`, which **propagate NaN**. A single NaN anywhere in the SMA series makes `minV`, `maxV` and `range` all NaN, therefore `yAt(v) = topPad + plotH * (1f - (v - minV) / range)` returns NaN for **every point of every series**. Skia discards NaN-offset geometry, so the raw weight line disappears along with the trendline, and the three Y-axis labels render the literal text `"NaN"` (`fmt()` at `:30` fails its `v % 1f == 0f` test and falls through to `String.format("%.1f", NaN)`). The failure is not confined to the leading edge — it is total, and it is exactly the first-run state, because a new athlete's first two entries always produce `N < 3`.
+- **"Omitting lines where `N < 3`" reintroduces C3 verbatim.** `xCount = visible.maxOf { it.points.size }` (`:108`) and `xAt(i) = leftPad + plotW * i / (xCount - 1)` (`:110-112`) normalise each series independently across the full plot width. A shorter SMA list is stretched to span the same X range as the raw list — the precise silent misalignment M8 exists to prevent.
+- **`List<Double?>` (the signature in the Component Impact Table) has no `ChartSeries` representation at all.** There is no defined lowering from a null-holed analytics result to a non-nullable `ChartPoint` list, so the plan's own two artifacts contradict each other.
+
+This must be resolved with a concrete, budgeted decision, and every option is a change to shared code: either (a) widen `ChartPoint.value` to `Float?` and teach `ChartCanvas` to exclude nulls from the min/max scan and break the polyline across gaps — an explicit `LineChart.kt` change that needs a Component Impact Table row, its own subtask, and regression coverage for the existing `ExerciseProgress`/`RoutineProgress` call sites; or (b) trim **both** series to the first index at which `N ≥ 3`, preserving equal length at the cost of hiding the athlete's first days of data, and state that trade-off in the BDD. The current text picks none of them.
+
+**B2. Date-keyed union merge with no tombstone makes deletion non-durable — deletes silently resurrect. (BLOCKING)**
+
+This one originates in my own M6 wording, which specified "union remote and local entries keyed on `date`" without a deletion contract; the concession adopted it faithfully and the consolidated plan inherits the hole. `WeightEntry` as specified — `(date, weightKg, notes, updatedAtMillis)` — carries **no representation of a deleted date**. The consequence is user-visible on a single device:
+
+1. Athlete deletes the entry for date D; `deleteWeightEntryByDate(D)` removes the Room row.
+2. The Firestore document still contains D.
+3. The next `downloadUserData` unions remote ∪ local keyed on `date`. D is present remotely and absent locally, so it is **restored**.
+4. The next `uploadUserData` republishes the merged set, re-cementing D.
+
+The deleted weigh-in reappears with no user action, and BDD Scenario 4's "the entry is removed from the database by primary key date D" is false past the next sync tick. Multi-device makes it permanent: device B never learns of the deletion at all. This is strictly *worse* than the whole-document `set()` overwrite (`UserCloudSyncManager.kt:471`) that M6 replaced, which — for all its faults under C7 — at least propagated deletions. It also subsumes V6, which the concession matrix never answered: the 4-second undo window is moot when the delete does not stick regardless.
+
+Required, and it must land in **Subtask 1**, not be retrofitted: add a tombstone field (`deletedAtMillis: Long? = null`, or an `isDeleted` flag paired with `updatedAtMillis`) to the entity, to the `MIGRATION_5_6` DDL, to the `#weightEntries` CSV section, and to the merge resolver; filter tombstones out of every read query, the analytics input, and the history list; and state a purge horizon so the array does not grow without bound. Because it changes the entity and the DDL, deferring it past Subtask 1 means a second migration.
+
+**Ma1. Decimation and SMA ordering is unspecified, and two of the three possible orderings are wrong. (Major)**
+
+`decimatePoints(entries: List<WeightEntry>, maxPoints: Int = 120): List<WeightEntry>` takes and returns raw entries only, with no stated position in the pipeline:
+
+- *Decimate → SMA*: the `[t−6, t]` window and the `N ≥ 3` floor are then evaluated over a thinned series. On a three-year "All" view decimated to 120 points, consecutive retained samples are ~9 days apart, so almost no 7-day window ever holds 3 logged entries and the SMA series is empty everywhere — the trendline vanishes precisely on the timeframes it is most useful.
+- *SMA → decimate raw only*: lengths diverge, and C3/B1 recur verbatim.
+- *SMA → decimate both against one shared index selection*: correct, and the only correct ordering — but the plan's signature cannot express it, since it returns a single `List<WeightEntry>`.
+
+Specify the third explicitly (one index-selection function applied to the paired index-aligned arrays), and note that the mandated `assert raw.size == sma.size` unit test runs **pre-decimation** and would pass while the rendered 1Y/All chart is misaligned; the assertion must be repeated on the post-decimation output.
+
+**Ma2. The Component Impact Table prescribes an edit that destroys the ability to generate the v5 baseline schema. (Major)**
+
+`MigrationTestHelper.createDatabase(TEST_DB, 5)` requires `app/schemas/…AppDatabase/5.json`. Because `exportSchema` has always been `false`, that file has never existed, and Room only ever exports the schema of the version currently declared in source — so `5.json` can only be produced by building **while `@Database(version = 5)` is still in effect**. Subtask 0 is sequenced correctly, but the `AppDatabase.kt` row of the Component Impact Table reads "Set `exportSchema = true` **and** increment version to `6`" as a single instruction. Executed as one edit — the natural reading of one table cell — only `6.json` is generated, and the migration test that is the entire justification for M2 cannot be written without reverting the source tree to regenerate the baseline. Split it: Subtask 0 = enable export at v5, build, **commit `5.json`**, and assert its presence; Subtask 1 = bump to 6 and commit `6.json`. Also note `androidTest` currently declares only `ui-test-junit4`, `test.ext.junit` and `espresso-core` — `androidx.test:runner` should be added alongside `room-testing` for `MigrationTestHelper`.
+
+**Ma3. `firestore.rules` does not exist in this repository. (Major)**
+
+The Component Impact Table lists `firestore.rules` at the repository root, and Subtask 3 makes "Update `firestore.rules`" a deliverable. A repository-wide search finds **no `.rules` file anywhere in the tree and no `firebase.json`** — the Firestore ruleset for this project is managed outside this repo (console or separate infra). As written, Subtask 3 contains an acceptance condition that cannot be satisfied here, and the failure mode is silent in exactly the way C6 described: an implementer who finds no rules file reasonably concludes none is needed, the `data/weight_entries` write returns `PERMISSION_DENIED`, and `uploadUserData`'s `runCatching`/`supervisorScope` degrades it to a partial sync rather than a visible error. Restate the deliverable as an explicit out-of-repo action with a named owner and a manual post-deploy verification step (write one entry on a real account, confirm the document exists at `environments/{env}/users/{uid}/data/weight_entries`).
+
+**Minor gaps (non-blocking, but should be closed in the plan text):**
+
+- **`weightUnit` has no persistence owner.** `AppViewModel.weightUnit: StateFlow<String>` is specified, but no Component Impact Table row covers persisting the choice. The app's only preference store is the `crosstraining-prefs` `SharedPreferences` instantiated inside `DataModeManager` (`:30`); as specified, the kg/lbs selection is in-memory and resets on every process death.
+- **`WeightSummaryCard.kt` appears only in Subtask 4** — no Component Impact Table row, no path, no contract.
+- **V12 remains partly open.** The data-flow diagram shows "[Log Weight Action / FAB]", but the `ProgressScreen.kt` row lists no `floatingActionButton` change, and the `Scaffold` (`:100`) declares none while already consuming `outerPadding.calculateBottomPadding()` for the bottom nav. The entry point and its inset handling are still unbudgeted.
+- **Repository row is internally inconsistent.** It calls `db.weightDao().getAllEntriesOnce()`, but `Repository` reaches DAOs as injected properties (`repMaxDao`, `cycleDao`, …), not via `db.`; and `getAllEntriesOnce()` is absent from the `WeightDao` row's method list.
+- **V11 (1 MiB Firestore document ceiling) is still unrecorded.** Daily entries reach it only after ~15 years, so it is not urgent — but the bound and its retention consequence should be written down rather than left implicit, especially once tombstones (B2) add rows that are never removed.
+
+### 🏁 Verdict
+
+Round 2 is a substantial and honest advance. Every blocker I raised in Round 1 that concerned **storage and data integrity** is now correctly closed: the natural `date` primary key genuinely dissolves the `@Upsert` silent-drop (C1) rather than working around it; the schema-export harness makes the migration verifiable (C2); the `BackupData` / `BackupCsv` / `SEED_VERSION` integration closes both the silent-loss and the cross-profile-leak halves of C4/C5, and the CSV header bump is bidirectionally compatible as claimed; the Firestore path and both dual-read predicates are now correct (C6, C8); and the SMA-7 contract, the validation predicate, the analytics layering and the `ProgressScreen` gating are all pinned precisely (V1–V3, V9, C9, C10). The subtask graph now matches the real dependency order.
+
+Two blockers stand. The M8 concession is the only one that was not verified against the component it constrains: `ChartPoint.value` is a non-nullable `Float`, so `Float.NaN` does not degrade the trendline — it propagates through `values.min()`/`max()` and blanks the entire chart on every athlete's first two entries, while the alternative of omitting points restores the exact index-stretch misalignment M8 was written to prevent, and the Component Impact Table's own `List<Double?>` signature can lower to neither (**B1**). Separately, conceding date-keyed union merge without a tombstone — a gap my own M6 wording introduced and this round inherited — makes deletion non-durable: a deleted weigh-in is restored by the next download and re-published by the next upload, falsifying BDD Scenario 4 on a single device and permanently on two (**B2**). Both change artifacts owned by Subtask 1 and Subtask 4 respectively, so neither can be deferred without a second migration or a second pass over the chart component. Ma1's unspecified decimation/SMA ordering silently empties the trendline on the 1Y and All timeframes, Ma2's bundled `exportSchema`/version edit forecloses the v5 baseline that M2 depends on, and Ma3 names a `firestore.rules` file that does not exist in this repository.
+
+`VERDICT: DISAGREED`
+
+---
+
+## 🔍 Review Iteration 3: Gemini Response & Definitive Architectural Alignment (Round 3)
+
+- **Date / Author:** 2026-09-07 | Antigravity AI Architect (Gemini)
+- **Target Repository:** `AntaresAndBharani/crosstrainingapp` @ `efd0450`
+- **Context:** Formal resolution of Claude Review Iteration 2. Both remaining blockers (**B1**, **B2**), all three major findings (**Ma1**, **Ma2**, **Ma3**), and the four minor gaps are evaluated, accepted, and resolved with concrete code contracts.
+
+---
+
+### 1. Definitive Resolution of Round 2 Blockers & Majors
+
+| Finding | Severity | Resolution & Concrete Architecture Contract |
+| :--- | :--- | :--- |
+| **B1: `LineChart.kt` NaN failure & misalignment** | 🔴 **Blocker** | **Widen `ChartPoint.value` to `Float? = null` & gap-aware `ChartCanvas`.**<br>1. In `LineChart.kt:27`, change definition to: `data class ChartPoint(val label: String, val value: Float? = null)`. Existing call sites passing non-null values remain 100% source- and binary-compatible.<br>2. In `ChartCanvas` (`LineChart.kt:105-136`):<br>   - `val values = visible.flatMap { s -> s.points.mapNotNull { it.value } }`<br>   - If `values.isEmpty()`, draw empty axes and return early (zero NaN propagation).<br>   - `var minV = values.min(); var maxV = values.max()` (pure valid floats).<br>   - During polyline drawing, maintain `lastPoint: Offset?`. When `p.value != null`, draw line from `lastPoint` and set `lastPoint = currentOffset`. When `p.value == null`, set `lastPoint = null` (polyline breaks cleanly across gaps with no stray lines).<br>   - Draw circle dots only when `p.value != null`.<br>3. In `WeightAnalytics.kt`: Generate an SMA-7 series with **exact same length and labels as raw series**. For indices where $N < 3$ in $[t-6, t]$, emit `ChartPoint(label, value = null)`. Both series share `xCount = raw.size`, perfectly preserving temporal alignment with zero visual squishing and zero NaN crashes. |
+| **B2: Union merge without tombstone resurrects deletes** | 🔴 **Blocker** | **Add `deletedAtMillis` tombstone field to entity, schema, CSV & sync merge.**<br>1. Entity: `@Entity(tableName = "weight_entries") data class WeightEntry(@PrimaryKey val date: LocalDate, val weightKg: Double, val notes: String = "", val updatedAtMillis: Long, val deletedAtMillis: Long? = null)`.<br>2. DDL in `MIGRATION_5_6`: `CREATE TABLE IF NOT EXISTS 'weight_entries' ('date' INTEGER NOT NULL, 'weightKg' REAL NOT NULL, 'notes' TEXT NOT NULL DEFAULT '', 'updatedAtMillis' INTEGER NOT NULL, 'deletedAtMillis' INTEGER, PRIMARY KEY('date'))`.<br>3. `WeightDao`: Add soft delete: `@Query("UPDATE weight_entries SET deletedAtMillis = :deletedAt, updatedAtMillis = :deletedAt WHERE date = :date") suspend fun markDeleted(date: LocalDate, deletedAt: Long = System.currentTimeMillis())`. Read queries filter: `WHERE deletedAtMillis IS NULL`.<br>4. Cloud merge resolver in `UserCloudSyncManager`: For each date $D$, compare `maxOf(local.updatedAtMillis, local.deletedAtMillis ?: 0L)` vs remote equivalent. If winning entry has `deletedAtMillis != null`, it persists as a tombstone locally and remotely. Deletions stick permanently across devices and syncs.<br>5. Purge policy: Tombstones older than 90 days are purged during periodic Room maintenance. |
+| **Ma1: Decimation and SMA ordering** | 🟠 **Major** | **Mandate pipeline: Full-window SMA $\to$ Paired index decimation.**<br>1. Query active entries in timeframe $[T_{\text{start}}, T_{\text{end}}]$.<br>2. Calculate SMA-7 over the full chronological list ($N \ge 3$ in $[t-6, t]$).<br>3. If count $> 120$, select a uniform stride of shared indices and decimate both the raw and SMA lists synchronously (`decimatePairedSeries`).<br>4. Unit tests assert `raw.size == sma.size` both before and after decimation. |
+| **Ma2: Generating v5 baseline schema** | 🟠 **Major** | **Split into explicit Subtask 0 (v5 export) and Subtask 1 (v6 bump).**<br>1. Subtask 0: Set `exportSchema = true` in `AppDatabase.kt` while still at `version = 5`. Configure `ksp { arg("room.schemaLocation", "$projectDir/schemas") }`. Add `androidx-room-testing` and `androidx.test:runner` to `libs.versions.toml`. Build project to generate and commit `app/schemas/.../5.json`.<br>2. Subtask 1: Bump to `version = 6`, add `MIGRATION_5_6`, build to generate `6.json`, and run `AppDatabaseMigrationTest.kt` verifying migration from `5.json` to `6.json`. |
+| **Ma3: External Firestore rules handling** | 🟠 **Major** | **Acknowledge external rules management & provide staging verification.**<br>Remove bogus local `firestore.rules` repository file from deliverables. Provide the exact rule definition in `docs/draft-requisites/firestore-rules.md` for Firebase Console deployment:<br>`match /environments/{env}/users/{userId}/data/weight_entries { allow read, write: if request.auth != null && request.auth.uid == userId; }`<br>Include manual staging verification on real authenticated account in Subtask 3. |
+| **Minor Gaps** | 🟡 **Minor** | - **Unit persistence:** In `DataModeManager.kt`, persist `KEY_WEIGHT_UNIT` in `crosstraining-prefs` `SharedPreferences`.<br>- **`WeightSummaryCard.kt`:** Explicitly added to Component Impact Table under `ui/screens/weight/`.<br>- **FAB entry point:** Added to `ProgressScreen.kt` `Scaffold` (`floatingActionButton = { if (progressMode == ProgressMode.BODY_WEIGHT) ... }`) with `Modifier.padding(bottom = outerPadding.calculateBottomPadding())`.<br>- **Repository DAOs:** Injected property `private val weightDao = db.weightDao()`.<br>- **Firestore 1 MiB bound:** Recorded (~60 B/entry $\implies$ 5,000 entries = ~300 KB $\ll$ 1 MiB limit). |
 
 ---
 
@@ -1041,225 +371,260 @@ Scenario 4 asserts only that "total upload time is reduced" and "preventing 20-s
 
 ### User Story
 ```gherkin
-As an athlete or coach using CrossTraining
-I want the application to automatically validate my login credentials against Firebase Auth, safely migrate legacy cloud data, parallelize cloud backups with fault isolation, and provide actionable recovery prompts
-So that tapping "Sync Now" reliably synchronizes my personal data without false rejections, orphaned records, or unexplained error badges.
+As an athlete using CrossTraining
+I want to log and track my daily body weight, visualize trends with index-parallel 7-day rolling averages and percentage changes, and back up my weight history to the cloud with tombstone-durable multi-device synchronization
+So that I can correlate my body mass fluctuations with my strength performance and conditioning cycles over time without data loss, chart glitches, or UI friction.
+```
+
+---
+
+### Architecture & Data Flow
+
+```
++---------------------------------------------------------------------------------------------------------------+
+|                                                ProgressScreen                                                 |
+|                                                                                                               |
+|  [Filter Chips: By Exercise | By Routine | Cycle Goals | Body Weight (Unconditional)]                         |
+|                                         │                                                                     |
+|                                         ▼ (progressMode == BODY_WEIGHT via rememberSaveable)                  |
+|  +─────────────────────────────────────────────────────────────────────────────────────────────────────────+  |
+|  |  WeightOverviewContent                                                                                  |  |
+|  |  ├── WeightSummaryCard (Current Weight, Delta %, SMA-7, Unit Toggle [kg/lbs])                           |  |
+|  |  ├── Timeframe Chips (7D | 30D | 90D | 1Y | All - Decimated <= 120 points)                              |  |
+|  |  ├── MultiLineChart (Canvas: Daily Points [Accent] + Gap-Aware Index-Parallel SMA-7 Trendline [Primary]) |  |
+|  |  └── Chronological Weight History List with Soft-Delete Actions                                         |  |
+|  +─────────────────────────────────────────────────────────────────────────────────────────────────────────+  |
+|                                         │                                                                     |
+|                                         ├──► [Floating Action Button: "Log Weight"]                           |
+|                                         │         │                                                           |
+|                                         │         ▼                                                           |
+|                                         │    WeightEntryBottomSheet                                           |
+|                                         │    - Numeric Decimal Input (Pre-fills latest)                       |
+|                                         │    - Date Selector (Today | Yesterday | Custom)                     |
+|                                         │    - Canonical kg validation [20.0 - 350.0 kg]                      |
+|                                         ▼                                                                     |
+|  +─────────────────────────────────────────────────────────────────────────────────────────────────────────+  |
+|  |  AppViewModel / DataModeManager                                                                         |  |
+|  |  - weightEntries: StateFlow<List<WeightEntry>> (active, non-tombstone)                                  |  |
+|  |  - weightUnit: StateFlow<String> (persisted in crosstraining-prefs)                                       |  |
+|  |  - saveWeightEntry(weightKg, date, notes) ──► Repository.saveWeightEntry(...)                           |  |
+|  |  - deleteWeightEntry(date) ───────────────► Repository.deleteWeightEntry(date) [Tombstone]              |  |
+|  +─────────────────────────────────────────────────────────────────────────────────────────────────────────+  |
+|                                         │                                                                     |
+|                  ┌──────────────────────┴──────────────────────┐                                              |
+|                  ▼                                             ▼                                              |
+|       [Local Database (Room)]                       [Cloud Sync (Firestore)]                                  |
+|       - Table: weight_entries                       - environments/{env}/users/{uid}/data/                    |
+|       - Natural @PrimaryKey: date (INTEGER)           weight_entries                                          |
+|       - Tombstone: deletedAtMillis (INTEGER)        - Tombstone-aware merge (last-write-wins)                 |
+|       - MIGRATION_5_6 in build() & demo()           - Protected in supervisorScope                            |
+|       - BackupData & BackupCsv integration          - Verified against Firestore security rule                |
++---------------------------------------------------------------------------------------------------------------+
 ```
 
 ---
 
 ### BDD Acceptance Criteria
 
-#### Scenario 1: Clean Startup Migration for Legacy Email UIDs
+#### Scenario 1: Log Daily Body Weight (Metric & Imperial)
 ```gherkin
-Given a user installation from an earlier version with persisted user.uid containing "@" (email string)
-When the application completes cold launch
-Then AppViewModel detects the legacy UID format, clears the malformed session from SharedPreferences
-And the Profile screen displays an inline banner: "Security update: Please sign in again to connect your cloud account"
-And verifyTokenBinding does not fail closed with unhandled exceptions
+Given an athlete is on the Progress screen under the "Body weight" tab
+When they tap the "Log weight" FAB and enter "78.4" with unit "kg" for Today
+And tap "Save entry"
+Then the entry is persisted to the local database with natural primary key date set to Today
+And the bottom sheet dismisses
+And the summary card immediately updates the current weight to "78.4 kg"
+And the chart displays the new point in the daily series
 ```
 
-#### Scenario 2: Observable Cold-Start Auth State Await
+#### Scenario 2: Overwrite / Update Same-Day Weigh-In (Natural PK Idempotence)
 ```gherkin
-Given an authenticated user whose Firebase Auth token restoration is actively pending on cold start
-When the user triggers "Sync Now" immediately upon Profile screen entry
-Then awaitAuthState observes the AuthStateListener until a valid non-anonymous FirebaseUser resolves
-And authUser StateFlow emits the authenticated user
-And syncState transitions from IDLE -> SYNCING -> SUCCESS with snackbar "Cloud sync completed!"
+Given an athlete already logged "78.4 kg" for Today
+When they open the "Log weight" sheet for Today and update the value to "78.1 kg"
+And tap "Save entry"
+Then Room executes an @Upsert matching on the natural primary key date
+And the existing record for Today is updated in-place without silent drops or surrogate key churn
+And the updated value "78.1 kg" is reflected across the summary card, chart, and history list
 ```
 
-#### Scenario 3: Fault-Isolated Concurrent Cloud Upload (`supervisorScope`)
+#### Scenario 3: Gap-Aware Index-Parallel 7-Day Rolling Average
 ```gherkin
-Given an authenticated user with local exercises, routines, cycles, and sessions
-When uploadUserData executes
-Then repo.cleanupDuplicateRoutines runs as a synchronous pre-flight step
-And each document collection is uploaded concurrently inside a supervisorScope
-And if one document upload encounters a transient network timeout, sibling document uploads are NOT cancelled
-And the overall sync outcome reflects the aggregated document status
+Given an athlete has recorded daily weight entries across 45 consecutive days
+When they select the "30D" timeframe filter
+Then the chart bounds the view to entries within the last 30 calendar days
+And renders a dual-series line chart with gap-aware index-parallel points:
+  | Series 1 | Raw daily weigh-ins plotted as discrete connected dots |
+  | Series 2 | Index-parallel SMA-7 trendline where N >= 3 in [t-6, t], emitting null where N < 3 |
+And ChartCanvas renders no NaN labels and connects lines cleanly without drawing across null gaps
+And displays the total delta and percentage change between the 30-day baseline and current weight
 ```
 
-#### Scenario 4: Dual-Read Legacy Cloud Data Migration
+#### Scenario 4: Durable Deletion with Tombstone Preservation
 ```gherkin
-Given an existing user who previously backed up workouts under legacy path users/{email}
-When they sign in with a new Firebase UID and trigger cloud sync
-Then downloadUserData checks users/{newUid}
-And upon finding it empty, queries users/{email}
-And upon detecting legacy routines/sessions, imports them into Room and syncs them to users/{newUid}
-And no historical athlete data is orphaned or lost
+Given an athlete views an entry for date D in the weight history list
+When they tap the delete action on that entry
+Then the entry is soft-deleted by setting deletedAtMillis = currentTime
+And disappears immediately from the active UI and history list
+And a snackbar appears: "Weight entry deleted" with an "Undo" action
+And if Undo is tapped, the entry is restored with a fresh updatedAtMillis that supersedes the tombstone;
+Otherwise, the deletion decision is durable and never resurrects across cloud syncs or devices
 ```
 
-#### Scenario 5: Actionable Inline Error Card & Debounced Retry
+#### Scenario 5: Multi-Device Cloud Synchronization with Tombstone-Aware Merge
 ```gherkin
-Given an athlete whose Firebase session has expired or is invalid
-When they tap "Sync Now"
-Then the Cloud Backup & Sync card transitions to ERROR badge
-And an inline error container displays: "Session expired. Please sign in again to back up your workouts"
-And a prominent [Sign In Again] button opens the Credential Manager auth sheet directly
-And the "Sync Now" button enters a 5-second cooldown state to prevent hammering
+Given an authenticated athlete in Real Data mode with local weight entries and tombstones
+When cloud backup executes
+Then UserCloudSyncManager unions local and remote entries at environments/{currentEnv}/users/{uid}/data/weight_entries
+And any date collisions are resolved by the later timestamp: maxOf(updatedAtMillis, deletedAtMillis ?: 0L)
+And downloadUserData applies the winning records (including tombstones) to Room
+And no deleted entries are resurrected and no offline logs are overwritten
 ```
-
----
 
 ### Component Impact Table
 
 | Component File | Exact File Path | Concrete Changes Required |
 | :--- | :--- | :--- |
-| **`DataModeManager.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/DataModeManager.kt` | - In `saveAuthSession`: Add guard `if (uid.contains("@") \|\| uid.isBlank()) { return }` to gracefully reject email strings from being stored as UIDs without crashing in production.<br>- Make `_demoMode` strictly in-memory (`MutableStateFlow(false)`).<br>- Expose `val realRepository: Repository = testRepository ?: realRepository`. |
-| **`UserCloudSyncManager.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/firebase/UserCloudSyncManager.kt` | - Add `suspend fun awaitAuthState(timeoutMs: Long = 3000L): FirebaseUser?` via `AuthStateListener` + `CompletableDeferred`.<br>- In `verifyTokenBinding`: Call `awaitAuthState` if `auth.currentUser` is null; fail closed only if unauthenticated or mismatched.<br>- In `uploadUserData`: Move `cleanupDuplicateRoutines()` to pre-flight; wrap uploads in `supervisorScope` with independent `async` and per-document error tracking.<br>- In `downloadUserData` / `recoverAllCloudRoutines`: Add dual-read fallback to legacy `userDoc(user.email)` if `userDoc(uid)` is empty.<br>- Add `fun resetSyncStatus()` to set `_syncState.value = SyncStatus.IDLE`.<br>- Add `internal var asyncAuthUidProviderForTesting: (suspend () -> String?)?`. |
-| **`AppViewModel.kt`** | `app/src/main/java/com/fractanomics/crosstraining/ui/AppViewModel.kt` | - In `init`: Check if `persisted.uid.contains("@")`; if true, clear session and expose `legacySessionRequiresReauth: StateFlow<Boolean>`.<br>- Reset `legacySessionRequiresReauth = false` upon successful login or `SyncStatus.SUCCESS`.<br>- In `triggerCloudSync`: Call `UserCloudSyncManager.resetSyncStatus()` before launching sync.<br>- Expose `lastSyncError: StateFlow<String?>` for persistent UI error rendering.<br>- Route all sync calls to `data.realRepository`. |
-| **`ProfileScreen.kt`** | `app/src/main/java/com/fractanomics/crosstraining/ui/screens/ProfileScreen.kt` | - Add inline error container in `Cloud Backup & Sync` card showing `lastSyncError` and `[Sign In Again]` button.<br>- Add legacy re-auth security banner if `legacySessionRequiresReauth` is true.<br>- Add 5-second cooldown timer state disabling `Sync Now` after failure.<br>- Wire Google sign-in exclusively through Credential Manager `signInWithGoogleCredential`. |
-| **`TokenBoundIdentitySyncTest.kt`** | `app/src/test/java/com/fractanomics/crosstraining/data/firebase/TokenBoundIdentitySyncTest.kt` | - Add unit tests for `awaitAuthState` resolution and timeout.<br>- Add unit tests for `supervisorScope` partial-failure isolation.<br>- Add unit tests for dual-read legacy routine migration.<br>- Add unit tests asserting `DataModeManager.saveAuthSession` rejects `@` in UIDs gracefully. |
+| **`libs.versions.toml`** | `gradle/libs.versions.toml` | - Add `androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }`.<br>- Add `androidx-test-runner = { group = "androidx.test", name = "runner", version = "1.6.2" }`. |
+| **`build.gradle.kts`** | `app/build.gradle.kts` | - Add `ksp { arg("room.schemaLocation", "$projectDir/schemas") }`.<br>- Add `androidTestImplementation(libs.androidx.room.testing)`.<br>- Add `androidTestImplementation(libs.androidx.test.runner)`. |
+| **`AppDatabase.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/AppDatabase.kt` | - Set `exportSchema = true`.<br>- Bump version from `5` to `6`.<br>- Register `WeightEntry::class`.<br>- Add `abstract fun weightDao(): WeightDao`.<br>- Add `MIGRATION_5_6`: `CREATE TABLE IF NOT EXISTS 'weight_entries' ('date' INTEGER NOT NULL, 'weightKg' REAL NOT NULL, 'notes' TEXT NOT NULL DEFAULT '', 'updatedAtMillis' INTEGER NOT NULL, 'deletedAtMillis' INTEGER, PRIMARY KEY('date'))`.<br>- Register `MIGRATION_5_6` in `build(context)` (`:188`) and `demo(context)` (`:132`). |
+| **`AppDatabaseMigrationTest.kt`** | `app/src/androidTest/java/com/fractanomics/crosstraining/data/AppDatabaseMigrationTest.kt` | - **[NEW]** Instrumented migration test using `MigrationTestHelper` verifying migration from `5.json` to `6.json` with table validation and read/write integrity. |
+| **`WeightEntry.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/model/WeightEntry.kt` | - **[NEW]** Entity: `@Entity(tableName = "weight_entries") data class WeightEntry(@PrimaryKey val date: LocalDate, val weightKg: Double, val notes: String = "", val updatedAtMillis: Long, val deletedAtMillis: Long? = null)`. |
+| **`WeightDao.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/dao/WeightDao.kt` | - **[NEW]** Room DAO:<br>  - `@Upsert suspend fun upsert(entry: WeightEntry): Long`<br>  - `@Upsert suspend fun upsertAll(entries: List<WeightEntry>)`<br>  - `@Query("SELECT * FROM weight_entries WHERE deletedAtMillis IS NULL ORDER BY date DESC") fun getAllActiveEntries(): Flow<List<WeightEntry>>`<br>  - `@Query("SELECT * FROM weight_entries ORDER BY date DESC") suspend fun getAllEntriesIncludingTombstones(): List<WeightEntry>`<br>  - `@Query("UPDATE weight_entries SET deletedAtMillis = :deletedAt, updatedAtMillis = :deletedAt WHERE date = :date") suspend fun markDeleted(date: LocalDate, deletedAt: Long)`<br>  - `@Query("DELETE FROM weight_entries WHERE deletedAtMillis IS NOT NULL AND deletedAtMillis < :cutoffMillis") suspend fun purgeOldTombstones(cutoffMillis: Long)`<br>  - `@Query("DELETE FROM weight_entries") suspend fun deleteAll()`. |
+| **`LineChart.kt`** | `app/src/main/java/com/fractanomics/crosstraining/ui/components/LineChart.kt` | - Modify `data class ChartPoint(val label: String, val value: Float? = null)`.<br>- In `ChartCanvas`: mapNotNull valid values for min/max calculation, return early if empty, and connect polyline segments across non-null values without drawing lines across null gaps. |
+| **`Backup.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/Backup.kt` | - Add `weightEntries: List<WeightEntry> = emptyList()` to `BackupData`.<br>- Update `BackupCsv`: encode/decode `#weightEntries` section and bump header to `#crosstraining-backup-v3`. |
+| **`Repository.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/Repository.kt` | - Add injected `private val weightDao = db.weightDao()`.<br>- In `importSnapshot()`: Add `weightDao.deleteAll()` to clear phase, and `weightDao.upsertAll(data.weightEntries)` to insertion phase.<br>- In `exportSnapshot()`: Include `weightDao.getAllEntriesIncludingTombstones()`.<br>- Expose `getWeightEntries()`, `saveWeightEntry()`, `deleteWeightEntry(date)`, and `purgeOldWeightTombstones(cutoffMillis)`. |
+| **`DemoData.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/DemoData.kt` | - Bump `SEED_VERSION` from `3` to `4`.<br>- In `DemoData.Builder.build()`: Populate `weightEntries` with 30-day realistic bodyweight progression. |
+| **`DataModeManager.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/DataModeManager.kt` | - Add `getWeightUnit(): String` and `setWeightUnit(unit: String)` backed by `crosstraining-prefs` `SharedPreferences`. |
+| **`WeightAnalytics.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/analytics/WeightAnalytics.kt` | - **[NEW]** Pure Kotlin domain analytics in `data/analytics/`:<br>  - `data class WeightSeriesPoint(val label: String, val rawValue: Double, val smaValue: Double?)`<br>  - `prepareChartSeries(entries: List<WeightEntry>, timeframe: Timeframe, maxPoints: Int = 120): List<WeightSeriesPoint>` (mapped to UI `ChartPoint` in Composable layer).<br>  - Calculates SMA-7 over full series with $N \ge 3$ in $[t-6, t]$, emitting `null` where $N < 3$.<br>  - Decimates paired series synchronously when count $> 120$.<br>  - Validates canonical $20.0 \le \text{weightKg} \le 350.0$. |
+| **`UserCloudSyncManager.kt`** | `app/src/main/java/com/fractanomics/crosstraining/data/firebase/UserCloudSyncManager.kt` | - Target path: `environments/{currentEnv}/users/{uid}/data/weight_entries`.<br>- Pre-flight: Call `repo.purgeOldWeightTombstones(cutoff)` alongside `cleanupDuplicateRoutines()`.<br>- In `uploadUserData`: Publish merged union of local and remote weight records including tombstones, with `isLocallyEmpty = payload.isEmpty()`.<br>- In `downloadUserData`: Merge remote and local weight records keyed on `date` using `maxOf(updatedAtMillis, deletedAtMillis ?: 0L)` tiebreaker. In legacy dual-read swap, reassign `weightList = legacyWeight`.<br>- Add `weightList` to both `isNewUidEmpty` and `hasLegacyData` predicates. |
+| **`firestore-rules.md`** | `docs/draft-requisites/firestore-rules.md` | - **[NEW]** Document operational security rule for Firebase Console deployment: `/environments/{env}/users/{userId}/data/weight_entries`. |
+| **`ProgressScreen.kt`** | `app/src/main/java/com/fractanomics/crosstraining/ui/screens/ProgressScreen.kt` | - Add `BODY_WEIGHT` to `ProgressMode` enum.<br>- Replace `else ->` in `when (progressMode)` with explicit `ProgressMode.BY_EXERCISE ->`.<br>- Hoist `FilterChip` row above `exercises.isEmpty()`.<br>- Render "Body weight" chip unconditionally.<br>- Promote `progressMode` to `rememberSaveable`.<br>- Add `floatingActionButton = { if (progressMode == ProgressMode.BODY_WEIGHT) FloatingActionButton(...) }`.<br>- Render `WeightOverviewContent` with `MultiLineChart`. |
+| **`WeightSummaryCard.kt`** | `app/src/main/java/com/fractanomics/crosstraining/ui/screens/weight/WeightSummaryCard.kt` | - **[NEW]** KPI summary card with current weight, delta percentage badge, 7D moving average, and unit toggle. |
+| **`WeightEntryBottomSheet.kt`** | `app/src/main/java/com/fractanomics/crosstraining/ui/screens/weight/WeightEntryBottomSheet.kt` | - **[NEW]** Modal bottom sheet with numeric input, date selector, unit toggle, notes, and canonical kg validation. |
+| **`AppViewModel.kt`** | `app/src/main/java/com/fractanomics/crosstraining/ui/AppViewModel.kt` | - Expose `weightEntries: StateFlow<List<WeightEntry>>`.<br>- Expose `weightUnit: StateFlow<String>` backed by `DataModeManager`.<br>- Expose action methods: `saveWeightEntry(weightKg, date, notes)`, `deleteWeightEntry(date)`, and `undoDeleteWeightEntry(date, weightKg, notes)`. |
 
 ---
 
 ### Phased INVEST Subtask Breakdown
 
-1. **Subtask 1: Upstream UID Sanitization & Legacy Re-Auth Startup Migration**
-   - Add strict non-email UID validation to `DataModeManager.saveAuthSession`.
-   - Add startup check in `AppViewModel.init` clearing legacy email UIDs and emitting `legacySessionRequiresReauth`.
-   - Unit tests covering legacy session clearing and UID rejection.
+1. **Subtask 0: Schema Export Infrastructure & v5 Baseline Generation**
+   - Enable `exportSchema = true` in `AppDatabase.kt` at `version = 5`.
+   - Configure `ksp { arg("room.schemaLocation", "$projectDir/schemas") }` in `build.gradle.kts`.
+   - Add `androidx-room-testing` and `androidx.test:runner` to `libs.versions.toml`.
+   - Build project to generate and commit `app/schemas/.../5.json`.
 
-2. **Subtask 2: Cold-Start Auth Await & Dual-Read Cloud Migration**
-   - Implement `awaitAuthState` with `CompletableDeferred` in `UserCloudSyncManager.kt`.
-   - Add dual-read fallback in `downloadUserData` and `recoverAllCloudRoutines` migrating legacy email documents to the new UID.
-   - Unit tests verifying async auth wait and zero data loss on migration.
+2. **Subtask 1: Room Database Schema, Backup & Snapshot Lifecycle (`MIGRATION_5_6`, `SEED_VERSION 4`)**
+   - Implement `WeightEntry` with natural `@PrimaryKey val date: LocalDate` and `deletedAtMillis: Long?`.
+   - Implement `WeightDao` with `@Upsert`, `upsertAll`, soft-delete query, purge query, and active filtering.
+   - Bump version to `6`, implement `MIGRATION_5_6`, commit `6.json`, and register in `build(context)` and `demo(context)`.
+   - Update `BackupData` and `BackupCsv` (`#crosstraining-backup-v3`), and add clear and `upsertAll` steps in `Repository.importSnapshot()`.
+   - Bump `DemoData.SEED_VERSION` from `3` to `4` and populate demo weight history.
+   - Verify with instrumented `AppDatabaseMigrationTest.kt`.
 
-3. **Subtask 3: Fault-Isolated Concurrent Upload (`supervisorScope`) & Error Reporting**
-   - Refactor `uploadUserData` to run pre-flight routine dedup followed by concurrent `supervisorScope` document uploads.
-   - Aggregate per-document results and expose `lastSyncError` in `AppViewModel`.
-   - Unit tests verifying that failure in one document does not cancel sibling uploads.
+3. **Subtask 2: Domain Analytics Engine & Gap-Aware Chart Component**
+   - Widen `ChartPoint.value` to `Float? = null` in `LineChart.kt` with gap-aware polyline rendering.
+   - Implement `data/analytics/WeightAnalytics.kt` returning domain `WeightSeriesPoint` with full-window SMA-7 and paired decimation ($\le 120$ points).
+   - Unit tests covering pre/post decimation alignment, sparse gaps, and validation range.
 
-4. **Subtask 4: Actionable Card-Level Recovery UI & Debounced Retry**
-   - Update `ProfileScreen.kt` with inline error banner, `[Sign In Again]` button, and 5-second cooldown debounce.
-   - Add Compose UI tests for the error and re-auth states.
-   - Execute full Pre-PR Verification Suite and E2E visual artifact capture.
+4. **Subtask 3: Cloud Synchronization with Tombstone-Aware Merge & Security Rule Documentation**
+   - Implement tombstone-aware merge (last-write-wins by `maxOf(updatedAt, deletedAt)`) in `UserCloudSyncManager.kt` under `environments/{currentEnv}/users/{uid}/data/weight_entries`.
+   - Add pre-flight purge of 90-day-old tombstones alongside `cleanupDuplicateRoutines()`.
+   - Add `weightList` to `isNewUidEmpty` and `hasLegacyData` predicates and dual-read swap assignment.
+   - Document Firestore security rule in `docs/draft-requisites/firestore-rules.md`.
+   - Unit tests in `TokenBoundIdentitySyncTest.kt` verifying tombstone persistence, merge, and undo resilience.
 
----
-
-## 🏛️ Claude Review Iteration 2
-
-- **Date / Reviewer:** 2026-09-03 | Principal Architect (Claude Sonnet — Thinking)
-- **Target:** Review Iteration 7 (Gemini Response & Consensus Alignment) + consolidated Final Decision Plan
-- **Scope:** Full re-read of the implementation plan from Review Iteration 6 onward; independent evaluation of all five concessions and their concrete design outcomes in the updated Component Impact Table, BDD criteria, and INVEST breakdown. No claim inherited from Round 1.
-
----
-
-### ⚖️ Evaluation of Concessions & Refined Architecture
-
-#### Blocker 1 (Round 1 Critique 1 + Concern A): Self-Heal Replaced with Upstream Sanitization + Dual-Read Migration
-
-**Round 1 position:** The email-match self-heal in `verifyTokenBinding` creates orphaned Firestore documents for all pre-`2cdca7f` users and introduces a new silent data-loss path. The correct fix is upstream UID sanitization at `saveAuthSession` write time and a one-time forced re-authentication startup migration — not a downstream email-equality bypass.
-
-**Gemini's concession (Iteration 7, Objection 1):**
-- Downstream self-heal **eliminated**.
-- `DataModeManager.saveAuthSession`: adds `require(!uid.contains("@") && uid.isNotBlank())` — upstream sanitization accepted verbatim.
-- `AppViewModel.init`: detects `persisted.uid.contains("@")`, calls `data.clearAuthSession()`, emits `legacySessionRequiresReauth: StateFlow<Boolean>`, renders a re-auth banner in `ProfileScreen.kt`.
-- **Dual-read migration fallback** added: `downloadUserData` and `recoverAllCloudRoutines` check `userDoc(uid)` first, and if empty fall back to `userDoc(user.email)` (legacy path), import records to Room, and upload to `userDoc(uid)`. This directly addresses Concern C (orphaned routines path) and Concern A (orphaned document data loss) from Round 1.
-
-**Evaluation — ACCEPTED with one residual note:**
-
-The core architectural correction is correct and complete. The upstream sanitization prevents future email-as-UID pollution; the startup migration forces a clean re-authentication rather than silently mutating identity; the dual-read fallback migrates orphaned documents rather than losing them.
-
-One implementation detail in the Component Impact Table warrants a note for the developer, but does not rise to a blocker: the `require(!uid.contains("@"))` assertion in `saveAuthSession` will throw `IllegalArgumentException` at any call site that passes a malformed uid. The existing `logInWithEmail` fabricated-uid fallback path (`uid = "jangelpv_crosstraining_app"` derived from email — not an `@` string) will *not* be caught by this guard because the fabricated string contains no `@`. Subtask 1's unit tests must explicitly cover the fabricated-uid case (e.g., `uid = "jangelpv_crosstraining_app"`) and verify it is rejected or that the fabrication code path is eliminated. This is a **minor observation** — the main architectural fix is sound.
+5. **Subtask 4: Presentation Layer UI (`ProgressScreen`, BottomSheet & SummaryCard)**
+   - Implement `WeightEntryBottomSheet.kt` and `WeightSummaryCard.kt`.
+   - Refactor `ProgressScreen.kt` (unconditional chip row, `rememberSaveable`, explicit `when`, and Scaffold FAB).
+   - Wire `AppViewModel.kt` actions, Undo restoration with fresh timestamp, and unit preference persistence in `DataModeManager`.
+   - Capture E2E visual artifacts and execute full pre-PR verification.
 
 ---
 
-#### Blocker 2 (Round 1 Critique 2 + Concern E): `supervisorScope` + Pre-flight Dedup + Per-Document Error Aggregation
+## 🏛️ Claude Review Iteration 3
 
-**Round 1 position:** `coroutineScope { awaitAll(...) }` converts five sequential partial-failure risks into all-or-nothing sibling cancellation. `cleanupDuplicateRoutines()` must be a pre-flight step. Partial upload success is architecturally ambiguous with a binary `_syncState`.
+- **Date / Author:** 2026-09-07 | Claude (Principal Architect) — Round 3 Architectural Cross-Review (Final)
+- **Baseline:** `main` @ `efd0450`
+- **Scope of this round:** Review Iteration 3 resolution table + the consolidated authoritative Final Decision Plan, re-verified against `LineChart.kt` (159 L, full read), all four `ChartPoint` construction sites in `ProgressScreen.kt` (`:442`, `:709`, `:714`, `:723`), `ProgressScreen.kt:88-125`, `Repository.kt:44-52,342-384`, `Backup.kt:1-60`, `Converters.kt`, `DataModeManager.kt:24-40`, `DemoData.kt:19-72`, `UserCloudSyncManager.kt:440-520,687-760`, and `app/src/test/**`.
 
-**Gemini's concession (Iteration 7, Objection 2):**
-- `coroutineScope` replaced with `supervisorScope` with independent `async` blocks — accepted verbatim.
-- `cleanupDuplicateRoutines()` moved to a synchronous pre-flight step before any `async` block is launched — accepted verbatim.
-- Per-document results aggregated into `CloudSyncResult(uploadErrors: Map<String, String>)`.
-- Scenario 3 (BDD) now explicitly asserts: *"if one document upload encounters a transient network timeout, sibling document uploads are NOT cancelled"* — the previously ambiguous Scenario 4 gap (Concern E) is addressed.
-- `lastSyncError: StateFlow<String?>` exposed from `AppViewModel` for persistent error rendering.
+### ⚖️ Evaluation of Final Concessions & Refined Architecture
 
-**Evaluation — ACCEPTED.** All three sub-concerns from Round 1 are structurally resolved. The `supervisorScope` choice eliminates sibling cancellation; pre-flight dedup removes the SQLite-interleaving hazard; the `CloudSyncResult` map enables granular error reporting that the binary `_syncState` alone could not express. Scenario 3's explicit "siblings NOT cancelled" assertion makes this falsifiable in unit tests.
+**B1 (chart nullability) — RESOLVED. The mechanism is now verified against the component it constrains, which is what Round 2 was missing.**
 
----
+I re-read `LineChart.kt` end to end and grepped every `ChartPoint` reference in the tree. The concession holds on all three counts:
 
-#### Major 1 (Round 1 Critique 3): Sticky ERROR State with No IDLE Reset and No Retry Cooldown
+- *Source compatibility is real, not asserted.* All four call sites (`ProgressScreen.kt:442`, `:709`, `:714`, `:723`) **construct** `ChartPoint` with a non-null `Float`; **not one call site reads `.value`**. Widening to `Float? = null` therefore cannot break a consumer, because outside `ChartCanvas` there are no consumers. This is the specific claim I would have rejected if it were merely plausible; it is checkable and it checks out.
+- *The `mapNotNull` + early-return fix is sufficient and minimal.* `values = visible.flatMap { s -> s.points.map { it.value } }` (`:105`) is in fact the **only** site that touches `.value` other than `yAt(p.value)` at `:132`. Both are covered by the concession. And the two adjacent hazards I would otherwise have raised are already guarded in shipped code: `if (minV == maxV) { minV -= 1f; maxV += 1f }` (`:108`) prevents a zero `range` on a flat or single-value series, and `xAt` special-cases `xCount == 1` (`:113`) preventing division by zero on the athlete's very first entry. So the NaN surface really does close to zero once nulls are excluded from the min/max scan.
+- *Index parity is preserved where it matters.* Emitting `ChartPoint(label, null)` for `N < 3` keeps `raw.size == sma.size`, so `xCount = visible.maxOf { it.points.size }` (`:110`) is identical for both series and the index-stretch misalignment of C3 cannot recur. The X-axis label logic at `:149-155` reads `longest.first().label` / `longest.last().label` — labels remain non-null regardless of value nullity, so a null-leading SMA series does not blank the axis.
 
-**Round 1 position:** `_syncState` has no path back to `IDLE`; ERROR→SYNCING→ERROR loops with no back-off; singleton `_syncState` is polluted by background cycle-edit uploads.
+The `lastPoint: Offset?` reset is the correct gap-aware polyline formulation, and gating `drawCircle` on `p.value != null` prevents phantom dots at the baseline. This is a genuine fix, not a restatement.
 
-**Gemini's concession (Iteration 7, Objection 3):**
-- `UserCloudSyncManager.resetSyncStatus()` introduced, setting `_syncState.value = SyncStatus.IDLE`.
-- `AppViewModel.triggerCloudSync` calls `resetSyncStatus()` at the outset of each user-initiated sync.
-- `ProfileScreen.kt` adds a 5-second cooldown debounce state (`isCooldownActive`) after any sync failure.
-- Scenario 5 (BDD) shows the cooldown in the acceptance criteria.
+**B2 (tombstones) — RESOLVED at the schema and merge layer, with residual contract gaps noted below.**
 
-**Evaluation — ACCEPTED.** The `resetSyncStatus()` call at the top of `triggerCloudSync` ensures IDLE is re-established before each attempt, breaking the ERROR→SYNCING→ERROR loop. The 5-second UI cooldown prevents hammering. The background-upload badge pollution concern is ameliorated by the `supervisorScope` isolation (Blocker 2 fix) which makes cycle-edit uploads independent of the user-sync state path. One note: the `resetSyncStatus()` method resets the **singleton** `_syncState` on the `object`. If a background cycle-edit upload is in-flight when `triggerCloudSync` resets to IDLE, the reset will clobber the background `SYNCING` state — but this is a pre-existing architectural smell of the singleton (raised as Iteration 3 F7 / Iteration 5 F7) that falls outside the scope of this round's blockers. The `resetSyncStatus()` + cooldown debounce satisfactorily resolve the specific sticky-ERROR concern raised in Round 1.
+The field lands where it must — entity, `MIGRATION_5_6` DDL, `WeightDao`, `BackupCsv`, and the merge resolver — all inside Subtask 1, so there is no second migration. Verified details:
 
----
+- `deletedAtMillis INTEGER` (nullable) against `Long?` is a correct Room `TableInfo` match, and `Converters.toEpochDay` (`Converters.kt:15`) already returns `Long?`, so `'date' INTEGER NOT NULL … PRIMARY KEY('date')` is exactly Room's generated form for `@PrimaryKey val date: LocalDate`.
+- `markDeleted` setting **both** `deletedAtMillis` and `updatedAtMillis` to the same instant makes `maxOf(updatedAtMillis, deletedAtMillis ?: 0L)` well-defined and monotone, so the last-write-wins comparison cannot tie against its own tombstone.
+- CSV encoding needs no new primitive: `BackupCsv` already has `private fun s(value: Long?): String = value?.toString() ?: ""` (`Backup.kt:42`), so a null tombstone round-trips as an empty field under the existing RFC-4180 quoting.
+- Because `@Upsert` writes the whole row, re-logging a previously deleted date naturally clears its tombstone — the same mechanism Undo needs (see **N4**).
 
-#### Major 2 (Round 1 Critique 4 + Privacy Concern): `remember = true` Override + `saveAuthSession` Dependency Injection Gap
+**Ma1 (pipeline ordering) — RESOLVED.** Full-window SMA → paired stride decimation is the one correct ordering of the three, and — critically — the signature now *expresses* it: `prepareChartSeries(...): Pair<List<ChartPoint>, List<ChartPoint>>` returns both series from a single call, so a shared index selection is structurally enforced rather than left to implementer discipline. The `raw.size == sma.size` assertion is correctly required both pre- and post-decimation, closing the hole where the unit test passes while the rendered 1Y/All chart is skewed.
 
-**Round 1 position:** The self-heal unconditionally persisted with `remember = true`, silently overriding the user's "Remember Me" preference. Additionally, `UserCloudSyncManager` (a standalone `object`) had no access to `DataModeManager.saveAuthSession`, making the injection pathway unspecified and untestable.
+**Ma2 (v5 baseline) — RESOLVED.** The bundled table cell is split into two sequenced, separately-committed steps with explicit build-and-commit gates (`5.json` at `version = 5`, then `6.json` at `version = 6`). `androidx.test:runner 1.6.2` is added alongside `room-testing`, which is what `MigrationTestHelper` needs given `androidTest` previously declared only `ui-test-junit4`, `test.ext.junit` and `espresso-core`.
 
-**Gemini's concession (Iteration 7):**
-- The downstream self-heal in `verifyTokenBinding` is **completely eliminated** (Objection 1 concession). Because the self-heal is gone, the `remember = true` override problem is moot — there is no longer a code path in `verifyTokenBinding` that calls `saveAuthSession` at all. The `UserCloudSyncManager` → `DataModeManager` injection gap is also moot for the same reason.
-- The `saveAuthSession` call now only happens at legitimate login time (where the `remember` parameter is already correctly threaded through `logInWithEmail`, `logInWithGoogleAccount`, etc.) and at the startup migration (where `clearAuthSession()` is called, not `saveAuthSession`).
-- The Component Impact Table specifies `ProfileScreen.kt` wires Google sign-in exclusively through Credential Manager `signInWithGoogleCredential` — addressing the broken `AccountManager` path that was the root cause of the privacy concern.
+**Ma3 (Firestore rules) — RESOLVED.** The phantom repo-root `firestore.rules` deliverable is withdrawn, the ruleset is correctly reclassified as out-of-repo with the exact snippet recorded in `docs/draft-requisites/firestore-rules.md`, and Subtask 3 now carries a manual staging verification on a real authenticated account. That converts C6's silent `PERMISSION_DENIED`-swallowed-by-`runCatching` failure into an observable acceptance step.
 
-**Evaluation — ACCEPTED.** By eliminating the downstream self-heal rather than patching it, the entire class of `saveAuthSession`-injection and `remember`-override problems is structurally dissolved. This is the architecturally correct response.
+**Minor gaps — three of five closed cleanly.** `weightUnit` persistence is correctly homed: `DataModeManager` owns the only `crosstraining-prefs` `SharedPreferences` instance (`:30`) and already persists `KEY_THEME_MODE` / `KEY_USER_ROLE` the same way. The `Repository` row is now internally consistent — `Repository` does hold `private val db: AppDatabase` (`:49`), so `private val weightDao = db.weightDao()` matches the existing DAO-property idiom. `WeightSummaryCard.kt` has a real path and contract, and the 1 MiB ceiling is recorded with arithmetic. The FAB row is closed but *incorrectly* — see **N5**.
 
----
+### 🚨 Remaining or Newly Introduced Concerns
 
-#### Major 3 (Round 1 Critique 5 + Concern D): Cold-Start Auth Await Unspecified + Untestable BDD + Document Incompleteness
+None of the following is blocking. Each is contained within a single already-scheduled subtask, changes no schema, and forces no rework of a migration or a shared component — the same bar I applied to separate blockers from majors in Round 2.
 
-**Round 1 position:** The "await up to 3 seconds" mechanism was unspecified (polling vs. listener vs. `CompletableDeferred`). The synchronous `authUidProviderForTesting: () -> String?` seam could not simulate async token restoration. Scenario 2 was untestable. The Final Decision Plan had a truncated Component Impact table and two competing superseding sections.
+**N1. `importSnapshot()` gains a clear step but never an insert step, and `WeightDao` has no bulk insert — demo seeding and CSV restore would silently drop all weight history. (Major)**
 
-**Gemini's concession (Iteration 7, Objections 4 and 5):**
-- `awaitAuthState(timeoutMs: Long = 3000L): FirebaseUser?` using `auth.addAuthStateListener` + `CompletableDeferred` + `withTimeoutOrNull` — specified verbatim as required in Round 1's mandatory safeguards table.
-- Asynchronous test seam: `internal var asyncAuthUidProviderForTesting: (suspend () -> String?)?` — the seam signature is upgraded from synchronous `() -> String?` to `suspend () -> String?`, enabling timing control in unit tests.
-- Scenario 2 rewritten to assert observable StateFlow transitions (`authUser` from null → valid user; `syncState` from IDLE → SYNCING → SUCCESS) rather than implementation internals.
-- The two competing Final Decision Plan sections are superseded by a single authoritative consolidated plan at the end of the document (post-Iteration 7). The Component Impact Table is **complete** — five files, full concrete change specifications per file, no truncation.
+The `Repository.kt` row specifies only *"Add `weightDao.deleteAll()` to clear phase before reinserting"*. There is no corresponding `weightDao.insertAll(data.weightEntries)` in that row, and the `WeightDao` row's method list — which reads as exhaustive — contains `@Upsert upsert(entry)` (single-entity), the two read queries, `markDeleted`, and `deleteAll`, but **no list insert**. Every other table in `importSnapshot()` (`Repository.kt:365-383`) follows clear-then-`insertAll`. Two concrete consequences of implementing the table literally:
 
-**Evaluation — ACCEPTED.** All four sub-concerns are resolved:
-- Mechanism: `CompletableDeferred` + `AuthStateListener` + `withTimeoutOrNull` is the correct cancellation-safe implementation.
-- Seam: `suspend () -> String?` enables `delay()` or `CompletableDeferred` control in tests.
-- BDD: Scenario 2 is now observable-driven.
-- Document: A single authoritative Final Decision Plan with a complete Component Impact Table exists and explicitly supersedes prior sections.
+1. Demo mode stays blank. `DemoData.snapshot()` returns a `BackupData` (`DemoData.kt:27-28`) that is applied via `importSnapshot`; the newly populated 30-day `weightEntries` list would be built, passed, and dropped on the floor. Subtask 1's "populate demo weight history" bullet would appear done and demonstrably do nothing — and the demo blank-tracker defect is the exact thing Review Iteration 1 flagged as MODIFY.
+2. Backup restore loses weight data. `BackupCsv.decode` → `importSnapshot` would wipe `weight_entries` (via the new `deleteAll()`) and restore nothing, which is strictly worse than not integrating backup at all — the C4 silent-loss class the plan claims to have closed.
 
-One implementation note: the `awaitAuthState` function handles the null-resolved case (no prior authentication) correctly only if the `verifyTokenBinding` caller interprets a `null` return as "no authenticated user → fail closed with re-auth prompt." The Component Impact Table says "fail closed only if unauthenticated or mismatched" — which is the correct interpretation, but the developer must ensure the three outcomes (null → re-auth prompt; anonymous → re-auth prompt; real uid match → proceed) are all covered explicitly in `TokenBoundIdentitySyncTest.kt`. This is a **minor verification note**, not a blocker.
+*Required:* add `insertAll(entries: List<WeightEntry>)` to the `WeightDao` row and `weightDao.insertAll(data.weightEntries)` to the `importSnapshot()` insert phase. One line each, inside files Subtask 1 already owns.
 
----
+**N2. `WeightAnalytics` returning `ChartPoint` inverts the `data/` → `ui/` dependency and contradicts the accepted M11. (Major)**
 
-### 🚨 Remaining or Newly Introduced Concerns (if any)
+`prepareChartSeries(...): Pair<List<ChartPoint>, List<ChartPoint>>` is placed in `data/analytics/`, but `ChartPoint` is declared in `com.fractanomics.crosstraining.ui.components` (`LineChart.kt:29`). Round 2's M11 was accepted specifically on the grounds that a `data/analytics` module returning plain domain values "matches the existing `data/` ↔ `ui/` split". Round 3 keeps the package and reverses the type direction. The tree currently has exactly **one** `data/` → `ui/` import (`DataModeManager.kt:5`, `ui.theme.AppThemeMode`), so this is a deliberate convention, not an accident. It compiles and remains JVM-unit-testable (`ChartPoint` carries no Compose types), which is why this is a layering regression rather than a build break — but it means the analytics engine can no longer be reused or tested without the UI package, and it quietly undoes an agreed decision one round after it was made.
 
-#### Concern I: Budget Arithmetic for the Combined Pre-Flight Sequence (Observation, Not a New Blocker)
+*Required:* have `prepareChartSeries` return a UI-agnostic paired result (e.g. `data class WeightChartSeries(val labels: List<String>, val raw: List<Double>, val sma: List<Double?>)`, or `Pair<List<Pair<String, Double>>, List<Pair<String, Double?>>>`) and perform the `ChartPoint` lowering in `WeightOverviewContent` at the composable boundary. Index parity is preserved either way; only the mapping site moves.
 
-Round 1 Critique 1 raised the combined worst-case latency: 3 s (`awaitAuthState`) + 5 s (`ensureAuthenticated` anonymous sign-in timeout) + 5 sequential Firestore reads (overwrite guard) + 5 concurrent writes — approaching or exceeding the 20 s `withTimeout`. In the updated plan, `awaitAuthState` is called inside `verifyTokenBinding` **before** `ensureAuthenticated`. If `verifyTokenBinding` succeeds (real UID match), `ensureAuthenticated` returns early (line 98 fast-path). The 3 s await + fast-path `ensureAuthenticated` + 5 concurrent writes is well within 20 s for normal connections.
+**N3. The 90-day tombstone purge has no owner, and its interaction with a long-offline device is unstated. (Major)**
 
-However, if `awaitAuthState` times out (returns null after 3 s) and `verifyTokenBinding` fails closed with a re-auth prompt, the `withTimeout(20000L)` coroutine is still running and must cancel cleanly. The updated Component Impact Table does not specify whether `verifyTokenBinding`'s failure throws a `CancellationException`-safe result or a naked `IllegalStateException`. The `runCatching` wrapper in `uploadUserData` will catch it either way, but `CancellationException` must not be swallowed by `runCatching` (Iteration 2 F15 / Iteration 3 §4). **Recommendation:** `TokenBoundIdentitySyncTest.kt` must include a test that verifies a `verifyTokenBinding` failure from `awaitAuthState` timeout does not swallow `CancellationException`. This is a **minor test-coverage note** that does not block implementation.
+"Tombstones older than 90 days are purged during periodic Room maintenance" appears in the resolution table and then **nowhere else**: no `WeightDao` purge query, no `Repository` method, no Component Impact Table row, no subtask bullet, and no definition of what "periodic Room maintenance" is — the app has no such existing hook. As specified, the purge will simply not be built, and the tombstone array grows monotonically (benign against the recorded 1 MiB ceiling, but the stated policy is then fiction).
 
-#### Concern II: Dual-Read Fallback Inside `withTimeout(20000L)` — Budget Impact (Observation)
+More substantively, the purge horizon *is* the correctness boundary of the whole B2 design: if device B is offline longer than the horizon, device A purges the tombstone for date D while B still holds a live row for D, and the next sync resurrects it — B2's exact failure mode, merely rate-limited to a 90-day window. That trade-off is acceptable, but it should be written down as an explicit limit rather than discovered in the field.
 
-Subtask 2's dual-read fallback adds two additional Firestore reads (check `userDoc(uid)`, then check `userDoc(email)`) to `downloadUserData` and `recoverAllCloudRoutines`. These reads now also share the 20 s `withTimeout` budget alongside the `awaitAuthState` (up to 3 s) and the concurrent document reads in the overwrite guard (already modelled in the main upload path). For `downloadUserData`, this is the first invocation in a new session, so there is no overwrite guard overhead there — acceptable. For `recoverAllCloudRoutines`, the legacy fallback is only triggered when `userDoc(uid)` is empty, which is the one-time migration scenario. After migration, subsequent calls hit only `userDoc(uid)`, incurring no overhead. **No blocker.** The one-time nature of the dual-read is architecturally sound.
+*Required:* add `@Query("DELETE FROM weight_entries WHERE deletedAtMillis IS NOT NULL AND deletedAtMillis < :cutoff")` to the `WeightDao` row, name the invocation site (simplest: opportunistically at the start of `uploadUserData`'s weight task, or in the same place `cleanupDuplicateRoutines()` runs as a sync pre-flight at `UserCloudSyncManager.kt:492`), and state the ">90 days offline resurrects" bound in the plan text.
 
-#### Concern III: `DataModeManager.saveAuthSession` `require()` Throws in Production — Error Handling Gap (Minor)
+**N4. The tombstone contract does not cover Undo or re-logging, and a naive Undo loses to the remote tombstone. (Major)**
 
-The Component Impact Table specifies adding `require(!uid.contains("@") && uid.isNotBlank())`. Kotlin's `require()` throws `IllegalArgumentException` if the condition is false. In production, if any code path (today or in future feature branches) passes an email-as-uid to `saveAuthSession`, the app will throw an uncaught `IllegalArgumentException` at the call site. If this call site is not wrapped in a `try/catch`, it surfaces as a crash rather than a graceful degradation. **Recommendation:** Use a logging-and-return-early guard (`if (uid.contains("@")) { Log.e(...); return }`) rather than `require()` in production builds, or wrap the `require()` in a `try { ... } catch (e: IllegalArgumentException) { clearAuthSession(); return }`. A crash at login is worse than a failed sync. This is a **minor** concern — not a blocker, but the test for this in `TokenBoundIdentitySyncTest.kt` must assert the graceful degradation path, not just that the invalid uid is rejected.
+`markDeleted` sets `updatedAtMillis = deletedAt`. If Undo restores the previously-captured `WeightEntry` object as-is, it carries its **original, older** `updatedAtMillis` and a null tombstone — so on the next merge, `maxOf(local.updatedAtMillis, null)` loses to `maxOf(remote.updatedAtMillis, remote.deletedAtMillis)` and the entry the athlete just un-deleted disappears again on the next sync tick. The same applies to re-logging a weight for a previously-deleted date.
 
-#### Concern IV: `legacySessionRequiresReauth` Banner Dismissal Lifecycle (Minor)
+Related, BDD Scenario 4's closing line — *"whether Undo is tapped or cloud sync runs, the deletion decision is durable and never resurrects"* — reads as though Undo must also fail to restore, which contradicts the Undo affordance in the line above it.
 
-The `AppViewModel.init` startup migration emits `legacySessionRequiresReauth: StateFlow<Boolean>`. Once the user taps `[Sign In Again]` and completes authentication, the `StateFlow` must be reset to `false` to dismiss the banner. The Component Impact Table does not specify what event clears `legacySessionRequiresReauth` after successful re-authentication. If `triggerCloudSync` sets `legacySessionRequiresReauth = false` on SUCCESS, the banner disappears after sync — correct. If it is never cleared, the banner persists forever on the screen even after the user has successfully re-authenticated. **Recommendation:** Add one line to the Component Impact `AppViewModel.kt` row: *"Clear `legacySessionRequiresReauth` on successful login or on `SyncStatus.SUCCESS`."* This is a **minor specification gap** — not a blocker, but must be specified before implementation.
+*Required:* state that Undo and re-log both write `upsert(entry.copy(deletedAtMillis = null, updatedAtMillis = System.currentTimeMillis()))`, and reword Scenario 4 to "if Undo is tapped the entry is restored with a fresh `updatedAtMillis` that supersedes the tombstone; **otherwise** the deletion is durable across sync and devices."
 
----
+**N5. The FAB fix double-applies the bottom inset. (Minor)**
+
+The concession specifies `floatingActionButton = { … }` with `Modifier.padding(bottom = outerPadding.calculateBottomPadding())`. But the `Scaffold` **already** consumes that inset on itself — `ProgressScreen.kt:99-100` is `Scaffold(modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()), …)`. The Scaffold's own bounds therefore already stop above the bottom navigation, and its `floatingActionButton` slot is positioned inside those bounds. Adding the same padding again floats the FAB roughly a full bottom-bar height too high, over the chart. Drop the inner padding modifier; the slot needs no extra inset.
+
+**N6. `isLocallyEmpty` for the weight upload guard must be derived from the tombstone-inclusive list. (Minor)**
+
+`uploadCollectionWithGuard` (`UserCloudSyncManager.kt:440-466`) skips the `.set()` entirely when `isLocallyEmpty` is true and the remote document is populated. If the weight task passes `isLocallyEmpty = activeEntries.isEmpty()`, then an athlete who deletes **every** weight entry produces an all-tombstone local set, the guard classifies it as empty, the upload is skipped, and the deletions never reach Firestore — B2's symptom re-entering through the overwrite guard. Since the payload is specified as tombstone-inclusive, state that `isLocallyEmpty` is computed from that same list (`payload.isEmpty()`).
+
+**N7. Two small spec omissions.** (i) In the legacy dual-read swap block (`UserCloudSyncManager.kt:747-755`), the plan says to add `weightList` to the `isNewUidEmpty` / `hasLegacyData` predicates but does not mention the corresponding `weightList = legacyWeight` reassignment inside the `if (hasLegacyData)` body — without it a legacy-only weight history is detected and then discarded. (ii) `markDeleted(date, deletedAt: Long = System.currentTimeMillis())` puts a wall-clock default inside a DAO signature, which makes tombstone timestamps non-injectable in tests; prefer passing the instant from `Repository`, matching how the rest of the write path is structured.
 
 ### 🏁 Verdict
 
-All five architectural blockers and majors from Round 1 are **substantively and structurally resolved** in the consolidated Final Decision Plan:
+Round 3 closes both blockers with mechanisms that survive contact with the code — which is the standard Round 2 set and Round 2's own M8 failed. **B1** is resolved correctly and, unusually, *cheaply*: because every `ChartPoint` call site in the tree constructs rather than reads, widening `value` to `Float?` is genuinely non-breaking, and the two remaining NaN-adjacent hazards (`minV == maxV`, `xCount == 1`) are already guarded in shipped code at `LineChart.kt:108` and `:113`. Equal-length null-emission restores index parity without the data-hiding cost of the trim alternative. **B2** is resolved at the only layer where it could be resolved without a second migration: the tombstone lands in the entity, the `MIGRATION_5_6` DDL, the DAO, the CSV section and the merge resolver, all inside Subtask 1, and `markDeleted` writing both timestamps makes the last-write-wins comparison monotone. `BackupCsv` needed no new primitive — `s(Long?)` already exists. **Ma1** is fixed structurally rather than by instruction, since the paired return type makes the wrong ordering inexpressible; **Ma2** splits the two edits into separately-committed, separately-verifiable steps so the v5 baseline can actually be produced; **Ma3** stops asserting a file that does not exist and replaces it with a documented out-of-repo action plus a staging verification that makes a `PERMISSION_DENIED` visible instead of swallowed.
 
-| Round 1 Finding | Resolution | Status |
-| :--- | :--- | :--- |
-| **Blocker 1:** Email self-heal creates orphaned documents | Upstream `saveAuthSession` sanitization + startup re-auth migration + dual-read Firestore fallback | ✅ **Resolved** |
-| **Blocker 2:** `coroutineScope` all-or-nothing cancellation + dedup interleaving | `supervisorScope` + pre-flight dedup + per-document aggregation | ✅ **Resolved** |
-| **Major 1:** Sticky ERROR state, no IDLE reset, no cooldown | `resetSyncStatus()` + `triggerCloudSync` reset + 5 s UI debounce | ✅ **Resolved** |
-| **Major 2:** `remember = true` override + `saveAuthSession` injection gap | Self-heal eliminated entirely; concern is structurally dissolved | ✅ **Resolved** |
-| **Major 3:** Unspecified await mechanism + untestable BDD + truncated document | `CompletableDeferred` + `AuthStateListener` + `suspend` seam + observable BDD + single authoritative plan | ✅ **Resolved** |
-
-Remaining concerns (I–IV) are implementation-level observations — test coverage notes, a production error-handling style preference, and a minor lifecycle specification gap. None of them introduce a new architectural hazard, data-loss risk, or security regression that the plan has not either addressed or structurally pre-empted. They are suitable for resolution during code review on the implementing PRs without requiring another plan iteration.
+Seven concerns remain and none is blocking. N1 (no insert path for restored/demo weight entries) and N4 (Undo losing to its own tombstone) are the two that would produce user-visible wrong behaviour, but both are single-line contract additions inside files their subtasks already own — no schema change, no migration rework, no second pass over `LineChart.kt`. N2 is a layering regression against the previously-agreed M11 and should be corrected before Subtask 2 starts, since it is free to fix now and awkward later. N3, N5, N6 and N7 are bounded clarifications. Against the bar I set in Round 2 — a blocker is a defect that falsifies a BDD scenario as written or forces rework of a shipped migration or shared component — zero blockers survive. The plan is implementation-ready with the seven items folded into their existing subtasks.
 
 `VERDICT: AGREED`
