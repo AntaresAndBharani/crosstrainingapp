@@ -86,6 +86,7 @@ class UserCloudSyncManagerOverwriteGuardTest {
         remoteCollectionsState["sessions"] = true
         remoteCollectionsState["cycle_goals"] = true
         remoteCollectionsState["rep_maxes"] = true
+        remoteCollectionsState["weight_entries"] = true
 
         // And local database is completely empty (no sample data populated)
         assertEquals(0, repo.getAllExercisesOnce().size)
@@ -93,6 +94,7 @@ class UserCloudSyncManagerOverwriteGuardTest {
         assertEquals(0, repo.getAllSessionsWithBlocksOnce().size)
         assertEquals(0, repo.snapshotCycleGoals().size)
         assertEquals(0, repo.exportSnapshot().repMaxes.size)
+        assertEquals(0, repo.getAllWeightEntriesIncludingTombstones().size)
 
         // When uploadUserData executes
         val result = UserCloudSyncManager.uploadUserData(repo)
@@ -100,13 +102,14 @@ class UserCloudSyncManagerOverwriteGuardTest {
         // Then upload succeeds without throwing
         assertTrue("Upload must succeed", result.isSuccess)
 
-        // And all 5 collections must be skipped from overwrite
+        // And all 6 collections must be skipped from overwrite
         assertTrue("No documents should be overwritten when local is empty and remote is populated", writtenCollections.isEmpty())
         assertFalse("exercises must not be overwritten", writtenCollections.containsKey("exercises"))
         assertFalse("routines must not be overwritten", writtenCollections.containsKey("routines"))
         assertFalse("sessions must not be overwritten", writtenCollections.containsKey("sessions"))
         assertFalse("cycle_goals must not be overwritten", writtenCollections.containsKey("cycle_goals"))
         assertFalse("rep_maxes must not be overwritten", writtenCollections.containsKey("rep_maxes"))
+        assertFalse("weight_entries must not be overwritten", writtenCollections.containsKey("weight_entries"))
     }
 
     @Test
@@ -117,8 +120,9 @@ class UserCloudSyncManagerOverwriteGuardTest {
         remoteCollectionsState["sessions"] = true
         remoteCollectionsState["cycle_goals"] = true
         remoteCollectionsState["rep_maxes"] = true
+        remoteCollectionsState["weight_entries"] = true
 
-        // And local database is populated with items for all 5 entities
+        // And local database is populated with items for all 6 entities
         val exercise = Exercise(id = 1L, name = "Snatch", category = ExerciseCategory.BARBELL, metricType = MetricType.WEIGHT, unit = "kg", tracksRepMax = true)
         db.exerciseDao().insert(exercise)
 
@@ -137,17 +141,20 @@ class UserCloudSyncManagerOverwriteGuardTest {
 
         repo.recordRepMax(exerciseId = 1L, reps = 1, weight = 105.0, date = LocalDate.now(), cycleId = 1L)
 
+        repo.saveWeightEntry(weightKg = 82.5, date = LocalDate.now())
+
         // When uploadUserData executes
         val result = UserCloudSyncManager.uploadUserData(repo)
 
-        // Then all 5 collections are uploaded because local has data
+        // Then all 6 collections are uploaded because local has data
         assertTrue("Upload must succeed", result.isSuccess)
-        assertEquals("All 5 collections must be uploaded", 5, writtenCollections.size)
+        assertEquals("All 6 collections must be uploaded", 6, writtenCollections.size)
         assertTrue(writtenCollections.containsKey("exercises"))
         assertTrue(writtenCollections.containsKey("routines"))
         assertTrue(writtenCollections.containsKey("sessions"))
         assertTrue(writtenCollections.containsKey("cycle_goals"))
         assertTrue(writtenCollections.containsKey("rep_maxes"))
+        assertTrue(writtenCollections.containsKey("weight_entries"))
     }
 
     @Test
@@ -162,10 +169,10 @@ class UserCloudSyncManagerOverwriteGuardTest {
         // When uploadUserData executes on empty local repo
         val result = UserCloudSyncManager.uploadUserData(repo)
 
-        // Then upload proceeds and writes all 5 documents as there is no remote backup to protect
+        // Then upload proceeds and writes all 6 documents as there is no remote backup to protect
         assertTrue("Upload must succeed", result.isSuccess)
-        assertEquals(5, writtenCollections.size)
-        for (col in listOf("exercises", "routines", "sessions", "cycle_goals", "rep_maxes")) {
+        assertEquals(6, writtenCollections.size)
+        for (col in listOf("exercises", "routines", "sessions", "cycle_goals", "rep_maxes", "weight_entries")) {
             val payload = writtenCollections[col]?.get("list") as? List<*>
             assertEquals("Collection $col must write empty list", 0, payload?.size)
         }
@@ -173,14 +180,15 @@ class UserCloudSyncManagerOverwriteGuardTest {
 
     @Test
     fun uploadUserData_protectsSelectively_perCollection() = runTest {
-        // Given remote has exercises and sessions, but no routines, goals, or rep maxes
+        // Given remote has exercises and sessions, but no routines, goals, rep maxes, or weight entries
         remoteCollectionsState["exercises"] = true
         remoteCollectionsState["sessions"] = true
         remoteCollectionsState["routines"] = false
         remoteCollectionsState["cycle_goals"] = false
         remoteCollectionsState["rep_maxes"] = false
+        remoteCollectionsState["weight_entries"] = false
 
-        // And local has ONLY exercises populated (so routines, sessions, goals, rep maxes are empty)
+        // And local has ONLY exercises populated (so routines, sessions, goals, rep maxes, weight are empty)
         val exercise = Exercise(id = 1L, name = "Clean & Jerk", category = ExerciseCategory.BARBELL, metricType = MetricType.WEIGHT, unit = "kg", tracksRepMax = true)
         db.exerciseDao().insert(exercise)
 
@@ -195,9 +203,10 @@ class UserCloudSyncManagerOverwriteGuardTest {
         // 2. sessions is locally empty and remotely populated -> SKIPPED (protected)
         assertFalse("sessions must be protected from empty overwrite", writtenCollections.containsKey("sessions"))
 
-        // 3. routines, cycle_goals, rep_maxes are locally empty AND remotely empty -> WRITTEN
+        // 3. routines, cycle_goals, rep_maxes, weight_entries are locally empty AND remotely empty -> WRITTEN
         assertTrue("routines must be written when remote is empty", writtenCollections.containsKey("routines"))
         assertTrue("cycle_goals must be written when remote is empty", writtenCollections.containsKey("cycle_goals"))
         assertTrue("rep_maxes must be written when remote is empty", writtenCollections.containsKey("rep_maxes"))
+        assertTrue("weight_entries must be written when remote is empty", writtenCollections.containsKey("weight_entries"))
     }
 }

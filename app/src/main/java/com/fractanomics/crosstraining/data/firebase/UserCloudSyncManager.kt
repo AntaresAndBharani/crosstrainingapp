@@ -491,6 +491,8 @@ object UserCloudSyncManager {
 
                 // 1. Explicit synchronous pre-flight step
                 repo.cleanupDuplicateRoutines()
+                val ninetyDaysAgo = System.currentTimeMillis() - 90L * 24 * 60 * 60 * 1000L
+                repo.purgeOldWeightTombstones(ninetyDaysAgo)
 
                 val doc = if (documentWriterForTesting != null) null else userDoc(uid)
                 val collectionErrors = mutableMapOf<String, Throwable>()
@@ -657,17 +659,40 @@ object UserCloudSyncManager {
                         }
                     }
 
+                    val taskWeightEntries = async {
+                        runCatching {
+                            val weightEntries = repo.getAllWeightEntriesIncludingTombstones()
+                            val weightPayload = weightEntries.map { we ->
+                                mapOf(
+                                    "date" to we.date.toEpochDay(),
+                                    "weightKg" to we.weightKg,
+                                    "notes" to we.notes,
+                                    "updatedAtMillis" to we.updatedAtMillis,
+                                    "deletedAtMillis" to we.deletedAtMillis
+                                )
+                            }
+                            uploadCollectionWithGuard(
+                                collectionName = "weight_entries",
+                                docRef = doc?.collection("data")?.document("weight_entries"),
+                                payload = weightPayload,
+                                isLocallyEmpty = weightPayload.isEmpty()
+                            )
+                        }
+                    }
+
                     val resExercises = taskExercises.await()
                     val resRoutines = taskRoutines.await()
                     val resSessions = taskSessions.await()
                     val resGoals = taskGoals.await()
                     val resRepMaxes = taskRepMaxes.await()
+                    val resWeightEntries = taskWeightEntries.await()
 
                     resExercises.exceptionOrNull()?.let { collectionErrors["exercises"] = it }
                     resRoutines.exceptionOrNull()?.let { collectionErrors["routines"] = it }
                     resSessions.exceptionOrNull()?.let { collectionErrors["sessions"] = it }
                     resGoals.exceptionOrNull()?.let { collectionErrors["cycle_goals"] = it }
                     resRepMaxes.exceptionOrNull()?.let { collectionErrors["rep_maxes"] = it }
+                    resWeightEntries.exceptionOrNull()?.let { collectionErrors["weight_entries"] = it }
                 }
 
                 if (collectionErrors.isNotEmpty()) {
@@ -720,8 +745,9 @@ object UserCloudSyncManager {
                 var sessList = fetchCollection(uid, "sessions")
                 var goalsList = fetchCollection(uid, "cycle_goals")
                 var rmList = fetchCollection(uid, "rep_maxes")
+                var weightList = fetchCollection(uid, "weight_entries")
 
-                val isNewUidEmpty = exList.isEmpty() && routList.isEmpty() && sessList.isEmpty() && goalsList.isEmpty() && rmList.isEmpty()
+                val isNewUidEmpty = exList.isEmpty() && routList.isEmpty() && sessList.isEmpty() && goalsList.isEmpty() && rmList.isEmpty() && weightList.isEmpty()
                 val userEmail = _userState.value?.email
                 var isMigratedFromLegacy = false
 
@@ -733,23 +759,26 @@ object UserCloudSyncManager {
                     var legacySess = fetchCollection(legacyUid, "sessions")
                     var legacyGoals = fetchCollection(legacyUid, "cycle_goals")
                     var legacyRm = fetchCollection(legacyUid, "rep_maxes")
+                    var legacyWeight = fetchCollection(legacyUid, "weight_entries")
 
                     val normalizedLegacyUid = normalizeEmail(userEmail).replace("/", "_")
-                    if (legacyEx.isEmpty() && legacyRout.isEmpty() && legacySess.isEmpty() && legacyGoals.isEmpty() && legacyRm.isEmpty() && normalizedLegacyUid != legacyUid) {
+                    if (legacyEx.isEmpty() && legacyRout.isEmpty() && legacySess.isEmpty() && legacyGoals.isEmpty() && legacyRm.isEmpty() && legacyWeight.isEmpty() && normalizedLegacyUid != legacyUid) {
                         legacyEx = fetchCollection(normalizedLegacyUid, "exercises")
                         legacyRout = fetchCollection(normalizedLegacyUid, "routines")
                         legacySess = fetchCollection(normalizedLegacyUid, "sessions")
                         legacyGoals = fetchCollection(normalizedLegacyUid, "cycle_goals")
                         legacyRm = fetchCollection(normalizedLegacyUid, "rep_maxes")
+                        legacyWeight = fetchCollection(normalizedLegacyUid, "weight_entries")
                     }
 
-                    val hasLegacyData = legacyEx.isNotEmpty() || legacyRout.isNotEmpty() || legacySess.isNotEmpty() || legacyGoals.isNotEmpty() || legacyRm.isNotEmpty()
+                    val hasLegacyData = legacyEx.isNotEmpty() || legacyRout.isNotEmpty() || legacySess.isNotEmpty() || legacyGoals.isNotEmpty() || legacyRm.isNotEmpty() || legacyWeight.isNotEmpty()
                     if (hasLegacyData) {
                         exList = legacyEx
                         routList = legacyRout
                         sessList = legacySess
                         goalsList = legacyGoals
                         rmList = legacyRm
+                        weightList = legacyWeight
                         isMigratedFromLegacy = true
                     }
                 }
@@ -881,6 +910,59 @@ object UserCloudSyncManager {
                         if (!exists) {
                             repo.recordRepMax(exerciseId, reps, weight, date, cycleId)
                         }
+                    }
+                }
+
+                // 6. Download Weight Entries with Tombstone-Aware Last-Write-Wins Merge
+                if (weightList.isNotEmpty()) {
+                    val localWeightEntries = repo.getAllWeightEntriesIncludingTombstones()
+                    val localByDate = localWeightEntries.associateBy { it.date }
+
+                    val mergedWinningEntries = mutableListOf<com.fractanomics.crosstraining.data.model.WeightEntry>()
+
+                    weightList.forEach { map ->
+                        val rawDate = map["date"] ?: return@forEach
+                        val date = when (rawDate) {
+                            is Number -> LocalDate.ofEpochDay(rawDate.toLong())
+                            is String -> runCatching { LocalDate.parse(rawDate) }.getOrNull() ?: return@forEach
+                            else -> return@forEach
+                        }
+                        val weightKg = (map["weightKg"] as? Number)?.toDouble() ?: return@forEach
+                        val notes = map["notes"] as? String ?: ""
+                        val updatedAtMillis = (map["updatedAtMillis"] as? Number)?.toLong() ?: 0L
+                        val deletedAtMillis = (map["deletedAtMillis"] as? Number)?.toLong()
+
+                        val remoteEffectiveTs = maxOf(updatedAtMillis, deletedAtMillis ?: 0L)
+                        val localEntry = localByDate[date]
+
+                        if (localEntry != null) {
+                            val localEffectiveTs = maxOf(localEntry.updatedAtMillis, localEntry.deletedAtMillis ?: 0L)
+                            if (remoteEffectiveTs >= localEffectiveTs) {
+                                mergedWinningEntries.add(
+                                    com.fractanomics.crosstraining.data.model.WeightEntry(
+                                        date = date,
+                                        weightKg = weightKg,
+                                        notes = notes,
+                                        updatedAtMillis = updatedAtMillis,
+                                        deletedAtMillis = deletedAtMillis
+                                    )
+                                )
+                            }
+                        } else {
+                            mergedWinningEntries.add(
+                                com.fractanomics.crosstraining.data.model.WeightEntry(
+                                    date = date,
+                                    weightKg = weightKg,
+                                    notes = notes,
+                                    updatedAtMillis = updatedAtMillis,
+                                    deletedAtMillis = deletedAtMillis
+                                )
+                            )
+                        }
+                    }
+
+                    if (mergedWinningEntries.isNotEmpty()) {
+                        repo.importWeightEntries(mergedWinningEntries)
                     }
                 }
 
