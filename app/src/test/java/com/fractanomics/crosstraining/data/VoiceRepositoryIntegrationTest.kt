@@ -710,6 +710,12 @@ class FakeSampleAppDatabase : AppDatabase() {
     }
 
     private val weightDaoImpl = object : com.fractanomics.crosstraining.data.dao.WeightDao {
+        private val weightFlow = kotlinx.coroutines.flow.MutableStateFlow<List<com.fractanomics.crosstraining.data.model.WeightEntry>>(emptyList())
+
+        private fun refreshFlow() {
+            weightFlow.value = weightStorage.filter { it.deletedAtMillis == null }.sortedByDescending { it.date }
+        }
+
         override suspend fun upsert(entry: com.fractanomics.crosstraining.data.model.WeightEntry): Long {
             val idx = weightStorage.indexOfFirst { it.date == entry.date }
             if (idx >= 0) {
@@ -717,17 +723,20 @@ class FakeSampleAppDatabase : AppDatabase() {
             } else {
                 weightStorage.add(entry)
             }
+            refreshFlow()
             return 1L
         }
 
         override suspend fun upsertAll(entries: List<com.fractanomics.crosstraining.data.model.WeightEntry>) {
-            entries.forEach { upsert(it) }
+            entries.forEach { entry ->
+                val idx = weightStorage.indexOfFirst { it.date == entry.date }
+                if (idx >= 0) weightStorage[idx] = entry else weightStorage.add(entry)
+            }
+            refreshFlow()
         }
 
         override fun getAllActiveEntries(): Flow<List<com.fractanomics.crosstraining.data.model.WeightEntry>> =
-            kotlinx.coroutines.flow.flow {
-                emit(weightStorage.filter { it.deletedAtMillis == null }.sortedByDescending { it.date })
-            }
+            weightFlow
 
         override suspend fun getAllActiveEntriesOnce(): List<com.fractanomics.crosstraining.data.model.WeightEntry> =
             weightStorage.filter { it.deletedAtMillis == null }.sortedByDescending { it.date }
@@ -742,15 +751,18 @@ class FakeSampleAppDatabase : AppDatabase() {
             val idx = weightStorage.indexOfFirst { it.date == date }
             if (idx >= 0) {
                 weightStorage[idx] = weightStorage[idx].copy(deletedAtMillis = deletedAt, updatedAtMillis = deletedAt)
+                refreshFlow()
             }
         }
 
         override suspend fun purgeOldTombstones(cutoffMillis: Long) {
             weightStorage.removeAll { it.deletedAtMillis != null && it.deletedAtMillis < cutoffMillis }
+            refreshFlow()
         }
 
         override suspend fun deleteAll() {
             weightStorage.clear()
+            refreshFlow()
         }
     }
 

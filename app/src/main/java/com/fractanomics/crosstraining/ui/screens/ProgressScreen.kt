@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Icon
@@ -73,7 +74,23 @@ import com.fractanomics.crosstraining.ui.trimmed
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
-enum class ProgressMode { BY_EXERCISE, BY_ROUTINE, CYCLE_GOALS }
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.fractanomics.crosstraining.data.analytics.Timeframe
+import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
+import com.fractanomics.crosstraining.data.model.WeightEntry
+import com.fractanomics.crosstraining.ui.screens.weight.WeightEntryBottomSheet
+import com.fractanomics.crosstraining.ui.screens.weight.WeightSummaryCard
+import kotlinx.coroutines.launch
+
+enum class ProgressMode { BY_EXERCISE, BY_ROUTINE, CYCLE_GOALS, BODY_WEIGHT }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -91,11 +108,20 @@ fun ProgressScreen(
     val cycleGoals by viewModel.cycleGoals.collectAsStateWithLifecycle()
     val repMaxes by viewModel.repMaxes.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val weightEntries by viewModel.weightEntries.collectAsStateWithLifecycle()
+    val weightUnit by viewModel.weightUnit.collectAsStateWithLifecycle()
 
     var selectedExercise by remember { mutableStateOf<Exercise?>(null) }
     var selectedRoutine by remember { mutableStateOf<Routine?>(null) }
     var selectedCycleGoalCycle by remember { mutableStateOf<Cycle?>(null) }
-    var progressMode by remember { mutableStateOf(ProgressMode.BY_EXERCISE) }
+    var progressMode by rememberSaveable { mutableStateOf(ProgressMode.BY_EXERCISE) }
+
+    // Bottom sheet & Snackbar state for Weight Logging
+    val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showWeightSheet by remember { mutableStateOf(false) }
+    var editingWeightEntry by remember { mutableStateOf<WeightEntry?>(null) }
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
@@ -113,12 +139,21 @@ fun ProgressScreen(
                     }
                 }
             )
+        },
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+        floatingActionButton = {
+            if (progressMode == ProgressMode.BODY_WEIGHT) {
+                FloatingActionButton(
+                    onClick = {
+                        editingWeightEntry = null
+                        showWeightSheet = true
+                    }
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = "Log weight")
+                }
+            }
         }
     ) { pad ->
-        if (exercises.isEmpty()) {
-            EmptyState("Add exercises and log sessions to see progress here.", Modifier.padding(pad))
-            return@Scaffold
-        }
         Column(
             modifier = Modifier
                 .padding(pad)
@@ -126,6 +161,7 @@ fun ProgressScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            // Mode Filter Chip Row hoisted unconditionally above mode empty states
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = progressMode == ProgressMode.BY_EXERCISE,
@@ -146,6 +182,11 @@ fun ProgressScreen(
                         label = { Text("Cycle goals") }
                     )
                 }
+                FilterChip(
+                    selected = progressMode == ProgressMode.BODY_WEIGHT,
+                    onClick = { progressMode = ProgressMode.BODY_WEIGHT },
+                    label = { Text("Body weight") }
+                )
             }
 
             when (progressMode) {
@@ -170,15 +211,220 @@ fun ProgressScreen(
                         onSelectCycle = { selectedCycleGoalCycle = it }
                     )
                 }
-                else -> {
-                    ExerciseProgress(
-                        exercises = exercises,
-                        repMaxes = repMaxes,
-                        sessions = sessions,
-                        current = selectedExercise ?: exercises.firstOrNull(),
-                        onSelect = { selectedExercise = it }
+                ProgressMode.BODY_WEIGHT -> {
+                    WeightOverviewContent(
+                        entries = weightEntries,
+                        unit = weightUnit,
+                        onToggleUnit = { viewModel.setWeightUnit(it) },
+                        onEditEntry = { entry ->
+                            editingWeightEntry = entry
+                            showWeightSheet = true
+                        },
+                        onDeleteEntry = { entry ->
+                            viewModel.deleteWeightEntry(entry.date)
+                            coroutineScope.launch {
+                                val result = snackbarHostState.showSnackbar(
+                                    message = "Weight entry deleted",
+                                    actionLabel = "Undo",
+                                    duration = SnackbarDuration.Short
+                                )
+                                if (result == SnackbarResult.ActionPerformed) {
+                                    viewModel.undoDeleteWeightEntry(
+                                        date = entry.date,
+                                        weightKg = entry.weightKg,
+                                        notes = entry.notes
+                                    )
+                                }
+                            }
+                        }
                     )
                 }
+                ProgressMode.BY_EXERCISE -> {
+                    if (exercises.isEmpty()) {
+                        EmptyState("Add exercises and log sessions to see progress here.")
+                    } else {
+                        ExerciseProgress(
+                            exercises = exercises,
+                            repMaxes = repMaxes,
+                            sessions = sessions,
+                            current = selectedExercise ?: exercises.firstOrNull(),
+                            onSelect = { selectedExercise = it }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showWeightSheet) {
+        val activeSorted = weightEntries.filter { it.deletedAtMillis == null }.sortedBy { it.date }
+        val latest = activeSorted.lastOrNull()
+
+        WeightEntryBottomSheet(
+            sheetState = sheetState,
+            initialEntry = editingWeightEntry,
+            latestEntry = latest,
+            unit = weightUnit,
+            onDismiss = { showWeightSheet = false },
+            onSave = { weightKg, date, notes ->
+                viewModel.saveWeightEntry(weightKg = weightKg, date = date, notes = notes)
+                coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
+                    showWeightSheet = false
+                }
+            },
+            onDelete = { date ->
+                val targetEntry = editingWeightEntry ?: activeSorted.find { it.date == date }
+                viewModel.deleteWeightEntry(date)
+                coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
+                    showWeightSheet = false
+                }
+                if (targetEntry != null) {
+                    coroutineScope.launch {
+                        val result = snackbarHostState.showSnackbar(
+                            message = "Weight entry deleted",
+                            actionLabel = "Undo",
+                            duration = SnackbarDuration.Short
+                        )
+                        if (result == SnackbarResult.ActionPerformed) {
+                            viewModel.undoDeleteWeightEntry(
+                                date = targetEntry.date,
+                                weightKg = targetEntry.weightKg,
+                                notes = targetEntry.notes
+                            )
+                        }
+                    }
+                }
+            }
+        )
+    }
+}
+
+// --- Body Weight Overview View ----------------------------------------------
+
+@Composable
+private fun WeightOverviewContent(
+    entries: List<WeightEntry>,
+    unit: String,
+    onToggleUnit: (String) -> Unit,
+    onEditEntry: (WeightEntry) -> Unit,
+    onDeleteEntry: (WeightEntry) -> Unit
+) {
+    val activeEntries = entries.filter { it.deletedAtMillis == null }.sortedBy { it.date }
+    var selectedTimeframe by rememberSaveable { mutableStateOf(Timeframe.THIRTY_DAYS) }
+
+    WeightSummaryCard(
+        entries = activeEntries,
+        unit = unit,
+        onToggleUnit = onToggleUnit
+    )
+
+    if (activeEntries.isEmpty()) {
+        EmptyState("No weight entries logged yet.\nTap the '+' button below to log your first weigh-in.")
+        return
+    }
+
+    // Timeframe Filter Chips
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Timeframe.values().forEach { tf ->
+            FilterChip(
+                selected = selectedTimeframe == tf,
+                onClick = { selectedTimeframe = tf },
+                label = { Text(tf.label) }
+            )
+        }
+    }
+
+    // Weight Chart Section
+    val isImperial = unit.equals("lbs", ignoreCase = true)
+    val chartPoints = remember(activeEntries, selectedTimeframe, isImperial) {
+        val seriesPoints = WeightAnalytics.prepareChartSeries(activeEntries, selectedTimeframe)
+        val rawChart = seriesPoints.map { p ->
+            val displayVal = if (isImperial) WeightAnalytics.kgToLbs(p.rawValue) else p.rawValue
+            ChartPoint(p.label, displayVal.toFloat())
+        }
+        val smaChart = seriesPoints.map { p ->
+            val displayVal = p.smaValue?.let {
+                if (isImperial) WeightAnalytics.kgToLbs(it) else it
+            }
+            ChartPoint(p.label, displayVal?.toFloat())
+        }
+        Pair(rawChart, smaChart)
+    }
+
+    val chartSeries = listOf(
+        ChartSeries(
+            name = "Daily (${unit.lowercase()})",
+            points = chartPoints.first,
+            color = MaterialTheme.colorScheme.secondary
+        ),
+        ChartSeries(
+            name = "7D Average",
+            points = chartPoints.second,
+            color = MaterialTheme.colorScheme.primary
+        )
+    )
+
+    SectionCard(title = "Weight Trend (${selectedTimeframe.label})") {
+        MultiLineChart(series = chartSeries)
+    }
+
+    // Weight History List (Chronological descending)
+    SectionCard(title = "Weight History") {
+        val descending = remember(activeEntries) { activeEntries.sortedByDescending { it.date } }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            descending.forEach { entry ->
+                val displayWeight = if (isImperial) WeightAnalytics.kgToLbs(entry.weightKg) else entry.weightKg
+                val weightStr = String.format(java.util.Locale.getDefault(), "%.1f", displayWeight)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onEditEntry(entry) }
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = entry.date.formatLong(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (entry.notes.isNotBlank()) {
+                            Text(
+                                text = entry.notes,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "$weightStr ${unit.lowercase()}",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        IconButton(
+                            onClick = { onDeleteEntry(entry) },
+                            modifier = Modifier.padding(start = 4.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Delete,
+                                contentDescription = "Delete entry",
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
             }
         }
     }
