@@ -371,6 +371,9 @@ class Repository(
     suspend fun purgeOldWeightTombstones(cutoffMillis: Long) =
         weightDao.purgeOldTombstones(cutoffMillis)
 
+    suspend fun importWeightEntries(entries: List<com.fractanomics.crosstraining.data.model.WeightEntry>) =
+        weightDao.upsertAll(entries)
+
     // --- Cloud Sync Getters ---------------------------------------------------
     suspend fun getAllExercisesOnce(): List<Exercise> = exerciseDao.getAllOnce()
     suspend fun getAllRoutinesWithBlocksOnce(): List<RoutineWithBlocks> = routineDao.getAllWithBlocksOnce()
