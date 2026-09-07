@@ -10,6 +10,7 @@ import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
+import com.fractanomics.crosstraining.data.model.WeightEntry
 import java.time.LocalDate
 
 /** A full in-memory snapshot of the database used for export/import. */
@@ -20,7 +21,8 @@ data class BackupData(
     val sessions: List<Session> = emptyList(),
     val blocks: List<SessionBlock> = emptyList(),
     val sets: List<BlockSet> = emptyList(),
-    val repMaxes: List<RepMax> = emptyList()
+    val repMaxes: List<RepMax> = emptyList(),
+    val weightEntries: List<WeightEntry> = emptyList()
 )
 
 /**
@@ -48,7 +50,7 @@ object BackupCsv {
 
     fun encode(data: BackupData): String {
         val sb = StringBuilder()
-        sb.append("#crosstraining-backup-v2\n")
+        sb.append("#crosstraining-backup-v3\n")
 
         sb.append("#cycles\n")
         sb.append(row(listOf("id", "name", "startDate", "endDate", "goal", "isActive")))
@@ -118,6 +120,14 @@ object BackupCsv {
             )))
         }
 
+        sb.append("#weightEntries\n")
+        sb.append(row(listOf("date", "weightKg", "notes", "updatedAtMillis", "deletedAtMillis")))
+        data.weightEntries.forEach {
+            sb.append(row(listOf(
+                s(it.date), s(it.weightKg), it.notes, s(it.updatedAtMillis), s(it.deletedAtMillis)
+            )))
+        }
+
         return sb.toString()
     }
 
@@ -130,6 +140,7 @@ object BackupCsv {
         val blocks = mutableListOf<SessionBlock>()
         val sets = mutableListOf<BlockSet>()
         val repMaxes = mutableListOf<RepMax>()
+        val weightEntries = mutableListOf<WeightEntry>()
 
         var section = ""
         var skipHeader = false
@@ -217,9 +228,21 @@ object BackupCsv {
                     sessionId = rec.lngOrNull(6),
                     blockId = rec.lngOrNull(7)
                 )
+                "weightEntries" -> {
+                    val entryDate = rec.date(0)
+                    if (entryDate != null) {
+                        weightEntries += WeightEntry(
+                            date = entryDate,
+                            weightKg = rec.dbl(1),
+                            notes = rec.str(2),
+                            updatedAtMillis = rec.lng(3),
+                            deletedAtMillis = rec.lngOrNull(4)
+                        )
+                    }
+                }
             }
         }
-        return BackupData(cycles, exercises, routines, sessions, blocks, sets, repMaxes)
+        return BackupData(cycles, exercises, routines, sessions, blocks, sets, repMaxes, weightEntries)
     }
 
     // --- field accessors (tolerant of short rows) -----------------------------

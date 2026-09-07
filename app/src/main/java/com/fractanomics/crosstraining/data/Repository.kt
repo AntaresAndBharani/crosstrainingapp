@@ -69,6 +69,7 @@ class Repository(
     private val blockDao = db.blockDao()
     private val repMaxDao = db.repMaxDao()
     private val cycleGoalDao = db.cycleGoalDao()
+    private val weightDao = db.weightDao()
 
     // --- Cycles ---------------------------------------------------------------
     val cycles: Flow<List<Cycle>> = flow {
@@ -339,6 +340,37 @@ class Repository(
         )
     )
 
+    // --- Weight Entries ------------------------------------------------------
+    val weightEntries: Flow<List<com.fractanomics.crosstraining.data.model.WeightEntry>> = weightDao.getAllActiveEntries()
+
+    suspend fun getActiveWeightEntriesOnce(): List<com.fractanomics.crosstraining.data.model.WeightEntry> =
+        weightDao.getAllActiveEntriesOnce()
+
+    suspend fun getAllWeightEntriesIncludingTombstones(): List<com.fractanomics.crosstraining.data.model.WeightEntry> =
+        weightDao.getAllEntriesIncludingTombstones()
+
+    suspend fun saveWeightEntry(
+        weightKg: Double,
+        date: LocalDate = LocalDate.now(),
+        notes: String = ""
+    ): Long = weightDao.upsert(
+        com.fractanomics.crosstraining.data.model.WeightEntry(
+            date = date,
+            weightKg = weightKg,
+            notes = notes,
+            updatedAtMillis = System.currentTimeMillis(),
+            deletedAtMillis = null
+        )
+    )
+
+    suspend fun deleteWeightEntry(
+        date: LocalDate,
+        deletedAt: Long = System.currentTimeMillis()
+    ) = weightDao.markDeleted(date, deletedAt)
+
+    suspend fun purgeOldWeightTombstones(cutoffMillis: Long) =
+        weightDao.purgeOldTombstones(cutoffMillis)
+
     // --- Cloud Sync Getters ---------------------------------------------------
     suspend fun getAllExercisesOnce(): List<Exercise> = exerciseDao.getAllOnce()
     suspend fun getAllRoutinesWithBlocksOnce(): List<RoutineWithBlocks> = routineDao.getAllWithBlocksOnce()
@@ -354,17 +386,19 @@ class Repository(
         sessions = sessionDao.getAllSessionsOnce(),
         blocks = blockDao.getAllBlocksOnce(),
         sets = blockDao.getAllSetsOnce(),
-        repMaxes = repMaxDao.getAllOnce()
+        repMaxes = repMaxDao.getAllOnce(),
+        weightEntries = weightDao.getAllEntriesIncludingTombstones()
     )
 
     /**
      * Replace all data with [data]. Tables are cleared first, then rows are
      * inserted in foreign-key order (exercises/cycles → routines → sessions →
-     * blocks → sets → rep-maxes) so relationships restore intact.
+     * blocks → sets → rep-maxes → weight-entries) so relationships restore intact.
      */
     suspend fun importSnapshot(data: BackupData) {
         withDatabaseTransaction {
-            // Clear children before parents to respect foreign keys.
+            // Clear children before parents to respect foreign keys, and clear weight entries.
+            weightDao.deleteAll()
             repMaxDao.deleteAll()
             blockDao.deleteAllSets()
             blockDao.deleteAllBlocks()
@@ -380,6 +414,7 @@ class Repository(
             blockDao.insertBlocks(data.blocks)
             blockDao.insertSets(data.sets)
             repMaxDao.insertAll(data.repMaxes)
+            weightDao.upsertAll(data.weightEntries)
         }
     }
 

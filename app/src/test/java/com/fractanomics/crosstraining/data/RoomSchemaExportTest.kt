@@ -1,4 +1,4 @@
-﻿package com.fractanomics.crosstraining.data
+package com.fractanomics.crosstraining.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -21,7 +21,7 @@ import java.io.File
 class RoomSchemaExportTest {
 
     @Test
-    fun appDatabaseSource_hasExportSchemaEnabledAtVersion5() {
+    fun appDatabaseSource_hasExportSchemaEnabledAtVersion6() {
         val candidatePaths = listOf(
             File("src/main/java/com/fractanomics/crosstraining/data/AppDatabase.kt"),
             File("app/src/main/java/com/fractanomics/crosstraining/data/AppDatabase.kt"),
@@ -31,7 +31,7 @@ class RoomSchemaExportTest {
         assertNotNull("AppDatabase.kt source file must be found", sourceFile)
 
         val content = sourceFile!!.readText()
-        assertTrue("AppDatabase must have version = 5", Regex("""version\s*=\s*5""").containsMatchIn(content))
+        assertTrue("AppDatabase must have version = 6", Regex("""version\s*=\s*6""").containsMatchIn(content))
         assertTrue("AppDatabase must have exportSchema = true", Regex("""exportSchema\s*=\s*true""").containsMatchIn(content))
     }
 
@@ -61,19 +61,19 @@ class RoomSchemaExportTest {
     }
 
     @Test
-    fun schemaArtifact_existsAndMatchesVersion5Contract() {
-        val candidatePaths = listOf(
+    fun schemaArtifact_existsAndMatchesVersion5And6Contracts() {
+        val candidatePaths5 = listOf(
             File("schemas/com.fractanomics.crosstraining.data.AppDatabase/5.json"),
             File("app/schemas/com.fractanomics.crosstraining.data.AppDatabase/5.json"),
             File("../app/schemas/com.fractanomics.crosstraining.data.AppDatabase/5.json")
         )
-        val schemaFile = candidatePaths.firstOrNull { it.exists() }
-        assertNotNull("Baseline schema artifact 5.json must exist in schemas directory", schemaFile)
+        val schemaFile5 = candidatePaths5.firstOrNull { it.exists() }
+        assertNotNull("Baseline schema artifact 5.json must exist in schemas directory", schemaFile5)
 
-        val content = schemaFile!!.readText()
-        assertTrue("Schema must have formatVersion 1", content.contains("\"formatVersion\": 1"))
-        assertTrue("Schema must specify database version 5", content.contains("\"version\": 5"))
-        assertTrue("Schema must contain identityHash", content.contains("\"identityHash\":"))
+        val content5 = schemaFile5!!.readText()
+        assertTrue("Schema 5.json must have formatVersion 1", content5.contains("\"formatVersion\": 1"))
+        assertTrue("Schema 5.json must specify database version 5", content5.contains("\"version\": 5"))
+        assertTrue("Schema 5.json must contain identityHash", content5.contains("\"identityHash\":"))
 
         // Check required v5 tables
         val expectedTables = listOf(
@@ -88,10 +88,25 @@ class RoomSchemaExportTest {
             "\"tableName\": \"cycle_goals\""
         )
         for (table in expectedTables) {
-            assertTrue("Schema 5.json must contain table definition: $table", content.contains(table))
+            assertTrue("Schema 5.json must contain table definition: $table", content5.contains(table))
         }
 
         // Must not contain weight_entries in version 5 baseline
-        assertFalse("Schema 5.json must not contain weight_entries before v6 migration", content.contains("weight_entries"))
+        assertFalse("Schema 5.json must not contain weight_entries before v6 migration", content5.contains("weight_entries"))
+
+        // Now verify 6.json
+        val candidatePaths6 = listOf(
+            File("schemas/com.fractanomics.crosstraining.data.AppDatabase/6.json"),
+            File("app/schemas/com.fractanomics.crosstraining.data.AppDatabase/6.json"),
+            File("../app/schemas/com.fractanomics.crosstraining.data.AppDatabase/6.json")
+        )
+        val schemaFile6 = candidatePaths6.firstOrNull { it.exists() }
+        assertNotNull("Schema artifact 6.json must exist in schemas directory", schemaFile6)
+
+        val content6 = schemaFile6!!.readText()
+        assertTrue("Schema 6.json must have formatVersion 1", content6.contains("\"formatVersion\": 1"))
+        assertTrue("Schema 6.json must specify database version 6", content6.contains("\"version\": 6"))
+        assertTrue("Schema 6.json must contain identityHash", content6.contains("\"identityHash\":"))
+        assertTrue("Schema 6.json must contain weight_entries table", content6.contains("\"tableName\": \"weight_entries\""))
     }
 }

@@ -14,6 +14,7 @@ import com.fractanomics.crosstraining.data.dao.ExerciseDao
 import com.fractanomics.crosstraining.data.dao.RepMaxDao
 import com.fractanomics.crosstraining.data.dao.RoutineDao
 import com.fractanomics.crosstraining.data.dao.SessionDao
+import com.fractanomics.crosstraining.data.dao.WeightDao
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
@@ -23,6 +24,7 @@ import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.RoutineBlock
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
+import com.fractanomics.crosstraining.data.model.WeightEntry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,9 +41,10 @@ import java.time.LocalDate
         SessionBlock::class,
         BlockSet::class,
         RepMax::class,
-        CycleGoal::class
+        CycleGoal::class,
+        WeightEntry::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -53,6 +56,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun blockDao(): BlockDao
     abstract fun repMaxDao(): RepMaxDao
     abstract fun cycleGoalDao(): CycleGoalDao
+    abstract fun weightDao(): WeightDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -107,6 +111,21 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `weight_entries` (
+                        `date` INTEGER NOT NULL,
+                        `weightKg` REAL NOT NULL,
+                        `notes` TEXT NOT NULL DEFAULT '',
+                        `updatedAtMillis` INTEGER NOT NULL,
+                        `deletedAtMillis` INTEGER,
+                        PRIMARY KEY(`date`)
+                    )
+                """.trimIndent())
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -129,7 +148,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "crosstraining-demo.db"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build().also { DEMO = it }
             }
@@ -185,7 +204,7 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 "crosstraining.db"
             )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .fallbackToDestructiveMigrationOnDowngrade()
             .addCallback(callback)
             .build()
