@@ -389,13 +389,15 @@ class FakeSampleAppDatabase : AppDatabase() {
     private val blocksStorage = mutableListOf<SessionBlock>()
     private val setsStorage = mutableListOf<BlockSet>()
     private val repMaxesStorage = mutableListOf<RepMax>()
+    private val weightStorage = mutableListOf<com.fractanomics.crosstraining.data.model.WeightEntry>()
 
     data class DbSnapshot(
         val exercises: List<Exercise>,
         val cycles: List<Cycle>,
         val sessions: List<Session>,
         val blocks: List<SessionBlock>,
-        val sets: List<BlockSet>
+        val sets: List<BlockSet>,
+        val weightEntries: List<com.fractanomics.crosstraining.data.model.WeightEntry>
     )
 
     fun createSnapshot(): DbSnapshot = DbSnapshot(
@@ -403,7 +405,8 @@ class FakeSampleAppDatabase : AppDatabase() {
         cycles = ArrayList(cyclesStorage),
         sessions = ArrayList(sessionsStorage),
         blocks = ArrayList(blocksStorage),
-        sets = ArrayList(setsStorage)
+        sets = ArrayList(setsStorage),
+        weightEntries = ArrayList(weightStorage)
     )
 
     fun restoreSnapshot(snapshot: DbSnapshot) {
@@ -412,6 +415,7 @@ class FakeSampleAppDatabase : AppDatabase() {
         sessionsStorage.clear(); sessionsStorage.addAll(snapshot.sessions)
         blocksStorage.clear(); blocksStorage.addAll(snapshot.blocks)
         setsStorage.clear(); setsStorage.addAll(snapshot.sets)
+        weightStorage.clear(); weightStorage.addAll(snapshot.weightEntries)
     }
 
     fun populateSampleData() {
@@ -705,6 +709,51 @@ class FakeSampleAppDatabase : AppDatabase() {
             repMaxesStorage.filter { it.exerciseId == exerciseId && it.reps == reps }.maxOfOrNull { it.weight }
     }
 
+    private val weightDaoImpl = object : com.fractanomics.crosstraining.data.dao.WeightDao {
+        override suspend fun upsert(entry: com.fractanomics.crosstraining.data.model.WeightEntry): Long {
+            val idx = weightStorage.indexOfFirst { it.date == entry.date }
+            if (idx >= 0) {
+                weightStorage[idx] = entry
+            } else {
+                weightStorage.add(entry)
+            }
+            return 1L
+        }
+
+        override suspend fun upsertAll(entries: List<com.fractanomics.crosstraining.data.model.WeightEntry>) {
+            entries.forEach { upsert(it) }
+        }
+
+        override fun getAllActiveEntries(): Flow<List<com.fractanomics.crosstraining.data.model.WeightEntry>> =
+            kotlinx.coroutines.flow.flow {
+                emit(weightStorage.filter { it.deletedAtMillis == null }.sortedByDescending { it.date })
+            }
+
+        override suspend fun getAllActiveEntriesOnce(): List<com.fractanomics.crosstraining.data.model.WeightEntry> =
+            weightStorage.filter { it.deletedAtMillis == null }.sortedByDescending { it.date }
+
+        override suspend fun getAllEntriesIncludingTombstones(): List<com.fractanomics.crosstraining.data.model.WeightEntry> =
+            ArrayList(weightStorage.sortedByDescending { it.date })
+
+        override suspend fun getEntryByDate(date: LocalDate): com.fractanomics.crosstraining.data.model.WeightEntry? =
+            weightStorage.find { it.date == date }
+
+        override suspend fun markDeleted(date: LocalDate, deletedAt: Long) {
+            val idx = weightStorage.indexOfFirst { it.date == date }
+            if (idx >= 0) {
+                weightStorage[idx] = weightStorage[idx].copy(deletedAtMillis = deletedAt, updatedAtMillis = deletedAt)
+            }
+        }
+
+        override suspend fun purgeOldTombstones(cutoffMillis: Long) {
+            weightStorage.removeAll { it.deletedAtMillis != null && it.deletedAtMillis < cutoffMillis }
+        }
+
+        override suspend fun deleteAll() {
+            weightStorage.clear()
+        }
+    }
+
     override fun cycleDao(): CycleDao = cycleDaoImpl
     override fun exerciseDao(): ExerciseDao = exerciseDaoImpl
     override fun routineDao(): RoutineDao = routineDaoImpl
@@ -712,6 +761,7 @@ class FakeSampleAppDatabase : AppDatabase() {
     override fun blockDao(): BlockDao = blockDaoImpl
     override fun repMaxDao(): RepMaxDao = repMaxDaoImpl
     override fun cycleGoalDao(): CycleGoalDao = cycleGoalDaoImpl
+    override fun weightDao(): com.fractanomics.crosstraining.data.dao.WeightDao = weightDaoImpl
 
     override fun clearAllTables() {
         exercisesStorage.clear()
@@ -723,6 +773,7 @@ class FakeSampleAppDatabase : AppDatabase() {
         blocksStorage.clear()
         setsStorage.clear()
         repMaxesStorage.clear()
+        weightStorage.clear()
     }
 
     override fun createInvalidationTracker(): androidx.room.InvalidationTracker {

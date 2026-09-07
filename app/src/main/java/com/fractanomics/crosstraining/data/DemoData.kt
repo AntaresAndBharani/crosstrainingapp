@@ -7,6 +7,7 @@ import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
+import com.fractanomics.crosstraining.data.model.WeightEntry
 import java.util.Locale
 
 /**
@@ -22,7 +23,7 @@ object DemoData {
      * Bump when the generated dataset changes; [DataModeManager] re-seeds any
      * demo database created from an older version.
      */
-    const val SEED_VERSION = 3
+    const val SEED_VERSION = 4
 
     fun snapshot(today: java.time.LocalDate = java.time.LocalDate.now()): BackupData =
         Builder(today).build()
@@ -67,6 +68,7 @@ object DemoData {
         private val blocks = mutableListOf<SessionBlock>()
         private val sets = mutableListOf<BlockSet>()
         private val repMaxes = mutableListOf<RepMax>()
+        private val weightEntries = mutableListOf<WeightEntry>()
 
         fun build(): BackupData {
             (0..7).forEach { week ->
@@ -74,7 +76,36 @@ object DemoData {
                 cleanDay(week)
             }
             repMaxHistory()
-            return BackupData(cycles, exercises, routines, sessions, blocks, sets, repMaxes)
+            weightHistory()
+            return BackupData(cycles, exercises, routines, sessions, blocks, sets, repMaxes, weightEntries)
+        }
+
+        private fun weightHistory() {
+            // Realistic 30-day bodyweight progression trending from ~79.8 kg to 78.4 kg with daily fluctuations
+            val baseWeight = 79.8
+            val dailyDeltas = listOf(
+                0.0, -0.2, 0.1, -0.3, -0.1, 0.2, -0.2,
+                -0.4, 0.1, -0.2, -0.1, 0.0, -0.3, 0.1,
+                -0.2, -0.3, 0.2, -0.1, -0.4, 0.1, -0.2,
+                -0.1, 0.0, -0.3, 0.1, -0.2, -0.2, 0.1,
+                -0.3, -0.2
+            )
+            var current = baseWeight
+            val nowMillis = System.currentTimeMillis()
+            for (i in 29 downTo 0) {
+                val dayOffset = (29 - i)
+                val delta = dailyDeltas.getOrElse(dayOffset) { 0.0 }
+                current += delta
+                val entryDate = today.minusDays(i.toLong())
+                val roundedWeight = Math.round(current * 10.0) / 10.0
+                weightEntries += WeightEntry(
+                    date = entryDate,
+                    weightKg = roundedWeight,
+                    notes = if (i == 0) "Morning weigh-in" else "",
+                    updatedAtMillis = nowMillis - (i * 86400000L),
+                    deletedAtMillis = null
+                )
+            }
         }
 
         // Two sessions a week, ending today: snatch day, then clean day 3 days later.
