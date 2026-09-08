@@ -32,6 +32,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -99,6 +100,7 @@ import com.fractanomics.crosstraining.ui.components.DateField
 import com.fractanomics.crosstraining.ui.components.Dropdown
 import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.QuickAddWorkoutDialog
+import com.fractanomics.crosstraining.ui.components.WorkoutJourneyAssistantSheet
 import com.fractanomics.crosstraining.ui.trimmed
 import com.fractanomics.crosstraining.util.RepScheme
 import kotlinx.coroutines.launch
@@ -174,7 +176,7 @@ fun sessionSeed(s: SessionWithBlocks, dateOverride: LocalDate? = null): SessionS
 
 // --- Mutable form state holders ----------------------------------------------
 
-private class SetState(
+internal class SetState(
     reps: String = "", value: String = "", group: String = "",
     warm: Boolean = false, failed: Boolean = false
 ) {
@@ -185,7 +187,7 @@ private class SetState(
     var isFailed by mutableStateOf(failed)
 }
 
-private class BlockState(
+internal class BlockState(
     name: String = "", kind: BlockKind = BlockKind.STRENGTH, format: String = "", scheme: String = "",
     exercise: Exercise? = null, newExerciseName: String = "", routine: Routine? = null,
     sequenceExercises: List<Exercise> = emptyList(),
@@ -213,7 +215,7 @@ private class BlockState(
     var exerciseIdsCsv by mutableStateOf(exerciseIdsCsv)
 }
 
-private fun buildBlockState(seed: BlockSeed, exercises: List<Exercise>, routines: List<Routine>) =
+internal fun buildBlockState(seed: BlockSeed, exercises: List<Exercise>, routines: List<Routine>) =
     BlockState(
         name = seed.name,
         kind = seed.kind,
@@ -230,7 +232,7 @@ private fun buildBlockState(seed: BlockSeed, exercises: List<Exercise>, routines
         exerciseIdsCsv = seed.exerciseIdsCsv
     )
 
-private fun BlockState.toDraftOrNull(): BlockDraft? {
+internal fun BlockState.toDraftOrNull(): BlockDraft? {
     val metric = exercise?.metricType ?: MetricType.WEIGHT
     val setDrafts = sets.mapNotNull { ss ->
         val reps = ss.reps.toIntOrNull() ?: return@mapNotNull null
@@ -306,6 +308,7 @@ fun SessionEditorBody(
     }
     val effectiveCycleId = selectedCycleId ?: activeCycle?.id
     var showQuickAddDialog by remember { mutableStateOf(false) }
+    var showWorkoutAssistantSheet by remember { mutableStateOf(false) }
 
     if (showQuickAddDialog) {
         QuickAddWorkoutDialog(
@@ -334,6 +337,23 @@ fun SessionEditorBody(
         )
     }
 
+    if (showWorkoutAssistantSheet) {
+        WorkoutJourneyAssistantSheet(
+            viewModel = viewModel,
+            onDismiss = { showWorkoutAssistantSheet = false },
+            onSuccess = { routine, session ->
+                scope.launch {
+                    val msg = buildString {
+                        append("Workout journey saved")
+                        if (routine != null) append(" (Routine '${routine.name}')")
+                        if (session != null) append(" (Session recorded)")
+                    }
+                    snackbar.showSnackbar(msg)
+                }
+            }
+        )
+    }
+
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
         topBar = {
@@ -351,6 +371,15 @@ fun SessionEditorBody(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { showWorkoutAssistantSheet = true }
+                    ) {
+                        Icon(
+                            Icons.Filled.ContentPaste,
+                            contentDescription = "Paste Workout Notes",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     IconButton(onClick = { showQuickAddDialog = true }) {
                         Icon(Icons.Filled.AutoAwesome, contentDescription = "AI Quick Add / Parse", tint = MaterialTheme.colorScheme.primary)
                     }
@@ -438,7 +467,9 @@ fun SessionEditorBody(
                                         description = blk.notes,
                                         sets = parsedRepsList.map { reps ->
                                             SetState(reps = reps.toString(), value = "")
-                                        }.toMutableStateList()
+                                        }.toMutableStateList(),
+                                        section = blk.section,
+                                        exerciseIdsCsv = blk.exerciseIdsCsv
                                     )
                                     blocks.add(newBlockState)
                                 }
@@ -486,8 +517,32 @@ fun SessionEditorBody(
                 }
             }
 
-            // Blocks List
+            // Blocks List grouped by section header
             blocks.forEachIndexed { index, block ->
+                val prevSection = if (index > 0) blocks[index - 1].section.trim() else null
+                val currentSection = block.section.trim()
+                if (currentSection.isNotBlank() && currentSection != prevSection) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = if (index > 0) 8.dp else 0.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = currentSection,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                }
+
                 CompactBlockEditor(
                     index = index,
                     block = block,
@@ -733,6 +788,15 @@ private fun CompactBlockEditor(
                         value = block.name,
                         onValueChange = { block.name = it },
                         label = { Text("Custom Block Name / Subtitle") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = block.section,
+                        onValueChange = { block.section = it },
+                        label = { Text("Macro-Block Section (e.g. Strength, Accessories)") },
                         singleLine = true,
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
