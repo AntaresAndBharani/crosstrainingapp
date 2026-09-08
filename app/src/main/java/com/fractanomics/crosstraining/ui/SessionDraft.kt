@@ -35,11 +35,26 @@ data class BlockDraft(
     val exerciseIdsCsv: String = ""
 )
 
-/** UI-side draft of a whole session, passed from the Log screen to the ViewModel. */
 data class SessionDraft(
     val cycleId: Long,
     val date: LocalDate,
     val title: String,
     val notes: String,
     val blocks: List<BlockDraft>
+)
+
+/**
+ * UI-side state holder representing in-flight Workout Journey Assistant setup across 4 steps.
+ */
+data class WorkoutJourneyDraft(
+    val document: com.fractanomics.crosstraining.util.ParsedWorkoutDocument,
+    val resolutionResult: com.fractanomics.crosstraining.data.ai.WorkoutEntityResolutionResult,
+    val currentStep: Int = 1,
+    val routineTitle: String = "",
+    val saveAsRoutine: Boolean = true,
+    val sessionTitle: String = "",
+    val logAsSession: Boolean = true,
+    val cycleId: Long? = null,
+    val sessionDate: LocalDate = LocalDate.now(),
+    val missingExercises: List<com.fractanomics.crosstraining.data.model.Exercise> = emptyList()
 )

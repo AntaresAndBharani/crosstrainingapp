@@ -48,6 +48,9 @@ import com.fractanomics.crosstraining.ui.voice.VoiceWorkoutUiState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import com.fractanomics.crosstraining.data.ai.WorkoutEntityResolutionResult
+import com.fractanomics.crosstraining.util.ParsedWorkoutDocument
+import com.fractanomics.crosstraining.util.WorkoutDocumentParser
 import java.time.LocalDate
 
 /**
@@ -814,6 +817,123 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
 
     fun resetVoiceIngestionState() {
         _voiceIngestionState.value = VoiceIngestionState.Idle
+    }
+
+    // --- Workout Journey Setup Assistant Subsystem ----------------------------
+
+    private val _workoutJourneyDraft = MutableStateFlow<WorkoutJourneyDraft?>(null)
+    val workoutJourneyDraft: StateFlow<WorkoutJourneyDraft?> = _workoutJourneyDraft.asStateFlow()
+
+    /**
+     * Parses raw workout text notes and initializes the 4-step workout journey draft state.
+     * Returns true if document parsing succeeded and at least one block was extracted.
+     */
+    suspend fun processWorkoutText(
+        rawText: String,
+        targetSessionDate: LocalDate = LocalDate.now(),
+        targetCycleId: Long? = null
+    ): Boolean = withContext(Dispatchers.Default) {
+        val trimmed = rawText.trim()
+        if (trimmed.isBlank()) return@withContext false
+
+        val parsedDoc = WorkoutDocumentParser.parseDocument(trimmed)
+        if (parsedDoc.blocks.isEmpty()) return@withContext false
+
+        val existingExercises = repo.getAllExercisesOnce()
+        val resolution = repo.entityResolver.resolveDocument(parsedDoc, existingExercises)
+
+        val currentCycleId = targetCycleId ?: activeCycle.value?.id ?: cycles.value.firstOrNull()?.id
+
+        val initialDraft = WorkoutJourneyDraft(
+            document = parsedDoc,
+            resolutionResult = resolution,
+            currentStep = 1,
+            routineTitle = parsedDoc.routineTitle.ifBlank { "Workout Routine" },
+            saveAsRoutine = parsedDoc.isRepeatable,
+            sessionTitle = parsedDoc.routineTitle.ifBlank {
+                if (parsedDoc.sections.isNotEmpty()) parsedDoc.sections.joinToString(" & ") else "Workout Session"
+            },
+            logAsSession = true,
+            cycleId = currentCycleId,
+            sessionDate = targetSessionDate,
+            missingExercises = resolution.missingExercises
+        )
+
+        _workoutJourneyDraft.value = initialDraft
+        true
+    }
+
+    /** Set the current active step (1 to 4) of the journey assistant. */
+    fun setJourneyStep(step: Int) {
+        _workoutJourneyDraft.value = _workoutJourneyDraft.value?.copy(currentStep = step.coerceIn(1, 4))
+    }
+
+    /** Update routine template and session options during Step 2. */
+    fun updateJourneyTemplateOptions(
+        routineTitle: String? = null,
+        saveAsRoutine: Boolean? = null,
+        sessionTitle: String? = null,
+        logAsSession: Boolean? = null,
+        cycleId: Long? = null,
+        sessionDate: LocalDate? = null
+    ) {
+        val current = _workoutJourneyDraft.value ?: return
+        _workoutJourneyDraft.value = current.copy(
+            routineTitle = routineTitle?.trim() ?: current.routineTitle,
+            saveAsRoutine = saveAsRoutine ?: current.saveAsRoutine,
+            sessionTitle = sessionTitle?.trim() ?: current.sessionTitle,
+            logAsSession = logAsSession ?: current.logAsSession,
+            cycleId = if (cycleId != null) cycleId else current.cycleId,
+            sessionDate = sessionDate ?: current.sessionDate
+        )
+    }
+
+    /** Update category or metricType for a proposed missing exercise in Step 3. */
+    fun updateMissingExerciseConfig(
+        exerciseName: String,
+        category: ExerciseCategory,
+        metricType: MetricType
+    ) {
+        val current = _workoutJourneyDraft.value ?: return
+        val updatedList = current.missingExercises.map { ex ->
+            if (ex.name.equals(exerciseName, ignoreCase = true)) {
+                ex.copy(category = category, metricType = metricType)
+            } else ex
+        }
+        _workoutJourneyDraft.value = current.copy(missingExercises = updatedList)
+    }
+
+    /** Atomically persists the journey into Room (Exercises, Routine template, Session & Blocks). */
+    fun confirmWorkoutJourney(
+        onComplete: (Routine?, Session?) -> Unit = { _, _ -> }
+    ): Job = viewModelScope.launch {
+        val draft = _workoutJourneyDraft.value ?: run {
+            onComplete(null, null)
+            return@launch
+        }
+
+        val effectiveResolution = draft.resolutionResult.copy(
+            missingExercises = draft.missingExercises
+        )
+
+        val (routine, session) = repo.persistWorkoutJourney(
+            document = draft.document,
+            resolutionResult = effectiveResolution,
+            sessionDate = draft.sessionDate,
+            saveAsRoutine = draft.saveAsRoutine,
+            logAsSession = draft.logAsSession,
+            cycleId = draft.cycleId,
+            customRoutineTitle = draft.routineTitle,
+            customSessionTitle = draft.sessionTitle
+        )
+
+        _workoutJourneyDraft.value = null
+        onComplete(routine, session)
+    }
+
+    /** Clears the in-flight workout journey draft. */
+    fun clearWorkoutJourneyDraft() {
+        _workoutJourneyDraft.value = null
     }
 
     companion object {

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FitnessCenter
@@ -91,6 +92,7 @@ import com.fractanomics.crosstraining.ui.WORKOUT_FORMATS
 import com.fractanomics.crosstraining.ui.components.Dropdown
 import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.ScreenList
+import com.fractanomics.crosstraining.ui.components.WorkoutJourneyAssistantSheet
 import com.fractanomics.crosstraining.util.RepScheme
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -145,6 +147,7 @@ fun LibraryScreen(
     var activeShareCode by remember { mutableStateOf<String?>(null) }
     var showImportModal by remember { mutableStateOf(false) }
     var showCommunityModal by remember { mutableStateOf(false) }
+    var showWorkoutAssistantSheet by remember { mutableStateOf(false) }
 
     val filteredExercises = remember(exercises, exerciseSearch, exerciseCategoryFilter) {
         exercises.filter { ex ->
@@ -333,6 +336,12 @@ fun LibraryScreen(
                     ) {
                         FilterChip(
                             selected = false,
+                            onClick = { showWorkoutAssistantSheet = true },
+                            label = { Text("Import from Notes", style = MaterialTheme.typography.labelSmall) },
+                            leadingIcon = { Icon(Icons.Filled.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        )
+                        FilterChip(
+                            selected = false,
                             onClick = { showImportModal = true },
                             label = { Text("Import Code", style = MaterialTheme.typography.labelSmall) },
                             leadingIcon = { Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)) }
@@ -409,6 +418,23 @@ fun LibraryScreen(
                     scope.launch {
                         snackbar.showSnackbar(if (ok) "Imported '${payload.routineName}' to library!" else "Import failed")
                     }
+                }
+            }
+        )
+    }
+
+    if (showWorkoutAssistantSheet) {
+        WorkoutJourneyAssistantSheet(
+            viewModel = viewModel,
+            onDismiss = { showWorkoutAssistantSheet = false },
+            onSuccess = { routine, session ->
+                scope.launch {
+                    val msg = buildString {
+                        append("Workout journey saved")
+                        if (routine != null) append(" (Routine '${routine.name}')")
+                        if (session != null) append(" (Session recorded)")
+                    }
+                    snackbar.showSnackbar(msg)
                 }
             }
         )
