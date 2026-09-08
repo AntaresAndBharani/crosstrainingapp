@@ -77,7 +77,7 @@ object DemoData {
             }
             repMaxHistory()
             weightHistory()
-            return BackupData(cycles, exercises, routines, sessions, blocks, sets, repMaxes, weightEntries)
+            return BackupData(cycles, exercises, routines, routineBlocks = emptyList(), sessions, blocks, sets, repMaxes, weightEntries)
         }
 
         private fun weightHistory() {

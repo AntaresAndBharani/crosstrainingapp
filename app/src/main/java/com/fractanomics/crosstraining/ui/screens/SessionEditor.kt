@@ -125,7 +125,9 @@ data class BlockSeed(
     val description: String = "",
     val resultText: String = "",
     val resultValue: String = "",
-    val sets: List<SetSeed> = listOf(SetSeed())
+    val sets: List<SetSeed> = listOf(SetSeed()),
+    val section: String = "",
+    val exerciseIdsCsv: String = ""
 )
 
 data class SessionSeed(
@@ -163,7 +165,9 @@ fun sessionSeed(s: SessionWithBlocks, dateOverride: LocalDate? = null): SessionS
                         warm = st.isWarmup,
                         failed = st.isFailed
                     )
-                }.ifEmpty { listOf(SetSeed()) }
+                }.ifEmpty { listOf(SetSeed()) },
+                section = bws.block.section,
+                exerciseIdsCsv = bws.block.exerciseIdsCsv
             )
         }.ifEmpty { listOf(BlockSeed()) }
     )
@@ -186,7 +190,8 @@ private class BlockState(
     exercise: Exercise? = null, newExerciseName: String = "", routine: Routine? = null,
     sequenceExercises: List<Exercise> = emptyList(),
     description: String = "", resultText: String = "", resultValue: String = "",
-    sets: List<SetState> = listOf(SetState())
+    sets: List<SetState> = listOf(SetState()),
+    section: String = "", exerciseIdsCsv: String = ""
 ) {
     var name by mutableStateOf(name)
     var kind by mutableStateOf(kind)
@@ -204,6 +209,8 @@ private class BlockState(
     var rmWeight by mutableStateOf("")
     var isExpanded by mutableStateOf(false)
     val sets: SnapshotStateList<SetState> = sets.toMutableStateList()
+    var section by mutableStateOf(section)
+    var exerciseIdsCsv by mutableStateOf(exerciseIdsCsv)
 }
 
 private fun buildBlockState(seed: BlockSeed, exercises: List<Exercise>, routines: List<Routine>) =
@@ -218,7 +225,9 @@ private fun buildBlockState(seed: BlockSeed, exercises: List<Exercise>, routines
         description = seed.description,
         resultText = seed.resultText,
         resultValue = seed.resultValue,
-        sets = seed.sets.map { SetState(it.reps, it.value, it.group, it.warm, it.failed) }
+        sets = seed.sets.map { SetState(it.reps, it.value, it.group, it.warm, it.failed) },
+        section = seed.section,
+        exerciseIdsCsv = seed.exerciseIdsCsv
     )
 
 private fun BlockState.toDraftOrNull(): BlockDraft? {
@@ -251,7 +260,9 @@ private fun BlockState.toDraftOrNull(): BlockDraft? {
         resultValue = resultValue.replace(',', '.').toDoubleOrNull(),
         sets = setDrafts,
         newRepMaxReps = if (recordRm) rmReps.toIntOrNull() else null,
-        newRepMaxWeight = if (recordRm) rmWeight.replace(',', '.').toDoubleOrNull() else null
+        newRepMaxWeight = if (recordRm) rmWeight.replace(',', '.').toDoubleOrNull() else null,
+        section = section.trim(),
+        exerciseIdsCsv = exerciseIdsCsv.trim()
     )
 }
 

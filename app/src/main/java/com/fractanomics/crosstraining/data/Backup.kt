@@ -8,6 +8,7 @@ import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
+import com.fractanomics.crosstraining.data.model.RoutineBlock
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.WeightEntry
@@ -18,6 +19,7 @@ data class BackupData(
     val cycles: List<Cycle> = emptyList(),
     val exercises: List<Exercise> = emptyList(),
     val routines: List<Routine> = emptyList(),
+    val routineBlocks: List<RoutineBlock> = emptyList(),
     val sessions: List<Session> = emptyList(),
     val blocks: List<SessionBlock> = emptyList(),
     val sets: List<BlockSet> = emptyList(),
@@ -50,7 +52,7 @@ object BackupCsv {
 
     fun encode(data: BackupData): String {
         val sb = StringBuilder()
-        sb.append("#crosstraining-backup-v3\n")
+        sb.append("#crosstraining-backup-v4\n")
 
         sb.append("#cycles\n")
         sb.append(row(listOf("id", "name", "startDate", "endDate", "goal", "isActive")))
@@ -77,6 +79,16 @@ object BackupCsv {
             )))
         }
 
+        sb.append("#routineBlocks\n")
+        sb.append(row(listOf("id", "routineId", "position", "name", "kind", "format", "setsCount", "targetRepsScheme", "exerciseIdsCsv", "notes", "section")))
+        data.routineBlocks.forEach {
+            sb.append(row(listOf(
+                it.id.toString(), it.routineId.toString(), it.position.toString(), it.name,
+                it.kind.name, it.format, it.setsCount.toString(), it.targetRepsScheme,
+                it.exerciseIdsCsv, it.notes, it.section
+            )))
+        }
+
         sb.append("#sessions\n")
         sb.append(row(listOf("id", "cycleId", "date", "title", "notes")))
         data.sessions.forEach {
@@ -88,13 +100,15 @@ object BackupCsv {
         sb.append("#blocks\n")
         sb.append(row(listOf(
             "id", "sessionId", "position", "name", "kind", "format", "scheme",
-            "mainExerciseId", "routineId", "description", "resultText", "resultValue", "notes"
+            "mainExerciseId", "routineId", "description", "resultText", "resultValue", "notes",
+            "section", "exerciseIdsCsv"
         )))
         data.blocks.forEach {
             sb.append(row(listOf(
                 it.id.toString(), it.sessionId.toString(), it.position.toString(), it.name,
                 it.kind.name, it.format, it.scheme, s(it.mainExerciseId), s(it.routineId),
-                it.description, it.resultText, s(it.resultValue), it.notes
+                it.description, it.resultText, s(it.resultValue), it.notes,
+                it.section, it.exerciseIdsCsv
             )))
         }
 
@@ -136,6 +150,7 @@ object BackupCsv {
         val cycles = mutableListOf<Cycle>()
         val exercises = mutableListOf<Exercise>()
         val routines = mutableListOf<Routine>()
+        val routineBlocks = mutableListOf<RoutineBlock>()
         val sessions = mutableListOf<Session>()
         val blocks = mutableListOf<SessionBlock>()
         val sets = mutableListOf<BlockSet>()
@@ -184,6 +199,19 @@ object BackupCsv {
                     description = rec.str(3),
                     defaultFormat = rec.str(4)
                 )
+                "routineBlocks" -> routineBlocks += RoutineBlock(
+                    id = rec.lng(0),
+                    routineId = rec.lng(1),
+                    position = rec.int(2),
+                    name = rec.str(3),
+                    kind = runCatching { BlockKind.valueOf(rec.str(4)) }.getOrDefault(BlockKind.OTHER),
+                    format = rec.str(5),
+                    setsCount = rec.int(6),
+                    targetRepsScheme = rec.str(7),
+                    exerciseIdsCsv = rec.str(8),
+                    notes = rec.str(9),
+                    section = rec.str(10)
+                )
                 "sessions" -> sessions += Session(
                     id = rec.lng(0),
                     cycleId = rec.lng(1),
@@ -204,7 +232,9 @@ object BackupCsv {
                     description = rec.str(9),
                     resultText = rec.str(10),
                     resultValue = rec.dblOrNull(11),
-                    notes = rec.str(12)
+                    notes = rec.str(12),
+                    section = rec.str(13),
+                    exerciseIdsCsv = rec.str(14)
                 )
                 "sets" -> sets += BlockSet(
                     id = rec.lng(0),
@@ -242,7 +272,7 @@ object BackupCsv {
                 }
             }
         }
-        return BackupData(cycles, exercises, routines, sessions, blocks, sets, repMaxes, weightEntries)
+        return BackupData(cycles, exercises, routines, routineBlocks, sessions, blocks, sets, repMaxes, weightEntries)
     }
 
     // --- field accessors (tolerant of short rows) -----------------------------

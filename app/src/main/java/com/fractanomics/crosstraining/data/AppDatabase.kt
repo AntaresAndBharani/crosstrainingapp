@@ -44,7 +44,7 @@ import java.time.LocalDate
         CycleGoal::class,
         WeightEntry::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -126,6 +126,14 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `routine_blocks` ADD COLUMN `section` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `session_blocks` ADD COLUMN `section` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `session_blocks` ADD COLUMN `exerciseIdsCsv` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -148,7 +156,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "crosstraining-demo.db"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build().also { DEMO = it }
             }
@@ -204,7 +212,7 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 "crosstraining.db"
             )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
             .fallbackToDestructiveMigrationOnDowngrade()
             .addCallback(callback)
             .build()

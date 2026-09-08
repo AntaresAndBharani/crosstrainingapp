@@ -30,7 +30,9 @@ data class BlockDraft(
     val resultValue: Double?,
     val sets: List<SetDraft>,
     val newRepMaxReps: Int?,
-    val newRepMaxWeight: Double?
+    val newRepMaxWeight: Double?,
+    val section: String = "",
+    val exerciseIdsCsv: String = ""
 )
 
 /** UI-side draft of a whole session, passed from the Log screen to the ViewModel. */
