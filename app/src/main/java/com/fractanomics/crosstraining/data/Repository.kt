@@ -50,7 +50,8 @@ class Repository(
     private val transactionRunner: TransactionRunner? = null,
     val aiCoreManager: AiCoreManager = AiCoreManager.DEFAULT,
     val grounder: ExerciseEntityGrounder = ExerciseEntityGrounder.DEFAULT,
-    val lexicon: FitnessSpeechLexicon = FitnessSpeechLexicon.DEFAULT
+    val lexicon: FitnessSpeechLexicon = FitnessSpeechLexicon.DEFAULT,
+    val entityResolver: com.fractanomics.crosstraining.data.ai.WorkoutEntityResolver = com.fractanomics.crosstraining.data.ai.WorkoutEntityResolver.DEFAULT
 ) {
 
     internal suspend fun <R> withDatabaseTransaction(block: suspend () -> R): R {
@@ -857,4 +858,203 @@ class Repository(
             )
         )
     }
+
+    /**
+     * Atomically persists a resolved workout journey:
+     * 1. Pre-filters and inserts approved missing exercises into SQLite with in-transaction deduplication.
+     * 2. If [saveAsRoutine] is true, creates/updates a [Routine] template with section-attributed [RoutineBlock]s.
+     * 3. If [logAsSession] is true, creates a [Session] with section-attributed [SessionBlock]s and [BlockSet]s.
+     *    For complexes, the [SessionBlock.mainExerciseId] points to the composite Exercise and
+     *    component exercise IDs are serialized into [SessionBlock.exerciseIdsCsv].
+     *
+     * Everything executes strictly inside [withDatabaseTransaction]. Any failure triggers a complete rollback.
+     */
+    suspend fun persistWorkoutJourney(
+        document: com.fractanomics.crosstraining.util.ParsedWorkoutDocument,
+        resolutionResult: com.fractanomics.crosstraining.data.ai.WorkoutEntityResolutionResult,
+        sessionDate: LocalDate = LocalDate.now(),
+        cycleId: Long? = null,
+        saveAsRoutine: Boolean = true,
+        logAsSession: Boolean = true,
+        customRoutineTitle: String? = null,
+        customSessionTitle: String? = null
+    ): Pair<Routine?, Session?> = withContext(Dispatchers.IO) {
+        withDatabaseTransaction {
+            // 1. Insert deduplicated missing exercises into database
+            val existingInDb = exerciseDao.getAllOnce().associateBy { it.name.trim().lowercase() }.toMutableMap()
+            val insertedExercises = mutableMapOf<String, Exercise>()
+
+            // Deduplicate proposed exercises by normalized name
+            val distinctMissing = resolutionResult.missingExercises.distinctBy { it.name.trim().lowercase() }
+            for (missingEx in distinctMissing) {
+                val key = missingEx.name.trim().lowercase()
+                val existing = existingInDb[key]
+                if (existing != null) {
+                    insertedExercises[missingEx.name.trim()] = existing
+                } else {
+                    val id = exerciseDao.insert(missingEx.copy(id = 0))
+                    val inserted = exerciseDao.byId(id) ?: exerciseDao.byName(missingEx.name.trim())
+                        ?: missingEx.copy(id = id)
+                    existingInDb[key] = inserted
+                    insertedExercises[missingEx.name.trim()] = inserted
+                }
+            }
+
+            // Function to resolve effective Exercise entity with database ID
+            suspend fun getPersistedExercise(name: String): Exercise {
+                val trimmed = name.trim()
+                val lower = trimmed.lowercase()
+                return existingInDb[lower]
+                    ?: insertedExercises[trimmed]
+                    ?: resolutionResult.matchedExisting[trimmed]
+                    ?: exerciseDao.byName(trimmed)
+                    ?: getOrCreateExercise(trimmed)
+            }
+
+            // 2. Save Routine template if requested
+            var persistedRoutine: Routine? = null
+            if (saveAsRoutine) {
+                val routineTitle = (customRoutineTitle?.takeIf { it.isNotBlank() }
+                    ?: document.routineTitle.takeIf { it.isNotBlank() }
+                    ?: "Workout Routine").trim()
+
+                val firstBlockExercise = resolutionResult.blockResolutions.firstOrNull()?.let {
+                    getPersistedExercise(it.mainExercise.name)
+                }
+
+                val targetRoutine = Routine(
+                    id = 0,
+                    name = routineTitle,
+                    mainExerciseId = firstBlockExercise?.id,
+                    description = document.sections.joinToString(" • ")
+                )
+
+                val routineBlocks = resolutionResult.blockResolutions.mapIndexed { idx, res ->
+                    val mainEx = getPersistedExercise(res.mainExercise.name)
+                    val componentIdsCsv = if (res.componentExercises.isNotEmpty()) {
+                        res.componentExercises.map { getPersistedExercise(it.name).id }.joinToString(",")
+                    } else {
+                        mainEx.id.toString()
+                    }
+
+                    RoutineBlock(
+                        id = 0,
+                        routineId = 0,
+                        position = idx,
+                        name = res.block.name,
+                        kind = res.block.kind,
+                        format = res.block.format,
+                        setsCount = if (res.block.sets.isNotEmpty()) res.block.sets.size else 1,
+                        targetRepsScheme = res.block.scheme,
+                        exerciseIdsCsv = componentIdsCsv,
+                        notes = res.block.rawText,
+                        section = res.block.section
+                    )
+                }
+
+                val savedRoutineId = saveRoutineWithBlocks(targetRoutine, routineBlocks)
+                persistedRoutine = targetRoutine.copy(id = savedRoutineId)
+            }
+
+            // 3. Save Session if requested
+            var persistedSession: Session? = null
+            if (logAsSession) {
+                val resolvedCycleId = cycleId
+                    ?: cycleDao.getAllOnce().find { it.isActive }?.id
+                    ?: cycleDao.getAllOnce().firstOrNull()?.id
+                    ?: saveCycle(Cycle(name = "General Training", startDate = sessionDate, isActive = true))
+
+                val sessionTitle = (customSessionTitle?.takeIf { it.isNotBlank() }
+                    ?: document.routineTitle.takeIf { it.isNotBlank() }
+                    ?: if (document.sections.isNotEmpty()) document.sections.joinToString(" & ") else "Workout Session").trim()
+
+                val session = Session(
+                    id = 0,
+                    cycleId = resolvedCycleId,
+                    date = sessionDate,
+                    title = sessionTitle,
+                    notes = document.rawText
+                )
+                val sessionId = sessionDao.insertSession(session)
+
+                val blockInserts = resolutionResult.blockResolutions.mapIndexed { blockIndex, res ->
+                    val mainEx = getPersistedExercise(res.mainExercise.name)
+                    val isComplex = res.block.kind == BlockKind.COMPLEX || res.componentExercises.isNotEmpty()
+
+                    val componentIdsCsv = if (res.componentExercises.isNotEmpty()) {
+                        res.componentExercises.map { getPersistedExercise(it.name).id }.joinToString(",")
+                    } else if (isComplex) {
+                        mainEx.id.toString()
+                    } else {
+                        ""
+                    }
+
+                    val sessionBlock = SessionBlock(
+                        id = 0,
+                        sessionId = sessionId,
+                        position = blockIndex,
+                        name = res.block.name,
+                        kind = res.block.kind,
+                        format = res.block.format,
+                        scheme = res.block.scheme,
+                        mainExerciseId = mainEx.id,
+                        routineId = persistedRoutine?.id,
+                        description = res.block.rawText,
+                        section = res.block.section,
+                        exerciseIdsCsv = componentIdsCsv
+                    )
+
+                    val blockSets = if (res.block.sets.isNotEmpty()) {
+                        res.block.sets.mapIndexed { setIndex, s ->
+                            BlockSet(
+                                id = 0,
+                                blockId = 0,
+                                position = setIndex,
+                                reps = s.reps,
+                                weight = s.weight,
+                                metricValue = s.metricValue,
+                                isWarmup = s.isWarmup,
+                                isFailed = s.isFailed,
+                                notes = s.notes
+                            )
+                        }
+                    } else {
+                        listOf(
+                            BlockSet(
+                                id = 0,
+                                blockId = 0,
+                                position = 0,
+                                reps = res.block.targetReps ?: 1,
+                                weight = null,
+                                metricValue = null
+                            )
+                        )
+                    }
+
+                    BlockInsert(
+                        block = sessionBlock,
+                        sets = blockSets
+                    )
+                }
+
+                blockInserts.forEachIndexed { bIdx, bi ->
+                    val blockId = blockDao.insertBlock(
+                        bi.block.copy(id = 0, sessionId = sessionId, position = bIdx)
+                    )
+                    if (bi.sets.isNotEmpty()) {
+                        blockDao.insertSets(
+                            bi.sets.mapIndexed { sIdx, bs ->
+                                bs.copy(id = 0, blockId = blockId, position = sIdx)
+                            }
+                        )
+                    }
+                }
+
+                persistedSession = session.copy(id = sessionId)
+            }
+
+            Pair(persistedRoutine, persistedSession)
+        }
+    }
 }
+
