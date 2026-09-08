@@ -52,5 +52,7 @@ data class SessionBlock(
     val description: String = "",
     val resultText: String = "",
     val resultValue: Double? = null,
-    val notes: String = ""
+    val notes: String = "",
+    val section: String = "",
+    val exerciseIdsCsv: String = ""
 )

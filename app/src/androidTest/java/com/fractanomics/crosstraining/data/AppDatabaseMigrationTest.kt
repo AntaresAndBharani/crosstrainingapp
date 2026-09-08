@@ -87,4 +87,61 @@ class AppDatabaseMigrationTest {
         assertTrue("deletedAtMillis should be null", weightCursor.isNull(4))
         weightCursor.close()
     }
+
+    @Test
+    @Throws(IOException::class)
+    fun migrate6To7_addsSectionAndExerciseIdsCsvAndValidatesSchema() {
+        // Given an existing Room database at version 6 with routine_blocks and session_blocks
+        val dbV6 = helper.createDatabase(TEST_DB, 6).apply {
+            // Seed routine
+            execSQL("INSERT INTO routines (id, name, mainExerciseId, description, defaultFormat) VALUES (1, 'Murph', NULL, 'Hero WOD', 'For Time')")
+            // Seed routine_block
+            execSQL("INSERT INTO routine_blocks (id, routineId, position, name, kind, format, setsCount, targetRepsScheme, exerciseIdsCsv, notes) VALUES (10, 1, 0, 'Run', 'MONOSTRUCTURAL', 'Standard', 1, '1 Mile', '', '')")
+            // Seed cycle & session
+            execSQL("INSERT INTO cycles (id, name, startDate, endDate, goal, isActive) VALUES (1, 'Strength Cycle', 19000, NULL, 'Base', 1)")
+            execSQL("INSERT INTO sessions (id, cycleId, date, title, notes) VALUES (100, 1, 19500, 'Murph Day', '')")
+            // Seed session_block
+            execSQL("INSERT INTO session_blocks (id, sessionId, position, name, kind, format, scheme, mainExerciseId, routineId, description, resultText, resultValue, notes) VALUES (1000, 100, 0, 'Run', 'MONOSTRUCTURAL', 'Standard', '', NULL, NULL, '', '8:30', 510.0, '')")
+            close()
+        }
+
+        // When MIGRATION_6_7 executes during upgrade to version 7
+        val dbV7 = helper.runMigrationsAndValidate(
+            TEST_DB,
+            7,
+            true,
+            AppDatabase.MIGRATION_6_7
+        )
+
+        // Then verify pre-existing data persists and defaults are applied
+        val routineBlockCursor = dbV7.query("SELECT id, name, section FROM routine_blocks WHERE id = 10")
+        assertTrue("RoutineBlock data should survive migration", routineBlockCursor.moveToFirst())
+        assertEquals(10L, routineBlockCursor.getLong(0))
+        assertEquals("Run", routineBlockCursor.getString(1))
+        assertEquals("", routineBlockCursor.getString(2))
+        routineBlockCursor.close()
+
+        val sessionBlockCursor = dbV7.query("SELECT id, name, section, exerciseIdsCsv FROM session_blocks WHERE id = 1000")
+        assertTrue("SessionBlock data should survive migration", sessionBlockCursor.moveToFirst())
+        assertEquals(1000L, sessionBlockCursor.getLong(0))
+        assertEquals("Run", sessionBlockCursor.getString(1))
+        assertEquals("", sessionBlockCursor.getString(2))
+        assertEquals("", sessionBlockCursor.getString(3))
+        sessionBlockCursor.close()
+
+        // And insert records with non-empty section and exerciseIdsCsv
+        dbV7.execSQL("UPDATE routine_blocks SET section = 'Warmup' WHERE id = 10")
+        dbV7.execSQL("UPDATE session_blocks SET section = 'Metcon', exerciseIdsCsv = '1,2,3' WHERE id = 1000")
+
+        val updatedRoutineBlock = dbV7.query("SELECT section FROM routine_blocks WHERE id = 10")
+        assertTrue(updatedRoutineBlock.moveToFirst())
+        assertEquals("Warmup", updatedRoutineBlock.getString(0))
+        updatedRoutineBlock.close()
+
+        val updatedSessionBlock = dbV7.query("SELECT section, exerciseIdsCsv FROM session_blocks WHERE id = 1000")
+        assertTrue(updatedSessionBlock.moveToFirst())
+        assertEquals("Metcon", updatedSessionBlock.getString(0))
+        assertEquals("1,2,3", updatedSessionBlock.getString(1))
+        updatedSessionBlock.close()
+    }
 }

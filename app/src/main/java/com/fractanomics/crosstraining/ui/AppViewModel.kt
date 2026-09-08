@@ -415,7 +415,9 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
                     routineId = bd.routineId,
                     description = bd.description,
                     resultText = bd.resultText,
-                    resultValue = bd.resultValue
+                    resultValue = bd.resultValue,
+                    section = bd.section,
+                    exerciseIdsCsv = bd.exerciseIdsCsv
                 ),
                 sets = bd.sets.map { sd ->
                     BlockSet(

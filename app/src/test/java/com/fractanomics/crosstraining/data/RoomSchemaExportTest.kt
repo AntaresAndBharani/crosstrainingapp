@@ -21,7 +21,7 @@ import java.io.File
 class RoomSchemaExportTest {
 
     @Test
-    fun appDatabaseSource_hasExportSchemaEnabledAtVersion6() {
+    fun appDatabaseSource_hasExportSchemaEnabledAtVersion7() {
         val candidatePaths = listOf(
             File("src/main/java/com/fractanomics/crosstraining/data/AppDatabase.kt"),
             File("app/src/main/java/com/fractanomics/crosstraining/data/AppDatabase.kt"),
@@ -31,7 +31,7 @@ class RoomSchemaExportTest {
         assertNotNull("AppDatabase.kt source file must be found", sourceFile)
 
         val content = sourceFile!!.readText()
-        assertTrue("AppDatabase must have version = 6", Regex("""version\s*=\s*6""").containsMatchIn(content))
+        assertTrue("AppDatabase must have version = 7", Regex("""version\s*=\s*7""").containsMatchIn(content))
         assertTrue("AppDatabase must have exportSchema = true", Regex("""exportSchema\s*=\s*true""").containsMatchIn(content))
     }
 
@@ -61,7 +61,7 @@ class RoomSchemaExportTest {
     }
 
     @Test
-    fun schemaArtifact_existsAndMatchesVersion5And6Contracts() {
+    fun schemaArtifact_existsAndMatchesVersion5And6And7Contracts() {
         val candidatePaths5 = listOf(
             File("schemas/com.fractanomics.crosstraining.data.AppDatabase/5.json"),
             File("app/schemas/com.fractanomics.crosstraining.data.AppDatabase/5.json"),
@@ -108,5 +108,21 @@ class RoomSchemaExportTest {
         assertTrue("Schema 6.json must specify database version 6", content6.contains("\"version\": 6"))
         assertTrue("Schema 6.json must contain identityHash", content6.contains("\"identityHash\":"))
         assertTrue("Schema 6.json must contain weight_entries table", content6.contains("\"tableName\": \"weight_entries\""))
+
+        // Now verify 7.json
+        val candidatePaths7 = listOf(
+            File("schemas/com.fractanomics.crosstraining.data.AppDatabase/7.json"),
+            File("app/schemas/com.fractanomics.crosstraining.data.AppDatabase/7.json"),
+            File("../app/schemas/com.fractanomics.crosstraining.data.AppDatabase/7.json")
+        )
+        val schemaFile7 = candidatePaths7.firstOrNull { it.exists() }
+        assertNotNull("Schema artifact 7.json must exist in schemas directory", schemaFile7)
+
+        val content7 = schemaFile7!!.readText()
+        assertTrue("Schema 7.json must have formatVersion 1", content7.contains("\"formatVersion\": 1"))
+        assertTrue("Schema 7.json must specify database version 7", content7.contains("\"version\": 7"))
+        assertTrue("Schema 7.json must contain identityHash", content7.contains("\"identityHash\":"))
+        assertTrue("Schema 7.json must contain section in routine_blocks", content7.contains("\"columnName\": \"section\""))
+        assertTrue("Schema 7.json must contain exerciseIdsCsv in session_blocks", content7.contains("\"columnName\": \"exerciseIdsCsv\""))
     }
 }

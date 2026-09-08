@@ -386,6 +386,7 @@ class Repository(
         cycles = cycleDao.getAllOnce(),
         exercises = exerciseDao.getAllOnce(),
         routines = routineDao.getAllOnce(),
+        routineBlocks = routineDao.getAllWithBlocksOnce().flatMap { it.blocks },
         sessions = sessionDao.getAllSessionsOnce(),
         blocks = blockDao.getAllBlocksOnce(),
         sets = blockDao.getAllSetsOnce(),
@@ -395,8 +396,8 @@ class Repository(
 
     /**
      * Replace all data with [data]. Tables are cleared first, then rows are
-     * inserted in foreign-key order (exercises/cycles → routines → sessions →
-     * blocks → sets → rep-maxes → weight-entries) so relationships restore intact.
+     * inserted in foreign-key order (exercises/cycles → routines → routineBlocks →
+     * sessions → blocks → sets → rep-maxes → weight-entries) so relationships restore intact.
      */
     suspend fun importSnapshot(data: BackupData) {
         withDatabaseTransaction {
@@ -413,6 +414,9 @@ class Repository(
             exerciseDao.insertAllReplace(data.exercises)
             cycleDao.insertAll(data.cycles)
             routineDao.insertAll(data.routines)
+            if (data.routineBlocks.isNotEmpty()) {
+                routineDao.insertBlocks(data.routineBlocks)
+            }
             sessionDao.insertSessions(data.sessions)
             blockDao.insertBlocks(data.blocks)
             blockDao.insertSets(data.sets)
