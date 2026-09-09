@@ -1,4 +1,4 @@
-﻿package com.fractanomics.crosstraining.data
+package com.fractanomics.crosstraining.data
 
 import com.fractanomics.crosstraining.data.ai.WorkoutEntityResolver
 import com.fractanomics.crosstraining.data.dao.BlockDao
@@ -218,6 +218,62 @@ class WorkoutJourneyRepositoryTest {
         assertNotNull(session)
         val allCurls = fakeDb.exerciseDao().getAllOnce().filter { it.name.contains("hammer curl", ignoreCase = true) }
         assertEquals(1, allCurls.size)
+    }
+
+    @Test
+    fun `persistWorkoutJourney throws IllegalArgumentException when blockResolutions is empty`() = runTest {
+        val doc = ParsedWorkoutDocument(
+            routineTitle = "Empty Blocks Workout",
+            blocks = emptyList()
+        )
+        val resolution = WorkoutEntityResolver.DEFAULT.resolveDocument(doc, fakeDb.exerciseDao().getAllOnce())
+
+        try {
+            repository.persistWorkoutJourney(
+                document = doc,
+                resolutionResult = resolution,
+                sessionDate = sessionDate
+            )
+            fail("Expected IllegalArgumentException when blockResolutions is empty")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("zero blocks", ignoreCase = true) == true)
+        }
+    }
+
+    @Test
+    fun `persistWorkoutJourney defensively filters missing exercises to only actively referenced ones`() = runTest {
+        val doc = ParsedWorkoutDocument(
+            routineTitle = "Active Blocks Only",
+            blocks = listOf(
+                ParsedDocumentBlock(name = "Active Exercise A", sets = listOf(ParsedDocumentSet(reps = 5, weight = 50.0)))
+            )
+        )
+        val resolution = WorkoutEntityResolver.DEFAULT.resolveDocument(doc, fakeDb.exerciseDao().getAllOnce())
+
+        // Simulate an unreferenced orphan exercise in missingExercises
+        val orphanExercise = Exercise(
+            id = 0L,
+            name = "Orphan Exercise Unreferenced",
+            category = ExerciseCategory.ACCESSORY,
+            metricType = MetricType.WEIGHT
+        )
+        val resolutionWithOrphan = resolution.copy(
+            missingExercises = resolution.missingExercises + orphanExercise
+        )
+
+        val (_, session) = repository.persistWorkoutJourney(
+            document = doc,
+            resolutionResult = resolutionWithOrphan,
+            sessionDate = sessionDate,
+            saveAsRoutine = false,
+            logAsSession = true
+        )
+
+        assertNotNull(session)
+        // Active exercise was persisted
+        assertNotNull(fakeDb.exerciseDao().byName("Active Exercise A"))
+        // Orphan exercise was NOT persisted to DB
+        org.junit.Assert.assertNull(fakeDb.exerciseDao().byName("Orphan Exercise Unreferenced"))
     }
 }
 

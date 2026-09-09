@@ -238,4 +238,123 @@ class WorkoutJourneyAssistantViewModelTest {
         viewModel.clearWorkoutJourneyDraft()
         assertNull(viewModel.workoutJourneyDraft.value)
     }
+
+    @Test
+    fun `Scenario 1 - Component Referential Pruning in Step 3`() = runTest {
+        val rawText = """
+            Strengh & Power block:
+            Clean + Hang Clean + Front Squat + Push to OverHead
+            52,5 55
+        """.trimIndent()
+
+        val success = viewModel.processWorkoutText(rawText)
+        assertTrue(success)
+
+        val draftBefore = viewModel.workoutJourneyDraft.value
+        assertNotNull(draftBefore)
+        // Verify Hang Clean is in missingExercises
+        assertTrue(draftBefore!!.missingExercises.any { it.name.equals("Hang Clean", ignoreCase = true) })
+
+        val complexBefore = draftBefore.resolutionResult.blockResolutions.first()
+        assertTrue(complexBefore.componentExercises.any { it.name.equals("Hang Clean", ignoreCase = true) })
+
+        // When the athlete deletes "Hang Clean" in Step 3
+        viewModel.removeMissingExercise("Hang Clean")
+
+        val draftAfter = viewModel.workoutJourneyDraft.value
+        assertNotNull(draftAfter)
+
+        // Then "Hang Clean" is removed from draft.missingExercises
+        assertFalse(draftAfter!!.missingExercises.any { it.name.equals("Hang Clean", ignoreCase = true) })
+
+        // And "Hang Clean" is removed from componentExercises of the complex in blockResolutions
+        val complexAfter = draftAfter.resolutionResult.blockResolutions.first()
+        assertFalse(complexAfter.componentExercises.any { it.name.equals("Hang Clean", ignoreCase = true) })
+
+        // And the composite complex block remains intact in blockResolutions
+        assertEquals("Clean + Hang Clean + Front Squat + Push to OverHead", complexAfter.mainExercise.name)
+        assertEquals(1, draftAfter.resolutionResult.blockResolutions.size)
+        assertEquals(1, draftAfter.document.blocks.size)
+    }
+
+    @Test
+    fun `removeMissingExercise prunes standalone block when its sole main exercise is deleted`() = runTest {
+        val rawText = """
+            Strengh block:
+            Back Squat: 100 100
+            Calves Raises: 50 50
+        """.trimIndent()
+
+        val success = viewModel.processWorkoutText(rawText)
+        assertTrue(success)
+
+        val draftBefore = viewModel.workoutJourneyDraft.value
+        assertNotNull(draftBefore)
+        assertEquals(2, draftBefore!!.resolutionResult.blockResolutions.size)
+
+        // When "Calves Raises" is deleted in Step 3
+        viewModel.removeMissingExercise("Calves Raises")
+
+        val draftAfter = viewModel.workoutJourneyDraft.value
+        assertNotNull(draftAfter)
+        assertEquals(1, draftAfter!!.resolutionResult.blockResolutions.size)
+        assertEquals(1, draftAfter.document.blocks.size)
+        assertEquals("Back Squat", draftAfter.resolutionResult.blockResolutions.first().mainExercise.name)
+        assertFalse(draftAfter.missingExercises.any { it.name.equals("Calves Raises", ignoreCase = true) })
+    }
+
+    @Test
+    fun `Scenario 2 - Block Deletion and Dynamic Orphan Pruning in Step 4`() = runTest {
+        val rawText = """
+            Strengh & Power block:
+            Back Squat: 100 100
+            Front Squat: 80 80
+            Romanian Deadlift: 70 70
+            Calves Raises: 50 50
+        """.trimIndent()
+
+        val success = viewModel.processWorkoutText(rawText)
+        assertTrue(success)
+
+        val draftBefore = viewModel.workoutJourneyDraft.value
+        assertNotNull(draftBefore)
+        assertEquals(4, draftBefore!!.resolutionResult.blockResolutions.size)
+        assertTrue(draftBefore.missingExercises.any { it.name.equals("Calves Raises", ignoreCase = true) })
+
+        // Index of block 4 ("Calves Raises") is 3
+        viewModel.removeJourneyBlock(3)
+
+        val draftAfter = viewModel.workoutJourneyDraft.value
+        assertNotNull(draftAfter)
+
+        // Then block 4 is removed from draft.resolutionResult.blockResolutions and document.blocks
+        assertEquals(3, draftAfter!!.resolutionResult.blockResolutions.size)
+        assertEquals(3, draftAfter.document.blocks.size)
+        assertFalse(draftAfter.resolutionResult.blockResolutions.any { it.block.name.contains("Calves Raises", ignoreCase = true) })
+
+        // And "Calves Raises" is automatically pruned from missingExercises
+        assertFalse(draftAfter.missingExercises.any { it.name.equals("Calves Raises", ignoreCase = true) })
+    }
+
+    @Test
+    fun `Scenario 4 - Idempotent Persistence with In-Flight Mutex Guard`() = runTest {
+        val rawText = """
+            Strengh block:
+            Back Squat
+            100 110
+        """.trimIndent()
+
+        viewModel.processWorkoutText(rawText)
+
+        var completionCount = 0
+        // Rapid double invocation simulating rapid double-tap
+        val job1 = viewModel.confirmWorkoutJourney { _, _ -> completionCount++ }
+        val job2 = viewModel.confirmWorkoutJourney { _, _ -> completionCount++ }
+
+        job1.join()
+        job2.join()
+
+        // Only the first tap executes persistence, second tap was rejected by mutex
+        assertEquals(1, completionCount)
+    }
 }
