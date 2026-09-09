@@ -116,8 +116,23 @@ object WorkoutDocumentParser {
 
     // Target reps extraction in block line: e.g. "4 Front Squats", "x15", "x 15", "15 reps", "10 Cal"
     private val TARGET_REPS_PREFIX_REGEX = Regex("""\b(\d+)\s+([A-Za-z]+.*)""")
-    private val TARGET_REPS_SUFFIX_REGEX = Regex("""(?:x\s*(\d+)|\b(\d+)\s*reps?\b)""", RegexOption.IGNORE_CASE)
+    private val TARGET_REPS_SUFFIX_REGEX = Regex("""(?:x\s*(\d+)(?:\s*reps?)?|\b(\d+)\s*reps?\b)""", RegexOption.IGNORE_CASE)
     private val CALORIE_METRIC_REGEX = Regex("""\b(\d+)\s*Cal(?:ories)?\b""", RegexOption.IGNORE_CASE)
+
+    // List prefix regex: e.g. "1- ", "1 - ", "1. ", "1) ", "- ", "* "
+    private val LIST_PREFIX_REGEX = Regex("""^\s*(?:\d+\s*[-–.)]\s*|[-*•+]\s*)""", RegexOption.IGNORE_CASE)
+
+    // Labeled sets header prefix: e.g. "Sets(5) & Weight per set:", "Weights per set:", "Extra Weight per set:", "Sets:"
+    private val LABELED_SETS_PREFIX_REGEX = Regex(
+        """^(?:(?:extra\s*)?\bweights?\s*(?:per\s*set)?|\bsets?\s*(?:\(\d+\))?(?:\s*&\s*\bweights?\s*(?:per\s*set)?)?|\breps?\s*(?:per\s*set)?)\s*[:–\-=]\s*""",
+        RegexOption.IGNORE_CASE
+    )
+
+    // Pre-colon or line-end boilerplate regex with word boundary protection:
+    // e.g. "Weights per set", "Weights per set:", "Sets(5) & Weight per set"
+    private val TRAILING_BOILERPLATE_REGEX = Regex(
+        """(?i)\s*(?:\.?\s*(?:extra\s*)?\bweights?\s*(?:per\s*set)?|\bsets?\s*(?:\(\d+\))?.*?|\breps?\s*(?:per\s*set)?)\s*:?\s*$"""
+    )
 
     /**
      * Normalizes European decimal commas using strict digit-bounded lookaround regex `(?<=\d),(?=\d)`.
@@ -181,6 +196,23 @@ object WorkoutDocumentParser {
                 continue
             }
 
+            // Orphan sets guard: if line looks like sets, bind to previous block if it has empty sets, or discard
+            if (isProbableSetsLine(rawLine)) {
+                if (parsedBlocks.isNotEmpty() && parsedBlocks.last().sets.isEmpty()) {
+                    val prev = parsedBlocks.removeAt(parsedBlocks.size - 1)
+                    val updated = parseSingleBlock(
+                        blockLine = prev.rawText,
+                        setsLine = rawLine,
+                        section = prev.section,
+                        defaultKind = prev.kind,
+                        defaultFormat = prev.format,
+                        defaultScheme = prev.scheme
+                    )
+                    parsedBlocks.add(updated)
+                }
+                continue
+            }
+
             // 4. If line contains Triset / Superset cluster definition (e.g. "E3MOM Trisets", "E2.5MOM Trisets")
             if (TRISET_HEADER_REGEX.containsMatchIn(rawLine)) {
                 trisetClusterCounter++
@@ -188,15 +220,22 @@ object WorkoutDocumentParser {
                 val formatMatch = FORMAT_REGEX.find(rawLine)
                 val format = formatMatch?.value?.trim() ?: "E3MOM"
 
+                val isSupersetModality = rawLine.contains("SUPERSET", ignoreCase = true) || rawLine.contains("BISET", ignoreCase = true)
+                val expectedModalityCount = if (isSupersetModality) 2 else 3
+
                 // Collect cluster exercises
                 val clusterItems = mutableListOf<String>()
+                var clusterMovementCount = 0
+                var hasNumberedOrBulletedSequence = false
+
                 while (lineIndex < lines.size) {
                     val nextLine = lines[lineIndex].trim()
                     if (nextLine.isBlank()) {
                         lineIndex++
                         continue
                     }
-                    // Break if another section, triset, or title starts
+
+                    // Break if another macro section, triset header, or title starts
                     if (SECTION_HEADER_REGEX.matches(nextLine) ||
                         REPEATABLE_ROUTINE_REGEX.matches(nextLine) ||
                         TRISET_HEADER_REGEX.containsMatchIn(nextLine) ||
@@ -204,7 +243,34 @@ object WorkoutDocumentParser {
                     ) {
                         break
                     }
+
+                    // Check if this line is an unindented new movement after reaching modality count
+                    val rawUnmodifiedLine = lines[lineIndex]
+                    val isLineIndented = rawUnmodifiedLine.startsWith(" ") || rawUnmodifiedLine.startsWith("\t")
+                    val isNumberedOrBulleted = LIST_PREFIX_REGEX.containsMatchIn(nextLine)
+                    val isSetsLine = isProbableSetsLine(nextLine)
+
+                    if (isNumberedOrBulleted) {
+                        hasNumberedOrBulletedSequence = true
+                    }
+
+                    // Context-aware cluster boundary termination:
+                    // 1) Sequence established and broken by non-sets line
+                    if (hasNumberedOrBulletedSequence && !isNumberedOrBulleted && !isSetsLine && clusterMovementCount >= 1) {
+                        break
+                    }
+
+                    // 2) Natural modality count reached (3 for triset, 2 for superset) and followed by unindented movement
+                    if (clusterMovementCount >= expectedModalityCount && !isSetsLine) {
+                        if (!isLineIndented || FORMAT_REGEX.containsMatchIn(nextLine)) {
+                            break
+                        }
+                    }
+
                     clusterItems.add(nextLine)
+                    if (!isSetsLine) {
+                        clusterMovementCount++
+                    }
                     lineIndex++
                 }
 
@@ -219,20 +285,26 @@ object WorkoutDocumentParser {
             }
 
             // 5. Standard or Complex Block line
-            // Check if next line contains sets or if this line contains name & sets
+            // Check if next line contains sets or if this line contains name & sets, skipping blank lines
             val blockLine = rawLine
-            val nextLine = if (lineIndex < lines.size) lines[lineIndex].trim() else ""
+            var peekIdx = lineIndex
+            while (peekIdx < lines.size && lines[peekIdx].isBlank()) {
+                peekIdx++
+            }
 
-            val hasSetsOnNextLine = nextLine.isNotBlank() &&
-                    !SECTION_HEADER_REGEX.matches(nextLine) &&
-                    !TRISET_HEADER_REGEX.containsMatchIn(nextLine) &&
-                    !REPEATABLE_ROUTINE_REGEX.matches(nextLine) &&
-                    isProbableSetsLine(nextLine)
+            val peekLine = if (peekIdx < lines.size) lines[peekIdx].trim() else ""
+
+            val hasSetsOnPeekLine = peekLine.isNotBlank() &&
+                    !SECTION_HEADER_REGEX.matches(peekLine) &&
+                    !TRISET_HEADER_REGEX.containsMatchIn(peekLine) &&
+                    !REPEATABLE_ROUTINE_REGEX.matches(peekLine) &&
+                    !TITLE_HEADER_REGEX.matches(peekLine) &&
+                    isProbableSetsLine(peekLine)
 
             val setsLineToUse: String
-            if (hasSetsOnNextLine) {
-                setsLineToUse = nextLine
-                lineIndex++ // consume sets line
+            if (hasSetsOnPeekLine) {
+                setsLineToUse = peekLine
+                lineIndex = peekIdx + 1 // consume past blank lines and the sets line
             } else {
                 setsLineToUse = ""
             }
@@ -273,10 +345,14 @@ object WorkoutDocumentParser {
         var i = 0
         while (i < clusterItems.size) {
             val item = clusterItems[i]
-            val nextItem = if (i + 1 < clusterItems.size) clusterItems[i + 1] else ""
+            var peek = i + 1
+            while (peek < clusterItems.size && clusterItems[peek].isBlank()) {
+                peek++
+            }
+            val nextItem = if (peek < clusterItems.size) clusterItems[peek] else ""
             if (nextItem.isNotBlank() && isProbableSetsLine(nextItem)) {
                 rawItemPairs.add(Pair(item, nextItem))
-                i += 2
+                i = peek + 1
             } else {
                 rawItemPairs.add(Pair(item, ""))
                 i += 1
@@ -340,25 +416,37 @@ object WorkoutDocumentParser {
         defaultFormat: String = "",
         defaultScheme: String = ""
     ): ParsedDocumentBlock {
-        val cleanLine = blockLine.replace(Regex("""^[-*+]\s*"""), "").trim()
+        // 1. Strip list prefixes: "1- ", "1 - ", "1. ", "- ", etc.
+        var text = blockLine.replace(LIST_PREFIX_REGEX, "").trim()
 
-        // Extract format (e.g. E3MOM, E2.5MOM)
-        val formatMatch = FORMAT_REGEX.find(cleanLine)
+        // 2. Extract format (e.g. E3MOM, E2.5MOM)
+        val formatMatch = FORMAT_REGEX.find(text)
         val format = formatMatch?.value?.trim() ?: defaultFormat
 
         var textWithoutFormat = if (formatMatch != null) {
-            cleanLine.removeRange(formatMatch.range).trim()
+            text.removeRange(formatMatch.range).trim()
         } else {
-            cleanLine
+            text
         }
 
-        // Check if complex
+        // 3. Check if complex
         val isComplex = COMPLEX_HEADER_REGEX.containsMatchIn(textWithoutFormat) ||
                 textWithoutFormat.contains("+")
         textWithoutFormat = textWithoutFormat.replace(COMPLEX_HEADER_REGEX, "").trim()
         textWithoutFormat = textWithoutFormat.replace(Regex("""^:\s*"""), "").trim()
 
-        // Check for calorie metric first (e.g. "10 Cal SkiErg")
+        // 4. Split inline sets if colon present and setsLine is not already provided
+        var inlineSetsStr = setsLine
+        if (inlineSetsStr.isBlank() && textWithoutFormat.contains(":")) {
+            val parts = textWithoutFormat.split(":", limit = 2)
+            textWithoutFormat = parts[0].trim()
+            inlineSetsStr = parts[1].trim()
+        }
+
+        // 5. Strip trailing sets/weights boilerplate with word-boundary protection before reps extraction
+        textWithoutFormat = textWithoutFormat.replace(TRAILING_BOILERPLATE_REGEX, "").trim()
+
+        // 6. Check for calorie metric first (e.g. "10 Cal SkiErg")
         var targetReps: Int? = null
         val calMatch = CALORIE_METRIC_REGEX.find(textWithoutFormat)
         if (calMatch != null) {
@@ -366,7 +454,7 @@ object WorkoutDocumentParser {
             textWithoutFormat = textWithoutFormat.removeRange(calMatch.range).trim()
         }
 
-        // Check for target reps prefix (e.g. "4 Front Squats")
+        // 7. Check for target reps prefix (e.g. "4 Front Squats")
         if (targetReps == null) {
             val prefixRepMatch = TARGET_REPS_PREFIX_REGEX.matchEntire(textWithoutFormat)
             if (prefixRepMatch != null) {
@@ -379,7 +467,7 @@ object WorkoutDocumentParser {
             }
         }
 
-        // Check for target reps suffix (e.g. "Banded Reverse Flys x15", "Calves Raises x 15")
+        // 8. Check for target reps suffix (e.g. "x12 reps", "x15", "x 15", "15 reps")
         val suffixRepMatch = TARGET_REPS_SUFFIX_REGEX.find(textWithoutFormat)
         if (suffixRepMatch != null) {
             val rVal = suffixRepMatch.groupValues[1].ifBlank { suffixRepMatch.groupValues[2] }.toIntOrNull()
@@ -389,15 +477,10 @@ object WorkoutDocumentParser {
             }
         }
 
-        // Extract inline notes or sets if colon present
-        var inlineSetsStr = setsLine
-        if (inlineSetsStr.isBlank() && textWithoutFormat.contains(":")) {
-            val parts = textWithoutFormat.split(":", limit = 2)
-            textWithoutFormat = parts[0].trim()
-            inlineSetsStr = parts[1].trim()
-        }
+        // Secondary strip of trailing boilerplate in case it followed reps
+        textWithoutFormat = textWithoutFormat.replace(TRAILING_BOILERPLATE_REGEX, "").trim()
 
-        // Extract movement name and clean annotations like "(tracking not needed)"
+        // 9. Extract movement name and clean annotations like "(tracking not needed)"
         val cleanName = textWithoutFormat
             .replace(Regex("""\([^\)]*not needed[^\)]*\)""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""^[,\s:–-]+|[-,\s:–]+$"""), "")
@@ -418,7 +501,7 @@ object WorkoutDocumentParser {
             else -> BlockKind.STRENGTH
         }
 
-        // Parse sets
+        // 10. Parse sets
         val effectiveTargetReps = targetReps ?: 1
         val parsedSets = parseSetsString(inlineSetsStr, defaultTargetReps = effectiveTargetReps)
 
@@ -452,7 +535,17 @@ object WorkoutDocumentParser {
      * - "not_done" -> skipped entirely
      */
     fun parseSetsString(setsString: String, defaultTargetReps: Int = 1): List<ParsedDocumentSet> {
-        val normalized = normalizeDecimalCommas(setsString).trim()
+        var normalized = normalizeDecimalCommas(setsString).trim()
+        if (normalized.isBlank()) return emptyList()
+
+        // Strip labeled sets prefix if present (e.g. "Sets(5) & Weight per set: 57.5 60")
+        if (LABELED_SETS_PREFIX_REGEX.containsMatchIn(normalized)) {
+            normalized = normalized.replace(LABELED_SETS_PREFIX_REGEX, "").trim()
+        } else if (normalized.contains(":")) {
+            // Secondary fallback for colon headers
+            normalized = normalized.substringAfter(":").trim()
+        }
+
         if (normalized.isBlank()) return emptyList()
 
         // Tokenize by whitespace, preserving parenthesized tokens like "60(1 rep)" or "60 (fail)"
@@ -566,14 +659,48 @@ object WorkoutDocumentParser {
 
     /**
      * Helper to detect if a line looks like set loads or tokens rather than movement headers.
+     *
+     * Invariants:
+     * 1. Inline Colon Guard: If a colon is present and the substring before `:` does not match
+     *    [LABELED_SETS_PREFIX_REGEX], return `false` immediately so inline movements like
+     *    `Front Squat: 100 100 100 100` are never misclassified as sets lines.
+     * 2. If [LABELED_SETS_PREFIX_REGEX] matches, evaluate remainder with [tokenizeSetString].
+     * 3. Uses parenthesized tokenization so annotations like "60(1 rep)" are evaluated as unified tokens.
      */
-    private fun isProbableSetsLine(line: String): Boolean {
-        val tokens = line.split(Regex("""[\s,]+""")).filter { it.isNotBlank() }
+    fun isProbableSetsLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+
+        // 1. Inline Colon Guard: if colon present, prefix MUST match LABELED_SETS_PREFIX_REGEX
+        if (trimmed.contains(":")) {
+            val prefix = trimmed.substringBefore(":") + ":"
+            if (!LABELED_SETS_PREFIX_REGEX.containsMatchIn(prefix)) {
+                return false
+            }
+        }
+
+        // Strip labeled prefix if present
+        val stripped = if (LABELED_SETS_PREFIX_REGEX.containsMatchIn(trimmed)) {
+            trimmed.replace(LABELED_SETS_PREFIX_REGEX, "").trim()
+        } else {
+            trimmed
+        }
+
+        if (stripped.isBlank()) return false
+
+        val tokens = tokenizeSetString(stripped)
         if (tokens.isEmpty()) return false
+
         val numericCount = tokens.count { token ->
             token.matches(Regex("""^[\d\.,]+(?:\([^\)]+\))?$""")) ||
                     token.equals("not_done", ignoreCase = true)
         }
+
+        // If labeled sets prefix was matched and remainder has numeric tokens, immediately true
+        if (LABELED_SETS_PREFIX_REGEX.containsMatchIn(trimmed) && numericCount > 0) {
+            return true
+        }
+
         return numericCount > 0 && (numericCount.toDouble() / tokens.size) >= 0.5
     }
 }

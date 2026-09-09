@@ -212,6 +212,122 @@ class WorkoutDocumentParserTest {
     }
 
     @Test
+    fun `Issue 523 Scenario 1 - Multi-Line Sets Line Binding & Colon-Demarcated Non-Label Protection`() {
+        val documentText = """
+            E3MOM 4 Front Squats
+
+            Sets(5) & Weight per set: 57,5 60 60(1 rep) 60(fail) not_done
+
+            Back Squats: 100 100 100 100
+        """.trimIndent()
+
+        val parsedDoc = WorkoutDocumentParser.parseDocument(documentText)
+
+        // Then exactly 2 distinct blocks are created: "Front Squats" and "Back Squats"
+        assertEquals(2, parsedDoc.blocks.size)
+
+        val frontSquats = parsedDoc.blocks[0]
+        assertEquals("Front Squats", frontSquats.name)
+        assertEquals(4, frontSquats.targetReps)
+        assertEquals("E3MOM", frontSquats.format)
+        assertEquals(4, frontSquats.sets.size)
+        assertEquals(57.5, frontSquats.sets[0].weight ?: 0.0, 0.001)
+        assertEquals(60.0, frontSquats.sets[1].weight ?: 0.0, 0.001)
+        assertEquals(1, frontSquats.sets[2].reps)
+        assertTrue(frontSquats.sets[3].isFailed)
+
+        val backSquats = parsedDoc.blocks[1]
+        assertEquals("Back Squats", backSquats.name)
+        assertEquals(4, backSquats.sets.size)
+        assertEquals(100.0, backSquats.sets[0].weight ?: 0.0, 0.001)
+        assertEquals(100.0, backSquats.sets[3].weight ?: 0.0, 0.001)
+    }
+
+    @Test
+    fun `Issue 523 Scenario 2 - Triset Cluster Boundary Enforcement`() {
+        val documentText = """
+            Accessories block:
+            E3MOM Trisets:
+                1- Romanian Deadlift x12 reps. Weights per set: 60 60 60 60
+                2- Pullups x8 reps. Extra Weight per set: 0(5 reps) 0(4) 0(4) 0(4)
+                3- DB Twist Curl x12 reps. Weight per set: 12,5 12,5 12,5 12,5
+
+            Barbell Calves Raises x15: 60 60 60 60
+        """.trimIndent()
+
+        val parsedDoc = WorkoutDocumentParser.parseDocument(documentText)
+
+        // Exactly 4 blocks: 3 in triset, 1 standalone
+        assertEquals(4, parsedDoc.blocks.size)
+
+        val rdl = parsedDoc.blocks[0]
+        assertEquals("Romanian Deadlift", rdl.name)
+        assertEquals(12, rdl.targetReps)
+        assertEquals("TRISET_1", rdl.scheme)
+        assertEquals("E3MOM", rdl.format)
+        assertEquals(BlockKind.SUPERSET, rdl.kind)
+
+        val pullups = parsedDoc.blocks[1]
+        assertEquals("Pullups", pullups.name)
+        assertEquals(8, pullups.targetReps)
+        assertEquals("TRISET_1", pullups.scheme)
+        assertEquals("E3MOM", pullups.format)
+        assertEquals(BlockKind.SUPERSET, pullups.kind)
+
+        val dbCurl = parsedDoc.blocks[2]
+        assertEquals("DB Twist Curl", dbCurl.name)
+        assertEquals(12, dbCurl.targetReps)
+        assertEquals("TRISET_1", dbCurl.scheme)
+        assertEquals("E3MOM", dbCurl.format)
+        assertEquals(BlockKind.SUPERSET, dbCurl.kind)
+
+        val calves = parsedDoc.blocks[3]
+        assertEquals("Barbell Calves Raises", calves.name)
+        assertEquals(15, calves.targetReps)
+        assertEquals(BlockKind.ACCESSORY, calves.kind)
+        assertEquals("", calves.format)
+        assertFalse(calves.scheme.startsWith("TRISET"))
+        assertEquals(4, calves.sets.size)
+        assertEquals(60.0, calves.sets[0].weight ?: 0.0, 0.001)
+    }
+
+    @Test
+    fun `Issue 523 Scenario 3 - Movement Name Cleansing and Compound Word Safety`() {
+        // "1- Romanian Deadlift x12 reps. Weights per set: 60 60 60 60"
+        val block1 = WorkoutDocumentParser.parseSingleBlock(
+            blockLine = "1- Romanian Deadlift x12 reps. Weights per set: 60 60 60 60"
+        )
+        assertEquals("Romanian Deadlift", block1.name)
+        assertEquals(12, block1.targetReps)
+        assertEquals(4, block1.sets.size)
+
+        // Compound word safety: "Bodyweight Pullups x10" must not truncate "Bodyweight" to "Body"
+        val block2 = WorkoutDocumentParser.parseSingleBlock(
+            blockLine = "Bodyweight Pullups x10"
+        )
+        assertEquals("Bodyweight Pullups", block2.name)
+        assertEquals(10, block2.targetReps)
+
+        val block3 = WorkoutDocumentParser.parseSingleBlock(
+            blockLine = "3. Free weight Squats x8: 80 80 80"
+        )
+        assertEquals("Free weight Squats", block3.name)
+        assertEquals(8, block3.targetReps)
+        assertEquals(3, block3.sets.size)
+    }
+
+    @Test
+    fun `Issue 523 Scenario 4 - Reps and Suffix Sanitization`() {
+        val block = WorkoutDocumentParser.parseSingleBlock(
+            blockLine = "Romanian Deadlift x12 reps. Weights per set: 60 60 60 60"
+        )
+        assertEquals(12, block.targetReps)
+        assertEquals("Romanian Deadlift", block.name)
+        assertEquals(4, block.sets.size)
+        assertEquals(60.0, block.sets[0].weight ?: 0.0, 0.001)
+    }
+
+    @Test
     fun `performance test - parseDocument executes in sub-15ms`() {
         val largeDoc = buildString {
             appendLine("# Monday Full Programming --- repeatable")
@@ -241,7 +357,7 @@ class WorkoutDocumentParserTest {
         val elapsedMillis = (System.nanoTime() - startTime) / 1_000_000.0
 
         assertNotNull(result)
-        assertEquals(7, result.blocks.size)
+        assertEquals(8, result.blocks.size)
         assertTrue("Parsing must execute in < 15ms locally, actual: ${elapsedMillis}ms", elapsedMillis < 15.0)
     }
 }
