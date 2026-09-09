@@ -195,7 +195,7 @@ crosstrainingapp/
 │       │       ├── MainActivity.kt               # Single Activity host with Edge-to-Edge & NavigationIntentHandler
 │       │       ├── data/
 │       │       │   ├── AppDatabase.kt            # Room database definition, type converters, & migrations (v1-v5)
-│       │       │   ├── Backup.kt                 # Relational CSV export and import serialization engine
+│       │       │   ├── Backup.kt                 # Relational CSV export and import serialization engine (v1-v4)
 │       │       │   ├── Converters.kt             # Room type converters (LocalDate, enums, primitives)
 │       │       │   ├── DataModeManager.kt        # Dual-database routing (Live vs Demo) & session-scoped isolation
 │       │       │   ├── DemoData.kt               # Isolated comprehensive demo dataset generator
@@ -205,7 +205,8 @@ crosstrainingapp/
 │       │       │   ├── ai/                       # On-device AI inference, phonetic normalization, & grounding
 │       │       │   │   ├── AiCoreManager.kt      # Gemini Nano / AICore orchestrator & resilient JSON parser
 │       │       │   │   ├── ExerciseEntityGrounder.kt # Movement name grounding & Levenshtein disambiguation
-│       │       │   │   └── FitnessSpeechLexicon.kt   # Pure Kotlin phonetic dictionary & fitness STT normalizer
+│       │       │   │   ├── FitnessSpeechLexicon.kt   # Pure Kotlin phonetic dictionary & fitness STT normalizer
+│       │       │   │   └── WorkoutEntityResolver.kt  # Grounding, category/metric inference, & barbell complex isolation
 │       │       │   ├── dao/                      # Room Data Access Objects
 │       │       │   │   ├── BlockDao.kt           # Session blocks and block sets DAO
 │       │       │   │   ├── CycleDao.kt           # Training cycles DAO
@@ -213,19 +214,20 @@ crosstrainingapp/
 │       │       │   │   ├── ExerciseDao.kt        # Movement and exercise catalog DAO
 │       │       │   │   ├── RepMaxDao.kt          # Personal records & rep-max history DAO
 │       │       │   │   ├── RoutineDao.kt         # Routines and routine blocks DAO
-│       │       │   └── SessionDao.kt         # Logged workouts & session history DAO
+│       │       │   │   └── SessionDao.kt         # Logged workouts & session history DAO
 │       │       ├── ui/
 │       │       │   ├── AppViewModel.kt           # Unified UI ViewModel exposing StateFlows and dispatching actions
 │       │       │   ├── Format.kt                 # UI display formatting helpers (dates, weights, times, scores)
 │       │       │   ├── ProgressAnalytics.kt      # Rep-max calculation, volume progression, and PR charting models
-│       │       │   ├── SessionDraft.kt           # Ephemeral UI editing models for workout logging & editing
+│       │       │   ├── SessionDraft.kt           # Ephemeral UI editing models for workout logging & editing (with section parity)
 │       │       │   ├── components/               # Reusable Jetpack Compose UI components & design system
 │       │       │   │   ├── CommonUi.kt           # Shared UI buttons, headers, cards, AppNumericTextField, modal sheets
 │       │       │   │   ├── DateField.kt          # Date picker field with Material 3 integration
 │       │       │   │   ├── Dropdown.kt           # Form dropdown selector
 │       │       │   │   ├── LineChart.kt          # Custom Canvas-rendered strength progression line chart
 │       │       │   │   ├── QuickAddWorkoutDialog.kt # Modal dialog for quick workout insertion
-│       │       │   │   └── ResetPasswordDialog.kt   # Password reset modal dialog with regex validation
+│       │       │   │   ├── ResetPasswordDialog.kt   # Password reset modal dialog with regex validation
+│       │       │   │   └── WorkoutJourneyAssistantSheet.kt # 4-step wizard modal sheet with sheet dismissal guard & interactive deletion
 │       │       │   ├── navigation/               # Navigation topology & routing
 │       │       │   │   ├── AppNavigation.kt      # NavHost, BottomNavigationBar, and ModalNavigationDrawer
 │       │       │   │   └── NavigationIntentHandler.kt # Deep-link and notification intent routing handler
@@ -237,7 +239,7 @@ crosstrainingapp/
 │       │       │   │   ├── LogSessionScreen.kt   # Daily workout logging screen
 │       │       │   │   ├── ProfileScreen.kt      # User account, theme toggle, CSV backup, & sync recovery cards
 │       │       │   │   ├── ProgressScreen.kt     # Personal record analytics & progression charts
-│       │       │   │   ├── SessionEditor.kt      # Comprehensive session editor with set spreadsheet
+│       │       │   │   ├── SessionEditor.kt      # Comprehensive session editor with set spreadsheet & macro-block section banner
 │       │       │   │   └── TimerScreen.kt        # Workout interval timer configuration & active display
 │       │       │   ├── theme/                    # Material Design 3 theme tokens
 │       │       │   │   ├── Color.kt              # App color palettes
@@ -257,6 +259,7 @@ crosstrainingapp/
 │       │       │       └── VoiceWorkoutIngestionSheet.kt # Modal bottom sheet with waveform visualizer & disambiguation
 │       │       └── util/                         # Pure domain utilities
 │       │           ├── RepScheme.kt              # Rep scheme pattern parsing & wave validation
+│       │           ├── WorkoutDocumentParser.kt  # Deterministic document parser with inline colon guard & triset cluster termination
 │       │           └── WorkoutParser.kt          # Free-text WOD and complex routine parsing algorithms
 │       └── test/java/com/fractanomics/crosstraining/ # Comprehensive Unit & Integration Test Suites (34 test classes)
 │           ├── data/
@@ -495,6 +498,14 @@ To guarantee a seamless onboarding experience on both fresh installs and product
 - `AppDatabase` registers `provisionDefaultCycleIfNeeded` on database `onCreate` and `onOpen` callbacks.
 - `Repository` inspects `cycleDao.getAllOnce().isEmpty()` and automatically provisions a default active training cycle named "General Training" (`isActive = true`, `startDate = LocalDate.now()`).
 - Reactive flows (`Repository.cycles`, `Repository.activeCycle`) emit default cycle provisioning events before streaming records to the UI, guaranteeing that first-time users can immediately log workouts without encountering "Create and select a cycle first".
+
+### 12. Workout Journey Ingestion & Interactive Pruning Pattern
+To facilitate bulk, frictionless workout ingestion from unformatted notes and text:
+- **Zero-Latency Deterministic Parsing (`WorkoutDocumentParser`)**: Operates entirely in Kotlin with zero platform dependencies, applying inline colon guards, context-aware triset boundary termination, blank-line lookahead, and word-bounded boilerplate sanitization.
+- **Single Source of Truth (`resolutionResult.blockResolutions`)**: Eliminates dual-list drift between document blocks and resolved block entities. The assistant UI derives rendering and persistence solely from `blockResolutions`.
+- **Referential Component Pruning**: Deleting a proposed component movement (e.g. from a barbell complex) prunes only the component link from `componentExercises` and `exerciseIdsCsv` while keeping the composite entity intact.
+- **No-Orphan Ingestion Guard**: Deleting a block dynamically filters `missingExercises` to ensure only exercises actively referenced by remaining blocks are inserted into SQLite.
+- **Idempotent Persistence Mutex**: Persistence in `AppViewModel.confirmWorkoutJourney` executes with an in-flight mutex and `try/catch/finally` error handling, preventing rapid button double-taps from producing duplicate records.
 
 ---
 
