@@ -357,7 +357,7 @@ class WorkoutDocumentParserTest {
         val elapsedMillis = (System.nanoTime() - startTime) / 1_000_000.0
 
         assertNotNull(result)
-        assertEquals(7, result.blocks.size)
+        assertEquals(8, result.blocks.size)
         assertTrue("Parsing must execute in < 15ms locally, actual: ${elapsedMillis}ms", elapsedMillis < 15.0)
     }
 }
