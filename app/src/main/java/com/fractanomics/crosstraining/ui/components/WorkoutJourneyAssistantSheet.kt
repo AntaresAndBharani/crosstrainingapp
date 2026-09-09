@@ -28,8 +28,10 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
@@ -232,6 +234,9 @@ fun WorkoutJourneyAssistantSheet(
                             onUpdateExercise = { name, cat, metric ->
                                 viewModel.updateMissingExerciseConfig(name, cat, metric)
                             },
+                            onDeleteExercise = { name ->
+                                viewModel.removeMissingExercise(name)
+                            },
                             onNext = { viewModel.setJourneyStep(4) },
                             onBack = { viewModel.setJourneyStep(2) }
                         )
@@ -241,6 +246,9 @@ fun WorkoutJourneyAssistantSheet(
                         Step4PreviewAndConfirm(
                             draft = currentDraft,
                             isSaving = isSaving,
+                            onDeleteBlock = { index ->
+                                viewModel.removeJourneyBlock(index)
+                            },
                             onConfirm = {
                                 isSaving = true
                                 viewModel.confirmWorkoutJourney { routine, session ->
@@ -639,11 +647,13 @@ private fun Step2TemplatesAndCycle(
 private fun Step3ReviewExercises(
     draft: WorkoutJourneyDraft,
     onUpdateExercise: (name: String, category: ExerciseCategory, metric: MetricType) -> Unit,
+    onDeleteExercise: (name: String) -> Unit,
     onNext: () -> Unit,
     onBack: () -> Unit
 ) {
     val existing = draft.resolutionResult.matchedExisting.values.distinctBy { it.id }
     val missing = draft.missingExercises
+    val hasBlocks = draft.resolutionResult.blockResolutions.isNotEmpty()
 
     Column(
         modifier = Modifier
@@ -656,6 +666,34 @@ private fun Step3ReviewExercises(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        // Banner when all missing movements have been cataloged/resolved or deleted
+        if (missing.isEmpty()) {
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.CheckCircle,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        "All movements in library",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+        }
 
         if (existing.isNotEmpty()) {
             Text(
@@ -718,17 +756,38 @@ private fun Step3ReviewExercises(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(ex.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = MaterialTheme.colorScheme.secondaryContainer
+                            Text(
+                                ex.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Text(
-                                    "NEW",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = MaterialTheme.colorScheme.secondaryContainer
+                                ) {
+                                    Text(
+                                        "NEW",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { onDeleteExercise(ex.name) },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.DeleteOutline,
+                                        contentDescription = "Delete ${ex.name}",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
 
@@ -778,6 +837,7 @@ private fun Step3ReviewExercises(
 
             Button(
                 onClick = onNext,
+                enabled = hasBlocks,
                 modifier = Modifier
                     .weight(1.5f)
                     .height(48.dp)
@@ -795,10 +855,12 @@ private fun Step3ReviewExercises(
 private fun Step4PreviewAndConfirm(
     draft: WorkoutJourneyDraft,
     isSaving: Boolean,
+    onDeleteBlock: (index: Int) -> Unit,
     onConfirm: () -> Unit,
     onBack: () -> Unit
 ) {
-    val document = draft.document
+    val blockResolutions = draft.resolutionResult.blockResolutions
+    val hasBlocks = blockResolutions.isNotEmpty()
 
     Column(
         modifier = Modifier
@@ -841,14 +903,50 @@ private fun Step4PreviewAndConfirm(
         }
 
         Text(
-            "Blocks (${document.blocks.size})",
+            "Blocks (${blockResolutions.size})",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
 
-        // Block Previews grouped by section
-        document.blocks.forEachIndexed { index, block ->
-            val prevSection = if (index > 0) document.blocks[index - 1].section.trim() else null
+        if (blockResolutions.isEmpty()) {
+            OutlinedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.outlinedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Text(
+                        "No blocks remaining in workout",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "All blocks were removed. At least one block is required to save a routine or session.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // Block Previews grouped by section, derived from authoritative blockResolutions
+        blockResolutions.forEachIndexed { index, res ->
+            val block = res.block
+            val prevSection = if (index > 0) blockResolutions[index - 1].block.section.trim() else null
             val currentSection = block.section.trim()
 
             if (currentSection.isNotBlank() && currentSection != prevSection) {
@@ -886,15 +984,31 @@ private fun Step4PreviewAndConfirm(
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.weight(1f)
                         )
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text(
-                                block.kind.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant
+                            ) {
+                                Text(
+                                    block.kind.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = { onDeleteBlock(index) },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.DeleteOutline,
+                                    contentDescription = "Delete block ${index + 1}",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
 
@@ -953,7 +1067,7 @@ private fun Step4PreviewAndConfirm(
 
             Button(
                 onClick = onConfirm,
-                enabled = !isSaving,
+                enabled = !isSaving && hasBlocks,
                 modifier = Modifier
                     .weight(1.6f)
                     .height(48.dp)

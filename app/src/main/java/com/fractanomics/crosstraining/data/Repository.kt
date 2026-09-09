@@ -879,13 +879,26 @@ class Repository(
         customRoutineTitle: String? = null,
         customSessionTitle: String? = null
     ): Pair<Routine?, Session?> = withContext(Dispatchers.IO) {
+        require(resolutionResult.blockResolutions.isNotEmpty()) { "Cannot persist workout journey with zero blocks" }
+
         withDatabaseTransaction {
-            // 1. Insert deduplicated missing exercises into database
+            // Collect all movement names actively referenced by remaining blockResolutions
+            val referencedMovementNames = mutableSetOf<String>()
+            for (res in resolutionResult.blockResolutions) {
+                referencedMovementNames.add(res.mainExercise.name.trim().lowercase())
+                res.block.movements.forEach { referencedMovementNames.add(it.trim().lowercase()) }
+                res.componentExercises.forEach { referencedMovementNames.add(it.name.trim().lowercase()) }
+            }
+
+            // 1. Insert deduplicated missing exercises that are actively referenced
             val existingInDb = exerciseDao.getAllOnce().associateBy { it.name.trim().lowercase() }.toMutableMap()
             val insertedExercises = mutableMapOf<String, Exercise>()
 
-            // Deduplicate proposed exercises by normalized name
-            val distinctMissing = resolutionResult.missingExercises.distinctBy { it.name.trim().lowercase() }
+            // Deduplicate proposed exercises by normalized name and filter to referenced only
+            val distinctMissing = resolutionResult.missingExercises
+                .distinctBy { it.name.trim().lowercase() }
+                .filter { referencedMovementNames.contains(it.name.trim().lowercase()) }
+
             for (missingEx in distinctMissing) {
                 val key = missingEx.name.trim().lowercase()
                 val existing = existingInDb[key]

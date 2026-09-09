@@ -903,33 +903,141 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         _workoutJourneyDraft.value = current.copy(missingExercises = updatedList)
     }
 
+    private var isPersistingJourney: Boolean = false
+
+    /**
+     * Removes a proposed missing exercise from Step 3:
+     * - Prunes from [WorkoutJourneyDraft.missingExercises].
+     * - Prunes from [ResolvedBlockEntity.componentExercises] and updates [ParsedDocumentBlock.movements]
+     *   for any complex blocks in [WorkoutEntityResolutionResult.blockResolutions], keeping the composite intact.
+     * - If an individual (non-complex) block relied solely on this missing exercise as its mainExercise,
+     *   that block is pruned from [WorkoutEntityResolutionResult.blockResolutions] and [ParsedWorkoutDocument.blocks].
+     */
+    fun removeMissingExercise(exerciseName: String) {
+        val current = _workoutJourneyDraft.value ?: return
+        val targetName = exerciseName.trim()
+
+        // 1. Remove from missingExercises list
+        val updatedMissing = current.missingExercises.filterNot { it.name.trim().equals(targetName, ignoreCase = true) }
+
+        // 2. Prune componentExercises from complexes in blockResolutions, or prune non-complex blocks using it
+        val updatedBlockResolutions = mutableListOf<com.fractanomics.crosstraining.data.ai.ResolvedBlockEntity>()
+        for (res in current.resolutionResult.blockResolutions) {
+            val isComplex = res.block.kind == BlockKind.COMPLEX || res.componentExercises.isNotEmpty() || res.block.name.contains("+")
+            if (isComplex) {
+                val updatedComponents = res.componentExercises.filterNot { it.name.trim().equals(targetName, ignoreCase = true) }
+                val updatedMovements = res.block.movements.filterNot { it.trim().equals(targetName, ignoreCase = true) }
+                val updatedBlock = res.block.copy(movements = updatedMovements)
+                updatedBlockResolutions.add(res.copy(block = updatedBlock, componentExercises = updatedComponents))
+            } else {
+                if (res.mainExercise.name.trim().equals(targetName, ignoreCase = true)) {
+                    // Deleted exercise was the sole main exercise of this non-complex block -> prune block
+                    continue
+                }
+                updatedBlockResolutions.add(res)
+            }
+        }
+
+        val updatedDocBlocks = updatedBlockResolutions.map { it.block }
+        val updatedResolution = current.resolutionResult.copy(
+            missingExercises = updatedMissing,
+            blockResolutions = updatedBlockResolutions
+        )
+        val updatedDoc = current.document.copy(blocks = updatedDocBlocks)
+
+        _workoutJourneyDraft.value = current.copy(
+            document = updatedDoc,
+            resolutionResult = updatedResolution,
+            missingExercises = updatedMissing
+        )
+    }
+
+    /**
+     * Removes a block from Step 4 Preview by index:
+     * - Removes the targeted block from [WorkoutEntityResolutionResult.blockResolutions] and [ParsedWorkoutDocument.blocks].
+     * - Dynamically filters [WorkoutJourneyDraft.missingExercises] to prune any proposed exercise
+     *   no longer referenced by any remaining block.
+     */
+    fun removeJourneyBlock(index: Int) {
+        val current = _workoutJourneyDraft.value ?: return
+        if (index !in current.resolutionResult.blockResolutions.indices) return
+
+        val updatedBlockResolutions = current.resolutionResult.blockResolutions.toMutableList()
+        updatedBlockResolutions.removeAt(index)
+
+        // Collect all movement names referenced by remaining blocks
+        val remainingReferencedNames = mutableSetOf<String>()
+        for (res in updatedBlockResolutions) {
+            remainingReferencedNames.add(res.mainExercise.name.trim().lowercase())
+            res.block.movements.forEach { remainingReferencedNames.add(it.trim().lowercase()) }
+            res.componentExercises.forEach { remainingReferencedNames.add(it.name.trim().lowercase()) }
+        }
+
+        // Prune orphan missing exercises
+        val updatedMissing = current.missingExercises.filter {
+            remainingReferencedNames.contains(it.name.trim().lowercase())
+        }
+
+        val updatedDocBlocks = updatedBlockResolutions.map { it.block }
+        val updatedDoc = current.document.copy(blocks = updatedDocBlocks)
+        val updatedResolution = current.resolutionResult.copy(
+            missingExercises = updatedMissing,
+            blockResolutions = updatedBlockResolutions
+        )
+
+        _workoutJourneyDraft.value = current.copy(
+            document = updatedDoc,
+            resolutionResult = updatedResolution,
+            missingExercises = updatedMissing
+        )
+    }
+
     /** Atomically persists the journey into Room (Exercises, Routine template, Session & Blocks). */
     fun confirmWorkoutJourney(
         onComplete: (Routine?, Session?) -> Unit = { _, _ -> }
-    ): Job = viewModelScope.launch {
-        val draft = _workoutJourneyDraft.value ?: run {
-            onComplete(null, null)
-            return@launch
+    ): Job {
+        if (isPersistingJourney) {
+            return Job().apply { complete() }
         }
+        isPersistingJourney = true
 
-        val effectiveResolution = draft.resolutionResult.copy(
-            missingExercises = draft.missingExercises
-        )
+        return viewModelScope.launch {
+            try {
+                val draft = _workoutJourneyDraft.value ?: run {
+                    onComplete(null, null)
+                    return@launch
+                }
 
-        val (routine, session) = repo.persistWorkoutJourney(
-            document = draft.document,
-            resolutionResult = effectiveResolution,
-            sessionDate = draft.sessionDate,
-            saveAsRoutine = draft.saveAsRoutine,
-            logAsSession = draft.logAsSession,
-            cycleId = draft.cycleId,
-            customRoutineTitle = draft.routineTitle,
-            customSessionTitle = draft.sessionTitle
-        )
+            if (draft.resolutionResult.blockResolutions.isEmpty()) {
+                onComplete(null, null)
+                return@launch
+            }
 
-        _workoutJourneyDraft.value = null
-        onComplete(routine, session)
+            val effectiveResolution = draft.resolutionResult.copy(
+                missingExercises = draft.missingExercises
+            )
+
+            val (routine, session) = repo.persistWorkoutJourney(
+                document = draft.document,
+                resolutionResult = effectiveResolution,
+                sessionDate = draft.sessionDate,
+                saveAsRoutine = draft.saveAsRoutine,
+                logAsSession = draft.logAsSession,
+                cycleId = draft.cycleId,
+                customRoutineTitle = draft.routineTitle,
+                customSessionTitle = draft.sessionTitle
+            )
+
+            _workoutJourneyDraft.value = null
+            onComplete(routine, session)
+        } catch (e: Exception) {
+            android.util.Log.e("AppViewModel", "Failed to persist workout journey", e)
+            onComplete(null, null)
+        } finally {
+            isPersistingJourney = false
+        }
     }
+}
 
     /** Clears the in-flight workout journey draft. */
     fun clearWorkoutJourneyDraft() {
