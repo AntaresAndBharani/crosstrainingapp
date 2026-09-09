@@ -12,7 +12,9 @@ import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -337,24 +339,31 @@ class WorkoutJourneyAssistantViewModelTest {
     }
 
     @Test
-    fun `Scenario 4 - Idempotent Persistence with In-Flight Mutex Guard`() = runTest {
-        val rawText = """
-            Strengh block:
-            Back Squat
-            100 110
-        """.trimIndent()
+    fun `Scenario 4 - Idempotent Persistence with In-Flight Mutex Guard`() = runTest(StandardTestDispatcher()) {
+        Dispatchers.setMain(coroutineContext[kotlinx.coroutines.CoroutineDispatcher]!!)
+        try {
+            val rawText = """
+                Strengh block:
+                Back Squat
+                100 110
+            """.trimIndent()
 
-        viewModel.processWorkoutText(rawText)
+            viewModel.processWorkoutText(rawText)
 
-        var completionCount = 0
-        // Rapid double invocation simulating rapid double-tap
-        val job1 = viewModel.confirmWorkoutJourney { _, _ -> completionCount++ }
-        val job2 = viewModel.confirmWorkoutJourney { _, _ -> completionCount++ }
+            var completionCount = 0
+            // Rapid double invocation simulating rapid double-tap while first is in-flight
+            val job1 = viewModel.confirmWorkoutJourney { _, _ -> completionCount++ }
+            val job2 = viewModel.confirmWorkoutJourney { _, _ -> completionCount++ }
 
-        job1.join()
-        job2.join()
+            advanceUntilIdle()
 
-        // Only the first tap executes persistence, second tap was rejected by mutex
-        assertEquals(1, completionCount)
+            job1.join()
+            job2.join()
+
+            // Only the first tap executes persistence, second tap was rejected by mutex
+            assertEquals(1, completionCount)
+        } finally {
+            Dispatchers.setMain(testDispatcher)
+        }
     }
 }
