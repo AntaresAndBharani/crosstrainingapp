@@ -296,6 +296,12 @@ if ($CaptureArtifacts) {
 
     Write-Host "Syncing latest screenshots to main repo ($LatestDir)..." -ForegroundColor Cyan
     Get-ChildItem -Path . -Filter "*.png" | Copy-Item -Destination $LatestDir -Force
+    if (Test-Path $DebugDir) {
+        Get-ChildItem -Path $DebugDir -Recurse -Filter "*.png" | Where-Object { $_.Directory.Name -eq "takeScreenshot" } | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination "$LatestDir\$($_.Name)" -Force
+            Copy-Item -Path $_.FullName -Destination "$ReportDir\$($_.Name)" -Force
+        }
+    }
 
     Write-Host "Archiving screenshots to QA repo ($ReportDir)..." -ForegroundColor Cyan
     Get-ChildItem -Path . -Filter "*.png" | Move-Item -Destination $ReportDir -Force

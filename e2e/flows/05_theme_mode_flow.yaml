@@ -12,6 +12,10 @@ tags:
 - tapOn: "Continue as Guest"
 - tapOn: "Open Menu"
 - tapOn: "Profile & Settings"
+- scrollUntilVisible:
+    element:
+      text: "Appearance & Theme"
+    direction: DOWN
 - assertVisible: "Appearance & Theme"
 - scrollUntilVisible:
     element:
