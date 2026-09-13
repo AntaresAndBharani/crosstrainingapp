@@ -1,4 +1,4 @@
-﻿package com.fractanomics.crosstraining.ui
+package com.fractanomics.crosstraining.ui
 
 import com.fractanomics.crosstraining.data.DataModeManager
 import com.fractanomics.crosstraining.data.DataModeManagerTest.FakeTrackingSharedPreferences
@@ -8,6 +8,7 @@ import com.fractanomics.crosstraining.data.Repository
 import com.fractanomics.crosstraining.data.analytics.Timeframe
 import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
 import com.fractanomics.crosstraining.data.model.WeightEntry
+import com.fractanomics.crosstraining.ui.screens.ProgressMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -200,5 +201,31 @@ class AppViewModelWeightTest {
         assertNotNull("Index 2 has N=3 >= 3", series[2].smaValue)
 
         collectJob.cancel()
+    }
+
+    @Test
+    fun progressMode_defaultsToByExercise_andUpdatesReactivelyAndIdempotently() = runTest {
+        // Given initial ViewModel state
+        assertEquals("Initial progressMode must default to BY_EXERCISE", ProgressMode.BY_EXERCISE, viewModel.progressMode.value)
+
+        // When updating mode to BODY_WEIGHT (e.g. from DrawerItem.WEIGHT or profile card)
+        viewModel.setProgressMode(ProgressMode.BODY_WEIGHT)
+
+        // Then progressMode StateFlow reflects BODY_WEIGHT immediately
+        assertEquals(ProgressMode.BODY_WEIGHT, viewModel.progressMode.value)
+
+        // When updating idempotently (rapid double-tap scenario)
+        viewModel.setProgressMode(ProgressMode.BODY_WEIGHT)
+        assertEquals(ProgressMode.BODY_WEIGHT, viewModel.progressMode.value)
+
+        // When switching back to BY_ROUTINE or BY_EXERCISE (e.g. from DrawerItem.PROGRESS)
+        viewModel.setProgressMode(ProgressMode.BY_ROUTINE)
+        assertEquals(ProgressMode.BY_ROUTINE, viewModel.progressMode.value)
+
+        viewModel.setProgressMode(ProgressMode.CYCLE_GOALS)
+        assertEquals(ProgressMode.CYCLE_GOALS, viewModel.progressMode.value)
+
+        viewModel.setProgressMode(ProgressMode.BY_EXERCISE)
+        assertEquals(ProgressMode.BY_EXERCISE, viewModel.progressMode.value)
     }
 }

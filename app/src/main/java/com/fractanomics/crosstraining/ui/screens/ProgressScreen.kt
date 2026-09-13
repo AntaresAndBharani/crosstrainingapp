@@ -114,7 +114,7 @@ fun ProgressScreen(
     var selectedExercise by remember { mutableStateOf<Exercise?>(null) }
     var selectedRoutine by remember { mutableStateOf<Routine?>(null) }
     var selectedCycleGoalCycle by remember { mutableStateOf<Cycle?>(null) }
-    var progressMode by rememberSaveable { mutableStateOf(ProgressMode.BY_EXERCISE) }
+    val progressMode by viewModel.progressMode.collectAsStateWithLifecycle()
 
     // Bottom sheet & Snackbar state for Weight Logging
     val coroutineScope = rememberCoroutineScope()
@@ -165,26 +165,26 @@ fun ProgressScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = progressMode == ProgressMode.BY_EXERCISE,
-                    onClick = { progressMode = ProgressMode.BY_EXERCISE },
+                    onClick = { viewModel.setProgressMode(ProgressMode.BY_EXERCISE) },
                     label = { Text("By exercise") }
                 )
                 if (routines.isNotEmpty()) {
                     FilterChip(
                         selected = progressMode == ProgressMode.BY_ROUTINE,
-                        onClick = { progressMode = ProgressMode.BY_ROUTINE },
+                        onClick = { viewModel.setProgressMode(ProgressMode.BY_ROUTINE) },
                         label = { Text("By routine") }
                     )
                 }
                 if (cycles.isNotEmpty()) {
                     FilterChip(
                         selected = progressMode == ProgressMode.CYCLE_GOALS,
-                        onClick = { progressMode = ProgressMode.CYCLE_GOALS },
+                        onClick = { viewModel.setProgressMode(ProgressMode.CYCLE_GOALS) },
                         label = { Text("Cycle goals") }
                     )
                 }
                 FilterChip(
                     selected = progressMode == ProgressMode.BODY_WEIGHT,
-                    onClick = { progressMode = ProgressMode.BODY_WEIGHT },
+                    onClick = { viewModel.setProgressMode(ProgressMode.BODY_WEIGHT) },
                     label = { Text("Body weight") }
                 )
             }

@@ -78,6 +78,13 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     private val _legacySessionRequiresReauth = MutableStateFlow(false)
     val legacySessionRequiresReauth: StateFlow<Boolean> = _legacySessionRequiresReauth.asStateFlow()
 
+    private val _progressMode = MutableStateFlow(com.fractanomics.crosstraining.ui.screens.ProgressMode.BY_EXERCISE)
+    val progressMode: StateFlow<com.fractanomics.crosstraining.ui.screens.ProgressMode> = _progressMode.asStateFlow()
+
+    fun setProgressMode(mode: com.fractanomics.crosstraining.ui.screens.ProgressMode) {
+        _progressMode.value = mode
+    }
+
     init {
         viewModelScope.launch {
             runCatching { repo.provisionDefaultCycleIfNeeded() }

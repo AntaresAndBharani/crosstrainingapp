@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.MonitorWeight
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.DrawerValue
@@ -77,12 +78,13 @@ import com.fractanomics.crosstraining.ui.screens.LibraryScreen
 import com.fractanomics.crosstraining.ui.screens.LogSessionScreen
 import com.fractanomics.crosstraining.ui.screens.LoginWelcomeScreen
 import com.fractanomics.crosstraining.ui.screens.ProfileScreen
+import com.fractanomics.crosstraining.ui.screens.ProgressMode
 import com.fractanomics.crosstraining.ui.screens.ProgressScreen
 import com.fractanomics.crosstraining.ui.screens.SessionEditorScreen
 import com.fractanomics.crosstraining.ui.screens.TimerScreen
 import kotlinx.coroutines.launch
 
-/** Primary daily driver destinations shown in the fixed bottom navigation bar. */
+/** Top-level navigation bar destinations. */
 enum class BottomDestination(
     val route: String,
     val label: String,
@@ -107,6 +109,7 @@ enum class DrawerItem(
     LOG("log", "Log Workout", "Active training session", Icons.Filled.FitnessCenter, DrawerSection.WORKOUTS),
     HISTORY("history", "Session History", "Past logged workouts", Icons.Filled.History, DrawerSection.WORKOUTS),
     PROGRESS("progress", "Progress & Analytics", "Charts, volume & PRs", Icons.Filled.BarChart, DrawerSection.WORKOUTS),
+    WEIGHT("progress", "Body Weight", "Weight log & trend analytics", Icons.Filled.MonitorWeight, DrawerSection.WORKOUTS),
 
     // Tools & Planning Section (Coach primary)
     CYCLES("cycles", "Training Cycles", "Periodization & blocks", Icons.Filled.CalendarMonth, DrawerSection.PROGRAMMING),
@@ -134,6 +137,7 @@ fun AppNavigation(
     val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
     val authUser by viewModel.authUser.collectAsStateWithLifecycle()
     val userRole by viewModel.userRole.collectAsStateWithLifecycle()
+    val currentProgressMode by viewModel.progressMode.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
     var guestModeAccepted by remember { mutableStateOf(false) }
@@ -190,6 +194,7 @@ fun AppNavigation(
                     AppDrawerContent(
                         authUser = authUser,
                         currentRoute = currentRoute,
+                        currentProgressMode = currentProgressMode,
                         demoMode = demoMode,
                         userRole = userRole,
                         onToggleRole = {
@@ -204,9 +209,14 @@ fun AppNavigation(
                             }
                         },
                         onToggleDemoMode = { enabled -> viewModel.setDemoMode(enabled) },
-                        onNavigate = { route ->
+                        onSelectDrawerItem = { item ->
+                            if (item == DrawerItem.WEIGHT) {
+                                viewModel.setProgressMode(ProgressMode.BODY_WEIGHT)
+                            } else if (item == DrawerItem.PROGRESS) {
+                                viewModel.setProgressMode(ProgressMode.BY_EXERCISE)
+                            }
                             scope.launch { drawerState.close() }
-                            navController.navigate(route) {
+                            navController.navigate(item.route) {
                                 popUpTo(navController.graph.findStartDestination().id) {
                                     saveState = true
                                 }
@@ -375,11 +385,12 @@ private fun PrimaryNavigationBar(
 private fun AppDrawerContent(
     authUser: AuthUser?,
     currentRoute: String?,
+    currentProgressMode: ProgressMode,
     demoMode: Boolean,
     userRole: UserRole,
     onToggleRole: () -> Unit,
     onToggleDemoMode: (Boolean) -> Unit,
-    onNavigate: (String) -> Unit,
+    onSelectDrawerItem: (DrawerItem) -> Unit,
     onCloseDrawer: () -> Unit
 ) {
     Column(
@@ -510,7 +521,11 @@ private fun AppDrawerContent(
 
             val sectionItems = DrawerItem.entries.filter { it.section == section }
             sectionItems.forEach { item ->
-                val selected = currentRoute == item.route
+                val selected = when (item) {
+                    DrawerItem.WEIGHT -> currentRoute == BottomDestination.PROGRESS.route && currentProgressMode == ProgressMode.BODY_WEIGHT
+                    DrawerItem.PROGRESS -> currentRoute == BottomDestination.PROGRESS.route && currentProgressMode != ProgressMode.BODY_WEIGHT
+                    else -> currentRoute == item.route
+                }
                 NavigationDrawerItem(
                     icon = { Icon(item.icon, contentDescription = item.title) },
                     label = {
@@ -524,7 +539,7 @@ private fun AppDrawerContent(
                         }
                     },
                     selected = selected,
-                    onClick = { onNavigate(item.route) },
+                    onClick = { onSelectDrawerItem(item) },
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                     shape = RoundedCornerShape(12.dp)
                 )
