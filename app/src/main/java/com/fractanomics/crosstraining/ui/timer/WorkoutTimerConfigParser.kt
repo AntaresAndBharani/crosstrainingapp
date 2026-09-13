@@ -35,8 +35,11 @@ object WorkoutTimerConfigParser {
     ): WorkoutTimerConfig? {
         if (formatString.isNullOrBlank()) return null
 
-        // 1. Normalize European decimal commas (e.g. E2,5MOM -> E2.5MOM) using canonical regex
-        val normalized = formatString.replace(WorkoutDocumentParser.DECIMAL_COMMA_REGEX, ".").trim()
+        // 1. Normalize European decimal commas (e.g. E2,5MOM -> E2.5MOM) and remove optional colon after REST
+        val normalized = formatString
+            .replace(WorkoutDocumentParser.DECIMAL_COMMA_REGEX, ".")
+            .replace(Regex("""\bREST\s*:\s*""", RegexOption.IGNORE_CASE), "REST ")
+            .trim()
 
         // 2. Extract canonical format token using WorkoutDocumentParser.FORMAT_REGEX
         val match = WorkoutDocumentParser.FORMAT_REGEX.find(normalized) ?: return null

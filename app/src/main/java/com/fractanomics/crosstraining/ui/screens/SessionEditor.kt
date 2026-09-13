@@ -105,6 +105,20 @@ import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.QuickAddWorkoutDialog
 import com.fractanomics.crosstraining.ui.components.WorkoutJourneyAssistantSheet
 import com.fractanomics.crosstraining.ui.trimmed
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.derivedStateOf
+import com.fractanomics.crosstraining.ui.components.InSessionTimerBar
+import com.fractanomics.crosstraining.ui.components.InSessionTimerSheet
+import com.fractanomics.crosstraining.ui.timer.NotificationPermissionHelper
+import com.fractanomics.crosstraining.ui.timer.TimerEngine
+import com.fractanomics.crosstraining.ui.timer.TimerEngineProvider
+import com.fractanomics.crosstraining.ui.timer.TimerPhase
+import com.fractanomics.crosstraining.ui.timer.TimerService
+import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfig
+import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfigParser
 import com.fractanomics.crosstraining.util.RepScheme
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -414,6 +428,129 @@ fun SessionEditorBody(
         )
     }
 
+    val context = LocalContext.current
+    val timerEngine = remember { TimerEngineProvider.get(context) }
+    val timerSnapshot by timerEngine.snapshot.collectAsStateWithLifecycle()
+    val isTimerActive by remember {
+        derivedStateOf { timerSnapshot.phase != TimerPhase.IDLE }
+    }
+
+    var showTimerSheet by remember { mutableStateOf(false) }
+    var timerSheetPrefillTitle by remember { mutableStateOf("") }
+    var timerSheetPrefillRounds by remember { mutableIntStateOf(1) }
+    var pendingReplaceConfig by remember { mutableStateOf<WorkoutTimerConfig?>(null) }
+    var showConflictDialog by remember { mutableStateOf(false) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            TimerService.startService(context)
+        } else {
+            scope.launch {
+                snackbar.showSnackbar(
+                    "Timer running in-session. Grant notification permission in Settings for lock-screen controls."
+                )
+            }
+        }
+    }
+
+    val requestNotificationPermissionAndStartService: () -> Unit = {
+        NotificationPermissionHelper.handleTimerStartWithPermission(
+            context = context,
+            onPermissionRequired = {
+                permissionLauncher.launch(NotificationPermissionHelper.POST_NOTIFICATIONS)
+            },
+            onStartService = {
+                TimerService.startService(context)
+            }
+        )
+    }
+
+    val launchOrReplaceTimer: (WorkoutTimerConfig) -> Unit = { config ->
+        if (isTimerActive && timerSnapshot.phase != TimerPhase.FINISHED) {
+            // Check if it's the exact same configuration/label running
+            if (timerSnapshot.workoutLabel.isNotBlank() && timerSnapshot.workoutLabel == config.workoutLabel) {
+                showTimerSheet = true
+            } else {
+                pendingReplaceConfig = config
+                showConflictDialog = true
+            }
+        } else {
+            timerEngine.configure(config)
+            timerEngine.start()
+            requestNotificationPermissionAndStartService()
+        }
+    }
+
+    val launchTimingFromTokenOrOpenSheet: (String?, Int, String) -> Unit = { formatToken, roundCount, label ->
+        val baseConfig = timerEngine.currentConfig
+        val parsedConfig = WorkoutTimerConfigParser.parse(
+            formatString = formatToken,
+            roundCount = roundCount,
+            workoutLabel = label,
+            baseConfig = baseConfig
+        )
+        if (parsedConfig != null) {
+            launchOrReplaceTimer(parsedConfig)
+        } else {
+            timerSheetPrefillTitle = label
+            timerSheetPrefillRounds = roundCount.coerceAtLeast(1)
+            showTimerSheet = true
+        }
+    }
+
+    if (showConflictDialog && pendingReplaceConfig != null) {
+        AlertDialog(
+            onDismissRequest = {
+                showConflictDialog = false
+                pendingReplaceConfig = null
+            },
+            title = { Text("Replace active timer?") },
+            text = {
+                Text(
+                    "A timer is currently running (${timerSnapshot.workoutLabel.ifBlank { timerSnapshot.mode.label }}). " +
+                        "Do you want to replace it with '${pendingReplaceConfig?.workoutLabel?.ifBlank { pendingReplaceConfig?.mode?.label }}'?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val config = pendingReplaceConfig
+                        showConflictDialog = false
+                        pendingReplaceConfig = null
+                        if (config != null) {
+                            timerEngine.replaceTimer(config)
+                            requestNotificationPermissionAndStartService()
+                        }
+                    }
+                ) {
+                    Text("Replace", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showConflictDialog = false
+                        pendingReplaceConfig = null
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showTimerSheet) {
+        InSessionTimerSheet(
+            timerEngine = timerEngine,
+            onDismiss = { showTimerSheet = false },
+            prefillTitle = timerSheetPrefillTitle,
+            prefillRounds = timerSheetPrefillRounds,
+            onStartService = requestNotificationPermissionAndStartService
+        )
+    }
+
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
         topBar = {
@@ -451,7 +588,22 @@ fun SessionEditorBody(
                 }
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) }
+        snackbarHost = { SnackbarHost(snackbar) },
+        bottomBar = {
+            if (isTimerActive) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    InSessionTimerBar(
+                        timerEngine = timerEngine,
+                        onExpand = { showTimerSheet = true },
+                        onStartService = requestNotificationPermissionAndStartService
+                    )
+                }
+            }
+        }
     ) { pad ->
         Column(
             modifier = Modifier
@@ -619,7 +771,14 @@ fun SessionEditorBody(
                             exercises = exercises,
                             routines = routines,
                             canRemove = blocks.size > 1,
-                            onRemove = { blocks.removeAt(item.index) }
+                            onRemove = { blocks.removeAt(item.index) },
+                            onLaunchTimer = {
+                                val label = item.block.exercise?.name ?: item.block.name.ifBlank { "Movement ${item.index + 1}" }
+                                val timingToken = item.block.format.ifBlank {
+                                    if (item.block.description.contains("Rest", ignoreCase = true)) item.block.description else null
+                                }
+                                launchTimingFromTokenOrOpenSheet(timingToken, item.block.sets.size, label)
+                            }
                         )
                     }
                     is EditorBlockItem.SubBlockGroup -> {
@@ -694,6 +853,26 @@ fun SessionEditorBody(
                                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                             )
                                         }
+
+                                        // Sub-Block Timer Launcher Button
+                                        IconButton(
+                                            onClick = {
+                                                val timingToken = item.format.ifBlank { item.subBlockName }
+                                                launchTimingFromTokenOrOpenSheet(
+                                                    timingToken,
+                                                    item.totalRounds,
+                                                    item.subBlockName
+                                                )
+                                            },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Timer,
+                                                contentDescription = "Start timer for ${item.subBlockName}",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
                                     }
                                 }
 
@@ -706,7 +885,15 @@ fun SessionEditorBody(
                                         exercises = exercises,
                                         routines = routines,
                                         canRemove = blocks.size > 1,
-                                        onRemove = { blocks.removeAt(childIndex) }
+                                        onRemove = { blocks.removeAt(childIndex) },
+                                        onLaunchTimer = {
+                                            val label = childBlock.exercise?.name ?: childBlock.name.ifBlank { "Movement ${childIndex + 1}" }
+                                            val timingToken = childBlock.format.ifBlank {
+                                                // Check if notes or description contain Rest or format
+                                                if (childBlock.description.contains("Rest", ignoreCase = true)) childBlock.description else null
+                                            }
+                                            launchTimingFromTokenOrOpenSheet(timingToken, childBlock.sets.size, label)
+                                        }
                                     )
                                 }
                             }
@@ -794,7 +981,8 @@ private fun CompactBlockEditor(
     exercises: List<Exercise>,
     routines: List<Routine>,
     canRemove: Boolean,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    onLaunchTimer: (() -> Unit)? = null
 ) {
     val metric = block.exercise?.metricType ?: MetricType.WEIGHT
     val valueLabel = if (metric == MetricType.WEIGHT) "kg" else metric.defaultUnit
@@ -847,6 +1035,21 @@ private fun CompactBlockEditor(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Timer Launcher Button
+                    if (onLaunchTimer != null) {
+                        IconButton(
+                            onClick = onLaunchTimer,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Timer,
+                                contentDescription = "Start timer for ${block.exercise?.name ?: block.name.ifBlank { "Block ${index + 1}" }}",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
                     // Type Badge Chip
                     AssistChip(
                         onClick = {
