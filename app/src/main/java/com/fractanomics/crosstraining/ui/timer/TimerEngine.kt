@@ -124,6 +124,132 @@ class TimerEngine(
         advanceToNextPhaseOrRound()
     }
 
+    /**
+     * Rewinds the active timer to the previous round or phase.
+     *
+     * - If in [TimerPhase.FINISHED], rewinds to the final work round in a clean paused state (isRunning = false).
+     * - For [TimerMode.EMOM]: if currentRound > 1, decrements round and resets round clock to intervalSeconds.
+     * - For [TimerMode.TABATA]: if in REST, reverts to WORK of the same round; if in WORK and currentRound > 1, decrements round to WORK.
+     * - For [TimerMode.DEATH_BY]: if currentRound > 1, decrements round, resets round clock to 60s, and updates targetRepsCurrentRound.
+     * - For single-round modes ([TimerMode.AMRAP], [TimerMode.TIME_CAP], [TimerMode.REST]) or boundary conditions (currentRound <= 1 in WORK, or IDLE/PREP phase), this is a strict no-op.
+     */
+    fun previousRound() {
+        val current = _snapshot.value
+        if (current.phase == TimerPhase.IDLE || current.phase == TimerPhase.PREP) return
+
+        if (current.phase == TimerPhase.FINISHED) {
+            timerJob?.cancel()
+            val finalRound = config.totalRounds
+            when (config.mode) {
+                TimerMode.EMOM -> {
+                    val roundSecs = config.intervalSeconds
+                    val remainingTotal = roundSecs
+                    _snapshot.value = current.copy(
+                        phase = TimerPhase.WORK,
+                        isRunning = false,
+                        currentRound = finalRound,
+                        roundSecondsRemaining = roundSecs,
+                        roundSecondsElapsed = 0,
+                        roundTotalSeconds = roundSecs,
+                        totalSecondsRemaining = remainingTotal
+                    )
+                }
+                TimerMode.TABATA -> {
+                    val roundSecs = config.workSeconds
+                    val remainingTotal = config.workSeconds + config.restSeconds
+                    _snapshot.value = current.copy(
+                        phase = TimerPhase.WORK,
+                        isRunning = false,
+                        currentRound = finalRound,
+                        roundSecondsRemaining = roundSecs,
+                        roundSecondsElapsed = 0,
+                        roundTotalSeconds = roundSecs,
+                        totalSecondsRemaining = remainingTotal
+                    )
+                }
+                TimerMode.DEATH_BY -> {
+                    val roundSecs = 60
+                    val remainingTotal = 60
+                    _snapshot.value = current.copy(
+                        phase = TimerPhase.WORK,
+                        isRunning = false,
+                        currentRound = finalRound,
+                        roundSecondsRemaining = roundSecs,
+                        roundSecondsElapsed = 0,
+                        roundTotalSeconds = roundSecs,
+                        targetRepsCurrentRound = finalRound,
+                        totalSecondsRemaining = remainingTotal
+                    )
+                }
+                TimerMode.AMRAP, TimerMode.TIME_CAP, TimerMode.REST -> {
+                    // No-op for non-round / single-round modes
+                }
+            }
+            return
+        }
+
+        when (config.mode) {
+            TimerMode.EMOM -> {
+                if (current.currentRound <= 1) return
+                val prevRound = current.currentRound - 1
+                val roundSecs = config.intervalSeconds
+                val remainingTotal = (config.totalRounds - prevRound + 1) * roundSecs
+                _snapshot.value = current.copy(
+                    phase = TimerPhase.WORK,
+                    currentRound = prevRound,
+                    roundSecondsRemaining = roundSecs,
+                    roundSecondsElapsed = 0,
+                    roundTotalSeconds = roundSecs,
+                    totalSecondsRemaining = remainingTotal
+                )
+            }
+            TimerMode.TABATA -> {
+                if (current.phase == TimerPhase.REST) {
+                    // In REST: revert to WORK of the same round
+                    val remainingTotal = (config.totalRounds - current.currentRound + 1) * (config.workSeconds + config.restSeconds)
+                    _snapshot.value = current.copy(
+                        phase = TimerPhase.WORK,
+                        roundSecondsRemaining = config.workSeconds,
+                        roundSecondsElapsed = 0,
+                        roundTotalSeconds = config.workSeconds,
+                        totalSecondsRemaining = remainingTotal
+                    )
+                } else {
+                    // In WORK: decrement to WORK of previous round if > 1
+                    if (current.currentRound <= 1) return
+                    val prevRound = current.currentRound - 1
+                    val remainingTotal = (config.totalRounds - prevRound + 1) * (config.workSeconds + config.restSeconds)
+                    _snapshot.value = current.copy(
+                        phase = TimerPhase.WORK,
+                        currentRound = prevRound,
+                        roundSecondsRemaining = config.workSeconds,
+                        roundSecondsElapsed = 0,
+                        roundTotalSeconds = config.workSeconds,
+                        totalSecondsRemaining = remainingTotal
+                    )
+                }
+            }
+            TimerMode.DEATH_BY -> {
+                if (current.currentRound <= 1) return
+                val prevRound = current.currentRound - 1
+                val roundSecs = 60
+                val remainingTotal = (config.totalRounds - prevRound + 1) * 60
+                _snapshot.value = current.copy(
+                    phase = TimerPhase.WORK,
+                    currentRound = prevRound,
+                    roundSecondsRemaining = roundSecs,
+                    roundSecondsElapsed = 0,
+                    roundTotalSeconds = roundSecs,
+                    targetRepsCurrentRound = prevRound,
+                    totalSecondsRemaining = remainingTotal
+                )
+            }
+            TimerMode.AMRAP, TimerMode.TIME_CAP, TimerMode.REST -> {
+                // Strict no-op for single-round / non-round modes
+            }
+        }
+    }
+
     private suspend fun runPrepPhase() {
         var prepLeft = config.prepCountdownSeconds
         val totalSecs = calculateInitialTotalSeconds(config)
