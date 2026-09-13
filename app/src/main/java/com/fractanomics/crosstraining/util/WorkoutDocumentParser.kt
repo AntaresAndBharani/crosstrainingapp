@@ -79,7 +79,7 @@ data class ParsedWorkoutDocument(
 object WorkoutDocumentParser {
 
     // Strict digit-bounded lookaround regex: replaces comma with dot ONLY between digits
-    private val DECIMAL_COMMA_REGEX = Regex("""(?<=\d),(?=\d)""")
+    internal val DECIMAL_COMMA_REGEX = Regex("""(?<=\d),(?=\d)""")
 
     // Shorthand set token regex: matches weight and optional parenthesized annotation
     // e.g. "57.5", "60", "60(1 rep)", "60(fail)", "0(4)", "0(5 reps)", "100(3)", "60 (fail)"
@@ -89,8 +89,8 @@ object WorkoutDocumentParser {
     )
 
     // Format regex matching EMOM, EXMOM, EX.YMOM, AMRAP, FOR TIME, TABATA, REST
-    private val FORMAT_REGEX = Regex(
-        """\b(E\d+(?:\.\d+)?MOM|EMOM(?:\s+\d+)?|AMRAP(?:\s+\d+)?|FOR TIME|FT|TABATA|REST(?:\s+\d+(?:\s*min|\s*sec|\s*s)?)?)\b""",
+    internal val FORMAT_REGEX = Regex(
+        """\b(E\d+(?:\.\d+)?MOM|EMOM(?:\s+\d+)?|AMRAP(?:\s+\d+)?|FOR TIME(?:\s+\d+)?|FT(?:\s+\d+)?|TABATA|REST(?:\s+\d+(?:\s*min|\s*sec|\s*s)?)?)\b""",
         RegexOption.IGNORE_CASE
     )
 
