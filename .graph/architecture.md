@@ -587,6 +587,13 @@ Offline backups and data exports must preserve complete relational integrity:
 - Adheres to RFC-4180 quoting rules to safely round-trip multiline notes, quotes, and punctuation.
 - Preserves primary keys, foreign keys, sections, and soft-delete tombstones across restore cycles.
 
+### 15. Reactive Navigation Engine, Canonical Routing & Dynamic Viewport Mode Selection
+To guarantee deadlock-free navigation and robust, glanceable telemetry across user roles:
+- **Single Reactive Source of Truth (`AppViewModel.progressMode`)**: Mode state is hoisted to `AppViewModel` as a `StateFlow<ProgressMode>`, establishing a single reactive source of truth shared between navigation drawer items, profile shortcut cards, and screen filter chips.
+- **Mutually Exclusive Canonical Drawer Routing**: Dedicated `DrawerItem.WEIGHT` under `DrawerSection.WORKOUTS` routes canonically to `"progress"` while setting `ProgressMode.BODY_WEIGHT`. Selection state in `AppDrawerContent` evaluates `DrawerItem.WEIGHT` (`route == "progress" && currentProgressMode == ProgressMode.BODY_WEIGHT`) and `DrawerItem.PROGRESS` (`route == "progress" && currentProgressMode != ProgressMode.BODY_WEIGHT`), preventing duplicate drawer highlighting and re-navigation deadlock.
+- **Dual-State Profile Weight Telemetry (`ProfileWeightCard`)**: Rendered directly beneath the User Profile Card across both Athlete and Coach modes. Features an inviting empty state with a prominent `"Log First Weigh-in"` CTA when zero entries exist, and a populated state displaying latest weight, unit, color-coded 30-day delta trend badge, and `"Open Weight Tracker"` CTA. Both CTAs invoke `onNavigateToWeight` to route directly into Body Weight mode.
+- **Crash-Free Dynamic Mode Derivation & Edge-to-Edge Auto-Scroll**: `ProgressScreen` dynamically derives `availableModes` (`BY_EXERCISE`, optional `BY_ROUTINE`, optional `CYCLE_GOALS`, `BODY_WEIGHT`) matching rendered items, eliminating non-zero index crashes on empty datasets. Replaces rigid rows with `LazyRow` using native `contentPadding = PaddingValues(horizontal = 16.dp)`, edge-to-edge layout styling, and programmatic auto-scroll via `lazyListState.animateScrollToItem(idx)` driven by `LaunchedEffect(progressMode, availableModes)`. Timeframe chips in `WeightOverviewContent` utilize `horizontalScroll` and zero-allocation `Timeframe.entries`.
+
 ---
 
 ## Architectural Constraints & Anti-Patterns
