@@ -57,6 +57,9 @@ import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.ViewAgenda
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -273,6 +276,58 @@ internal fun BlockState.toDraftOrNull(): BlockDraft? {
     )
 }
 
+internal sealed class EditorBlockItem {
+    data class Standalone(val index: Int, val block: BlockState) : EditorBlockItem()
+    data class SubBlockGroup(
+        val subBlockName: String,
+        val format: String,
+        val items: List<Pair<Int, BlockState>>
+    ) : EditorBlockItem() {
+        val totalRounds: Int
+            get() = items.maxOfOrNull { it.second.sets.size } ?: 0
+    }
+}
+
+internal fun groupEditorBlocks(blocks: List<BlockState>): List<EditorBlockItem> {
+    val result = mutableListOf<EditorBlockItem>()
+    var i = 0
+    while (i < blocks.size) {
+        val currentBlock = blocks[i]
+        val trimmedSub = currentBlock.subBlock.trim()
+        val trimmedSection = currentBlock.section.trim()
+
+        if (trimmedSub.isBlank()) {
+            result.add(EditorBlockItem.Standalone(i, currentBlock))
+            i++
+        } else {
+            val groupItems = mutableListOf<Pair<Int, BlockState>>()
+            groupItems.add(i to currentBlock)
+            var j = i + 1
+            while (j < blocks.size) {
+                val nextBlock = blocks[j]
+                if (nextBlock.subBlock.trim().equals(trimmedSub, ignoreCase = true) &&
+                    nextBlock.section.trim().equals(trimmedSection, ignoreCase = true)
+                ) {
+                    groupItems.add(j to nextBlock)
+                    j++
+                } else {
+                    break
+                }
+            }
+            val groupFormat = groupItems.firstOrNull { it.second.format.isNotBlank() }?.second?.format ?: ""
+            result.add(
+                EditorBlockItem.SubBlockGroup(
+                    subBlockName = trimmedSub,
+                    format = groupFormat,
+                    items = groupItems
+                )
+            )
+            i = j
+        }
+    }
+    return result
+}
+
 // --- Shared editor body ------------------------------------------------------
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -474,7 +529,8 @@ fun SessionEditorBody(
                                             SetState(reps = reps.toString(), value = "")
                                         }.toMutableStateList(),
                                         section = blk.section,
-                                        exerciseIdsCsv = blk.exerciseIdsCsv
+                                        exerciseIdsCsv = blk.exerciseIdsCsv,
+                                        subBlock = blk.subBlock
                                     )
                                     blocks.add(newBlockState)
                                 }
@@ -522,17 +578,22 @@ fun SessionEditorBody(
                 }
             }
 
-            // Blocks List grouped by section header
-            blocks.forEachIndexed { index, block ->
-                val prevSection = if (index > 0) blocks[index - 1].section.trim() else null
-                val currentSection = block.section.trim()
+            // Blocks List grouped by section header and sub-block containers
+            val editorItems = groupEditorBlocks(blocks)
+            var prevSection: String? = null
+            editorItems.forEach { item ->
+                val currentSection = when (item) {
+                    is EditorBlockItem.Standalone -> item.block.section.trim()
+                    is EditorBlockItem.SubBlockGroup -> item.items.first().second.section.trim()
+                }
+
                 if (currentSection.isNotBlank() && currentSection != prevSection) {
                     Surface(
                         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = if (index > 0) 8.dp else 0.dp)
+                            .padding(top = if (prevSection != null) 8.dp else 0.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -547,16 +608,111 @@ fun SessionEditorBody(
                         }
                     }
                 }
+                prevSection = currentSection
 
-                CompactBlockEditor(
-                    index = index,
-                    block = block,
-                    blocks = blocks,
-                    exercises = exercises,
-                    routines = routines,
-                    canRemove = blocks.size > 1,
-                    onRemove = { blocks.removeAt(index) }
-                )
+                when (item) {
+                    is EditorBlockItem.Standalone -> {
+                        CompactBlockEditor(
+                            index = item.index,
+                            block = item.block,
+                            blocks = blocks,
+                            exercises = exercises,
+                            routines = routines,
+                            canRemove = blocks.size > 1,
+                            onRemove = { blocks.removeAt(item.index) }
+                        )
+                    }
+                    is EditorBlockItem.SubBlockGroup -> {
+                        OutlinedCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.outlinedCardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            ),
+                            border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                // Sub-Block Header Row: Title, Format Badge, Round Counter
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.ViewAgenda,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            text = item.subBlockName,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        if (item.format.isNotBlank()) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = item.format,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+
+                                        val rounds = item.totalRounds
+                                        Surface(
+                                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "$rounds ${if (rounds == 1) "Round" else "Rounds"}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Child blocks rendered inside container
+                                item.items.forEach { (childIndex, childBlock) ->
+                                    CompactBlockEditor(
+                                        index = childIndex,
+                                        block = childBlock,
+                                        blocks = blocks,
+                                        exercises = exercises,
+                                        routines = routines,
+                                        canRemove = blocks.size > 1,
+                                        onRemove = { blocks.removeAt(childIndex) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Quick Add Blocks Action Bar
@@ -802,6 +958,15 @@ private fun CompactBlockEditor(
                         value = block.section,
                         onValueChange = { block.section = it },
                         label = { Text("Macro-Block Section (e.g. Strength, Accessories)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = block.subBlock,
+                        onValueChange = { block.subBlock = it },
+                        label = { Text("Sub-Block / Triset (e.g. E3MOM Trisets, Superset A)") },
                         singleLine = true,
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()

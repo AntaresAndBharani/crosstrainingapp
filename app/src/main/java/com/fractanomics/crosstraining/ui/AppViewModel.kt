@@ -427,7 +427,8 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
                     resultText = bd.resultText,
                     resultValue = bd.resultValue,
                     section = bd.section,
-                    exerciseIdsCsv = bd.exerciseIdsCsv
+                    exerciseIdsCsv = bd.exerciseIdsCsv,
+                    subBlock = bd.subBlock
                 ),
                 sets = bd.sets.map { sd ->
                     BlockSet(
