@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mail
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MonitorWeight
 import androidx.compose.material.icons.filled.Palette
 import com.fractanomics.crosstraining.data.model.UserRole
 import androidx.compose.material.icons.filled.RadioButtonChecked
@@ -92,11 +93,15 @@ import com.fractanomics.crosstraining.data.firebase.CloudSyncErrorMapper
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.firebase.SyncStatus
+import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
+import com.fractanomics.crosstraining.data.model.WeightEntry
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.theme.AppThemeMode
 import androidx.compose.material.icons.filled.Close
+import java.util.Locale
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -108,7 +113,8 @@ fun ProfileScreen(
     snackbar: SnackbarHostState,
     outerPadding: PaddingValues = PaddingValues(),
     onOpenDrawer: () -> Unit = {},
-    onOpenTimer: () -> Unit = {}
+    onOpenTimer: () -> Unit = {},
+    onNavigateToWeight: () -> Unit = {}
 ) {
     val authUser by viewModel.authUser.collectAsStateWithLifecycle()
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
@@ -117,6 +123,8 @@ fun ProfileScreen(
     val currentThemeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val currentUserRole by viewModel.userRole.collectAsStateWithLifecycle()
     val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
+    val weightEntries by viewModel.weightEntries.collectAsStateWithLifecycle()
+    val weightUnit by viewModel.weightUnit.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val credentialManager = remember { CredentialManager.create(context) }
@@ -259,6 +267,13 @@ fun ProfileScreen(
                     }
                 }
             }
+
+            // Body Weight Card (Profile Shortcut)
+            ProfileWeightCard(
+                entries = weightEntries,
+                unit = weightUnit,
+                onNavigateToWeight = onNavigateToWeight
+            )
 
             // Data Mode Card
             DataModeCard(
@@ -1190,3 +1205,191 @@ fun CloudBackupSyncCard(
         }
     }
 }
+
+/**
+ * Dual-state shortcut card on the Profile screen providing rapid glanceability of
+ * athlete body weight progress and direct entry into the Body Weight dashboard (Issue #532).
+ *
+ * States supported:
+ * - Empty state: When zero weigh-ins are logged, displays an inviting empty state with
+ *   "No weigh-ins logged yet" and primary CTA "Log First Weigh-in".
+ * - Populated state: Displays latest logged weight, 30-day delta trend badge, unit, and
+ *   primary CTA "Open Weight Tracker".
+ *
+ * Presentation invariant: Visible across both Athlete and Coach modes.
+ */
+@Composable
+fun ProfileWeightCard(
+    entries: List<WeightEntry>,
+    unit: String,
+    onNavigateToWeight: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val activeSorted = remember(entries) {
+        entries
+            .filter { it.deletedAtMillis == null }
+            .sortedBy { it.date }
+    }
+
+    val latestEntry = activeSorted.lastOrNull()
+    val isImperial = unit.equals("lbs", ignoreCase = true)
+
+    ElevatedCard(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // Header Row with Icon & Title
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.MonitorWeight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Body Weight",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Text(
+                        text = "TRACKER",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            if (latestEntry == null) {
+                // Empty State: zero weigh-ins logged yet
+                Text(
+                    text = "No weigh-ins logged yet",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Button(
+                    onClick = onNavigateToWeight,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        Icons.Filled.MonitorWeight,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Log First Weigh-in")
+                }
+            } else {
+                // Populated State: Latest logged weight and 30-day delta trend
+                val currentDisplayWeight = if (isImperial) {
+                    WeightAnalytics.kgToLbs(latestEntry.weightKg)
+                } else {
+                    latestEntry.weightKg
+                }
+
+                // 30-day delta trend: compare against entry closest to 30 days ago
+                val targetDate = latestEntry.date.minusDays(30)
+                val historicalCandidates = activeSorted.filter { !it.date.isAfter(targetDate) }
+                val comparisonEntry = historicalCandidates.lastOrNull()
+                    ?: if (activeSorted.size > 1) activeSorted.first() else null
+
+                val deltaWeight = if (comparisonEntry != null && comparisonEntry != latestEntry && comparisonEntry.weightKg > 0.0) {
+                    val deltaKg = latestEntry.weightKg - comparisonEntry.weightKg
+                    if (isImperial) WeightAnalytics.kgToLbs(deltaKg) else deltaKg
+                } else null
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = String.format(Locale.getDefault(), "%.1f", currentDisplayWeight),
+                            style = MaterialTheme.typography.headlineLarge.copy(
+                                fontSize = 36.sp,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = unit.lowercase(),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                    }
+
+                    if (deltaWeight != null) {
+                        val isGain = deltaWeight > 0.0
+                        val isNeutral = Math.abs(deltaWeight) < 0.05
+                        val badgeColor = when {
+                            isNeutral -> MaterialTheme.colorScheme.surfaceVariant
+                            isGain -> MaterialTheme.colorScheme.errorContainer
+                            else -> MaterialTheme.colorScheme.primaryContainer
+                        }
+                        val textColor = when {
+                            isNeutral -> MaterialTheme.colorScheme.onSurfaceVariant
+                            isGain -> MaterialTheme.colorScheme.onErrorContainer
+                            else -> MaterialTheme.colorScheme.onPrimaryContainer
+                        }
+                        val sign = if (isGain) "+" else ""
+
+                        Surface(
+                            color = badgeColor,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        ) {
+                            Text(
+                                text = "$sign${String.format(Locale.getDefault(), "%.1f", deltaWeight)} $unit (30d)",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = textColor,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = onNavigateToWeight,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        Icons.Filled.MonitorWeight,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Open Weight Tracker")
+                }
+            }
+        }
+    }
+}
+
