@@ -32,6 +32,10 @@ import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.ViewAgenda
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -199,6 +203,58 @@ private fun setToken(set: BlockSet): String {
     return "$prefix$core$suffix"
 }
 
+internal sealed class HistoryBlockItem {
+    data class Standalone(val index: Int, val blockWithSets: BlockWithSets) : HistoryBlockItem()
+    data class SubBlockGroup(
+        val subBlockName: String,
+        val format: String,
+        val items: List<Pair<Int, BlockWithSets>>
+    ) : HistoryBlockItem() {
+        val totalRounds: Int
+            get() = items.maxOfOrNull { it.second.sets.size } ?: 0
+    }
+}
+
+internal fun groupHistoryBlocks(blocks: List<BlockWithSets>): List<HistoryBlockItem> {
+    val result = mutableListOf<HistoryBlockItem>()
+    var i = 0
+    while (i < blocks.size) {
+        val currentBlock = blocks[i]
+        val trimmedSub = currentBlock.block.subBlock.trim()
+        val trimmedSection = currentBlock.block.section.trim()
+
+        if (trimmedSub.isBlank()) {
+            result.add(HistoryBlockItem.Standalone(i, currentBlock))
+            i++
+        } else {
+            val groupItems = mutableListOf<Pair<Int, BlockWithSets>>()
+            groupItems.add(i to currentBlock)
+            var j = i + 1
+            while (j < blocks.size) {
+                val nextBlock = blocks[j]
+                if (nextBlock.block.subBlock.trim().equals(trimmedSub, ignoreCase = true) &&
+                    nextBlock.block.section.trim().equals(trimmedSection, ignoreCase = true)
+                ) {
+                    groupItems.add(j to nextBlock)
+                    j++
+                } else {
+                    break
+                }
+            }
+            val groupFormat = groupItems.firstOrNull { it.second.block.format.isNotBlank() }?.second?.block?.format ?: ""
+            result.add(
+                HistoryBlockItem.SubBlockGroup(
+                    subBlockName = trimmedSub,
+                    format = groupFormat,
+                    items = groupItems
+                )
+            )
+            i = j
+        }
+    }
+    return result
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CompactSessionCard(
@@ -334,81 +390,132 @@ private fun CompactSessionCard(
                 ) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                    item.blocks.sortedBy { it.block.position }.forEachIndexed { idx, bws ->
-                        val b = bws.block
-                        val title = b.name.ifBlank { b.mainExerciseId?.let { exerciseNames[it] } ?: "Block ${idx + 1}" }
+                    val historyItems = remember(item.blocks) {
+                        groupHistoryBlocks(item.blocks.sortedBy { it.block.position })
+                    }
+                    var prevSection: String? = null
+                    historyItems.forEach { hItem ->
+                        val currentSection = when (hItem) {
+                            is HistoryBlockItem.Standalone -> hItem.blockWithSets.block.section.trim()
+                            is HistoryBlockItem.SubBlockGroup -> hItem.items.first().second.block.section.trim()
+                        }
 
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                                .padding(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                        if (currentSection.isNotBlank() && currentSection != prevSection) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = if (prevSection != null) 8.dp else 0.dp)
                             ) {
-                                Text(
-                                    title,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                if (b.kind != BlockKind.STRENGTH) {
-                                    AssistChip(
-                                        onClick = {},
-                                        label = { Text(b.kind.label, style = MaterialTheme.typography.labelSmall) }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = currentSection,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
                                 }
                             }
+                        }
+                        prevSection = currentSection
 
-                            if (b.description.isNotBlank()) {
-                                Text(b.description, style = MaterialTheme.typography.bodySmall)
+                        when (hItem) {
+                            is HistoryBlockItem.Standalone -> {
+                                HistoryBlockCard(
+                                    idx = hItem.index,
+                                    bws = hItem.blockWithSets,
+                                    exerciseNames = exerciseNames
+                                )
                             }
-
-                            // Sets Grid
-                            if (bws.sets.isNotEmpty()) {
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    bws.sets.sortedBy { it.position }.forEachIndexed { setIdx, st ->
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = when {
-                                                st.isFailed -> MaterialTheme.colorScheme.errorContainer
-                                                st.isWarmup -> Color(0xFFFEF3C7)
-                                                else -> MaterialTheme.colorScheme.surface
-                                            },
-                                            modifier = Modifier.padding(vertical = 2.dp)
+                            is HistoryBlockItem.SubBlockGroup -> {
+                                OutlinedCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = CardDefaults.outlinedCardColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                    ),
+                                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        // Sub-Block Header Row: Title, Format Badge, Round Counter
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
-                                            Text(
-                                                "#${setIdx + 1}: ${setToken(st)}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.SemiBold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
-                                                color = when {
-                                                    st.isFailed -> MaterialTheme.colorScheme.onErrorContainer
-                                                    st.isWarmup -> Color(0xFFB45309)
-                                                    else -> MaterialTheme.colorScheme.onSurface
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            ) {
+                                                Icon(
+                                                    Icons.Filled.ViewAgenda,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                                Text(
+                                                    text = hItem.subBlockName,
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                if (hItem.format.isNotBlank()) {
+                                                    Surface(
+                                                        color = MaterialTheme.colorScheme.secondaryContainer,
+                                                        shape = RoundedCornerShape(6.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = hItem.format,
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
                                                 }
+
+                                                val rounds = hItem.totalRounds
+                                                Surface(
+                                                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "$rounds ${if (rounds == 1) "Round" else "Rounds"}",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        // Child blocks inside sub-block container
+                                        hItem.items.forEach { (childIdx, childBws) ->
+                                            HistoryBlockCard(
+                                                idx = childIdx,
+                                                bws = childBws,
+                                                exerciseNames = exerciseNames
                                             )
                                         }
                                     }
                                 }
-                            }
-
-                            // Metcon Result
-                            val result = listOfNotNull(
-                                b.resultText.ifBlank { null },
-                                b.resultValue?.let { "= ${it.trimmed()}" }
-                            ).joinToString(" ")
-                            if (result.isNotBlank()) {
-                                Text(
-                                    "Score: $result",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
                             }
                         }
                     }
@@ -445,6 +552,91 @@ private fun CompactSessionCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun HistoryBlockCard(
+    idx: Int,
+    bws: BlockWithSets,
+    exerciseNames: Map<Long, String>
+) {
+    val b = bws.block
+    val title = b.name.ifBlank { b.mainExerciseId?.let { exerciseNames[it] } ?: "Block ${idx + 1}" }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            if (b.kind != BlockKind.STRENGTH) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text(b.kind.label, style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+        }
+
+        if (b.description.isNotBlank()) {
+            Text(b.description, style = MaterialTheme.typography.bodySmall)
+        }
+
+        // Sets Grid
+        if (bws.sets.isNotEmpty()) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                bws.sets.sortedBy { it.position }.forEachIndexed { setIdx, st ->
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = when {
+                            st.isFailed -> MaterialTheme.colorScheme.errorContainer
+                            st.isWarmup -> Color(0xFFFEF3C7)
+                            else -> MaterialTheme.colorScheme.surface
+                        },
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    ) {
+                        Text(
+                            "#${setIdx + 1}: ${setToken(st)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                            color = when {
+                                st.isFailed -> MaterialTheme.colorScheme.onErrorContainer
+                                st.isWarmup -> Color(0xFFB45309)
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Metcon Result
+        val result = listOfNotNull(
+            b.resultText.ifBlank { null },
+            b.resultValue?.let { "= ${it.trimmed()}" }
+        ).joinToString(" ")
+        if (result.isNotBlank()) {
+            Text(
+                "Score: $result",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
     }
 }

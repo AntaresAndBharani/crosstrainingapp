@@ -38,6 +38,10 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.ViewAgenda
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -568,6 +572,85 @@ private fun CompactExerciseCard(exercise: Exercise, onEdit: () -> Unit, onDelete
     }
 }
 
+internal sealed class RoutineBlockItem {
+    data class Standalone(val index: Int, val block: RoutineBlock) : RoutineBlockItem()
+    data class SubBlockGroup(
+        val subBlockName: String,
+        val format: String,
+        val items: List<Pair<Int, RoutineBlock>>
+    ) : RoutineBlockItem() {
+        val totalSetsCount: Int
+            get() = items.maxOfOrNull { it.second.setsCount } ?: 0
+    }
+}
+
+internal fun groupRoutineBlocks(blocks: List<RoutineBlock>): List<RoutineBlockItem> {
+    val result = mutableListOf<RoutineBlockItem>()
+    var i = 0
+    while (i < blocks.size) {
+        val currentBlock = blocks[i]
+        val trimmedSub = currentBlock.subBlock.trim()
+        val trimmedSection = currentBlock.section.trim()
+        val trimmedScheme = currentBlock.targetRepsScheme.trim()
+
+        val effectiveSub = if (trimmedSub.isNotBlank()) {
+            trimmedSub
+        } else if (trimmedScheme.startsWith("TRISET", ignoreCase = true) ||
+            trimmedScheme.startsWith("SUPERSET", ignoreCase = true) ||
+            trimmedScheme.startsWith("BISET", ignoreCase = true)
+        ) {
+            trimmedScheme
+        } else {
+            ""
+        }
+
+        if (effectiveSub.isBlank()) {
+            result.add(RoutineBlockItem.Standalone(i, currentBlock))
+            i++
+        } else {
+            val groupItems = mutableListOf<Pair<Int, RoutineBlock>>()
+            groupItems.add(i to currentBlock)
+            var j = i + 1
+            while (j < blocks.size) {
+                val nextBlock = blocks[j]
+                val nextSub = nextBlock.subBlock.trim()
+                val nextSection = nextBlock.section.trim()
+                val nextScheme = nextBlock.targetRepsScheme.trim()
+
+                val nextEffectiveSub = if (nextSub.isNotBlank()) {
+                    nextSub
+                } else if (nextScheme.startsWith("TRISET", ignoreCase = true) ||
+                    nextScheme.startsWith("SUPERSET", ignoreCase = true) ||
+                    nextScheme.startsWith("BISET", ignoreCase = true)
+                ) {
+                    nextScheme
+                } else {
+                    ""
+                }
+
+                if (nextEffectiveSub.equals(effectiveSub, ignoreCase = true) &&
+                    nextSection.equals(trimmedSection, ignoreCase = true)
+                ) {
+                    groupItems.add(j to nextBlock)
+                    j++
+                } else {
+                    break
+                }
+            }
+            val groupFormat = groupItems.firstOrNull { it.second.format.isNotBlank() }?.second?.format ?: ""
+            result.add(
+                RoutineBlockItem.SubBlockGroup(
+                    subBlockName = effectiveSub,
+                    format = groupFormat,
+                    items = groupItems
+                )
+            )
+            i = j
+        }
+    }
+    return result
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RoutineCard(
@@ -590,87 +673,130 @@ private fun RoutineCard(
             if (blocks.isNotEmpty()) {
                 HorizontalDivider()
                 Text("Blocks (${blocks.size}):", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                blocks.forEachIndexed { idx, blk ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+
+                val routineItems = remember(blocks) { groupRoutineBlocks(blocks) }
+                var prevSection: String? = null
+                routineItems.forEach { rItem ->
+                    val currentSection = when (rItem) {
+                        is RoutineBlockItem.Standalone -> rItem.block.section.trim()
+                        is RoutineBlockItem.SubBlockGroup -> rItem.items.first().second.section.trim()
+                    }
+
+                    if (currentSection.isNotBlank() && currentSection != prevSection) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = if (prevSection != null) 8.dp else 0.dp)
                         ) {
-                            Text(
-                                text = "${idx + 1}. ${blk.name.ifBlank { blk.kind.label }}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(4.dp))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                             ) {
                                 Text(
-                                    blk.kind.label,
-                                    style = MaterialTheme.typography.labelSmall,
+                                    text = currentSection,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                             }
                         }
+                    }
+                    prevSection = currentSection
 
-                        val detailLine = listOfNotNull(
-                            blk.format.takeIf { it.isNotBlank() }?.let { "Format: $it" },
-                            if (blk.targetRepsScheme.isNotBlank()) "Reps: ${blk.targetRepsScheme}" else null,
-                            if (blk.setsCount > 1) "${blk.setsCount} sets" else null
-                        ).joinToString(" · ")
-
-                        if (detailLine.isNotBlank()) {
-                            Text(detailLine, style = MaterialTheme.typography.bodySmall)
-                        }
-
-                        val (wInt, rInt, sMetric) = parseMetabolicNotes(blk.notes)
-                        if (wInt.isNotBlank() || rInt.isNotBlank()) {
-                            val metaSummary = listOfNotNull(
-                                if (wInt.isNotBlank()) "Work: $wInt" else null,
-                                if (rInt.isNotBlank()) "Rest: $rInt" else null,
-                                "Score: ${sMetric.label}"
-                            ).joinToString("  ·  ")
-                            Text(
-                                text = metaSummary,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.padding(top = 2.dp)
+                    when (rItem) {
+                        is RoutineBlockItem.Standalone -> {
+                            RoutineBlockCard(
+                                idx = rItem.index,
+                                blk = rItem.block,
+                                exercises = exercises
                             )
                         }
-
-                        val targetExNames = blk.exerciseIdsCsv.split(",")
-                            .mapNotNull { idStr -> idStr.trim().toLongOrNull() }
-                            .mapNotNull { id -> exercises.firstOrNull { it.id == id }?.name }
-
-                        if (targetExNames.isNotEmpty()) {
-                            if (targetExNames.size > 1 || blk.kind == BlockKind.COMPLEX || blk.kind == BlockKind.SUPERSET) {
-                                val seqText = formatExerciseSequence(targetExNames, blk.targetRepsScheme)
-                                Text(
-                                    text = "Sequence: $seqText",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(top = 2.dp)
-                                )
-                            } else {
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    targetExNames.forEach { exName ->
-                                        Box(
-                                            modifier = Modifier
-                                                .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(4.dp))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        is RoutineBlockItem.SubBlockGroup -> {
+                            OutlinedCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.outlinedCardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                ),
+                                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    // Sub-Block Header Row: Title, Format Badge, Sets / Rounds Counter
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            modifier = Modifier.weight(1f, fill = false)
                                         ) {
-                                            Text(exName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                                            Icon(
+                                                Icons.Filled.ViewAgenda,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                            Text(
+                                                text = rItem.subBlockName,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
                                         }
+
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            if (rItem.format.isNotBlank()) {
+                                                Surface(
+                                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = rItem.format,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+
+                                            val setsCount = rItem.totalSetsCount
+                                            if (setsCount > 0) {
+                                                Surface(
+                                                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "$setsCount ${if (setsCount == 1) "Round" else "Rounds"}",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Child routine blocks inside container
+                                    rItem.items.forEach { (childIdx, childBlk) ->
+                                        RoutineBlockCard(
+                                            idx = childIdx,
+                                            blk = childBlk,
+                                            exercises = exercises
+                                        )
                                     }
                                 }
                             }
@@ -693,6 +819,101 @@ private fun RoutineCard(
         }
     }
 }
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RoutineBlockCard(
+    idx: Int,
+    blk: RoutineBlock,
+    exercises: List<Exercise>
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${idx + 1}. ${blk.name.ifBlank { blk.kind.label }}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Box(
+                modifier = Modifier
+                    .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    blk.kind.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+
+        val detailLine = listOfNotNull(
+            blk.format.takeIf { it.isNotBlank() }?.let { "Format: $it" },
+            if (blk.targetRepsScheme.isNotBlank()) "Reps: ${blk.targetRepsScheme}" else null,
+            if (blk.setsCount > 1) "${blk.setsCount} sets" else null
+        ).joinToString(" · ")
+
+        if (detailLine.isNotBlank()) {
+            Text(detailLine, style = MaterialTheme.typography.bodySmall)
+        }
+
+        val (wInt, rInt, sMetric) = parseMetabolicNotes(blk.notes)
+        if (wInt.isNotBlank() || rInt.isNotBlank()) {
+            val metaSummary = listOfNotNull(
+                if (wInt.isNotBlank()) "Work: $wInt" else null,
+                if (rInt.isNotBlank()) "Rest: $rInt" else null,
+                "Score: ${sMetric.label}"
+            ).joinToString("  ·  ")
+            Text(
+                text = metaSummary,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+
+        val targetExNames = blk.exerciseIdsCsv.split(",")
+            .mapNotNull { idStr -> idStr.trim().toLongOrNull() }
+            .mapNotNull { id -> exercises.firstOrNull { it.id == id }?.name }
+
+        if (targetExNames.isNotEmpty()) {
+            if (targetExNames.size > 1 || blk.kind == BlockKind.COMPLEX || blk.kind == BlockKind.SUPERSET) {
+                val seqText = formatExerciseSequence(targetExNames, blk.targetRepsScheme)
+                Text(
+                    text = "Sequence: $seqText",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            } else {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    targetExNames.forEach { exName ->
+                        Box(
+                            modifier = Modifier
+                                .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(exName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 private fun ExerciseEditorDialog(
