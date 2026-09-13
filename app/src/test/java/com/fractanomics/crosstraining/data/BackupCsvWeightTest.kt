@@ -39,7 +39,7 @@ class BackupCsvWeightTest {
         val backup = BackupData(weightEntries = listOf(activeEntry, tombstoneEntry))
         val encoded = BackupCsv.encode(backup)
 
-        assertTrue("Encoded CSV must have v4 header", encoded.startsWith("#crosstraining-backup-v4"))
+        assertTrue("Encoded CSV must have v5 header", encoded.startsWith("#crosstraining-backup-v5"))
         assertTrue("Encoded CSV must contain #weightEntries section", encoded.contains("#weightEntries\n"))
 
         val decoded = BackupCsv.decode(encoded)

@@ -34,5 +34,6 @@ data class RoutineBlock(
     val targetRepsScheme: String = "",
     val exerciseIdsCsv: String = "",
     val notes: String = "",
-    val section: String = ""
+    val section: String = "",
+    val subBlock: String = ""
 )

@@ -43,7 +43,8 @@ data class ParsedDocumentBlock(
     val movements: List<String> = emptyList(),
     val sets: List<ParsedDocumentSet> = emptyList(),
     val targetReps: Int? = null,
-    val rawText: String = ""
+    val rawText: String = "",
+    val subBlock: String = ""
 )
 
 /**
@@ -274,11 +275,13 @@ object WorkoutDocumentParser {
                     lineIndex++
                 }
 
+                val clusterSubBlock = rawLine.trim().replace(Regex("""^#+\s*"""), "").trim()
                 val parsedClusterBlocks = parseTrisetCluster(
                     clusterItems = clusterItems,
                     format = format,
                     scheme = clusterScheme,
-                    section = currentSection
+                    section = currentSection,
+                    subBlock = clusterSubBlock
                 )
                 parsedBlocks.addAll(parsedClusterBlocks)
                 continue
@@ -339,7 +342,8 @@ object WorkoutDocumentParser {
         clusterItems: List<String>,
         format: String,
         scheme: String,
-        section: String
+        section: String,
+        subBlock: String = ""
     ): List<ParsedDocumentBlock> {
         val rawItemPairs = mutableListOf<Pair<String, String>>() // (header, setsLine)
         var i = 0
@@ -367,7 +371,8 @@ object WorkoutDocumentParser {
                 section = section,
                 defaultKind = BlockKind.SUPERSET,
                 defaultFormat = format,
-                defaultScheme = scheme
+                defaultScheme = scheme,
+                defaultSubBlock = subBlock
             )
         }
 
@@ -391,13 +396,15 @@ object WorkoutDocumentParser {
                     scheme = scheme,
                     format = format,
                     kind = BlockKind.SUPERSET,
-                    sets = inheritedSets
+                    sets = inheritedSets,
+                    subBlock = if (block.subBlock.isNotBlank()) block.subBlock else subBlock
                 )
             } else {
                 block.copy(
                     scheme = scheme,
                     format = format,
-                    kind = BlockKind.SUPERSET
+                    kind = BlockKind.SUPERSET,
+                    subBlock = if (block.subBlock.isNotBlank()) block.subBlock else subBlock
                 )
             }
         }
@@ -414,7 +421,8 @@ object WorkoutDocumentParser {
         section: String = "",
         defaultKind: BlockKind? = null,
         defaultFormat: String = "",
-        defaultScheme: String = ""
+        defaultScheme: String = "",
+        defaultSubBlock: String = ""
     ): ParsedDocumentBlock {
         // 1. Strip list prefixes: "1- ", "1 - ", "1. ", "- ", etc.
         var text = blockLine.replace(LIST_PREFIX_REGEX, "").trim()
@@ -511,6 +519,14 @@ object WorkoutDocumentParser {
             else -> ""
         }
 
+        val computedSubBlock = when {
+            defaultSubBlock.isNotBlank() -> defaultSubBlock
+            isComplex && format.isNotBlank() -> "$format Complex"
+            isComplex -> "Complex"
+            format.isNotBlank() && cleanName.isNotBlank() -> "$format $cleanName"
+            else -> ""
+        }
+
         return ParsedDocumentBlock(
             name = cleanName,
             section = section,
@@ -520,7 +536,8 @@ object WorkoutDocumentParser {
             movements = movements,
             sets = parsedSets,
             targetReps = targetReps,
-            rawText = blockLine
+            rawText = blockLine,
+            subBlock = computedSubBlock
         )
     }
 

@@ -54,5 +54,6 @@ data class SessionBlock(
     val resultValue: Double? = null,
     val notes: String = "",
     val section: String = "",
-    val exerciseIdsCsv: String = ""
+    val exerciseIdsCsv: String = "",
+    val subBlock: String = ""
 )

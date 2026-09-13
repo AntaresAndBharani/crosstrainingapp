@@ -144,4 +144,61 @@ class AppDatabaseMigrationTest {
         assertEquals("1,2,3", updatedSessionBlock.getString(1))
         updatedSessionBlock.close()
     }
+
+    @Test
+    @Throws(IOException::class)
+    fun migrate7To8_addsSubBlockColumnAndValidatesSchema() {
+        // Given an existing Room database at version 7 with routine_blocks and session_blocks
+        val dbV7 = helper.createDatabase(TEST_DB, 7).apply {
+            // Seed routine
+            execSQL("INSERT INTO routines (id, name, mainExerciseId, description, defaultFormat) VALUES (1, 'Monday Functional', NULL, 'Complex & Trisets', 'E3MOM')")
+            // Seed routine_block
+            execSQL("INSERT INTO routine_blocks (id, routineId, position, name, kind, format, setsCount, targetRepsScheme, exerciseIdsCsv, notes, section) VALUES (10, 1, 0, 'Clean + Hang Clean + Front Squat + Push to OverHead', 'COMPLEX', 'E3MOM', 7, '7x1', '1', '', 'Strengh & Power block')")
+            // Seed cycle & session
+            execSQL("INSERT INTO cycles (id, name, startDate, endDate, goal, isActive) VALUES (1, 'Strength Cycle', 19000, NULL, 'Base', 1)")
+            execSQL("INSERT INTO sessions (id, cycleId, date, title, notes) VALUES (100, 1, 19500, 'Monday Workout', '')")
+            // Seed session_block
+            execSQL("INSERT INTO session_blocks (id, sessionId, position, name, kind, format, scheme, mainExerciseId, routineId, description, resultText, resultValue, notes, section, exerciseIdsCsv) VALUES (1000, 100, 0, 'Front Squats', 'STRENGTH', 'E3MOM', '4x4', NULL, NULL, '', '', NULL, '', 'Strengh & Power block', '')")
+            close()
+        }
+
+        // When MIGRATION_7_8 executes during upgrade to version 8
+        val dbV8 = helper.runMigrationsAndValidate(
+            TEST_DB,
+            8,
+            true,
+            AppDatabase.MIGRATION_7_8
+        )
+
+        // Then verify pre-existing data survives migration and subBlock defaults to empty string
+        val routineBlockCursor = dbV8.query("SELECT id, name, section, subBlock FROM routine_blocks WHERE id = 10")
+        assertTrue("RoutineBlock data should survive migration", routineBlockCursor.moveToFirst())
+        assertEquals(10L, routineBlockCursor.getLong(0))
+        assertEquals("Clean + Hang Clean + Front Squat + Push to OverHead", routineBlockCursor.getString(1))
+        assertEquals("Strengh & Power block", routineBlockCursor.getString(2))
+        assertEquals("", routineBlockCursor.getString(3))
+        routineBlockCursor.close()
+
+        val sessionBlockCursor = dbV8.query("SELECT id, name, section, subBlock FROM session_blocks WHERE id = 1000")
+        assertTrue("SessionBlock data should survive migration", sessionBlockCursor.moveToFirst())
+        assertEquals(1000L, sessionBlockCursor.getLong(0))
+        assertEquals("Front Squats", sessionBlockCursor.getString(1))
+        assertEquals("Strengh & Power block", sessionBlockCursor.getString(2))
+        assertEquals("", sessionBlockCursor.getString(3))
+        sessionBlockCursor.close()
+
+        // And verify updating subBlock persists correctly
+        dbV8.execSQL("UPDATE routine_blocks SET subBlock = 'E3MOM Complex' WHERE id = 10")
+        dbV8.execSQL("UPDATE session_blocks SET subBlock = 'E3MOM Front Squats' WHERE id = 1000")
+
+        val updatedRoutineBlock = dbV8.query("SELECT subBlock FROM routine_blocks WHERE id = 10")
+        assertTrue(updatedRoutineBlock.moveToFirst())
+        assertEquals("E3MOM Complex", updatedRoutineBlock.getString(0))
+        updatedRoutineBlock.close()
+
+        val updatedSessionBlock = dbV8.query("SELECT subBlock FROM session_blocks WHERE id = 1000")
+        assertTrue(updatedSessionBlock.moveToFirst())
+        assertEquals("E3MOM Front Squats", updatedSessionBlock.getString(0))
+        updatedSessionBlock.close()
+    }
 }

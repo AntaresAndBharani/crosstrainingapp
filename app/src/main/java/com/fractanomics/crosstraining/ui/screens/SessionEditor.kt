@@ -129,7 +129,8 @@ data class BlockSeed(
     val resultValue: String = "",
     val sets: List<SetSeed> = listOf(SetSeed()),
     val section: String = "",
-    val exerciseIdsCsv: String = ""
+    val exerciseIdsCsv: String = "",
+    val subBlock: String = ""
 )
 
 data class SessionSeed(
@@ -169,7 +170,8 @@ fun sessionSeed(s: SessionWithBlocks, dateOverride: LocalDate? = null): SessionS
                     )
                 }.ifEmpty { listOf(SetSeed()) },
                 section = bws.block.section,
-                exerciseIdsCsv = bws.block.exerciseIdsCsv
+                exerciseIdsCsv = bws.block.exerciseIdsCsv,
+                subBlock = bws.block.subBlock
             )
         }.ifEmpty { listOf(BlockSeed()) }
     )
@@ -193,7 +195,7 @@ internal class BlockState(
     sequenceExercises: List<Exercise> = emptyList(),
     description: String = "", resultText: String = "", resultValue: String = "",
     sets: List<SetState> = listOf(SetState()),
-    section: String = "", exerciseIdsCsv: String = ""
+    section: String = "", exerciseIdsCsv: String = "", subBlock: String = ""
 ) {
     var name by mutableStateOf(name)
     var kind by mutableStateOf(kind)
@@ -213,6 +215,7 @@ internal class BlockState(
     val sets: SnapshotStateList<SetState> = sets.toMutableStateList()
     var section by mutableStateOf(section)
     var exerciseIdsCsv by mutableStateOf(exerciseIdsCsv)
+    var subBlock by mutableStateOf(subBlock)
 }
 
 internal fun buildBlockState(seed: BlockSeed, exercises: List<Exercise>, routines: List<Routine>) =
@@ -229,7 +232,8 @@ internal fun buildBlockState(seed: BlockSeed, exercises: List<Exercise>, routine
         resultValue = seed.resultValue,
         sets = seed.sets.map { SetState(it.reps, it.value, it.group, it.warm, it.failed) },
         section = seed.section,
-        exerciseIdsCsv = seed.exerciseIdsCsv
+        exerciseIdsCsv = seed.exerciseIdsCsv,
+        subBlock = seed.subBlock
     )
 
 internal fun BlockState.toDraftOrNull(): BlockDraft? {
@@ -264,7 +268,8 @@ internal fun BlockState.toDraftOrNull(): BlockDraft? {
         newRepMaxReps = if (recordRm) rmReps.toIntOrNull() else null,
         newRepMaxWeight = if (recordRm) rmWeight.replace(',', '.').toDoubleOrNull() else null,
         section = section.trim(),
-        exerciseIdsCsv = exerciseIdsCsv.trim()
+        exerciseIdsCsv = exerciseIdsCsv.trim(),
+        subBlock = subBlock.trim()
     )
 }
 
