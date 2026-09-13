@@ -10,6 +10,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -27,6 +31,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -154,102 +159,120 @@ fun ProgressScreen(
             }
         }
     ) { pad ->
+        val availableModes = remember(routines.isNotEmpty(), cycles.isNotEmpty()) {
+            listOfNotNull(
+                ProgressMode.BY_EXERCISE,
+                if (routines.isNotEmpty()) ProgressMode.BY_ROUTINE else null,
+                if (cycles.isNotEmpty()) ProgressMode.CYCLE_GOALS else null,
+                ProgressMode.BODY_WEIGHT
+            )
+        }
+        val lazyListState = rememberLazyListState()
+
+        LaunchedEffect(progressMode, availableModes) {
+            val idx = availableModes.indexOf(progressMode)
+            if (idx >= 0) {
+                lazyListState.animateScrollToItem(idx)
+            }
+        }
+
         Column(
             modifier = Modifier
                 .padding(pad)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .padding(vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             // Mode Filter Chip Row hoisted unconditionally above mode empty states
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = progressMode == ProgressMode.BY_EXERCISE,
-                    onClick = { viewModel.setProgressMode(ProgressMode.BY_EXERCISE) },
-                    label = { Text("By exercise") }
-                )
-                if (routines.isNotEmpty()) {
+            LazyRow(
+                state = lazyListState,
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(availableModes) { mode ->
                     FilterChip(
-                        selected = progressMode == ProgressMode.BY_ROUTINE,
-                        onClick = { viewModel.setProgressMode(ProgressMode.BY_ROUTINE) },
-                        label = { Text("By routine") }
-                    )
-                }
-                if (cycles.isNotEmpty()) {
-                    FilterChip(
-                        selected = progressMode == ProgressMode.CYCLE_GOALS,
-                        onClick = { viewModel.setProgressMode(ProgressMode.CYCLE_GOALS) },
-                        label = { Text("Cycle goals") }
-                    )
-                }
-                FilterChip(
-                    selected = progressMode == ProgressMode.BODY_WEIGHT,
-                    onClick = { viewModel.setProgressMode(ProgressMode.BODY_WEIGHT) },
-                    label = { Text("Body weight") }
-                )
-            }
-
-            when (progressMode) {
-                ProgressMode.BY_ROUTINE -> {
-                    RoutineProgress(
-                        routines = routines,
-                        routinesWithBlocks = routinesWithBlocks,
-                        exercises = exercises,
-                        sessions = sessions,
-                        current = selectedRoutine ?: routines.firstOrNull(),
-                        onSelect = { selectedRoutine = it }
-                    )
-                }
-                ProgressMode.CYCLE_GOALS -> {
-                    CycleGoalsProgress(
-                        cycles = cycles,
-                        currentCycle = selectedCycleGoalCycle ?: activeCycle ?: cycles.firstOrNull(),
-                        cycleGoals = cycleGoals,
-                        exercises = exercises,
-                        sessions = sessions,
-                        repMaxes = repMaxes,
-                        onSelectCycle = { selectedCycleGoalCycle = it }
-                    )
-                }
-                ProgressMode.BODY_WEIGHT -> {
-                    WeightOverviewContent(
-                        entries = weightEntries,
-                        unit = weightUnit,
-                        onToggleUnit = { viewModel.setWeightUnit(it) },
-                        onEditEntry = { entry ->
-                            editingWeightEntry = entry
-                            showWeightSheet = true
-                        },
-                        onDeleteEntry = { entry ->
-                            viewModel.deleteWeightEntry(entry.date)
-                            coroutineScope.launch {
-                                val result = snackbarHostState.showSnackbar(
-                                    message = "Weight entry deleted",
-                                    actionLabel = "Undo",
-                                    duration = SnackbarDuration.Short
-                                )
-                                if (result == SnackbarResult.ActionPerformed) {
-                                    viewModel.undoDeleteWeightEntry(
-                                        date = entry.date,
-                                        weightKg = entry.weightKg,
-                                        notes = entry.notes
-                                    )
+                        selected = progressMode == mode,
+                        onClick = { viewModel.setProgressMode(mode) },
+                        label = {
+                            Text(
+                                when (mode) {
+                                    ProgressMode.BY_EXERCISE -> "By exercise"
+                                    ProgressMode.BY_ROUTINE -> "By routine"
+                                    ProgressMode.CYCLE_GOALS -> "Cycle goals"
+                                    ProgressMode.BODY_WEIGHT -> "Body weight"
                                 }
-                            }
+                            )
                         }
                     )
                 }
-                ProgressMode.BY_EXERCISE -> {
-                    if (exercises.isEmpty()) {
-                        EmptyState("Add exercises and log sessions to see progress here.")
-                    } else {
-                        ExerciseProgress(
+            }
+
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                when (progressMode) {
+                    ProgressMode.BY_ROUTINE -> {
+                        RoutineProgress(
+                            routines = routines,
+                            routinesWithBlocks = routinesWithBlocks,
                             exercises = exercises,
-                            repMaxes = repMaxes,
                             sessions = sessions,
-                            current = selectedExercise ?: exercises.firstOrNull(),
-                            onSelect = { selectedExercise = it }
+                            current = selectedRoutine ?: routines.firstOrNull(),
+                            onSelect = { selectedRoutine = it }
                         )
+                    }
+                    ProgressMode.CYCLE_GOALS -> {
+                        CycleGoalsProgress(
+                            cycles = cycles,
+                            currentCycle = selectedCycleGoalCycle ?: activeCycle ?: cycles.firstOrNull(),
+                            cycleGoals = cycleGoals,
+                            exercises = exercises,
+                            sessions = sessions,
+                            repMaxes = repMaxes,
+                            onSelectCycle = { selectedCycleGoalCycle = it }
+                        )
+                    }
+                    ProgressMode.BODY_WEIGHT -> {
+                        WeightOverviewContent(
+                            entries = weightEntries,
+                            unit = weightUnit,
+                            onToggleUnit = { viewModel.setWeightUnit(it) },
+                            onEditEntry = { entry ->
+                                editingWeightEntry = entry
+                                showWeightSheet = true
+                            },
+                            onDeleteEntry = { entry ->
+                                viewModel.deleteWeightEntry(entry.date)
+                                coroutineScope.launch {
+                                    val result = snackbarHostState.showSnackbar(
+                                        message = "Weight entry deleted",
+                                        actionLabel = "Undo",
+                                        duration = SnackbarDuration.Short
+                                    )
+                                    if (result == SnackbarResult.ActionPerformed) {
+                                        viewModel.undoDeleteWeightEntry(
+                                            date = entry.date,
+                                            weightKg = entry.weightKg,
+                                            notes = entry.notes
+                                        )
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    ProgressMode.BY_EXERCISE -> {
+                        if (exercises.isEmpty()) {
+                            EmptyState("Add exercises and log sessions to see progress here.")
+                        } else {
+                            ExerciseProgress(
+                                exercises = exercises,
+                                repMaxes = repMaxes,
+                                sessions = sessions,
+                                current = selectedExercise ?: exercises.firstOrNull(),
+                                onSelect = { selectedExercise = it }
+                            )
+                        }
                     }
                 }
             }
@@ -325,10 +348,12 @@ private fun WeightOverviewContent(
 
     // Timeframe Filter Chips
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Timeframe.values().forEach { tf ->
+        Timeframe.entries.forEach { tf ->
             FilterChip(
                 selected = selectedTimeframe == tf,
                 onClick = { selectedTimeframe = tf },
