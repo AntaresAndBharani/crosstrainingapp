@@ -323,7 +323,17 @@ fun AppNavigation(
                             snackbar = snackbarHostState,
                             outerPadding = innerPadding,
                             onOpenDrawer = openDrawer,
-                            onOpenTimer = openTimer
+                            onOpenTimer = openTimer,
+                            onNavigateToWeight = {
+                                viewModel.setProgressMode(ProgressMode.BODY_WEIGHT)
+                                navController.navigate(BottomDestination.PROGRESS.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            }
                         )
                     }
                 }
