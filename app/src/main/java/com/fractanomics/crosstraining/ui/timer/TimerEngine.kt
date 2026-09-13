@@ -42,6 +42,7 @@ class TimerEngine(
     private var timerJob: Job? = null
 
     private var config = WorkoutTimerConfig()
+    val currentConfig: WorkoutTimerConfig get() = config
     private val _snapshot = MutableStateFlow(TimerSnapshot())
     val snapshot: StateFlow<TimerSnapshot> = _snapshot.asStateFlow()
 
@@ -49,6 +50,27 @@ class TimerEngine(
         if (!_snapshot.value.isRunning && _snapshot.value.phase != TimerPhase.PREP) {
             config = newConfig
             reset()
+        }
+    }
+
+    /**
+     * Atomically transitions to a new timer configuration without emitting a transient IDLE phase.
+     * Cancels any existing timer job and immediately launches the PREP or WORK phase.
+     */
+    fun replaceTimer(newConfig: WorkoutTimerConfig) {
+        timerJob?.cancel()
+        config = newConfig
+        val totalSecs = calculateInitialTotalSeconds(config)
+        val roundSecs = calculateInitialRoundSeconds(config)
+
+        if (config.prepCountdownSeconds > 0) {
+            timerJob = scope.launch {
+                runPrepPhase()
+            }
+        } else {
+            timerJob = scope.launch {
+                startMainTimer()
+            }
         }
     }
 
@@ -91,7 +113,9 @@ class TimerEngine(
             roundTotalSeconds = roundSecs,
             totalSecondsElapsed = 0,
             totalSecondsRemaining = totalSecs,
-            targetRepsCurrentRound = 1
+            targetRepsCurrentRound = 1,
+            workoutLabel = config.workoutLabel,
+            mode = config.mode
         )
     }
 
@@ -102,12 +126,20 @@ class TimerEngine(
 
     private suspend fun runPrepPhase() {
         var prepLeft = config.prepCountdownSeconds
+        val totalSecs = calculateInitialTotalSeconds(config)
         _snapshot.value = _snapshot.value.copy(
             phase = TimerPhase.PREP,
             isRunning = true,
+            currentRound = 1,
+            totalRounds = config.totalRounds,
             roundSecondsRemaining = prepLeft,
             roundSecondsElapsed = 0,
-            roundTotalSeconds = config.prepCountdownSeconds
+            roundTotalSeconds = config.prepCountdownSeconds,
+            totalSecondsElapsed = 0,
+            totalSecondsRemaining = totalSecs,
+            targetRepsCurrentRound = 1,
+            workoutLabel = config.workoutLabel,
+            mode = config.mode
         )
 
         while (prepLeft > 0) {
@@ -141,7 +173,9 @@ class TimerEngine(
             roundTotalSeconds = roundSecs,
             totalSecondsElapsed = 0,
             totalSecondsRemaining = totalSecs,
-            targetRepsCurrentRound = 1
+            targetRepsCurrentRound = 1,
+            workoutLabel = config.workoutLabel,
+            mode = config.mode
         )
 
         runTimerLoop()

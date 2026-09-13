@@ -29,7 +29,8 @@ data class WorkoutTimerConfig(
     val targetMinutes: Int = 12,        // Target duration in minutes for AMRAP / Time Cap
     val prepCountdownSeconds: Int = 10, // 3-2-1 GO prep countdown
     val soundEnabled: Boolean = true,
-    val vibrationEnabled: Boolean = true
+    val vibrationEnabled: Boolean = true,
+    val workoutLabel: String = ""
 )
 
 /** Dynamic snapshot state for the active timer engine. */
@@ -43,5 +44,7 @@ data class TimerSnapshot(
     val roundTotalSeconds: Int = 60,
     val totalSecondsElapsed: Int = 0,
     val totalSecondsRemaining: Int = 0,
-    val targetRepsCurrentRound: Int = 1 // For Death By mode
+    val targetRepsCurrentRound: Int = 1, // For Death By mode
+    val workoutLabel: String = "",
+    val mode: TimerMode = TimerMode.EMOM
 )
