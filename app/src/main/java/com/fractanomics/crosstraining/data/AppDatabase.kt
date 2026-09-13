@@ -44,7 +44,7 @@ import java.time.LocalDate
         CycleGoal::class,
         WeightEntry::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -134,6 +134,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `session_blocks` ADD COLUMN `subBlock` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `routine_blocks` ADD COLUMN `subBlock` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -156,7 +163,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "crosstraining-demo.db"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build().also { DEMO = it }
             }
@@ -196,6 +203,7 @@ abstract class AppDatabase : RoomDatabase() {
                             isProduction = isProduction
                         )
                         provisionDefaultCycleIfNeeded(database)
+                        Repository(database).reconcileLegacyWorkoutSubBlocks()
                     }
                 }
 
@@ -203,6 +211,7 @@ abstract class AppDatabase : RoomDatabase() {
                     super.onOpen(db)
                     CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
                         provisionDefaultCycleIfNeeded(database)
+                        Repository(database).reconcileLegacyWorkoutSubBlocks()
                     }
                 }
             }
@@ -212,7 +221,7 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 "crosstraining.db"
             )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
             .fallbackToDestructiveMigrationOnDowngrade()
             .addCallback(callback)
             .build()

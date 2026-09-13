@@ -1,4 +1,4 @@
-﻿package com.fractanomics.crosstraining.data
+package com.fractanomics.crosstraining.data
 
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockWithSets
@@ -69,6 +69,7 @@ class BackupCsvV4AndDraftParityTest {
 
         assertEquals("Main Lift", draft.section)
         assertEquals("5,12,19", draft.exerciseIdsCsv)
+        assertEquals("", draft.subBlock)
 
         // Seed into BlockSeed directly
         val seed = BlockSeed(
@@ -82,25 +83,29 @@ class BackupCsvV4AndDraftParityTest {
             resultText = draft.resultText,
             resultValue = draft.resultValue?.toString() ?: "",
             section = draft.section,
-            exerciseIdsCsv = draft.exerciseIdsCsv
+            exerciseIdsCsv = draft.exerciseIdsCsv,
+            subBlock = "E2MOM Snatch Wave"
         )
 
         assertEquals("Main Lift", seed.section)
         assertEquals("5,12,19", seed.exerciseIdsCsv)
+        assertEquals("E2MOM Snatch Wave", seed.subBlock)
 
         // Test via sessionSeed(SessionWithBlocks)
         val session = Session(id = 10L, cycleId = 1L, date = LocalDate.now(), title = "Test", notes = "")
-        val sessionWithBlocks = SessionWithBlocks(session, listOf(BlockWithSets(originalBlock, emptyList())))
+        val sessionBlockWithSub = originalBlock.copy(subBlock = "E2MOM Snatch Wave")
+        val sessionWithBlocks = SessionWithBlocks(session, listOf(BlockWithSets(sessionBlockWithSub, emptyList())))
         val loadedSeed = sessionSeed(sessionWithBlocks)
 
         assertEquals(1, loadedSeed.blocks.size)
         val loadedBlockSeed = loadedSeed.blocks[0]
         assertEquals("Main Lift", loadedBlockSeed.section)
         assertEquals("5,12,19", loadedBlockSeed.exerciseIdsCsv)
+        assertEquals("E2MOM Snatch Wave", loadedBlockSeed.subBlock)
     }
 
     @Test
-    fun backupCsv_roundTripsRoutineBlocksAndBlockColumnsUnderV4Header() {
+    fun backupCsv_roundTripsRoutineBlocksAndBlockColumnsUnderV5Header() {
         val routineBlock = RoutineBlock(
             id = 101L,
             routineId = 5L,
@@ -112,7 +117,8 @@ class BackupCsvV4AndDraftParityTest {
             targetRepsScheme = "20s work / 10s rest",
             exerciseIdsCsv = "1,2",
             notes = "Low intensity",
-            section = "Warmup"
+            section = "Warmup",
+            subBlock = "Warmup Tabata"
         )
 
         val sessionBlock = SessionBlock(
@@ -130,7 +136,8 @@ class BackupCsvV4AndDraftParityTest {
             resultValue = 120.0,
             notes = "All sets clean",
             section = "Strength",
-            exerciseIdsCsv = "3,4"
+            exerciseIdsCsv = "3,4",
+            subBlock = "5x5 Front Squat"
         )
 
         val backup = BackupData(
@@ -139,7 +146,7 @@ class BackupCsvV4AndDraftParityTest {
         )
 
         val encoded = BackupCsv.encode(backup)
-        assertTrue("Encoded CSV must start with #crosstraining-backup-v4", encoded.startsWith("#crosstraining-backup-v4\n"))
+        assertTrue("Encoded CSV must start with #crosstraining-backup-v5", encoded.startsWith("#crosstraining-backup-v5\n"))
         assertTrue("Encoded CSV must contain #routineBlocks section", encoded.contains("#routineBlocks\n"))
 
         val decoded = BackupCsv.decode(encoded)
@@ -151,6 +158,7 @@ class BackupCsvV4AndDraftParityTest {
         assertEquals("Warmup", decRoutineBlock.section)
         assertEquals("1,2", decRoutineBlock.exerciseIdsCsv)
         assertEquals("20s work / 10s rest", decRoutineBlock.targetRepsScheme)
+        assertEquals("Warmup Tabata", decRoutineBlock.subBlock)
 
         assertEquals(1, decoded.blocks.size)
         val decSessionBlock = decoded.blocks[0]
@@ -158,6 +166,27 @@ class BackupCsvV4AndDraftParityTest {
         assertEquals("Front Squat", decSessionBlock.name)
         assertEquals("Strength", decSessionBlock.section)
         assertEquals("3,4", decSessionBlock.exerciseIdsCsv)
+        assertEquals("5x5 Front Squat", decSessionBlock.subBlock)
+    }
+
+    @Test
+    fun backupCsv_decodesLegacyV4WithCleanDefaults() {
+        val legacyV4Text = """
+            #crosstraining-backup-v4
+            #routineBlocks
+            id,routineId,position,name,kind,format,setsCount,targetRepsScheme,exerciseIdsCsv,notes,section
+            101,5,0,Squat Warmup,OTHER,Tabata,4,20s work / 10s rest,1,Low intensity,Warmup
+            #blocks
+            id,sessionId,position,name,kind,format,scheme,mainExerciseId,routineId,description,resultText,resultValue,notes,section,exerciseIdsCsv
+            201,50,1,Front Squat,STRENGTH,5x5,5 reps,3,5,Working sets,120kg,120.0,All sets clean,Strength,3
+        """.trimIndent()
+
+        val decodedV4 = BackupCsv.decode(legacyV4Text)
+        assertEquals(1, decodedV4.routineBlocks.size)
+        assertEquals("", decodedV4.routineBlocks[0].subBlock)
+
+        assertEquals(1, decodedV4.blocks.size)
+        assertEquals("", decodedV4.blocks[0].subBlock)
     }
 
     @Test
@@ -178,6 +207,7 @@ class BackupCsvV4AndDraftParityTest {
         assertEquals("Back Squat", bV3.name)
         assertEquals("", bV3.section)
         assertEquals("", bV3.exerciseIdsCsv)
+        assertEquals("", bV3.subBlock)
         assertTrue(decodedV3.routineBlocks.isEmpty())
 
         val legacyV1Text = """

@@ -52,7 +52,7 @@ object BackupCsv {
 
     fun encode(data: BackupData): String {
         val sb = StringBuilder()
-        sb.append("#crosstraining-backup-v4\n")
+        sb.append("#crosstraining-backup-v5\n")
 
         sb.append("#cycles\n")
         sb.append(row(listOf("id", "name", "startDate", "endDate", "goal", "isActive")))
@@ -80,12 +80,12 @@ object BackupCsv {
         }
 
         sb.append("#routineBlocks\n")
-        sb.append(row(listOf("id", "routineId", "position", "name", "kind", "format", "setsCount", "targetRepsScheme", "exerciseIdsCsv", "notes", "section")))
+        sb.append(row(listOf("id", "routineId", "position", "name", "kind", "format", "setsCount", "targetRepsScheme", "exerciseIdsCsv", "notes", "section", "subBlock")))
         data.routineBlocks.forEach {
             sb.append(row(listOf(
                 it.id.toString(), it.routineId.toString(), it.position.toString(), it.name,
                 it.kind.name, it.format, it.setsCount.toString(), it.targetRepsScheme,
-                it.exerciseIdsCsv, it.notes, it.section
+                it.exerciseIdsCsv, it.notes, it.section, it.subBlock
             )))
         }
 
@@ -101,14 +101,14 @@ object BackupCsv {
         sb.append(row(listOf(
             "id", "sessionId", "position", "name", "kind", "format", "scheme",
             "mainExerciseId", "routineId", "description", "resultText", "resultValue", "notes",
-            "section", "exerciseIdsCsv"
+            "section", "exerciseIdsCsv", "subBlock"
         )))
         data.blocks.forEach {
             sb.append(row(listOf(
                 it.id.toString(), it.sessionId.toString(), it.position.toString(), it.name,
                 it.kind.name, it.format, it.scheme, s(it.mainExerciseId), s(it.routineId),
                 it.description, it.resultText, s(it.resultValue), it.notes,
-                it.section, it.exerciseIdsCsv
+                it.section, it.exerciseIdsCsv, it.subBlock
             )))
         }
 
@@ -210,7 +210,8 @@ object BackupCsv {
                     targetRepsScheme = rec.str(7),
                     exerciseIdsCsv = rec.str(8),
                     notes = rec.str(9),
-                    section = rec.str(10)
+                    section = rec.str(10),
+                    subBlock = rec.str(11)
                 )
                 "sessions" -> sessions += Session(
                     id = rec.lng(0),
@@ -234,7 +235,8 @@ object BackupCsv {
                     resultValue = rec.dblOrNull(11),
                     notes = rec.str(12),
                     section = rec.str(13),
-                    exerciseIdsCsv = rec.str(14)
+                    exerciseIdsCsv = rec.str(14),
+                    subBlock = rec.str(15)
                 )
                 "sets" -> sets += BlockSet(
                     id = rec.lng(0),

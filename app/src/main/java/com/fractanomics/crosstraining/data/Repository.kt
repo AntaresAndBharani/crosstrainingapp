@@ -961,7 +961,8 @@ class Repository(
                         targetRepsScheme = res.block.scheme,
                         exerciseIdsCsv = componentIdsCsv,
                         notes = res.block.rawText,
-                        section = res.block.section
+                        section = res.block.section,
+                        subBlock = res.block.subBlock
                     )
                 }
 
@@ -1014,7 +1015,8 @@ class Repository(
                         routineId = persistedRoutine?.id,
                         description = res.block.rawText,
                         section = res.block.section,
-                        exerciseIdsCsv = componentIdsCsv
+                        exerciseIdsCsv = componentIdsCsv,
+                        subBlock = res.block.subBlock
                     )
 
                     val blockSets = if (res.block.sets.isNotEmpty()) {
@@ -1067,6 +1069,121 @@ class Repository(
             }
 
             Pair(persistedRoutine, persistedSession)
+        }
+    }
+
+    /**
+     * Idempotent, parent-bounded backfill that upgrades legacy Monday functional fitness routines
+     * and sessions from unassigned subBlock ("") to standardized subBlock tags and normalized section headers.
+     *
+     * Rules adhere to Scenarios 3, 5, and 8:
+     * - Bounded to parent routines/sessions matching Monday program names/titles.
+     * - Only modifies blocks where subBlock is blank ("") to protect user customizations.
+     * - Matches section names case-insensitively using composite patterns (%Strengh%, %Strength%, %Accessories%).
+     * - Normalizes section names to "Strength & Power" and "Accessories".
+     */
+    suspend fun reconcileLegacyWorkoutSubBlocks(): Unit = withContext(Dispatchers.IO) {
+        withDatabaseTransaction {
+            // 1. Reconcile matching Monday routines
+            val allRoutines = routineDao.getAllWithBlocksOnce()
+            for (rWithBlocks in allRoutines) {
+                val rName = rWithBlocks.routine.name.trim()
+                val isMondayRoutine = rName.startsWith("Monday", ignoreCase = true) ||
+                        rName.contains("Mondays", ignoreCase = true)
+                if (!isMondayRoutine) continue
+
+                var routineChanged = false
+                val updatedBlocks = rWithBlocks.blocks.map { b ->
+                    if (b.subBlock.isNotBlank()) {
+                        b
+                    } else {
+                        val secLower = b.section.trim().lowercase()
+                        val isStrengthSection = secLower.contains("strengh") || secLower.contains("strength")
+                        val isAccessorySection = secLower.contains("accessories") || secLower.contains("accessory")
+
+                        val (targetSec, targetSub) = when {
+                            isStrengthSection && b.name.equals("Clean + Hang Clean + Front Squat + Push to OverHead", ignoreCase = true) ->
+                                Pair("Strength & Power", "E3MOM Complex")
+                            isStrengthSection && b.name.equals("Front Squats", ignoreCase = true) ->
+                                Pair("Strength & Power", "E3MOM Front Squats")
+                            isAccessorySection && (b.name.equals("Romanian Deadlift", ignoreCase = true) ||
+                                    b.name.equals("Pullups", ignoreCase = true) ||
+                                    b.name.equals("DB Twist Curl", ignoreCase = true)) ->
+                                Pair("Accessories", "E3MOM Trisets")
+                            isAccessorySection && (b.name.equals("Barbell Calves Raises", ignoreCase = true) ||
+                                    b.name.equals("Banded Reverse Flys", ignoreCase = true) ||
+                                    b.name.equals("SkiErg", ignoreCase = true)) ->
+                                Pair("Accessories", "E2,5MOM Trisets")
+                            else -> Pair(b.section, b.subBlock)
+                        }
+
+                        if (targetSec != b.section || targetSub != b.subBlock) {
+                            routineChanged = true
+                            b.copy(section = targetSec, subBlock = targetSub)
+                        } else {
+                            b
+                        }
+                    }
+                }
+
+                if (routineChanged) {
+                    routineDao.deleteBlocksForRoutine(rWithBlocks.routine.id)
+                    routineDao.insertBlocks(updatedBlocks)
+                }
+            }
+
+            // 2. Reconcile matching Monday sessions
+            val allSessions = sessionDao.getAllSessionsOnce()
+            for (s in allSessions) {
+                val sTitle = s.title.trim()
+                val isMondaySession = sTitle.startsWith("Monday", ignoreCase = true) ||
+                        sTitle.contains("Mondays", ignoreCase = true)
+                if (!isMondaySession) continue
+
+                val sWithBlocks = sessionDao.getByIdOnce(s.id) ?: continue
+                var sessionChanged = false
+                val blockInserts = sWithBlocks.blocks.map { bWithSets ->
+                    val b = bWithSets.block
+                    val sets = bWithSets.sets
+                    if (b.subBlock.isNotBlank()) {
+                        BlockInsert(block = b, sets = sets)
+                    } else {
+                        val secLower = b.section.trim().lowercase()
+                        val isStrengthSection = secLower.contains("strengh") || secLower.contains("strength")
+                        val isAccessorySection = secLower.contains("accessories") || secLower.contains("accessory")
+
+                        val (targetSec, targetSub) = when {
+                            isStrengthSection && b.name.equals("Clean + Hang Clean + Front Squat + Push to OverHead", ignoreCase = true) ->
+                                Pair("Strength & Power", "E3MOM Complex")
+                            isStrengthSection && b.name.equals("Front Squats", ignoreCase = true) ->
+                                Pair("Strength & Power", "E3MOM Front Squats")
+                            isAccessorySection && (b.name.equals("Romanian Deadlift", ignoreCase = true) ||
+                                    b.name.equals("Pullups", ignoreCase = true) ||
+                                    b.name.equals("DB Twist Curl", ignoreCase = true)) ->
+                                Pair("Accessories", "E3MOM Trisets")
+                            isAccessorySection && (b.name.equals("Barbell Calves Raises", ignoreCase = true) ||
+                                    b.name.equals("Banded Reverse Flys", ignoreCase = true) ||
+                                    b.name.equals("SkiErg", ignoreCase = true)) ->
+                                Pair("Accessories", "E2,5MOM Trisets")
+                            else -> Pair(b.section, b.subBlock)
+                        }
+
+                        if (targetSec != b.section || targetSub != b.subBlock) {
+                            sessionChanged = true
+                            BlockInsert(
+                                block = b.copy(section = targetSec, subBlock = targetSub),
+                                sets = sets
+                            )
+                        } else {
+                            BlockInsert(block = b, sets = sets)
+                        }
+                    }
+                }
+
+                if (sessionChanged) {
+                    updateSession(s, blockInserts)
+                }
+            }
         }
     }
 }

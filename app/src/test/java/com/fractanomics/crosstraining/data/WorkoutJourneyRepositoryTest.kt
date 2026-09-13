@@ -275,6 +275,177 @@ class WorkoutJourneyRepositoryTest {
         // Orphan exercise was NOT persisted to DB
         org.junit.Assert.assertNull(fakeDb.exerciseDao().byName("Orphan Exercise Unreferenced"))
     }
+
+    @Test
+    fun `reconcileLegacyWorkoutSubBlocks upgrades legacy Monday session and routine to normalized section and subBlocks`() = runTest {
+        // Given a synthetic pre-migration Room test fixture representing the imported legacy workout:
+        // Routine "Mondays" and Session "Monday: Strength & Accessories" with legacy section typo and empty subBlock
+        val legacyRoutine = Routine(id = 1L, name = "Mondays", description = "Legacy import")
+        val legacyRoutineBlocks = listOf(
+            RoutineBlock(
+                id = 1L, routineId = 1L, position = 0,
+                name = "Clean + Hang Clean + Front Squat + Push to OverHead",
+                kind = BlockKind.COMPLEX, format = "E3MOM", setsCount = 7, targetRepsScheme = "7x1",
+                section = "Strengh & Power block", subBlock = ""
+            ),
+            RoutineBlock(
+                id = 2L, routineId = 1L, position = 1,
+                name = "Front Squats",
+                kind = BlockKind.STRENGTH, format = "E3MOM", setsCount = 4, targetRepsScheme = "4x4",
+                section = "Strengh & Power block", subBlock = ""
+            ),
+            RoutineBlock(
+                id = 3L, routineId = 1L, position = 2,
+                name = "Romanian Deadlift",
+                kind = BlockKind.SUPERSET, format = "E3MOM", setsCount = 4, targetRepsScheme = "TRISET_1",
+                section = "Accessories block", subBlock = ""
+            ),
+            RoutineBlock(
+                id = 4L, routineId = 1L, position = 3,
+                name = "Pullups",
+                kind = BlockKind.SUPERSET, format = "E3MOM", setsCount = 4, targetRepsScheme = "TRISET_1",
+                section = "Accessories block", subBlock = ""
+            ),
+            RoutineBlock(
+                id = 5L, routineId = 1L, position = 4,
+                name = "DB Twist Curl",
+                kind = BlockKind.SUPERSET, format = "E3MOM", setsCount = 4, targetRepsScheme = "TRISET_1",
+                section = "Accessories block", subBlock = ""
+            ),
+            RoutineBlock(
+                id = 6L, routineId = 1L, position = 5,
+                name = "Barbell Calves Raises",
+                kind = BlockKind.SUPERSET, format = "E2,5MOM", setsCount = 4, targetRepsScheme = "TRISET_2",
+                section = "Accessories block", subBlock = ""
+            ),
+            RoutineBlock(
+                id = 7L, routineId = 1L, position = 6,
+                name = "Banded Reverse Flys",
+                kind = BlockKind.SUPERSET, format = "E2,5MOM", setsCount = 4, targetRepsScheme = "TRISET_2",
+                section = "Accessories block", subBlock = ""
+            ),
+            RoutineBlock(
+                id = 8L, routineId = 1L, position = 7,
+                name = "SkiErg",
+                kind = BlockKind.SUPERSET, format = "E2,5MOM", setsCount = 4, targetRepsScheme = "TRISET_2",
+                section = "Accessories block", subBlock = ""
+            )
+        )
+        fakeDb.routineDao().insert(legacyRoutine)
+        fakeDb.routineDao().insertBlocks(legacyRoutineBlocks)
+
+        val legacySession = Session(id = 100L, cycleId = 1L, date = sessionDate, title = "Monday: Strength & Accessories", notes = "")
+        val legacySessionBlocks = legacyRoutineBlocks.mapIndexed { idx, rb ->
+            BlockInsert(
+                block = SessionBlock(
+                    id = 1000L + idx,
+                    sessionId = 100L,
+                    position = idx,
+                    name = rb.name,
+                    kind = rb.kind,
+                    format = rb.format,
+                    scheme = rb.targetRepsScheme,
+                    section = rb.section,
+                    subBlock = rb.subBlock
+                ),
+                sets = listOf(BlockSet(id = 5000L + idx, blockId = 1000L + idx, position = 0, reps = 5))
+            )
+        }
+        fakeDb.sessionDao().insertSession(legacySession)
+        legacySessionBlocks.forEach { bi ->
+            fakeDb.blockDao().insertBlock(bi.block)
+            fakeDb.blockDao().insertSets(bi.sets)
+        }
+
+        // When reconcileLegacyWorkoutSubBlocks runs
+        repository.reconcileLegacyWorkoutSubBlocks()
+
+        // Then routine blocks are updated to normalized section and subBlock
+        val updatedRoutines = fakeDb.routineDao().getAllWithBlocksOnce()
+        val updatedRoutine = updatedRoutines.find { it.routine.id == 1L }!!
+        val rBlocks = updatedRoutine.blocks.sortedBy { it.position }
+        assertEquals(8, rBlocks.size)
+
+        assertEquals("Strength & Power", rBlocks[0].section)
+        assertEquals("E3MOM Complex", rBlocks[0].subBlock)
+
+        assertEquals("Strength & Power", rBlocks[1].section)
+        assertEquals("E3MOM Front Squats", rBlocks[1].subBlock)
+
+        assertEquals("Accessories", rBlocks[2].section)
+        assertEquals("E3MOM Trisets", rBlocks[2].subBlock)
+        assertEquals("Accessories", rBlocks[3].section)
+        assertEquals("E3MOM Trisets", rBlocks[3].subBlock)
+        assertEquals("Accessories", rBlocks[4].section)
+        assertEquals("E3MOM Trisets", rBlocks[4].subBlock)
+
+        assertEquals("Accessories", rBlocks[5].section)
+        assertEquals("E2,5MOM Trisets", rBlocks[5].subBlock)
+        assertEquals("Accessories", rBlocks[6].section)
+        assertEquals("E2,5MOM Trisets", rBlocks[6].subBlock)
+        assertEquals("Accessories", rBlocks[7].section)
+        assertEquals("E2,5MOM Trisets", rBlocks[7].subBlock)
+
+        // And session blocks are likewise updated
+        val updatedSessionWithBlocks = fakeDb.sessionDao().getByIdOnce(100L)!!
+        val sBlocks = updatedSessionWithBlocks.blocks.sortedBy { it.block.position }.map { it.block }
+        assertEquals(8, sBlocks.size)
+
+        assertEquals("Strength & Power", sBlocks[0].section)
+        assertEquals("E3MOM Complex", sBlocks[0].subBlock)
+
+        assertEquals("Strength & Power", sBlocks[1].section)
+        assertEquals("E3MOM Front Squats", sBlocks[1].subBlock)
+
+        assertEquals("Accessories", sBlocks[2].section)
+        assertEquals("E3MOM Trisets", sBlocks[2].subBlock)
+        assertEquals("Accessories", sBlocks[3].section)
+        assertEquals("E3MOM Trisets", sBlocks[3].subBlock)
+        assertEquals("Accessories", sBlocks[4].section)
+        assertEquals("E3MOM Trisets", sBlocks[4].subBlock)
+
+        assertEquals("Accessories", sBlocks[5].section)
+        assertEquals("E2,5MOM Trisets", sBlocks[5].subBlock)
+        assertEquals("Accessories", sBlocks[6].section)
+        assertEquals("E2,5MOM Trisets", sBlocks[6].subBlock)
+        assertEquals("Accessories", sBlocks[7].section)
+        assertEquals("E2,5MOM Trisets", sBlocks[7].subBlock)
+    }
+
+    @Test
+    fun `reconcileLegacyWorkoutSubBlocks is idempotent and leaves customized and unrelated sessions untouched`() = runTest {
+        // Given an unrelated session ("Wednesday Metcon") and a customized Monday block with non-empty subBlock
+        val wednesdaySession = Session(id = 200L, cycleId = 1L, date = sessionDate, title = "Wednesday Metcon", notes = "")
+        val wednesdayBlock = SessionBlock(
+            id = 2000L, sessionId = 200L, position = 0,
+            name = "Front Squats", kind = BlockKind.STRENGTH, format = "5x5", scheme = "5x5",
+            section = "Main Lift", subBlock = ""
+        )
+        fakeDb.sessionDao().insertSession(wednesdaySession)
+        fakeDb.blockDao().insertBlock(wednesdayBlock)
+
+        val mondayCustomSession = Session(id = 300L, cycleId = 1L, date = sessionDate, title = "Monday Heavy", notes = "")
+        val mondayCustomBlock = SessionBlock(
+            id = 3000L, sessionId = 300L, position = 0,
+            name = "Front Squats", kind = BlockKind.STRENGTH, format = "E3MOM", scheme = "4x4",
+            section = "Strength", subBlock = "Custom Front Squats Tag"
+        )
+        fakeDb.sessionDao().insertSession(mondayCustomSession)
+        fakeDb.blockDao().insertBlock(mondayCustomBlock)
+
+        // When reconcileLegacyWorkoutSubBlocks runs
+        repository.reconcileLegacyWorkoutSubBlocks()
+
+        // Then unrelated session block remains untouched (name matches Front Squats but section & title do not qualify)
+        val s200 = fakeDb.sessionDao().getByIdOnce(200L)!!
+        assertEquals("Main Lift", s200.blocks[0].block.section)
+        assertEquals("", s200.blocks[0].block.subBlock)
+
+        // And customized Monday block remains untouched (non-empty subBlock is protected)
+        val s300 = fakeDb.sessionDao().getByIdOnce(300L)!!
+        assertEquals("Strength", s300.blocks[0].block.section)
+        assertEquals("Custom Front Squats Tag", s300.blocks[0].block.subBlock)
+    }
 }
 
 private class FakeTestAppDatabase : AppDatabase() {
@@ -365,7 +536,7 @@ private class FakeTestAppDatabase : AppDatabase() {
 
     private val sessionDaoImpl = object : SessionDao {
         override suspend fun insertSession(session: Session): Long {
-            val nextId = (sessionsStorage.maxOfOrNull { it.id } ?: 0L) + 1L
+            val nextId = if (session.id > 0L) session.id else (sessionsStorage.maxOfOrNull { it.id } ?: 0L) + 1L
             val created = session.copy(id = nextId)
             sessionsStorage.add(created)
             return nextId
@@ -392,7 +563,7 @@ private class FakeTestAppDatabase : AppDatabase() {
 
     private val blockDaoImpl = object : BlockDao {
         override suspend fun insertBlock(block: SessionBlock): Long {
-            val nextId = (blocksStorage.maxOfOrNull { it.id } ?: 0L) + 1L
+            val nextId = if (block.id > 0L) block.id else (blocksStorage.maxOfOrNull { it.id } ?: 0L) + 1L
             val created = block.copy(id = nextId)
             blocksStorage.add(created)
             return nextId
@@ -404,7 +575,7 @@ private class FakeTestAppDatabase : AppDatabase() {
         }
         override suspend fun insertSet(set: BlockSet): Long {
             if (simulateSetInsertFailure) throw IllegalStateException("Simulated failure")
-            val nextId = (setsStorage.maxOfOrNull { it.id } ?: 0L) + 1L
+            val nextId = if (set.id > 0L) set.id else (setsStorage.maxOfOrNull { it.id } ?: 0L) + 1L
             val created = set.copy(id = nextId)
             setsStorage.add(created)
             return nextId
@@ -448,14 +619,14 @@ private class FakeTestAppDatabase : AppDatabase() {
 
     private val routineDaoImpl = object : RoutineDao {
         override suspend fun insert(routine: Routine): Long {
-            val nextId = (routinesStorage.maxOfOrNull { it.id } ?: 0L) + 1L
+            val nextId = if (routine.id > 0L) routine.id else (routinesStorage.maxOfOrNull { it.id } ?: 0L) + 1L
             val created = routine.copy(id = nextId)
             routinesStorage.add(created)
             return nextId
         }
         override suspend fun insertAll(routines: List<Routine>) { routines.forEach { insert(it) } }
         override suspend fun insertBlock(block: RoutineBlock): Long {
-            val nextId = (routineBlocksStorage.maxOfOrNull { it.id } ?: 0L) + 1L
+            val nextId = if (block.id > 0L) block.id else (routineBlocksStorage.maxOfOrNull { it.id } ?: 0L) + 1L
             val created = block.copy(id = nextId)
             routineBlocksStorage.add(created)
             return nextId
