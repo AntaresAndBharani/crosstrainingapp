@@ -2,32 +2,40 @@
 
 ## System Overview & Technology Stack
 
-**CrossTraining** (`com.fractanomics.crosstraining`) is an offline-first Android application engineered for CrossFit athletes, strength trainees, and strength & conditioning coaches. The platform enables comprehensive tracking of strength progressions, complex barbell routines, periodized training cycles, monostructural conditioning metrics, audio/haptic interval timers, natural language voice workout dictation, dual-sandbox data isolation, and multi-tenant cloud synchronization.
+**CrossTraining** (`com.fractanomics.crosstraining`) is an offline-first Android application engineered for CrossFit athletes, strength trainees, and strength & conditioning coaches. The platform enables comprehensive tracking of strength progressions, complex barbell routines, periodized training cycles, monostructural conditioning metrics, body weight trend analytics, audio/haptic interval timers, natural language voice workout dictation, deterministic markdown document ingestion, dual-sandbox data isolation, and multi-tenant cloud synchronization.
 
 ```mermaid
 graph TD
     subgraph Presentation ["Presentation Layer (Jetpack Compose / Material 3)"]
-        UI["Compose Screens & Modals (ui.screens, ui.voice, ui.components)"]
+        UI["Compose Screens & Modals (ui.screens, ui.voice, ui.components, ui.screens.weight)"]
         VM["AppViewModel (UDF State Holder & Flow Combinator)"]
         Nav["Navigation Compose & NavigationIntentHandler"]
     end
 
-    subgraph AudioAI ["Voice & On-Device AI Subsystem"]
+    subgraph IngestionAI ["Voice, Text & AI Ingestion Subsystem"]
         VoiceCtrl["VoiceInputController (SpeechRecognizer & Noise Suppression)"]
         Lexicon["FitnessSpeechLexicon (Phonetic & STT Normalization)"]
         AiCore["AiCoreManager (Gemini Nano / Heuristic Fallback)"]
         Grounder["ExerciseEntityGrounder (Fuzzy Matching & Movement Disambiguation)"]
+        Resolver["WorkoutEntityResolver (Composite Isolation & Category Inference)"]
+        DocParser["WorkoutDocumentParser (Zero-Latency Deterministic Parsing)"]
+    end
+
+    subgraph AnalyticsSubsystem ["Domain Analytics Subsystem"]
+        WeightAna["WeightAnalytics (SMA-7, Decimation & Physiological Bounds)"]
+        ProgAna["ProgressAnalytics (Volume & PR Trend Calculations)"]
     end
 
     subgraph DataPersistence ["Data Layer & Local Persistence"]
         DMM["DataModeManager (Dual-Sandbox Routing: Live vs Demo)"]
         Repo["Repository (Single Source of Truth & Atomic Persistence)"]
-        RoomDB[("Room AppDatabase (SQLite, Migrations v1-v5)")]
+        RoomDB[("Room AppDatabase (SQLite, Migrations v1-v7, Schemas Export)")]
+        BackupEng["BackupCsv (v4 RFC-4180 Relational Engine)"]
     end
 
     subgraph CloudIdentity ["Cloud Sync & Identity Subsystem"]
         CredMgr["Credential Manager & Google ID (androidx.credentials)"]
-        CloudSync["UserCloudSyncManager (Token-Bound Sync & Overwrite Guards)"]
+        CloudSync["UserCloudSyncManager (Token-Bound Sync, supervisorScope & Tombstones)"]
         CommunitySync["FirebaseSyncManager (Share Codes & Community WODs)"]
         Firestore[("Cloud Firestore (Multi-Tenant Environments)")]
         FirebaseAuth[("Firebase Auth (UID Token Verification)")]
@@ -54,6 +62,15 @@ graph TD
     Grounder -->|Resolves Catalog IDs| RoomDB
     Repo -->|4. Atomic Commit (Session, Blocks, Sets)| RoomDB
 
+    UI -->|Pastes Raw Workout Text| DocParser
+    DocParser -->|Structured Document Blocks| Resolver
+    Resolver -->|Grounds Movements & Isolates Complexes| RoomDB
+    Resolver -->|Proposes Block Resolutions & Missing Moves| VM
+    VM -->|Confirms Ingestion with Mutex Guard| Repo
+
+    VM -->|Applies Timeframe & SMA-7 Pipeline| WeightAna
+    WeightAna -->|Emits Decimated Index-Parallel Points| UI
+
     VM -->|Triggers Background Sync| CloudSync
     CredMgr -->|Authenticates Credentials| FirebaseAuth
     CloudSync -->|Token Verification & Cold-Start Await| FirebaseAuth
@@ -70,10 +87,10 @@ graph TD
 | Tier / Subsystem | Technology | Specification / Version | Architectural Role |
 |---|---|---|---|
 | **Language & Runtime** | Kotlin | `2.0.21` / JVM 17 (`compileOptions`, `kotlinOptions`) | Strongly-typed functional & object-oriented application core |
-| **Android SDK Target** | Android SDK | `minSdk 26`, `targetSdk 35`, `compileSdk 35` | Modern Android 15 platform compliance with Android 8.0+ backwards compatibility |
+| **Android SDK Target** | Android SDK | `minSdk 26`, `targetSdk 35`, `compileSdk 35` | Android 15 platform compliance with Android 8.0+ backwards compatibility |
 | **UI Toolkit** | Jetpack Compose | Compose BOM `2024.10.01`, Material 3 | Declarative, reactive, component-driven user interface |
 | **Navigation** | Navigation Compose | `2.8.4` (`androidx.navigation.compose`) | Single-Activity declarative navigation host and deep-linking |
-| **Persistence** | AndroidX Room | `2.6.1` with KSP `2.0.21-1.0.28` | Local relational SQLite database with typed DAOs and schema migrations |
+| **Persistence** | AndroidX Room | `2.6.1` with KSP `2.0.21-1.0.28`, Schema v7 | Local relational SQLite database with typed DAOs, schema export, and migrations |
 | **Asynchronous & Concurrency** | Kotlin Coroutines & Flow | `1.9.0` (`StateFlow`, `SharedFlow`, `supervisorScope`) | Structured concurrency, reactive data streaming, non-blocking I/O |
 | **Lifecycle Integration** | AndroidX Lifecycle | `2.8.7` (`lifecycle-runtime-compose`, `viewmodel-compose`) | Lifecycle-aware UI state collection (`collectAsStateWithLifecycle`) |
 | **Identity & Authentication** | Credential Manager & Google ID | `androidx.credentials:1.3.0`, `googleid:1.1.1`, Play Services Auth `21.3.0` | Modern biometric, passkey, and Google ID token authentication flows |
@@ -99,7 +116,7 @@ The codebase strictly adheres to **Clean Architecture** principles and **Unidire
 ```mermaid
 graph RL
     subgraph Presentation ["Presentation Layer (ui)"]
-        UI_Screens["Compose Screens (ui.screens)"]
+        UI_Screens["Compose Screens (ui.screens, ui.screens.weight)"]
         UI_Voice["Voice Ingestion UI (ui.voice)"]
         UI_Components["Design System Primitives (ui.components)"]
         UI_VM["AppViewModel (UDF State Holder)"]
@@ -110,20 +127,21 @@ graph RL
     subgraph Data ["Data Layer (data)"]
         D_Repo["Repository (Single Source of Truth)"]
         D_Mode["DataModeManager (Sandbox Routing: Live vs Demo)"]
-        D_AI["On-Device AI Engine (data.ai: AiCoreManager, Grounder)"]
+        D_AI["On-Device AI Engine (data.ai: AiCoreManager, Grounder, Resolver)"]
         D_Voice["Speech Ingestion (data.voice: VoiceInputController)"]
-        D_DAO["Room DAOs (data.dao)"]
-        D_DB["AppDatabase (SQLite & Migrations v1-v5)"]
+        D_DAO["Room DAOs (data.dao: Block, Cycle, Goal, Exercise, RepMax, Routine, Session, Weight)"]
+        D_DB["AppDatabase (SQLite & Migrations v1-v7, Schemas Export)"]
         D_Cloud["UserCloudSyncManager & FirebaseSyncManager (data.firebase)"]
-        D_Backup["Backup & CSV Migration Engine (data.Backup)"]
+        D_Backup["Backup & CSV Migration Engine (data.BackupCsv v4)"]
     end
 
-    subgraph Domain ["Domain & Utility Layer (util, data.model & data.ai)"]
-        DOM_Models["Entities & Relations (Cycle, Session, Routine, RepMax, etc.)"]
-        DOM_Enums["Domain Enums (BlockKind, MetricType, UserRole, TimerMode, etc.)"]
+    subgraph Domain ["Domain & Utility Layer (util, data.model & data.analytics)"]
+        DOM_Models["Entities & Relations (Cycle, Session, Routine, RepMax, WeightEntry, etc.)"]
+        DOM_Enums["Domain Enums (BlockKind, MetricType, UserRole, TimerMode, Timeframe, etc.)"]
         DOM_Voice["Voice State Machine (VoiceIngestionState, ParsedBlock, ParsedBlockSet)"]
         DOM_Lexicon["Domain Lexicon (FitnessSpeechLexicon)"]
-        DOM_Utils["Pure Algorithms (WorkoutParser, RepScheme)"]
+        DOM_Analytics["Domain Analytics (WeightAnalytics, ProgressAnalytics)"]
+        DOM_Utils["Pure Algorithms (WorkoutDocumentParser, WorkoutParser, RepScheme)"]
     end
 
     Presentation --> Data
@@ -131,45 +149,50 @@ graph RL
     Data --> Domain
 ```
 
-### 1. Domain & Utility Layer (`com.fractanomics.crosstraining.util`, `data.model` & pure modules in `data.ai`)
+### 1. Domain & Utility Layer (`com.fractanomics.crosstraining.util`, `data.model` & `data.analytics`)
 - **Responsibilities:**
-  - Contains core business entities (`Cycle`, `Session`, `Routine`, `Exercise`, `RepMax`, `BlockSet`, `RoutineBlock`, `SessionBlock`, `CycleGoal`), domain value objects, and enums (`BlockKind`, `MetricType`, `ExerciseCategory`, `UserRole`, `TimerMode`, `TimerPhase`).
-  - Encapsulates domain contracts for AI parsing (`ParsedBlock`, `ParsedBlockSet`, `WorkoutParseResult`, `GroundingMatch`).
+  - Contains core business entities (`Cycle`, `Session`, `Routine`, `Exercise`, `RepMax`, `BlockSet`, `RoutineBlock`, `SessionBlock`, `CycleGoal`, `WeightEntry`), domain relations (`BlockWithSets`, `SessionWithBlocks`, `RoutineWithBlocks`, `CycleWithGoals`), and domain enums (`BlockKind`, `MetricType`, `ExerciseCategory`, `UserRole`, `TimerMode`, `TimerPhase`, `Timeframe`).
+  - Encapsulates domain contracts for AI and document parsing (`ParsedBlock`, `ParsedBlockSet`, `WorkoutParseResult`, `GroundingMatch`, `ParsedWorkoutDocument`, `ParsedDocumentBlock`, `ParsedDocumentSet`, `WorkoutEntityResolutionResult`, `ResolvedBlockEntity`).
   - Houses the formal 7-stage voice ingestion lifecycle state machine (`VoiceIngestionState`).
   - Encapsulates pure domain algorithms:
+    - `WorkoutDocumentParser`: Deterministic, zero-latency (< 15ms) document parser for unformatted workout notes, applying digit-bounded lookaround regex `(?<=\d),(?=\d)` for European decimal comma normalization, inline colon non-label guards, context-aware triset boundary termination, blank-line lookahead, and shorthand set grammar (`0(4)`, `60(fail)`, `not_done`).
     - `WorkoutParser`: Regex-driven free-text workout syntax parsing, rep-scheme extraction, and movement extraction.
     - `RepScheme`: Wave-loading validation, rep-count decomposition, and string formatting.
     - `FitnessSpeechLexicon`: Pure Kotlin phonetic normalization engine mapping fitness acronyms, Olympic lifting terms, and common speech-to-text artifacts without platform dependencies.
+    - `WeightAnalytics`: Physiological range validation ([20.0 kg, 350.0 kg], [44.1 lbs, 771.6 lbs]), timeframe filtering (`7D`, `30D`, `90D`, `1Y`, `ALL`), 7-day Simple Moving Average (SMA-7) calculation over the closed interval `[t-6, t]` requiring `N >= 3` entries, and paired decimation down to `<= 120` points preserving index parallelism across raw and trend lines.
 - **Architectural Invariants:**
-  - **Zero Platform Dependencies:** Must not import Android framework classes (`android.*`, `Context`, `View`, `Bundle`, Compose UI tokens).
+  - **Zero Platform Dependencies:** Must not import Android framework classes (`android.*`, `Context`, `View`, `Bundle`, Compose UI tokens, or Room annotations beyond entity definitions).
   - **Deterministic & Pure:** All functions must be deterministic, free of side-effects, and 100% unit-testable without Android mocks, instrumentation, or Robolectric runners.
 
 ### 2. Data Layer (`com.fractanomics.crosstraining.data`)
 - **Responsibilities:**
-  - **Room Database & DAOs (`data.dao`):** Provides strongly-typed SQL mapping, foreign key constraints, cascading deletes, indexes, and reactive queries via Kotlin `Flow`.
-  - **Single Source of Truth (`Repository`):** Coordinates multi-entity transactional persistence using `db.withTransaction { ... }`. Encapsulates write-time business logic such as auto-creating exercises (`getOrCreateExercise`), synchronizing routine blocks, discovering new rep-maxes, startup default cycle provisioning, and deduplicating routines.
+  - **Room Database & DAOs (`data.dao`):** Provides strongly-typed SQL mapping, foreign key constraints, cascading deletes, indexes, and reactive queries via Kotlin `Flow`. Features 10 entities, 8 DAOs (`BlockDao`, `CycleDao`, `CycleGoalDao`, `ExerciseDao`, `RepMaxDao`, `RoutineDao`, `SessionDao`, `WeightDao`), and schema migrations (v1 through v7) with automated schema export.
+  - **Single Source of Truth (`Repository`):** Coordinates multi-entity transactional persistence using `db.withTransaction { ... }`. Encapsulates write-time business logic such as auto-creating exercises (`getOrCreateExercise`), synchronizing routine blocks, discovering new rep-maxes, startup default cycle provisioning, routine deduplication, and natural primary key weight snapshot persistence.
   - **Dual-Sandbox Routing (`DataModeManager`):** Manages session-scoped in-memory switching between the live database (`crosstraining.db`) and the disposable sample database (`crosstraining-demo.db`), guaranteeing that demo sessions cannot corrupt athlete history. Provides `realRepository` for strictly isolated background sync operations.
-  - **On-Device AI & Speech Ingestion (`data.ai`, `data.voice`):**
+  - **On-Device AI, Document Grounding & Speech Ingestion (`data.ai`, `data.voice`):**
     - `VoiceInputController`: Wraps `SpeechRecognizer` with acoustic noise suppression intent flags, manages audio focus, streams real-time RMS dB levels and partial transcripts, and handles standardized error translation (`VoiceInputError`).
     - `AiCoreManager`: Decoupled via `GeminiNanoClient` interface. Orchestrates prompt construction commanding strict JSON schemas, parses resilient JSON, and seamlessly falls back to heuristic rule-based parsing when on-device AI is unavailable.
     - `ExerciseEntityGrounder`: Matches recognized movement text against Room `ExerciseDao` movements using exact alias maps, token overlap, and Levenshtein distance metrics (confidence threshold 0.0–1.0) to prompt disambiguation for ambiguous queries.
+    - `WorkoutEntityResolver`: Performs in-transaction entity grounding, category and metric type inference (Machine -> CALORIES/DISTANCE, Gymnastics -> REPS/WEIGHT, Barbell -> WEIGHT), and barbell complex composite isolation.
   - **Cloud Synchronization & Identity (`data.firebase`):**
-    - `UserCloudSyncManager`: Manages token-bound identity verification, cold-start auth resolution (`awaitAuthState`), fault-isolated concurrent uploads using `supervisorScope`, per-document empty overwrite protection (`uploadCollectionWithGuard`), and dual-read cloud migrations.
+    - `UserCloudSyncManager`: Manages token-bound identity verification, cold-start auth resolution (`awaitAuthState`), fault-isolated concurrent uploads across 6 collections (`exercises`, `routines`, `sessions`, `cycle_goals`, `rep_maxes`, `weight_entries`) using `supervisorScope`, per-document empty overwrite protection (`uploadCollectionWithGuard`), dual-read cloud migrations, and tombstone-aware synchronization (`WeightEntry.deletedAtMillis`).
     - `FirebaseSyncManager`: Global community workout publishing and retrieval via alphanumeric 6-character share codes.
-    - `CloudSyncErrorMapper`: Translates Firestore network timeouts, unauthenticated states, and permission denials into user-friendly UI feedback.
-  - **Backup & Migration Engine (`BackupCsv`, `AppDatabase.MIGRATION_*`):** Manages relational CSV serialization/deserialization and SQLite schema migrations (v1 through v5).
+    - `CloudSyncErrorMapper`: Translates Firestore network timeouts, unauthenticated states, and permission denials into user-friendly UI feedback with 5-second cooldown debounce state.
+  - **Backup & Migration Engine (`BackupCsv`, `AppDatabase.MIGRATION_*`):** Manages RFC-4180 relational CSV serialization/deserialization (`#crosstraining-backup-v4` supporting 9 tables/sections) and SQLite schema migrations (v1 through v7).
 - **Architectural Invariants:**
   - DAOs must remain package-private or accessible exclusively through `Repository`.
   - All database writes, file I/O, network operations, and AI inference must execute on background coroutine dispatchers (`Dispatchers.IO`).
   - Empty local datasets must never overwrite populated remote cloud collections without explicit guard verification.
+  - Deletions synced to cloud Firestore must carry durable tombstones (`deletedAtMillis`) to prevent deleted records from resurrecting on sibling devices.
 
 ### 3. Presentation / UI Layer (`com.fractanomics.crosstraining.ui`)
 - **Responsibilities:**
-  - **State Orchestration (`AppViewModel`):** Central state holder for the UI. Binds reactive streams from `DataModeManager.repositoryFlow`, exposes lifecycle-safe `StateFlow<T>`, and receives user intents to trigger coroutine executions on `viewModelScope`. Exposes `voiceIngestionState` and `voiceWorkoutUiState`.
+  - **State Orchestration (`AppViewModel`):** Central state holder for the UI. Binds reactive streams from `DataModeManager.repositoryFlow`, exposes lifecycle-safe `StateFlow<T>`, and receives user intents to trigger coroutine executions on `viewModelScope`. Exposes `progressMode`, `voiceIngestionState`, `voiceWorkoutUiState`, and workout journey assistant draft state with mutex persistence guards.
   - **Single-Activity Host & Navigation (`MainActivity`, `ui.navigation`):** Single-Activity architecture with edge-to-edge system bar configuration. Defines top-level navigation routes (`BottomDestination`, `DrawerItem`), dynamic bottom bars based on user role (`ATHLETE` vs `COACH`), and routes external notifications via `NavigationIntentHandler`.
   - **Stateful Screens & Stateless Content (`ui.screens`):** Implements strict separation between stateful container composables (which inject the ViewModel) and stateless presentation composables (which receive pure data classes and emit lambdas).
+  - **Body Weight Tracker UI (`ui.screens.weight`):** Modular weight tracking components: `WeightEntryBottomSheet` with calendar date selection and physiological input guards, and `WeightSummaryCard` providing latest weigh-in metrics, 30-day delta, and quick logging actions.
   - **Voice Ingestion UI (`ui.voice`):** `VoiceWorkoutIngestionSheet` provides real-time audio visualization with an animated multi-bar RMS waveform, live speech transcript display, interactive movement disambiguation chips, and spreadsheet-style inline set editing.
-  - **Design System & Components (`ui.components`, `ui.theme`):** Encapsulates Material 3 theme tokens, typography, dynamic palettes, and robust UI primitives such as `AppNumericTextField`, `LineChart`, `ResetPasswordDialog`, and `QuickAddWorkoutDialog`.
+  - **Design System & Components (`ui.components`, `ui.theme`):** Encapsulates Material 3 theme tokens, typography, dynamic palettes, and robust UI primitives such as `AppNumericTextField` (with select-all buffer and deferred commit), `LineChart` (with gap-aware rendering), `ResetPasswordDialog`, `QuickAddWorkoutDialog`, and `WorkoutJourneyAssistantSheet` (4-step wizard modal sheet with sheet dismissal guard and interactive deletion).
   - **Foreground Timer Subsystem (`ui.timer`):** Hoists `TimerEngine` to application scope, running tick loops independent of activity lifecycle, and binds to `TimerService` for MediaStyle notifications, audio interval cues (`ToneGenerator`), and haptic vibrations.
 - **Architectural Invariants:**
   - UI components must never instantiate or interact with Room DAOs, Firestore, or speech recognizers directly.
@@ -187,6 +210,7 @@ crosstrainingapp/
 ├── app/
 │   ├── build.gradle.kts                          # App build configuration, dependencies, and signing configs
 │   ├── proguard-rules.pro                        # Proguard / R8 optimization rules
+│   ├── schemas/                                  # Room exported schema JSON definitions (v5-v7)
 │   └── src/
 │       ├── main/
 │       │   ├── AndroidManifest.xml               # App manifest, permissions (audio, notifications, foreground), services
@@ -194,7 +218,7 @@ crosstrainingapp/
 │       │       ├── CrossTrainingApp.kt           # Application class & Composition Root (DataModeManager, TimerEngine)
 │       │       ├── MainActivity.kt               # Single Activity host with Edge-to-Edge & NavigationIntentHandler
 │       │       ├── data/
-│       │       │   ├── AppDatabase.kt            # Room database definition, type converters, & migrations (v1-v5)
+│       │       │   ├── AppDatabase.kt            # Room database definition, type converters, & migrations (v1-v7)
 │       │       │   ├── Backup.kt                 # Relational CSV export and import serialization engine (v1-v4)
 │       │       │   ├── Converters.kt             # Room type converters (LocalDate, enums, primitives)
 │       │       │   ├── DataModeManager.kt        # Dual-database routing (Live vs Demo) & session-scoped isolation
@@ -207,6 +231,8 @@ crosstrainingapp/
 │       │       │   │   ├── ExerciseEntityGrounder.kt # Movement name grounding & Levenshtein disambiguation
 │       │       │   │   ├── FitnessSpeechLexicon.kt   # Pure Kotlin phonetic dictionary & fitness STT normalizer
 │       │       │   │   └── WorkoutEntityResolver.kt  # Grounding, category/metric inference, & barbell complex isolation
+│       │       │   ├── analytics/                # Pure domain analytics engines
+│       │       │   │   └── WeightAnalytics.kt    # Physiological validation, SMA-7 calculation, & paired decimation
 │       │       │   ├── dao/                      # Room Data Access Objects
 │       │       │   │   ├── BlockDao.kt           # Session blocks and block sets DAO
 │       │       │   │   ├── CycleDao.kt           # Training cycles DAO
@@ -214,20 +240,40 @@ crosstrainingapp/
 │       │       │   │   ├── ExerciseDao.kt        # Movement and exercise catalog DAO
 │       │       │   │   ├── RepMaxDao.kt          # Personal records & rep-max history DAO
 │       │       │   │   ├── RoutineDao.kt         # Routines and routine blocks DAO
-│       │       │   │   └── SessionDao.kt         # Logged workouts & session history DAO
+│       │       │   │   ├── SessionDao.kt         # Logged workouts & session history DAO
+│       │       │   │   └── WeightDao.kt          # Body weight entries & tombstone soft delete DAO
+│       │       │   ├── firebase/                 # Cloud synchronization & identity
+│       │       │   │   ├── CloudSyncErrorMapper.kt   # Firestore error translation & UI debounce helper
+│       │       │   │   ├── FirebaseSyncManager.kt    # Public routine exchange via 6-char share codes
+│       │       │   │   └── UserCloudSyncManager.kt   # Token-bound identity sync, supervisorScope & tombstones
+│       │       │   └── model/                    # Relational Room entities & composite relation POJOs
+│       │       │       ├── BlockSet.kt           # Individual workout set entity
+│       │       │       ├── Cycle.kt              # Training cycle / meso-cycle entity
+│       │       │       ├── CycleGoal.kt          # Cycle movement targets entity
+│       │       │       ├── Enums.kt              # Domain enums (BlockKind, MetricType, ExerciseCategory, etc.)
+│       │       │       ├── Exercise.kt           # Exercise catalog entity
+│       │       │       ├── Relations.kt          # Relation POJOs (SessionWithBlocks, RoutineWithBlocks, etc.)
+│       │       │       ├── RepMax.kt             # Personal records & rep maxes entity
+│       │       │       ├── Routine.kt            # Daily routine template entity
+│       │       │       ├── RoutineBlock.kt       # Routine block template entity (with section)
+│       │       │       ├── Session.kt            # Logged workout session entity
+│       │       │       ├── SessionBlock.kt       # Session workout block entity (with section & complex CSV)
+│       │       │       ├── UserRole.kt           # Athlete vs Coach domain role
+│       │       │       └── WeightEntry.kt        # Body weight entry entity (with natural PK & tombstone)
 │       │       ├── ui/
 │       │       │   ├── AppViewModel.kt           # Unified UI ViewModel exposing StateFlows and dispatching actions
 │       │       │   ├── Format.kt                 # UI display formatting helpers (dates, weights, times, scores)
 │       │       │   ├── ProgressAnalytics.kt      # Rep-max calculation, volume progression, and PR charting models
-│       │       │   ├── SessionDraft.kt           # Ephemeral UI editing models for workout logging & editing (with section parity)
+│       │       │   ├── SessionDraft.kt           # Ephemeral UI editing models for workout logging & editing
 │       │       │   ├── components/               # Reusable Jetpack Compose UI components & design system
-│       │       │   │   ├── CommonUi.kt           # Shared UI buttons, headers, cards, AppNumericTextField, modal sheets
+│       │       │   │   ├── CommonUi.kt           # Shared UI buttons, headers, cards, modal sheets
+│       │       │   │   ├── AppNumericTextField.kt# Focus-aware ephemeral buffer & deferred commit numeric input
 │       │       │   │   ├── DateField.kt          # Date picker field with Material 3 integration
 │       │       │   │   ├── Dropdown.kt           # Form dropdown selector
-│       │       │   │   ├── LineChart.kt          # Custom Canvas-rendered strength progression line chart
+│       │       │   │   ├── LineChart.kt          # Custom Canvas-rendered line chart with gap-aware rendering
 │       │       │   │   ├── QuickAddWorkoutDialog.kt # Modal dialog for quick workout insertion
 │       │       │   │   ├── ResetPasswordDialog.kt   # Password reset modal dialog with regex validation
-│       │       │   │   └── WorkoutJourneyAssistantSheet.kt # 4-step wizard modal sheet with sheet dismissal guard & interactive deletion
+│       │       │   │   └── WorkoutJourneyAssistantSheet.kt # 4-step wizard modal sheet with dismissal guard
 │       │       │   ├── navigation/               # Navigation topology & routing
 │       │       │   │   ├── AppNavigation.kt      # NavHost, BottomNavigationBar, and ModalNavigationDrawer
 │       │       │   │   └── NavigationIntentHandler.kt # Deep-link and notification intent routing handler
@@ -238,15 +284,18 @@ crosstrainingapp/
 │       │       │   │   ├── LoginWelcomeScreen.kt # Authentication, Google Sign-In, Credential Manager, & Guest mode
 │       │       │   │   ├── LogSessionScreen.kt   # Daily workout logging screen
 │       │       │   │   ├── ProfileScreen.kt      # User account, theme toggle, CSV backup, & sync recovery cards
-│       │       │   │   ├── ProgressScreen.kt     # Personal record analytics & progression charts
-│       │       │   │   ├── SessionEditor.kt      # Comprehensive session editor with set spreadsheet & macro-block section banner
-│       │       │   │   └── TimerScreen.kt        # Workout interval timer configuration & active display
+│       │       │   │   ├── ProgressScreen.kt     # Personal record analytics, weight trends & multi-mode charts
+│       │       │   │   ├── SessionEditor.kt      # Session editor with set spreadsheet & macro-block section banner
+│       │       │   │   ├── TimerScreen.kt        # Workout interval timer configuration & active display
+│       │       │   │   └── weight/               # Modular Body Weight Tracker UI
+│       │       │   │       ├── WeightEntryBottomSheet.kt # Weight logging bottom sheet with date picker & validation
+│       │       │   │       └── WeightSummaryCard.kt      # Weight dashboard card with 30-day delta and quick actions
 │       │       │   ├── theme/                    # Material Design 3 theme tokens
 │       │       │   │   ├── Color.kt              # App color palettes
 │       │       │   │   ├── Theme.kt              # CrossTrainingTheme wrapper with light/dark/system support
 │       │       │   │   └── Type.kt               # Typography specifications
 │       │       │   ├── timer/                    # Foreground Timer Subsystem
-│       │       │   │   ├── NotificationPermissionHelper.kt # Runtime notification permission check & launch helper
+│       │       │   │   ├── NotificationPermissionHelper.kt # Runtime notification permission helper
 │       │       │   │   ├── TimerEngine.kt        # State machine, countdown loop, audio tones, & vibrations
 │       │       │   │   ├── TimerEngineProvider.kt# Application-scoped singleton provider for TimerEngine
 │       │       │   │   ├── TimerNotificationActionDispatcher.kt # Dispatches notification intent actions to TimerEngine
@@ -254,28 +303,37 @@ crosstrainingapp/
 │       │       │   │   ├── TimerNotificationSpec.kt # Notification action and metadata builder
 │       │       │   │   ├── TimerService.kt       # Foreground service hosting ongoing MediaStyle notification
 │       │       │   │   ├── TimerTeardownController.kt # Graceful service termination and resource release
-│       │       │   │   └── WorkoutTimer.kt       # Timer data contracts (TimerMode, TimerPhase, WorkoutTimerConfig, TimerSnapshot)
+│       │       │   │   └── WorkoutTimer.kt       # Timer data contracts (TimerMode, TimerPhase, WorkoutTimerConfig)
 │       │       │   └── voice/                    # Voice Ingestion UI
 │       │       │       └── VoiceWorkoutIngestionSheet.kt # Modal bottom sheet with waveform visualizer & disambiguation
 │       │       └── util/                         # Pure domain utilities
 │       │           ├── RepScheme.kt              # Rep scheme pattern parsing & wave validation
-│       │           ├── WorkoutDocumentParser.kt  # Deterministic document parser with inline colon guard & triset cluster termination
+│       │           ├── WorkoutDocumentParser.kt  # Deterministic document parser with inline colon guard & lookahead
 │       │           └── WorkoutParser.kt          # Free-text WOD and complex routine parsing algorithms
-│       └── test/java/com/fractanomics/crosstraining/ # Comprehensive Unit & Integration Test Suites (34 test classes)
+│       └── test/java/com/fractanomics/crosstraining/ # Comprehensive Unit & Integration Test Suites (47 test classes)
 │           ├── data/
+│           │   ├── BackupCsvV4AndDraftParityTest.kt
+│           │   ├── BackupCsvWeightTest.kt
 │           │   ├── DataModeManagerTest.kt
+│           │   ├── RepositoryWeightSnapshotTest.kt
+│           │   ├── RoomSchemaExportTest.kt
 │           │   ├── RoutineModelTest.kt
 │           │   ├── StartupCycleProvisioningTest.kt
-│           │   └── VoiceRepositoryIntegrationTest.kt
+│           │   ├── VoiceRepositoryIntegrationTest.kt
+│           │   └── WorkoutJourneyRepositoryTest.kt
 │           ├── data/ai/
 │           │   ├── AiCoreManagerTest.kt
 │           │   ├── ExerciseEntityGrounderTest.kt
-│           │   └── FitnessSpeechLexiconTest.kt
+│           │   ├── FitnessSpeechLexiconTest.kt
+│           │   └── WorkoutEntityResolverTest.kt
+│           ├── data/analytics/
+│           │   └── WeightAnalyticsTest.kt
 │           ├── data/firebase/
 │           │   ├── CloudSyncErrorMapperTest.kt
 │           │   ├── CrossAuthSignInTest.kt
 │           │   ├── TokenBoundIdentitySyncTest.kt
-│           │   └── UserCloudSyncManagerOverwriteGuardTest.kt
+│           │   ├── UserCloudSyncManagerOverwriteGuardTest.kt
+│           │   └── WeightCloudSyncTest.kt
 │           ├── data/voice/
 │           │   └── VoiceInputControllerTest.kt
 │           ├── ui/
@@ -284,14 +342,18 @@ crosstrainingapp/
 │           │   ├── AppViewModelDataModeSwitchingTest.kt
 │           │   ├── AppViewModelPasswordResetTest.kt
 │           │   ├── AppViewModelVoiceIngestionTest.kt
-│           │   └── PasswordResetDispatchTest.kt
+│           │   ├── AppViewModelWeightTest.kt
+│           │   ├── PasswordResetDispatchTest.kt
+│           │   └── WorkoutJourneyAssistantViewModelTest.kt
 │           ├── ui/components/
 │           │   ├── AppNumericTextFieldTest.kt
+│           │   ├── LineChartGapAwareTest.kt
 │           │   ├── QuickAddWorkoutDialogNumericMigrationTest.kt
 │           │   └── ResetPasswordDialogTest.kt
 │           ├── ui/screens/
 │           │   ├── ProfileScreenRecoveryUnitTest.kt
 │           │   ├── SessionEditorNumericMigrationTest.kt
+│           │   ├── SessionEditorSectionParityTest.kt
 │           │   └── TimerScreenNumericMigrationTest.kt
 │           ├── ui/theme/
 │           │   └── ThemeModeTest.kt
@@ -306,14 +368,17 @@ crosstrainingapp/
 │           ├── ui/voice/
 │           │   └── VoiceWorkoutIngestionSheetTest.kt
 │           └── util/
+│               ├── WorkoutDocumentParserTest.kt
 │               └── WorkoutParserTest.kt
-├── docs/                                         # Technical documentation & testing runbooks
-│   └── local-testing.md                          # Comprehensive local testing guide & CI status check registry
+├── docs/                                         # Technical documentation, testing runbooks & visual artifacts
+│   ├── local-testing.md                          # Comprehensive local testing guide & CI status check registry
+│   └── screenshots/                              # Validated visual evidence artifacts (01-06)
 ├── e2e/                                          # Automated Maestro E2E test flows
 │   ├── flow-mapping.json                         # Mapping of E2E test flows to functional domains
 │   └── flows/                                    # Maestro YAML scenario scripts (01-06)
 └── scripts/                                      # Automation scripts & CI test harnesses
     ├── crosstrainingapp.ps1                      # Unified CLI entrypoint (emulator, test, build, release)
+    ├── run-e2e-tests.ps1                         # Local and CI Maestro E2E test execution engine
     ├── lib/                                      # Reusable PowerShell modules (AdbEmulatorHelper, GitHubArtifactHelper, PrComment)
     └── tests/                                    # Pester test suites verifying CI pipelines and scripts
 ```
@@ -407,8 +472,9 @@ Cloud synchronization is engineered for multi-tenant security, race-condition re
 - **Token-Bound Identity Alignment**: Enforces that authenticated sessions match the underlying Firebase Auth token UID prior to cloud synchronization, preventing cross-tenant data leaks.
 - **Cold-Start Auth State Await**: Utilizes `AuthStateListener` and `CompletableDeferred` with a 3-second timeout (`awaitAuthState`) to eliminate cold-start race conditions when syncing immediately upon entering the profile screen.
 - **Dual-Read Cloud Migration**: Automatically detects empty user directories under `users/{newUid}`, queries legacy email paths (`users/{email}`), imports historical data into Room, and re-uploads to `users/{newUid}`, ensuring zero data loss during identity migrations.
-- **Fault-Isolated Concurrent Uploads (`supervisorScope`)**: Runs an explicit synchronous routine deduplication pre-flight step (`repo.cleanupDuplicateRoutines()`), followed by concurrent uploads of collections (`exercises`, `routines`, `sessions`, `cycle_goals`, `rep_maxes`) inside a `supervisorScope`. A transient failure in one collection does not cancel sibling uploads.
+- **Fault-Isolated Concurrent Uploads (`supervisorScope`)**: Runs an explicit synchronous routine deduplication pre-flight step (`repo.cleanupDuplicateRoutines()`), followed by concurrent uploads of 6 collections (`exercises`, `routines`, `sessions`, `cycle_goals`, `rep_maxes`, `weight_entries`) inside a `supervisorScope`. A transient failure in one collection does not cancel sibling uploads.
 - **Empty Overwrite Protection (`uploadCollectionWithGuard`)**: Inspects remote collection existence before executing `.set()` updates to prevent uninitialized local databases from overwriting preexisting cloud backups.
+- **Tombstone Soft Deletes (`deletedAtMillis`)**: Deletions (such as weight entries) are tracked via tombstones with timestamps rather than immediate SQL purge. The sync engine propagates tombstones to Firestore and merges remote changes without resurrecting deleted data.
 - **Error Translation & Card-Level Recovery**: Maps Firestore and network exceptions via `CloudSyncErrorMapper` into friendly user messages, with 5-second cooldown debounce state (`isCooldownActive`) on the UI.
 
 ### 6. Stateful Container vs Stateless Presentation Composables
@@ -507,6 +573,20 @@ To facilitate bulk, frictionless workout ingestion from unformatted notes and te
 - **No-Orphan Ingestion Guard**: Deleting a block dynamically filters `missingExercises` to ensure only exercises actively referenced by remaining blocks are inserted into SQLite.
 - **Idempotent Persistence Mutex**: Persistence in `AppViewModel.confirmWorkoutJourney` executes with an in-flight mutex and `try/catch/finally` error handling, preventing rapid button double-taps from producing duplicate records.
 
+### 13. Body Weight Tracking, Trend Analytics & Gap-Aware Charting Pattern
+Tracking athlete body mass requires strict mathematical hygiene and responsive visualization:
+- **Natural Primary Key Idempotence (`WeightEntry.date: LocalDate`)**: Adopts calendar date as natural primary key, eliminating surrogate ID churn and preventing duplicate weigh-ins on the same day.
+- **Physiological Bounds Validation (`WeightAnalytics`)**: Bounds inputs to canonical physiological ranges `[20.0 kg, 350.0 kg]` (`[44.1 lbs, 771.6 lbs]`), preventing chart scale distortions from erroneous inputs.
+- **7-Day Simple Moving Average (SMA-7)**: Computes moving averages over the closed calendar window `[t-6, t]`. To avoid deceptive trend extrapolation, an SMA point is only emitted when at least `N >= 3` entries exist within the 7-day window; otherwise, `null` is returned.
+- **Synchronized Paired Decimation**: When datasets exceed 120 points, raw entries and SMA points are decimated using identical stride indices, ensuring index-parallel alignment between raw and moving average line series.
+- **Gap-Aware Canvas Charting (`LineChart`)**: Breaks continuous line paths when time deltas between adjacent points exceed threshold boundaries, preventing false interpolation over long training hiatuses.
+
+### 14. Relational Backup & Snapshot Parity Pattern (`BackupCsv` v4)
+Offline backups and data exports must preserve complete relational integrity:
+- Encodes all 9 database tables (`#cycles`, `#exercises`, `#routines`, `#routineBlocks`, `#sessions`, `#blocks`, `#sets`, `#repMaxes`, `#weightEntries`) with `#crosstraining-backup-v4` header.
+- Adheres to RFC-4180 quoting rules to safely round-trip multiline notes, quotes, and punctuation.
+- Preserves primary keys, foreign keys, sections, and soft-delete tombstones across restore cycles.
+
 ---
 
 ## Architectural Constraints & Anti-Patterns
@@ -515,7 +595,7 @@ To facilitate bulk, frictionless workout ingestion from unformatted notes and te
 
 1. **Inward-Only Dependency Rule**:
    - The UI layer (`com.fractanomics.crosstraining.ui`) must never directly query Room DAOs, `AppDatabase`, or Firebase SDKs. All operations must flow through `AppViewModel`.
-   - Domain utilities (`com.fractanomics.crosstraining.util`), domain models (`data.model`), and phonetic lexicons (`data.ai.FitnessSpeechLexicon`) must remain pure Kotlin with zero Android framework imports.
+   - Domain utilities (`com.fractanomics.crosstraining.util`), domain models (`data.model`), domain analytics (`data.analytics`), and phonetic lexicons (`data.ai.FitnessSpeechLexicon`) must remain pure Kotlin with zero Android framework imports.
 2. **Lifecycle-Safe Reactive Collection**:
    - UI Composables must always use `collectAsStateWithLifecycle()` to collect `StateFlow`s. Raw `collectAsState()` is prohibited because it continues collecting when the application is backgrounded.
 3. **Structured Non-Blocking Coroutines**:
@@ -523,15 +603,23 @@ To facilitate bulk, frictionless workout ingestion from unformatted notes and te
    - `GlobalScope.launch` and `runBlocking` are strictly prohibited in production code. Use `viewModelScope` in ViewModels and `rememberCoroutineScope` in Composables for UI-only effects.
    - Decoupled concurrent tasks (e.g. multi-collection cloud uploads) must run inside `supervisorScope` to prevent single-task failures from cancelling sibling operations.
 4. **Relational Atomic Integrity**:
-   - Multi-entity writes (e.g. saving a `Session` with its `SessionBlock`s and `BlockSet`s) must be wrapped in `db.withTransaction { ... }`.
+   - Multi-entity writes (e.g. saving a `Session` with its `SessionBlock`s and `BlockSet`s, or a `Routine` with its `RoutineBlock`s) must be wrapped in `db.withTransaction { ... }`.
 5. **Peripheral & Hardware Resilience**:
    - Audio (`ToneGenerator`), Haptic (`VibratorManager` / `Vibrator`), and Speech (`SpeechRecognizer`) invocations must be safely wrapped with fallback exception handling to support varying Android API levels, emulator environments, and headless test runners.
 6. **Token-Bound Identity & Overwrite Protection**:
-   - Cloud sync must verify active auth token binding before execution and guard against empty local collections overwriting remote cloud backups.
-7. **Zero Environment Configuration Leaks**:
-   - Never commit developer-specific JVM paths (e.g. `org.gradle.java.home`) to repository `gradle.properties`. Keystore secrets and environment tokens must be injected via Gradle properties or environment variables.
-8. **Strict Acyclic Package Graph**:
-   - Dependencies must strictly follow: `util` → `model` → `dao` → `data` → `ui`. Circular dependencies between packages or components are strictly forbidden.
+   - Cloud sync must verify active auth token binding before execution, await cold-start auth state resolution, and guard against empty local collections overwriting remote cloud backups.
+7. **Tombstone Durability for Deletion Synchronization**:
+   - Distributed entities (e.g. `WeightEntry`) must support soft-deletion via `deletedAtMillis`. Purging records from SQLite without tombstone propagation causes remote cloud sync to resurrect deleted data.
+8. **Natural Key Idempotence for Calendar Daily Logs**:
+   - Time-series daily entities (such as daily weigh-ins) must use calendar `LocalDate` as natural primary key to eliminate surrogate key churn and enforce idempotent upserts.
+9. **Index-Parallel Chart Series Decimation**:
+   - When downsampling multi-series charts (e.g., raw weights vs SMA trendline), decimation must use identical stride indices across both series to prevent point misalignment.
+10. **Single Authoritative Source in Multi-Step Wizards**:
+    - Wizards (e.g. `WorkoutJourneyAssistantSheet`) must derive draft state, item removal, and persistence from a single authoritative list (`resolutionResult.blockResolutions`), eliminating dual-source divergence.
+11. **Zero Environment Configuration Leaks**:
+    - Never commit developer-specific JVM paths (e.g. `org.gradle.java.home`) to repository `gradle.properties`. Keystore secrets and environment tokens must be injected via Gradle properties or environment variables.
+12. **Strict Acyclic Package Graph**:
+    - Dependencies must strictly follow: `util` / `model` / `analytics` → `dao` → `data` → `ui`. Circular dependencies between packages or components are strictly forbidden.
 
 ### Architectural Anti-Patterns & Solutions
 
@@ -550,6 +638,11 @@ To facilitate bulk, frictionless workout ingestion from unformatted notes and te
 | **Stale Token Cloud Synchronization** | Triggering sync before Firebase Auth token resolution on cold start or after user switch. | Use `awaitAuthState` and `verifyTokenBinding` to ensure local identity matches active auth UID. |
 | **Raw Exception Leakage to UI** | Displaying raw Firestore error codes (`PERMISSION_DENIED`, `UNAVAILABLE`) to users. | Translate exceptions into actionable messages via `CloudSyncErrorMapper`. |
 | **Acoustic Noise Unfiltered Voice Capture** | Invoking `SpeechRecognizer` without noise suppression or offline flags. | Configure `EXTRA_PREFER_OFFLINE`, acoustic echo cancellation, and noise suppression flags in `VoiceInputController`. |
+| **Surrogate Key Churn on Daily Logs** | Generating random autoincrement IDs for date-unique logs (e.g. daily weigh-ins), causing duplicate rows on repeated logging. | Use natural primary key (`LocalDate`) to enforce SQL `REPLACE` / upsert idempotence. |
+| **Unsynchronized Multi-Series Decimation** | Decimating raw data series and moving average trendlines independently, causing X-axis index drift. | Enforce synchronized stride decimation (`WeightAnalytics.prepareWeightChartSeries`) sharing identical stride indices. |
+| **Dual-Source Wizard State Divergence** | Maintaining independent lists for parsed blocks and resolved entities in wizard UIs. | Elevate `blockResolutions` as the single authoritative source of truth for both display and persistence. |
+| **Unwrapped Multi-Table Persistence** | Inserting session blocks and block sets outside a database transaction, leaving orphaned records on crash. | Wrap multi-table relational persistence in `db.withTransaction { ... }`. |
+| **Hard Deletion Cloud Resurrect Bug** | Hard-deleting rows in local SQLite, causing subsequent cloud pulls to resurrect deleted records. | Use tombstone soft-deletion (`deletedAtMillis`) and sync deletion status across clients. |
 
 ---
 
@@ -557,7 +650,7 @@ To facilitate bulk, frictionless workout ingestion from unformatted notes and te
 
 When modifying system architecture or implementing new features:
 1. **Automated Verification**: All local unit tests pass (`.\gradlew.bat testDebugUnitTest --no-daemon`).
-2. **Architecture Compliance**: New features must strictly adhere to the layered structure (`data/model`, `data/dao`, `data/ai`, `data/voice`, `data/firebase`, `ui/screens`, `ui/components`, `ui/voice`, `ui/timer`, `util`).
+2. **Architecture Compliance**: New features must strictly adhere to the layered structure (`data/model`, `data/dao`, `data/ai`, `data/voice`, `data/firebase`, `data/analytics`, `ui/screens`, `ui/components`, `ui/voice`, `ui/timer`, `util`).
 3. **Living Documentation Sync**: Any structural modifications, new layers, or data flow updates must be synchronized with `.graph/architecture.md` and `.agents/rules/`.
 4. **Changelog Maintenance**: Add a descriptive entry under `## [Unreleased]` in `CHANGELOG.md` following the Keep a Changelog standard.
 5. **Remote CI Gate**: Remote GitHub Actions CI workflows (`build.yml`, `release.yml`) must report 100% green status prior to PR merge.
