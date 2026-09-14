@@ -84,6 +84,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -1021,7 +1022,7 @@ private fun CompactBlockEditor(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f, fill = false)
                 ) {
                     Box(
                         modifier = Modifier
@@ -1043,11 +1044,15 @@ private fun CompactBlockEditor(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     // Timer Launcher Button
                     if (onLaunchTimer != null) {
                         IconButton(
@@ -1063,13 +1068,13 @@ private fun CompactBlockEditor(
                         }
                     }
 
-                    // Type Badge Chip
+                    // Type Badge Chip (suppressed if inside sub-block or rendered concisely)
                     AssistChip(
                         onClick = {
                             val nextIdx = (block.kind.ordinal + 1) % BlockKind.entries.size
                             block.kind = BlockKind.entries[nextIdx]
                         },
-                        label = { Text(block.kind.label, style = MaterialTheme.typography.labelSmall) },
+                        label = { Text(block.kind.shortLabel, style = MaterialTheme.typography.labelSmall) },
                         colors = AssistChipDefaults.assistChipColors(
                             containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
                         )

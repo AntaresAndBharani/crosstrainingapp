@@ -793,9 +793,11 @@ private fun RoutineProgress(
     fun matchesRoutineBlock(pb: BlockPerformance, rBlk: RoutineBlock, totalDefined: Int): Boolean {
         val bName = rBlk.name.ifBlank { rBlk.kind.label }
         val pbName = pb.block.name.ifBlank { pb.block.kind.label }
+        val isSupersetKindMatch = pb.block.kind == BlockKind.SUPERSET && rBlk.kind == BlockKind.SUPERSET
         return pbName.equals(bName, ignoreCase = true) ||
             (rBlk.name.isNotBlank() && pb.block.name.equals(rBlk.name, ignoreCase = true)) ||
             (rBlk.targetRepsScheme.isNotBlank() && pb.block.scheme.equals(rBlk.targetRepsScheme, ignoreCase = true)) ||
+            (isSupersetKindMatch && (pb.block.name.isBlank() || rBlk.name.isBlank())) ||
             (pb.block.kind == rBlk.kind && totalDefined == 1)
     }
 

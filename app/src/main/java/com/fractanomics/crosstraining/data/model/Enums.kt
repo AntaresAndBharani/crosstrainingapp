@@ -33,10 +33,10 @@ enum class MetricType(val label: String, val defaultUnit: String, val tracksRepM
  * presents the block; STRENGTH/ACCESSORY are loaded work that can target a main
  * lift for progression.
  */
-enum class BlockKind(val label: String) {
+enum class BlockKind(val label: String, val shortLabel: String = label) {
     WEIGHTLIFTING("Weightlifting"),
     COMPLEX("Complex"),
-    SUPERSET("Superset / Bi-set / Tri-set"),
+    SUPERSET("Superset"),
     HYPERTROPHY("Hypertrophy"),
     ACCESSORY("Accessory"),
     METABOLIC("Metabolic"),
