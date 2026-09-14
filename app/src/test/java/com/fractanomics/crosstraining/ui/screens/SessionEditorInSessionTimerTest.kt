@@ -207,4 +207,143 @@ class SessionEditorInSessionTimerTest {
         assertEquals(TimerPhase.IDLE, engine.snapshot.value.phase)
         assertTrue(!engine.snapshot.value.isRunning)
     }
+
+    @Test
+    fun `Issue 552 Scenario 1 - Direct Format and Round Badges Launch Configures SubBlock Timer`() = runTest {
+        val testDispatcher = UnconfinedTestDispatcher(testScheduler)
+        val engine = TimerEngine(context = null, coroutineDispatcher = testDispatcher)
+
+        val subBlockName = "E3MOM Complex"
+        val format = "E3MOM"
+        val totalRounds = 7
+
+        val config = WorkoutTimerConfigParser.parse(
+            formatString = format,
+            roundCount = totalRounds,
+            workoutLabel = subBlockName,
+            baseConfig = engine.currentConfig
+        )
+        assertNotNull(config)
+        assertEquals(TimerMode.EMOM, config!!.mode)
+        assertEquals(180, config.intervalSeconds)
+        assertEquals(7, config.totalRounds)
+        assertEquals("E3MOM Complex", config.workoutLabel)
+
+        engine.configure(config)
+        engine.start()
+
+        val snap = engine.snapshot.value
+        assertTrue(snap.isRunning)
+        assertEquals("E3MOM Complex", snap.workoutLabel)
+        assertEquals(1, snap.currentRound)
+        assertEquals(7, snap.totalRounds)
+
+        // Verifying the conditional render predicate:
+        val shouldRenderInlineTimer = snap.workoutLabel == subBlockName && snap.phase != TimerPhase.IDLE
+        assertTrue(shouldRenderInlineTimer)
+
+        // For a different sub-block, predicate must be false
+        val otherSubBlock = "Accessories block"
+        val shouldRenderOther = snap.workoutLabel == otherSubBlock && snap.phase != TimerPhase.IDLE
+        assertTrue(!shouldRenderOther)
+
+        engine.stop()
+    }
+
+    @Test
+    fun `Issue 552 Scenario 2 and 4 - SubBlock Inline Timer Rewind and Next Round Navigation`() = runTest {
+        val testDispatcher = UnconfinedTestDispatcher(testScheduler)
+        val engine = TimerEngine(context = null, coroutineDispatcher = testDispatcher)
+
+        val config = WorkoutTimerConfig(
+            mode = TimerMode.EMOM,
+            intervalSeconds = 180,
+            totalRounds = 7,
+            prepCountdownSeconds = 0,
+            workoutLabel = "E3MOM Complex"
+        )
+        engine.configure(config)
+        engine.start()
+
+        assertEquals(1, engine.snapshot.value.currentRound)
+
+        // Advance to Round 4
+        engine.skipRound() // round 2
+        engine.skipRound() // round 3
+        engine.skipRound() // round 4
+        assertEquals(4, engine.snapshot.value.currentRound)
+        assertEquals(180, engine.snapshot.value.roundSecondsRemaining)
+
+        // Tap Rewind button (⏮)
+        engine.previousRound()
+        val snapRewound = engine.snapshot.value
+        assertEquals(3, snapRewound.currentRound)
+        assertEquals(180, snapRewound.roundSecondsRemaining)
+        assertTrue(snapRewound.isRunning)
+
+        // Advance to Next Round (⏭)
+        engine.skipRound()
+        val snapNext = engine.snapshot.value
+        assertEquals(4, snapNext.currentRound)
+        assertEquals(180, snapNext.roundSecondsRemaining)
+
+        engine.stop()
+    }
+
+    @Test
+    fun `Issue 552 Scenario 3 - Rewind is Disabled on Round 1`() = runTest {
+        val testDispatcher = UnconfinedTestDispatcher(testScheduler)
+        val engine = TimerEngine(context = null, coroutineDispatcher = testDispatcher)
+
+        val config = WorkoutTimerConfig(
+            mode = TimerMode.EMOM,
+            intervalSeconds = 180,
+            totalRounds = 7,
+            prepCountdownSeconds = 0,
+            workoutLabel = "E3MOM Complex"
+        )
+        engine.configure(config)
+        engine.start()
+
+        val snap = engine.snapshot.value
+        assertEquals(1, snap.currentRound)
+        val canRewind = snap.totalRounds > 1 && (snap.currentRound > 1 || snap.phase == TimerPhase.FINISHED || snap.phase == TimerPhase.REST)
+        assertTrue("canRewind must evaluate to false on Round 1 in WORK phase", !canRewind)
+
+        // Invoking previousRound at round 1 must not alter state
+        engine.previousRound()
+        assertEquals(1, engine.snapshot.value.currentRound)
+        assertEquals(180, engine.snapshot.value.roundSecondsRemaining)
+
+        engine.stop()
+    }
+
+    @Test
+    fun `Issue 552 Scenario 6 - Dismiss and Stop Inline Timer collapses widget back to IDLE`() = runTest {
+        val testDispatcher = UnconfinedTestDispatcher(testScheduler)
+        val engine = TimerEngine(context = null, coroutineDispatcher = testDispatcher)
+
+        val subBlockName = "E3MOM Complex"
+        val config = WorkoutTimerConfig(
+            mode = TimerMode.EMOM,
+            intervalSeconds = 180,
+            totalRounds = 7,
+            prepCountdownSeconds = 0,
+            workoutLabel = subBlockName
+        )
+        engine.configure(config)
+        engine.start()
+
+        assertTrue(engine.snapshot.value.phase != TimerPhase.IDLE)
+        val activeBeforeDismiss = engine.snapshot.value.workoutLabel == subBlockName && engine.snapshot.value.phase != TimerPhase.IDLE
+        assertTrue(activeBeforeDismiss)
+
+        // User taps Close (✕) button
+        engine.stop()
+
+        assertEquals(TimerPhase.IDLE, engine.snapshot.value.phase)
+        assertTrue(!engine.snapshot.value.isRunning)
+        val activeAfterDismiss = engine.snapshot.value.workoutLabel == subBlockName && engine.snapshot.value.phase != TimerPhase.IDLE
+        assertTrue("Inline timer must collapse when engine phase is IDLE", !activeAfterDismiss)
+    }
 }

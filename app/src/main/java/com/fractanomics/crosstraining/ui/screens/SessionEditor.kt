@@ -112,6 +112,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.derivedStateOf
 import com.fractanomics.crosstraining.ui.components.InSessionTimerBar
 import com.fractanomics.crosstraining.ui.components.InSessionTimerSheet
+import com.fractanomics.crosstraining.ui.components.SubBlockInlineTimer
 import com.fractanomics.crosstraining.ui.timer.NotificationPermissionHelper
 import com.fractanomics.crosstraining.ui.timer.TimerEngine
 import com.fractanomics.crosstraining.ui.timer.TimerEngineProvider
@@ -825,10 +826,20 @@ fun SessionEditorBody(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
+                                        val launchSubBlockTimer = {
+                                            val timingToken = item.format.ifBlank { item.subBlockName }
+                                            launchTimingFromTokenOrOpenSheet(
+                                                timingToken,
+                                                item.totalRounds,
+                                                item.subBlockName
+                                            )
+                                        }
+
                                         if (item.format.isNotBlank()) {
                                             Surface(
                                                 color = MaterialTheme.colorScheme.secondaryContainer,
-                                                shape = RoundedCornerShape(6.dp)
+                                                shape = RoundedCornerShape(6.dp),
+                                                modifier = Modifier.clickable(onClick = launchSubBlockTimer)
                                             ) {
                                                 Text(
                                                     text = item.format,
@@ -843,7 +854,8 @@ fun SessionEditorBody(
                                         val rounds = item.totalRounds
                                         Surface(
                                             color = MaterialTheme.colorScheme.tertiaryContainer,
-                                            shape = RoundedCornerShape(6.dp)
+                                            shape = RoundedCornerShape(6.dp),
+                                            modifier = Modifier.clickable(onClick = launchSubBlockTimer)
                                         ) {
                                             Text(
                                                 text = "$rounds ${if (rounds == 1) "Round" else "Rounds"}",
@@ -856,14 +868,7 @@ fun SessionEditorBody(
 
                                         // Sub-Block Timer Launcher Button
                                         IconButton(
-                                            onClick = {
-                                                val timingToken = item.format.ifBlank { item.subBlockName }
-                                                launchTimingFromTokenOrOpenSheet(
-                                                    timingToken,
-                                                    item.totalRounds,
-                                                    item.subBlockName
-                                                )
-                                            },
+                                            onClick = launchSubBlockTimer,
                                             modifier = Modifier.size(28.dp)
                                         ) {
                                             Icon(
@@ -874,6 +879,14 @@ fun SessionEditorBody(
                                             )
                                         }
                                     }
+                                }
+
+                                // Conditionally render SubBlockInlineTimer when active for this sub-block
+                                if (timerSnapshot.workoutLabel == item.subBlockName && timerSnapshot.phase != TimerPhase.IDLE) {
+                                    SubBlockInlineTimer(
+                                        timerEngine = timerEngine,
+                                        onStartService = requestNotificationPermissionAndStartService
+                                    )
                                 }
 
                                 // Child blocks rendered inside container
