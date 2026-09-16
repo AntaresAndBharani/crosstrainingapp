@@ -1,4 +1,4 @@
-﻿package com.fractanomics.crosstraining.data.analytics
+package com.fractanomics.crosstraining.data.analytics
 
 import com.fractanomics.crosstraining.data.model.WeightEntry
 import org.junit.Assert.assertEquals
@@ -230,6 +230,201 @@ class WeightAnalyticsTest {
 
         val convertedKg = WeightAnalytics.lbsToKg(lbs)
         assertEquals(kg, convertedKg, 0.0001)
+    }
+
+    // =========================================================================
+    // Issue #558 / #559: Historical Lookback SMA-7 Domain Engine Acceptance Tests
+    // =========================================================================
+
+    @Test
+    fun `historical lookback scenario 1 - pre-period historical data populates moving average on day 1 of 7D timeframe`() {
+        // Given an athlete has logged daily weight entries from Sep 1 to Sep 14
+        val entries = (0 until 14).map { day ->
+            createEntry(baseDate.plusDays(day.toLong()), 80.0 + day * 0.5)
+        }
+
+        // When the athlete views the "7D" timeframe anchored on Sep 14 (cutoff Sep 8)
+        val anchor = baseDate.plusDays(13) // Sep 14
+        val series = WeightAnalytics.prepareChartSeries(
+            entries = entries,
+            timeframe = Timeframe.SEVEN_DAYS,
+            referenceDate = anchor
+        )
+
+        // Then the chart series contains 7 daily points from Sep 8 to Sep 14
+        assertEquals(7, series.size)
+        val cutoff = baseDate.plusDays(7) // Sep 8
+        assertEquals(cutoff, series.first().date)
+        assertEquals(anchor, series.last().date)
+
+        // And every single point including Sep 8 and Sep 9 has a non-null 7D moving average computed from [date - 6 days, date]
+        series.forEach { point ->
+            assertNotNull("Point on ${point.date} must have non-null SMA-7", point.smaValue)
+        }
+
+        // And the 7D average line on Sep 8 is computed using entries from Sep 2 to Sep 8.
+        // Entries Sep 2 to Sep 8: days 1..7 -> weights: 80.5, 81.0, 81.5, 82.0, 82.5, 83.0, 83.5
+        val expectedSep8Sma = (1..7).map { 80.0 + it * 0.5 }.average()
+        assertEquals(expectedSep8Sma, series.first().smaValue!!, 0.001)
+    }
+
+    @Test
+    fun `historical lookback scenario 2 - leading-edge cold start emits null when prior history does not exist`() {
+        // Given an athlete who started logging on Day 1 (no prior entries exist)
+        // And logs entries on Day 1, Day 2, and Day 3
+        val entries = listOf(
+            createEntry(baseDate, 80.0), // Day 1: Sep 1
+            createEntry(baseDate.plusDays(1), 80.5), // Day 2: Sep 2
+            createEntry(baseDate.plusDays(2), 81.0)  // Day 3: Sep 3
+        )
+
+        // When the athlete views the weight trend chart
+        val series = WeightAnalytics.prepareChartSeries(entries, Timeframe.ALL)
+
+        // Then Day 1 has smaValue = null (N=1 < 3)
+        assertEquals(3, series.size)
+        assertNull("Day 1 has N=1 < 3, smaValue must be null", series[0].smaValue)
+
+        // And Day 2 has smaValue = null (N=2 < 3)
+        assertNull("Day 2 has N=2 < 3, smaValue must be null", series[1].smaValue)
+
+        // And Day 3 has a valid non-null smaValue if an entry exists on Day 3 (N=3 >= 3).
+        assertNotNull("Day 3 has N=3 >= 3, smaValue must not be null", series[2].smaValue)
+        assertEquals((80.0 + 80.5 + 81.0) / 3.0, series[2].smaValue!!, 0.001)
+    }
+
+    @Test
+    fun `historical lookback scenario 3a - sparse pre-period history meeting N greater than or equal 3 threshold across boundary`() {
+        // Given an athlete logged weights on Sep 4 and Sep 6 (prior to 7D cutoff Sep 8)
+        // And logs a weight on Sep 8
+        // baseDate = Sep 1 -> Sep 4 is baseDate + 3, Sep 6 is baseDate + 5, Sep 8 is baseDate + 7, Sep 14 is baseDate + 13
+        val entries = listOf(
+            createEntry(baseDate.plusDays(3), 80.0), // Sep 4
+            createEntry(baseDate.plusDays(5), 81.0), // Sep 6
+            createEntry(baseDate.plusDays(7), 82.0)  // Sep 8
+        )
+
+        // When the 7D chart series is generated anchored on Sep 14 (cutoff Sep 8)
+        val anchor = baseDate.plusDays(13) // Sep 14
+        val series = WeightAnalytics.prepareChartSeries(
+            entries = entries,
+            timeframe = Timeframe.SEVEN_DAYS,
+            referenceDate = anchor
+        )
+
+        // Then entries within [Sep 2, Sep 8] include Sep 4, Sep 6, Sep 8 (N=3)
+        // Within display window [Sep 8, Sep 14], only Sep 8 has an entry logged
+        assertEquals(1, series.size)
+        assertEquals(baseDate.plusDays(7), series[0].date)
+
+        // And Sep 8 emits a valid 7D average equal to (weight[Sep 4] + weight[Sep 6] + weight[Sep 8]) / 3.
+        assertNotNull("Sep 8 has N=3 across boundary, smaValue must not be null", series[0].smaValue)
+        val expectedAvg = (80.0 + 81.0 + 82.0) / 3.0
+        assertEquals(expectedAvg, series[0].smaValue!!, 0.001)
+    }
+
+    @Test
+    fun `historical lookback scenario 3b - sparse pre-period history below N less than 3 threshold across boundary`() {
+        // Given an athlete logged only one weight on Sep 6 prior to the 7D cutoff Sep 8
+        // And logs a weight on Sep 8
+        val entries = listOf(
+            createEntry(baseDate.plusDays(5), 81.0), // Sep 6
+            createEntry(baseDate.plusDays(7), 82.0)  // Sep 8
+        )
+
+        // When the 7D chart series is generated anchored on Sep 14 (cutoff Sep 8)
+        val anchor = baseDate.plusDays(13) // Sep 14
+        val series = WeightAnalytics.prepareChartSeries(
+            entries = entries,
+            timeframe = Timeframe.SEVEN_DAYS,
+            referenceDate = anchor
+        )
+
+        // Then entries within [Sep 2, Sep 8] include only Sep 6 and Sep 8 (N=2 < 3)
+        // Within display window [Sep 8, Sep 14], only Sep 8 has an entry logged
+        assertEquals(1, series.size)
+        assertEquals(baseDate.plusDays(7), series[0].date)
+
+        // And Sep 8 emits smaValue = null.
+        assertNull("Sep 8 has N=2 < 3, smaValue must be null", series[0].smaValue)
+    }
+
+    @Test
+    fun `historical lookback scenario 4 - soft-deleted entries in lookback window are excluded`() {
+        // Given historical entries preceding the timeframe boundary where one entry has deletedAtMillis set
+        // Entries on Sep 4 (soft-deleted), Sep 6 (active), Sep 7 (active), Sep 8 (active)
+        val entries = listOf(
+            createEntry(baseDate.plusDays(3), 80.0, deletedAt = 12345678L), // Sep 4 (deleted)
+            createEntry(baseDate.plusDays(5), 81.0),                         // Sep 6 (active)
+            createEntry(baseDate.plusDays(6), 82.0),                         // Sep 7 (active)
+            createEntry(baseDate.plusDays(7), 83.0)                          // Sep 8 (active)
+        )
+
+        // When computing the moving average for dates in the active timeframe (anchored on Sep 14, cutoff Sep 8)
+        val anchor = baseDate.plusDays(13) // Sep 14
+        val series = WeightAnalytics.prepareChartSeries(
+            entries = entries,
+            timeframe = Timeframe.SEVEN_DAYS,
+            referenceDate = anchor
+        )
+
+        // Then soft-deleted entries are excluded from both count and sum calculations.
+        // For Sep 8, window [Sep 2, Sep 8] has active entries: Sep 6, Sep 7, Sep 8 (N=3).
+        // Sep 4 is soft-deleted so count is 3 (not 4) and sum does not include 80.0.
+        assertEquals(1, series.size)
+        assertEquals(baseDate.plusDays(7), series[0].date)
+        assertNotNull(series[0].smaValue)
+        val expectedAvg = (81.0 + 82.0 + 83.0) / 3.0
+        assertEquals(expectedAvg, series[0].smaValue!!, 0.001)
+    }
+
+    @Test
+    fun `historical lookback scenario 5 - Timeframe ALL invariant and custom past reference date lookback`() {
+        // Given an athlete has 30 daily entries from Sep 1 to Sep 30
+        val entries = (0 until 30).map { day ->
+            createEntry(baseDate.plusDays(day.toLong()), 75.0 + day * 0.2)
+        }
+
+        // When the athlete selects Timeframe.ALL
+        val seriesAll = WeightAnalytics.prepareChartSeries(entries, Timeframe.ALL)
+
+        // Then 30 points are generated matching activeSorted, with SMA computed identically across full history
+        assertEquals(30, seriesAll.size)
+        for (i in 0 until 30) {
+            val date = baseDate.plusDays(i.toLong())
+            assertEquals(date, seriesAll[i].date)
+            val windowStart = date.minusDays(6)
+            val windowEntries = entries.filter { !it.date.isBefore(windowStart) && !it.date.isAfter(date) }
+            val expectedSma = if (windowEntries.size >= 3) windowEntries.map { it.weightKg }.average() else null
+            if (expectedSma == null) {
+                assertNull("SMA for $date should be null", seriesAll[i].smaValue)
+            } else {
+                assertNotNull("SMA for $date should not be null", seriesAll[i].smaValue)
+                assertEquals(expectedSma, seriesAll[i].smaValue!!, 0.001)
+            }
+        }
+
+        // And when the athlete selects Timeframe.SEVEN_DAYS with custom referenceDate Sep 15
+        val refDate = baseDate.plusDays(14) // Sep 15
+        val series7D = WeightAnalytics.prepareChartSeries(
+            entries = entries,
+            timeframe = Timeframe.SEVEN_DAYS,
+            referenceDate = refDate
+        )
+
+        // Then the output series spans strictly Sep 9 to Sep 15 (7 points)
+        assertEquals(7, series7D.size)
+        val expectedStart = refDate.minusDays(6) // Sep 9
+        assertEquals(expectedStart, series7D.first().date)
+        assertEquals(refDate, series7D.last().date)
+
+        // And Sep 9 computes its 7D average factoring in entries back to Sep 3.
+        // Entries Sep 3 to Sep 9: days 2..8 -> 7 entries, all present in entries
+        val sep9WindowEntries = entries.filter { !it.date.isBefore(expectedStart.minusDays(6)) && !it.date.isAfter(expectedStart) }
+        assertEquals(7, sep9WindowEntries.size)
+        val expectedSep9Sma = sep9WindowEntries.map { it.weightKg }.average()
+        assertNotNull(series7D.first().smaValue)
+        assertEquals(expectedSep9Sma, series7D.first().smaValue!!, 0.001)
     }
 
     private fun createEntry(date: LocalDate, weightKg: Double, deletedAt: Long? = null): WeightEntry {
