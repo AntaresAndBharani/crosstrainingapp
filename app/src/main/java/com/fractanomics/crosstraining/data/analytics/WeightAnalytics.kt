@@ -1,4 +1,4 @@
-﻿package com.fractanomics.crosstraining.data.analytics
+package com.fractanomics.crosstraining.data.analytics
 
 import com.fractanomics.crosstraining.data.model.WeightEntry
 import java.time.LocalDate
@@ -96,8 +96,10 @@ object WeightAnalytics {
      * Pipeline:
      * 1. Filter out soft-deleted entries, sort chronologically by date ascending.
      * 2. Filter by [timeframe] window relative to the latest available entry (or today if empty/relative).
-     * 3. Compute 7-day Simple Moving Average (SMA-7) across the closed calendar window [t-6, t].
-     *    Emits an SMA value when N >= 3 entries exist in [t-6, t], emitting null otherwise.
+     * 3. Compute 7-day Simple Moving Average (SMA-7) across the closed calendar window [t-6, t]
+     *    using a bounded backward index scan over the full active history (activeSorted) so leading-edge
+     *    points incorporate pre-period weigh-ins. Emits an SMA value when N >= 3 entries exist in [t-6, t],
+     *    emitting null otherwise.
      * 4. If total points exceed [maxPoints] (default 120), perform paired index decimation using
      *    a uniform stride to guarantee raw.size == sma.size post-decimation while always preserving
      *    the first and last points.
@@ -135,18 +137,39 @@ object WeightAnalytics {
             return emptyList()
         }
 
-        // Full-window SMA-7 calculation over windowed points
-        // For each entry t, find all entries in windowed where date in [t - 6 days, t].
-        // If count >= 3, sma = average of those entries. Otherwise null.
+        // Bounded backward scan SMA-7 calculation over full activeSorted history
+        // For each entry t in the display window, look back up to 6 positions in activeSorted
+        // while date >= t - 6 days. If count >= 3, sma = sum / count; otherwise null.
+        var activeIndex = 0
         val fullPoints = windowed.map { entry ->
             val t = entry.date
             val windowStart = t.minusDays(6)
-            val inWindow = windowed.filter { !it.date.isBefore(windowStart) && !it.date.isAfter(t) }
-            val sma = if (inWindow.size >= 3) {
-                inWindow.map { it.weightKg }.average()
+
+            // Advance activeIndex to the current entry in activeSorted
+            while (activeIndex < activeSorted.size && activeSorted[activeIndex].date < t) {
+                activeIndex++
+            }
+
+            var sum = 0.0
+            var count = 0
+            var scanIndex = activeIndex
+
+            while (scanIndex >= 0) {
+                val candidate = activeSorted[scanIndex]
+                if (candidate.date.isBefore(windowStart)) {
+                    break
+                }
+                sum += candidate.weightKg
+                count++
+                scanIndex--
+            }
+
+            val sma = if (count >= 3) {
+                sum / count
             } else {
                 null
             }
+
             WeightSeriesPoint(
                 date = entry.date,
                 label = entry.date.format(chartDateFormatter),
