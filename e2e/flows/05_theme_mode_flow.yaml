@@ -11,6 +11,10 @@ tags:
     timeout: 30000
 - tapOn: "Continue as Guest"
 - tapOn: "Open Menu"
+- scrollUntilVisible:
+    element:
+      text: "Profile & Settings"
+    direction: DOWN
 - tapOn: "Profile & Settings"
 - scrollUntilVisible:
     element:
