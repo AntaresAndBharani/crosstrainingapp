@@ -190,11 +190,14 @@ And Sep 9 computes its 7D average factoring in entries back to Sep 3.
 
 ### Phased INVEST Subtask Breakdown
 
-- **Subtask 1 (Historical Lookback SMA-7 Engine & Unit Test Suite):**
+- **Subtask 1 (Historical Lookback SMA-7 Domain Engine & Unit Test Suite):**
   - Implement $O(W)$ bounded backward scan for SMA-7 computation in `WeightAnalytics.prepareChartSeries()`.
   - Add comprehensive unit tests in `WeightAnalyticsTest.kt` covering Scenarios 1, 2, 3a, 3b, 4, and 5.
   - Run `.\gradlew.bat testDebugUnitTest --no-daemon` to ensure 100% test pass rate.
-  - Visually verify `ProgressScreen` weight trend chart renders continuous 7D average line without leading-edge gaps.
+
+- **Subtask 2 (ProgressScreen Trend UI Verification & E2E Visual Artifacts):**
+  - Verify `ProgressScreen` weight trend chart rendering in 7D, 30D, and 90D views to ensure continuous 7D average line without leading-edge gaps.
+  - Run `.\scripts\run-e2e-tests.ps1 -CaptureArtifacts -Version "latest" -PushArtifacts` to capture and commit updated screenshots.
 
 ---
 
