@@ -21,7 +21,7 @@ import java.io.File
 class RoomSchemaExportTest {
 
     @Test
-    fun appDatabaseSource_hasExportSchemaEnabledAtVersion8() {
+    fun appDatabaseSource_hasExportSchemaEnabledAtVersion9() {
         val candidatePaths = listOf(
             File("src/main/java/com/fractanomics/crosstraining/data/AppDatabase.kt"),
             File("app/src/main/java/com/fractanomics/crosstraining/data/AppDatabase.kt"),
@@ -31,7 +31,7 @@ class RoomSchemaExportTest {
         assertNotNull("AppDatabase.kt source file must be found", sourceFile)
 
         val content = sourceFile!!.readText()
-        assertTrue("AppDatabase must have version = 8", Regex("""version\s*=\s*8""").containsMatchIn(content))
+        assertTrue("AppDatabase must have version = 9", Regex("""version\s*=\s*9""").containsMatchIn(content))
         assertTrue("AppDatabase must have exportSchema = true", Regex("""exportSchema\s*=\s*true""").containsMatchIn(content))
     }
 
@@ -139,5 +139,24 @@ class RoomSchemaExportTest {
         assertTrue("Schema 8.json must specify database version 8", content8.contains("\"version\": 8"))
         assertTrue("Schema 8.json must contain identityHash", content8.contains("\"identityHash\":"))
         assertTrue("Schema 8.json must contain subBlock in routine_blocks and session_blocks", content8.contains("\"columnName\": \"subBlock\""))
+
+        // Now verify 9.json
+        val candidatePaths9 = listOf(
+            File("schemas/com.fractanomics.crosstraining.data.AppDatabase/9.json"),
+            File("app/schemas/com.fractanomics.crosstraining.data.AppDatabase/9.json"),
+            File("../app/schemas/com.fractanomics.crosstraining.data.AppDatabase/9.json")
+        )
+        val schemaFile9 = candidatePaths9.firstOrNull { it.exists() }
+        assertNotNull("Schema artifact 9.json must exist in schemas directory", schemaFile9)
+
+        val content9 = schemaFile9!!.readText()
+        assertTrue("Schema 9.json must have formatVersion 1", content9.contains("\"formatVersion\": 1"))
+        assertTrue("Schema 9.json must specify database version 9", content9.contains("\"version\": 9"))
+        assertTrue("Schema 9.json must contain identityHash", content9.contains("\"identityHash\":"))
+        assertTrue("Schema 9.json must contain daily_logs table", content9.contains("\"tableName\": \"daily_logs\""))
+        assertTrue("Schema 9.json must contain type in cycles", content9.contains("\"columnName\": \"type\""))
+        assertTrue("Schema 9.json must contain fastDaysOfWeek in cycles", content9.contains("\"columnName\": \"fastDaysOfWeek\""))
+        assertTrue("Schema 9.json must contain restDaysOfWeek in cycles", content9.contains("\"columnName\": \"restDaysOfWeek\""))
+        assertTrue("Schema 9.json must contain isCompleted in session_blocks", content9.contains("\"columnName\": \"isCompleted\""))
     }
 }

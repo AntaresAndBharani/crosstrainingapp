@@ -201,4 +201,73 @@ class AppDatabaseMigrationTest {
         assertEquals("E3MOM Front Squats", updatedSessionBlock.getString(0))
         updatedSessionBlock.close()
     }
+
+    @Test
+    @Throws(IOException::class)
+    fun migrate8To9_addsCycleFieldsSessionBlockCompletedDailyLogsAndValidatesSchema() {
+        // Given an existing Room database at version 8 with existing cycles, sessions, and session blocks
+        val dbV8 = helper.createDatabase(TEST_DB, 8).apply {
+            // Seed cycle
+            execSQL("INSERT INTO cycles (id, name, startDate, endDate, goal, isActive) VALUES (1, 'Strength Cycle', 19000, NULL, 'Base', 1)")
+            // Seed session
+            execSQL("INSERT INTO sessions (id, cycleId, date, title, notes) VALUES (100, 1, 19500, 'Monday Workout', '')")
+            // Seed session_block
+            execSQL("INSERT INTO session_blocks (id, sessionId, position, name, kind, format, scheme, mainExerciseId, routineId, description, resultText, resultValue, notes, section, exerciseIdsCsv, subBlock) VALUES (1000, 100, 0, 'Front Squats', 'STRENGTH', 'E3MOM', '4x4', NULL, NULL, '', '', NULL, '', 'Strengh & Power block', '', 'E3MOM Front Squats')")
+            close()
+        }
+
+        // When MIGRATION_8_9 executes during upgrade to version 9
+        val dbV9 = helper.runMigrationsAndValidate(
+            TEST_DB,
+            9,
+            true,
+            AppDatabase.MIGRATION_8_9
+        )
+
+        // Then verify pre-existing data persists and defaults are applied
+        val cycleCursor = dbV9.query("SELECT id, name, type, fastDaysOfWeek, restDaysOfWeek FROM cycles WHERE id = 1")
+        assertTrue("Cycle data should survive migration", cycleCursor.moveToFirst())
+        assertEquals(1L, cycleCursor.getLong(0))
+        assertEquals("Strength Cycle", cycleCursor.getString(1))
+        assertEquals("STRENGTH_WEIGHTLIFTING", cycleCursor.getString(2))
+        assertEquals(0L, cycleCursor.getLong(3))
+        assertEquals(0L, cycleCursor.getLong(4))
+        cycleCursor.close()
+
+        val sessionBlockCursor = dbV9.query("SELECT id, name, isCompleted FROM session_blocks WHERE id = 1000")
+        assertTrue("SessionBlock data should survive migration", sessionBlockCursor.moveToFirst())
+        assertEquals(1000L, sessionBlockCursor.getLong(0))
+        assertEquals("Front Squats", sessionBlockCursor.getString(1))
+        assertEquals(1L, sessionBlockCursor.getLong(2))
+        sessionBlockCursor.close()
+
+        // And verify daily_logs table exists and allows insertion
+        val dailyLogValues = ContentValues().apply {
+            put("date", 19500)
+            put("fastCompleted", 1)
+            put("isRestDay", 0)
+            put("caloriesKcal", 2200)
+            put("proteinGrams", 180)
+            put("carbsGrams", 200)
+            put("fatGrams", 60)
+            put("notes", "Clean eating")
+            put("updatedAtMillis", 1728000000000L)
+            putNull("deletedAtMillis")
+        }
+        dbV9.insert("daily_logs", SQLiteDatabase.CONFLICT_REPLACE, dailyLogValues)
+
+        val logCursor = dbV9.query("SELECT date, fastCompleted, isRestDay, caloriesKcal, proteinGrams, carbsGrams, fatGrams, notes, updatedAtMillis, deletedAtMillis FROM daily_logs WHERE date = 19500")
+        assertTrue("Daily log entry should be found", logCursor.moveToFirst())
+        assertEquals(19500L, logCursor.getLong(0))
+        assertEquals(1L, logCursor.getLong(1))
+        assertEquals(0L, logCursor.getLong(2))
+        assertEquals(2200L, logCursor.getLong(3))
+        assertEquals(180L, logCursor.getLong(4))
+        assertEquals(200L, logCursor.getLong(5))
+        assertEquals(60L, logCursor.getLong(6))
+        assertEquals("Clean eating", logCursor.getString(7))
+        assertEquals(1728000000000L, logCursor.getLong(8))
+        assertTrue("deletedAtMillis should be null", logCursor.isNull(9))
+        logCursor.close()
+    }
 }

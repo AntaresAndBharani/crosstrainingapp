@@ -15,5 +15,8 @@ data class Cycle(
     val startDate: LocalDate,
     val endDate: LocalDate? = null,
     val goal: String = "",
-    val isActive: Boolean = false
+    val isActive: Boolean = false,
+    val type: CycleType = CycleType.STRENGTH_WEIGHTLIFTING,
+    val fastDaysOfWeek: Int = 0,
+    val restDaysOfWeek: Int = 0
 )

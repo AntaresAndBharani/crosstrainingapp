@@ -46,3 +46,13 @@ enum class BlockKind(val label: String, val shortLabel: String = label) {
     METCON("WOD / Metcon"),
     OTHER("Other")
 }
+
+/**
+ * Training cycle macro-orientation.
+ * STRENGTH_WEIGHTLIFTING -> Standard periodized strength & weightlifting training.
+ * FAT_LOSS_BODYBUILDING  -> Bodybuilding hypertrophy with scheduled fast/rest days and cardio tracking.
+ */
+enum class CycleType {
+    STRENGTH_WEIGHTLIFTING,
+    FAT_LOSS_BODYBUILDING
+}

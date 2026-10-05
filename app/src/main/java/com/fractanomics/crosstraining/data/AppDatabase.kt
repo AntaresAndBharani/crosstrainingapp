@@ -10,6 +10,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.fractanomics.crosstraining.data.dao.BlockDao
 import com.fractanomics.crosstraining.data.dao.CycleDao
 import com.fractanomics.crosstraining.data.dao.CycleGoalDao
+import com.fractanomics.crosstraining.data.dao.DailyLogDao
 import com.fractanomics.crosstraining.data.dao.ExerciseDao
 import com.fractanomics.crosstraining.data.dao.RepMaxDao
 import com.fractanomics.crosstraining.data.dao.RoutineDao
@@ -18,6 +19,7 @@ import com.fractanomics.crosstraining.data.dao.WeightDao
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
+import com.fractanomics.crosstraining.data.model.DailyLog
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
@@ -42,9 +44,10 @@ import java.time.LocalDate
         BlockSet::class,
         RepMax::class,
         CycleGoal::class,
-        WeightEntry::class
+        WeightEntry::class,
+        DailyLog::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -57,6 +60,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun repMaxDao(): RepMaxDao
     abstract fun cycleGoalDao(): CycleGoalDao
     abstract fun weightDao(): WeightDao
+    abstract fun dailyLogDao(): DailyLogDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -141,6 +145,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `cycles` ADD COLUMN `type` TEXT NOT NULL DEFAULT 'STRENGTH_WEIGHTLIFTING'")
+                db.execSQL("ALTER TABLE `cycles` ADD COLUMN `fastDaysOfWeek` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `cycles` ADD COLUMN `restDaysOfWeek` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `session_blocks` ADD COLUMN `isCompleted` INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `daily_logs` (
+                        `date` INTEGER NOT NULL PRIMARY KEY,
+                        `fastCompleted` INTEGER,
+                        `isRestDay` INTEGER NOT NULL DEFAULT 0,
+                        `caloriesKcal` INTEGER,
+                        `proteinGrams` INTEGER,
+                        `carbsGrams` INTEGER,
+                        `fatGrams` INTEGER,
+                        `notes` TEXT NOT NULL DEFAULT '',
+                        `updatedAtMillis` INTEGER NOT NULL,
+                        `deletedAtMillis` INTEGER
+                    )
+                """.trimIndent())
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -163,7 +190,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "crosstraining-demo.db"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build().also { DEMO = it }
             }
@@ -221,7 +248,7 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 "crosstraining.db"
             )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
             .fallbackToDestructiveMigrationOnDowngrade()
             .addCallback(callback)
             .build()
