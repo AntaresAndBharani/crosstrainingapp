@@ -225,6 +225,9 @@ class AppViewModelWeightTest {
         viewModel.setProgressMode(ProgressMode.CYCLE_GOALS)
         assertEquals(ProgressMode.CYCLE_GOALS, viewModel.progressMode.value)
 
+        viewModel.setProgressMode(ProgressMode.FAT_LOSS)
+        assertEquals(ProgressMode.FAT_LOSS, viewModel.progressMode.value)
+
         viewModel.setProgressMode(ProgressMode.BY_EXERCISE)
         assertEquals(ProgressMode.BY_EXERCISE, viewModel.progressMode.value)
     }

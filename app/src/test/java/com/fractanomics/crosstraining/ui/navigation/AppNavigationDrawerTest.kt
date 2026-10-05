@@ -84,7 +84,17 @@ class AppNavigationDrawerTest {
             isSelected(DrawerItem.PROGRESS, currentRoute, ProgressMode.CYCLE_GOALS)
         )
 
-        // Case 5: On other routes (e.g. "log", "cycles")
+        // Case 5: On Progress screen with ProgressMode.FAT_LOSS
+        assertFalse(
+            "DrawerItem.WEIGHT must NOT be selected when in FAT_LOSS mode",
+            isSelected(DrawerItem.WEIGHT, currentRoute, ProgressMode.FAT_LOSS)
+        )
+        assertTrue(
+            "DrawerItem.PROGRESS must be selected when in FAT_LOSS mode",
+            isSelected(DrawerItem.PROGRESS, currentRoute, ProgressMode.FAT_LOSS)
+        )
+
+        // Case 6: On other routes (e.g. "log", "cycles")
         val otherRoute = BottomDestination.LOG.route
         assertFalse(
             "DrawerItem.WEIGHT must NOT be selected when on log route",
