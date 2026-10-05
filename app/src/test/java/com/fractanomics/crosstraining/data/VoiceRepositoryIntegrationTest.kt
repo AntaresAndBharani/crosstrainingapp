@@ -390,6 +390,7 @@ class FakeSampleAppDatabase : AppDatabase() {
     private val setsStorage = mutableListOf<BlockSet>()
     private val repMaxesStorage = mutableListOf<RepMax>()
     private val weightStorage = mutableListOf<com.fractanomics.crosstraining.data.model.WeightEntry>()
+    private val dailyLogsStorage = mutableListOf<com.fractanomics.crosstraining.data.model.DailyLog>()
 
     data class DbSnapshot(
         val exercises: List<Exercise>,
@@ -397,7 +398,8 @@ class FakeSampleAppDatabase : AppDatabase() {
         val sessions: List<Session>,
         val blocks: List<SessionBlock>,
         val sets: List<BlockSet>,
-        val weightEntries: List<com.fractanomics.crosstraining.data.model.WeightEntry>
+        val weightEntries: List<com.fractanomics.crosstraining.data.model.WeightEntry>,
+        val dailyLogs: List<com.fractanomics.crosstraining.data.model.DailyLog>
     )
 
     fun createSnapshot(): DbSnapshot = DbSnapshot(
@@ -406,7 +408,8 @@ class FakeSampleAppDatabase : AppDatabase() {
         sessions = ArrayList(sessionsStorage),
         blocks = ArrayList(blocksStorage),
         sets = ArrayList(setsStorage),
-        weightEntries = ArrayList(weightStorage)
+        weightEntries = ArrayList(weightStorage),
+        dailyLogs = ArrayList(dailyLogsStorage)
     )
 
     fun restoreSnapshot(snapshot: DbSnapshot) {
@@ -416,6 +419,7 @@ class FakeSampleAppDatabase : AppDatabase() {
         blocksStorage.clear(); blocksStorage.addAll(snapshot.blocks)
         setsStorage.clear(); setsStorage.addAll(snapshot.sets)
         weightStorage.clear(); weightStorage.addAll(snapshot.weightEntries)
+        dailyLogsStorage.clear(); dailyLogsStorage.addAll(snapshot.dailyLogs)
     }
 
     fun populateSampleData() {
@@ -766,6 +770,63 @@ class FakeSampleAppDatabase : AppDatabase() {
         }
     }
 
+    private val dailyLogDaoImpl = object : com.fractanomics.crosstraining.data.dao.DailyLogDao {
+        private val dailyLogFlow = kotlinx.coroutines.flow.MutableStateFlow<List<com.fractanomics.crosstraining.data.model.DailyLog>>(emptyList())
+
+        private fun refreshFlow() {
+            dailyLogFlow.value = dailyLogsStorage.filter { it.deletedAtMillis == null }.sortedByDescending { it.date }
+        }
+
+        override suspend fun upsert(dailyLog: com.fractanomics.crosstraining.data.model.DailyLog): Long {
+            val idx = dailyLogsStorage.indexOfFirst { it.date == dailyLog.date }
+            if (idx >= 0) {
+                dailyLogsStorage[idx] = dailyLog
+            } else {
+                dailyLogsStorage.add(dailyLog)
+            }
+            refreshFlow()
+            return 1L
+        }
+
+        override suspend fun upsertAll(dailyLogs: List<com.fractanomics.crosstraining.data.model.DailyLog>) {
+            dailyLogs.forEach { log ->
+                val idx = dailyLogsStorage.indexOfFirst { it.date == log.date }
+                if (idx >= 0) dailyLogsStorage[idx] = log else dailyLogsStorage.add(log)
+            }
+            refreshFlow()
+        }
+
+        override fun observeAllActive(): Flow<List<com.fractanomics.crosstraining.data.model.DailyLog>> =
+            dailyLogFlow
+
+        override suspend fun getAllActiveOnce(): List<com.fractanomics.crosstraining.data.model.DailyLog> =
+            dailyLogsStorage.filter { it.deletedAtMillis == null }.sortedByDescending { it.date }
+
+        override suspend fun getAllIncludingTombstones(): List<com.fractanomics.crosstraining.data.model.DailyLog> =
+            ArrayList(dailyLogsStorage.sortedByDescending { it.date })
+
+        override suspend fun getEntryByDate(date: LocalDate): com.fractanomics.crosstraining.data.model.DailyLog? =
+            dailyLogsStorage.find { it.date == date }
+
+        override suspend fun markDeleted(date: LocalDate, deletedAt: Long) {
+            val idx = dailyLogsStorage.indexOfFirst { it.date == date }
+            if (idx >= 0) {
+                dailyLogsStorage[idx] = dailyLogsStorage[idx].copy(deletedAtMillis = deletedAt, updatedAtMillis = deletedAt)
+                refreshFlow()
+            }
+        }
+
+        override suspend fun purgeOldTombstones(cutoffMillis: Long) {
+            dailyLogsStorage.removeAll { it.deletedAtMillis != null && it.deletedAtMillis < cutoffMillis }
+            refreshFlow()
+        }
+
+        override suspend fun deleteAll() {
+            dailyLogsStorage.clear()
+            refreshFlow()
+        }
+    }
+
     override fun cycleDao(): CycleDao = cycleDaoImpl
     override fun exerciseDao(): ExerciseDao = exerciseDaoImpl
     override fun routineDao(): RoutineDao = routineDaoImpl
@@ -774,6 +835,7 @@ class FakeSampleAppDatabase : AppDatabase() {
     override fun repMaxDao(): RepMaxDao = repMaxDaoImpl
     override fun cycleGoalDao(): CycleGoalDao = cycleGoalDaoImpl
     override fun weightDao(): com.fractanomics.crosstraining.data.dao.WeightDao = weightDaoImpl
+    override fun dailyLogDao(): com.fractanomics.crosstraining.data.dao.DailyLogDao = dailyLogDaoImpl
 
     override fun clearAllTables() {
         exercisesStorage.clear()
@@ -786,6 +848,7 @@ class FakeSampleAppDatabase : AppDatabase() {
         setsStorage.clear()
         repMaxesStorage.clear()
         weightStorage.clear()
+        dailyLogsStorage.clear()
     }
 
     override fun createInvalidationTracker(): androidx.room.InvalidationTracker {

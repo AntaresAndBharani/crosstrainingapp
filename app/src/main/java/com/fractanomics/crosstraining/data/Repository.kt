@@ -71,6 +71,7 @@ class Repository(
     private val repMaxDao = db.repMaxDao()
     private val cycleGoalDao = db.cycleGoalDao()
     private val weightDao = db.weightDao()
+    private val dailyLogDao = db.dailyLogDao()
 
     // --- Cycles ---------------------------------------------------------------
     val cycles: Flow<List<Cycle>> = flow {
@@ -374,6 +375,32 @@ class Repository(
 
     suspend fun importWeightEntries(entries: List<com.fractanomics.crosstraining.data.model.WeightEntry>) =
         weightDao.upsertAll(entries)
+
+    // --- Daily Logs -----------------------------------------------------------
+    val dailyLogs: Flow<List<com.fractanomics.crosstraining.data.model.DailyLog>> = dailyLogDao.observeAllActive()
+
+    suspend fun getActiveDailyLogsOnce(): List<com.fractanomics.crosstraining.data.model.DailyLog> =
+        dailyLogDao.getAllActiveOnce()
+
+    suspend fun getAllDailyLogsIncludingTombstones(): List<com.fractanomics.crosstraining.data.model.DailyLog> =
+        dailyLogDao.getAllIncludingTombstones()
+
+    suspend fun getDailyLogByDate(date: LocalDate): com.fractanomics.crosstraining.data.model.DailyLog? =
+        dailyLogDao.getEntryByDate(date)
+
+    suspend fun saveDailyLog(dailyLog: com.fractanomics.crosstraining.data.model.DailyLog): Long =
+        dailyLogDao.upsert(dailyLog)
+
+    suspend fun deleteDailyLog(
+        date: LocalDate,
+        deletedAt: Long = System.currentTimeMillis()
+    ) = dailyLogDao.markDeleted(date, deletedAt)
+
+    suspend fun purgeOldDailyLogTombstones(cutoffMillis: Long) =
+        dailyLogDao.purgeOldTombstones(cutoffMillis)
+
+    suspend fun importDailyLogs(entries: List<com.fractanomics.crosstraining.data.model.DailyLog>) =
+        dailyLogDao.upsertAll(entries)
 
     // --- Cloud Sync Getters ---------------------------------------------------
     suspend fun getAllExercisesOnce(): List<Exercise> = exerciseDao.getAllOnce()

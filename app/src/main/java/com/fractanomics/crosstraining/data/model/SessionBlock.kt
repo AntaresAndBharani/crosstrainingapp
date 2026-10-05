@@ -55,5 +55,6 @@ data class SessionBlock(
     val notes: String = "",
     val section: String = "",
     val exerciseIdsCsv: String = "",
-    val subBlock: String = ""
+    val subBlock: String = "",
+    val isCompleted: Boolean = true
 )

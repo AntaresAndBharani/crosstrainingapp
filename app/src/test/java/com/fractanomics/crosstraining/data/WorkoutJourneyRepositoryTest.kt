@@ -690,6 +690,18 @@ private class FakeTestAppDatabase : AppDatabase() {
         override suspend fun deleteAll() {}
     }
 
+    private val dailyLogDaoImpl = object : com.fractanomics.crosstraining.data.dao.DailyLogDao {
+        override suspend fun upsert(dailyLog: com.fractanomics.crosstraining.data.model.DailyLog): Long = 1L
+        override suspend fun upsertAll(dailyLogs: List<com.fractanomics.crosstraining.data.model.DailyLog>) {}
+        override fun observeAllActive(): Flow<List<com.fractanomics.crosstraining.data.model.DailyLog>> = flowOf(emptyList())
+        override suspend fun getAllActiveOnce(): List<com.fractanomics.crosstraining.data.model.DailyLog> = emptyList()
+        override suspend fun getAllIncludingTombstones(): List<com.fractanomics.crosstraining.data.model.DailyLog> = emptyList()
+        override suspend fun getEntryByDate(date: LocalDate): com.fractanomics.crosstraining.data.model.DailyLog? = null
+        override suspend fun markDeleted(date: LocalDate, deletedAt: Long) {}
+        override suspend fun purgeOldTombstones(cutoffMillis: Long) {}
+        override suspend fun deleteAll() {}
+    }
+
     override fun exerciseDao(): ExerciseDao = exerciseDaoImpl
     override fun routineDao(): RoutineDao = routineDaoImpl
     override fun cycleDao(): CycleDao = cycleDaoImpl
@@ -698,6 +710,7 @@ private class FakeTestAppDatabase : AppDatabase() {
     override fun repMaxDao(): RepMaxDao = repMaxDaoImpl
     override fun cycleGoalDao(): CycleGoalDao = cycleGoalDaoImpl
     override fun weightDao(): WeightDao = weightDaoImpl
+    override fun dailyLogDao(): com.fractanomics.crosstraining.data.dao.DailyLogDao = dailyLogDaoImpl
     override fun clearAllTables() {}
     override fun createInvalidationTracker(): androidx.room.InvalidationTracker {
         return object : androidx.room.InvalidationTracker(this@FakeTestAppDatabase, "sessions") {}

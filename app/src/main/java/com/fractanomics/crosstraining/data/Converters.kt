@@ -32,4 +32,11 @@ class Converters {
 
     @TypeConverter
     fun toBlockKind(value: BlockKind?): String? = value?.name
+
+    @TypeConverter
+    fun fromCycleType(value: String?): com.fractanomics.crosstraining.data.model.CycleType? =
+        value?.let { runCatching { com.fractanomics.crosstraining.data.model.CycleType.valueOf(it) }.getOrDefault(com.fractanomics.crosstraining.data.model.CycleType.STRENGTH_WEIGHTLIFTING) }
+
+    @TypeConverter
+    fun toCycleType(value: com.fractanomics.crosstraining.data.model.CycleType?): String? = value?.name
 }
