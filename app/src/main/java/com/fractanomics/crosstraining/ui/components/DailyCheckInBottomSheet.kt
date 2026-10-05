@@ -51,6 +51,9 @@ import java.time.LocalDate
 /**
  * Modal bottom sheet for logging athlete daily fasting status (Done / Ate something),
  * rest day flag, and macronutrient targets (Calories, Protein, Carbs, Fat).
+ *
+ * Supports nullable integer parsing for macronutrient goals and tombstone-durable
+ * synchronization via [com.fractanomics.crosstraining.data.model.DailyLog].
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
