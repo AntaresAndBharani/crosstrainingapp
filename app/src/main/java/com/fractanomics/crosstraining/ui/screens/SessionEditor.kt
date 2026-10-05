@@ -88,7 +88,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
 import com.fractanomics.crosstraining.data.model.BlockKind
+import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.Routine
@@ -98,6 +100,8 @@ import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.BlockDraft
 import com.fractanomics.crosstraining.ui.SessionDraft
 import com.fractanomics.crosstraining.ui.SetDraft
+import com.fractanomics.crosstraining.ui.components.DailyCheckInBottomSheet
+import com.fractanomics.crosstraining.ui.components.DailyCheckInCard
 import com.fractanomics.crosstraining.ui.WORKOUT_FORMATS
 import com.fractanomics.crosstraining.ui.components.AppNumericTextField
 import com.fractanomics.crosstraining.ui.components.DateField
@@ -149,7 +153,8 @@ data class BlockSeed(
     val sets: List<SetSeed> = listOf(SetSeed()),
     val section: String = "",
     val exerciseIdsCsv: String = "",
-    val subBlock: String = ""
+    val subBlock: String = "",
+    val isCompleted: Boolean? = null
 )
 
 data class SessionSeed(
@@ -190,7 +195,8 @@ fun sessionSeed(s: SessionWithBlocks, dateOverride: LocalDate? = null): SessionS
                 }.ifEmpty { listOf(SetSeed()) },
                 section = bws.block.section,
                 exerciseIdsCsv = bws.block.exerciseIdsCsv,
-                subBlock = bws.block.subBlock
+                subBlock = bws.block.subBlock,
+                isCompleted = bws.block.isCompleted
             )
         }.ifEmpty { listOf(BlockSeed()) }
     )
@@ -214,7 +220,8 @@ internal class BlockState(
     sequenceExercises: List<Exercise> = emptyList(),
     description: String = "", resultText: String = "", resultValue: String = "",
     sets: List<SetState> = listOf(SetState()),
-    section: String = "", exerciseIdsCsv: String = "", subBlock: String = ""
+    section: String = "", exerciseIdsCsv: String = "", subBlock: String = "",
+    isCompleted: Boolean = true
 ) {
     var name by mutableStateOf(name)
     var kind by mutableStateOf(kind)
@@ -235,9 +242,15 @@ internal class BlockState(
     var section by mutableStateOf(section)
     var exerciseIdsCsv by mutableStateOf(exerciseIdsCsv)
     var subBlock by mutableStateOf(subBlock)
+    var isCompleted by mutableStateOf(isCompleted)
 }
 
-internal fun buildBlockState(seed: BlockSeed, exercises: List<Exercise>, routines: List<Routine>) =
+internal fun buildBlockState(
+    seed: BlockSeed,
+    exercises: List<Exercise>,
+    routines: List<Routine>,
+    defaultCompleted: Boolean = true
+) =
     BlockState(
         name = seed.name,
         kind = seed.kind,
@@ -252,7 +265,8 @@ internal fun buildBlockState(seed: BlockSeed, exercises: List<Exercise>, routine
         sets = seed.sets.map { SetState(it.reps, it.value, it.group, it.warm, it.failed) },
         section = seed.section,
         exerciseIdsCsv = seed.exerciseIdsCsv,
-        subBlock = seed.subBlock
+        subBlock = seed.subBlock,
+        isCompleted = seed.isCompleted ?: defaultCompleted
     )
 
 internal fun BlockState.toDraftOrNull(): BlockDraft? {
@@ -288,7 +302,8 @@ internal fun BlockState.toDraftOrNull(): BlockDraft? {
         newRepMaxWeight = if (recordRm) rmWeight.replace(',', '.').toDoubleOrNull() else null,
         section = section.trim(),
         exerciseIdsCsv = exerciseIdsCsv.trim(),
-        subBlock = subBlock.trim()
+        subBlock = subBlock.trim(),
+        isCompleted = isCompleted
     )
 }
 
@@ -366,6 +381,7 @@ fun SessionEditorBody(
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
     val routines by viewModel.routines.collectAsStateWithLifecycle()
     val routinesWithBlocks by viewModel.routinesWithBlocks.collectAsStateWithLifecycle()
+    val dailyLogs by viewModel.dailyLogs.collectAsStateWithLifecycle()
 
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -378,11 +394,15 @@ fun SessionEditorBody(
     var title by remember(key) { mutableStateOf(seed.title) }
     var notes by remember(key) { mutableStateOf(seed.notes) }
     var showSessionMeta by remember { mutableStateOf(false) }
+    var showDailyCheckInSheet by remember { mutableStateOf(false) }
+
+    val effectiveCycleId = selectedCycleId ?: activeCycle?.id
+    val currentCycle = cycles.firstOrNull { it.id == effectiveCycleId } ?: activeCycle
+    val isFatLoss = currentCycle?.type == CycleType.FAT_LOSS_BODYBUILDING
 
     val blocks = remember(key) {
-        seed.blocks.map { buildBlockState(it, exercises, routines) }.toMutableStateList()
+        seed.blocks.map { buildBlockState(it, exercises, routines, defaultCompleted = !isFatLoss) }.toMutableStateList()
     }
-    val effectiveCycleId = selectedCycleId ?: activeCycle?.id
     var showQuickAddDialog by remember { mutableStateOf(false) }
     var showWorkoutAssistantSheet by remember { mutableStateOf(false) }
 
@@ -406,7 +426,8 @@ fun SessionEditorBody(
                             value = s.weight?.trimmed() ?: "",
                             warm = s.isWarmup
                         )
-                    }.ifEmpty { listOf(SetState()) }
+                    }.ifEmpty { listOf(SetState()) },
+                    isCompleted = !isFatLoss
                 )
                 blocks.add(newBlock)
             }
@@ -553,6 +574,31 @@ fun SessionEditorBody(
         )
     }
 
+    if (showDailyCheckInSheet) {
+        val isScheduledFast = currentCycle?.let {
+            FatLossAnalytics.isScheduledFastDay(date, it.fastDaysOfWeek)
+        } ?: false
+        val isScheduledRest = currentCycle?.let {
+            FatLossAnalytics.isScheduledRestDay(date, it.restDaysOfWeek)
+        } ?: false
+
+        DailyCheckInBottomSheet(
+            date = date,
+            dailyLog = dailyLogs.firstOrNull { it.date == date },
+            isScheduledFastDay = isScheduledFast,
+            isScheduledRestDay = isScheduledRest,
+            onDismiss = { showDailyCheckInSheet = false },
+            onSave = {
+                viewModel.saveDailyLog(it)
+                showDailyCheckInSheet = false
+            },
+            onDelete = {
+                viewModel.deleteDailyLog(it)
+                showDailyCheckInSheet = false
+            }
+        )
+    }
+
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
         topBar = {
@@ -684,7 +730,8 @@ fun SessionEditorBody(
                                         }.toMutableStateList(),
                                         section = blk.section,
                                         exerciseIdsCsv = blk.exerciseIdsCsv,
-                                        subBlock = blk.subBlock
+                                        subBlock = blk.subBlock,
+                                        isCompleted = !isFatLoss
                                     )
                                     blocks.add(newBlockState)
                                 }
@@ -731,6 +778,23 @@ fun SessionEditorBody(
                     }
                 }
             }
+
+            // Daily Check-In Card (Fasting adherence & Nutrition)
+            val isScheduledFast = currentCycle?.let {
+                FatLossAnalytics.isScheduledFastDay(date, it.fastDaysOfWeek)
+            } ?: false
+            val isScheduledRest = currentCycle?.let {
+                FatLossAnalytics.isScheduledRestDay(date, it.restDaysOfWeek)
+            } ?: false
+
+            DailyCheckInCard(
+                date = date,
+                dailyLog = dailyLogs.firstOrNull { it.date == date },
+                isScheduledFastDay = isScheduledFast,
+                isScheduledRestDay = isScheduledRest,
+                onSaveDailyLog = { viewModel.saveDailyLog(it) },
+                onOpenFullCheckIn = { showDailyCheckInSheet = true }
+            )
 
             // Blocks List grouped by section header and sub-block containers
             val editorItems = groupEditorBlocks(blocks)
@@ -922,7 +986,7 @@ fun SessionEditorBody(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
-                    onClick = { blocks.add(BlockState()) },
+                    onClick = { blocks.add(BlockState(isCompleted = !isFatLoss)) },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(10.dp)
                 ) {
@@ -1024,18 +1088,28 @@ private fun CompactBlockEditor(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.weight(1f, fill = false)
                 ) {
+                    Checkbox(
+                        checked = block.isCompleted,
+                        onCheckedChange = { block.isCompleted = it },
+                        modifier = Modifier.size(28.dp)
+                    )
+
                     Box(
                         modifier = Modifier
                             .size(28.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer),
+                            .background(
+                                if (block.isCompleted) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surfaceVariant
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             "${index + 1}",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                            color = if (block.isCompleted) MaterialTheme.colorScheme.onPrimaryContainer
+                            else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
@@ -1241,8 +1315,36 @@ private fun CompactBlockEditor(
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         )
+                        if (block.kind == BlockKind.CARDIO) {
+                            AppNumericTextField(
+                                value = block.resultValue,
+                                onValueChange = { block.resultValue = it },
+                                label = { Text("Cardio Minutes (e.g. 30.0)") },
+                                singleLine = true,
+                                allowDecimals = true,
+                                minValue = 0.0,
+                                maxValue = 1440.0,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
                 }
+            }
+
+            // Cardio Duration (minutes) quick field
+            if (block.kind == BlockKind.CARDIO) {
+                AppNumericTextField(
+                    value = block.resultValue,
+                    onValueChange = { block.resultValue = it },
+                    label = { Text("Cardio Duration (minutes)") },
+                    singleLine = true,
+                    allowDecimals = true,
+                    minValue = 0.0,
+                    maxValue = 1440.0,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
 
             // SPREADSHEET SET TABLE
