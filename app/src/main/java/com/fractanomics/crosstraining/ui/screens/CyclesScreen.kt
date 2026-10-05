@@ -23,6 +23,8 @@ import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -46,8 +48,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
+import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.components.DateField
@@ -56,6 +60,7 @@ import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.ScreenList
 import com.fractanomics.crosstraining.ui.formatLong
 import com.fractanomics.crosstraining.ui.trimmed
+import java.time.DayOfWeek
 import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -217,6 +222,49 @@ private fun CycleCard(
             }
             Text(range, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
+            if (cycle.type == CycleType.FAT_LOSS_BODYBUILDING) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.tertiaryContainer
+                    ) {
+                        Text(
+                            "Fat Loss & Bodybuilding",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+
+                    if (cycle.fastDaysOfWeek != 0) {
+                        val fastDaysStr = FatLossAnalytics.maskToDayOfWeekSet(cycle.fastDaysOfWeek)
+                            .sortedBy { it.value }
+                            .joinToString(", ") { it.name.take(3).lowercase().replaceFirstChar { c -> c.uppercase() } }
+                        Text(
+                            "Fast: $fastDaysStr",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    if (cycle.restDaysOfWeek != 0) {
+                        val restDaysStr = FatLossAnalytics.maskToDayOfWeekSet(cycle.restDaysOfWeek)
+                            .sortedBy { it.value }
+                            .joinToString(", ") { it.name.take(3).lowercase().replaceFirstChar { c -> c.uppercase() } }
+                        Text(
+                            "Rest: $restDaysStr",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
             if (cycle.goal.isNotBlank()) {
                 Text(
                     "Focus: ${cycle.goal}",
@@ -279,6 +327,7 @@ private data class GoalDraftState(
     val targetWeight: String
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CycleEditorDialog(
     original: Cycle?,
@@ -292,6 +341,9 @@ private fun CycleEditorDialog(
     var startDate by remember { mutableStateOf(original?.startDate ?: LocalDate.now()) }
     var endDate by remember { mutableStateOf(original?.endDate) }
     var makeActive by remember { mutableStateOf(original?.isActive ?: (original == null)) }
+    var cycleType by remember { mutableStateOf(original?.type ?: CycleType.STRENGTH_WEIGHTLIFTING) }
+    var fastDaysOfWeek by remember { mutableStateOf(original?.fastDaysOfWeek ?: 0) }
+    var restDaysOfWeek by remember { mutableStateOf(original?.restDaysOfWeek ?: 0) }
 
     val goalDrafts = remember(existingGoals, exercises) {
         mutableStateListOf<GoalDraftState>().apply {
@@ -323,6 +375,96 @@ private fun CycleEditorDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                // Cycle Type Selector
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Cycle Type", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = cycleType == CycleType.STRENGTH_WEIGHTLIFTING,
+                            onClick = { cycleType = CycleType.STRENGTH_WEIGHTLIFTING },
+                            label = { Text("Strength & Lifts") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = cycleType == CycleType.FAT_LOSS_BODYBUILDING,
+                            onClick = { cycleType = CycleType.FAT_LOSS_BODYBUILDING },
+                            label = { Text("Fat Loss & BB") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                // If FAT_LOSS_BODYBUILDING: Render Fast Days & Rest Days bitmask chip selectors
+                if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
+                    val daysOfWeek = listOf(
+                        DayOfWeek.MONDAY,
+                        DayOfWeek.TUESDAY,
+                        DayOfWeek.WEDNESDAY,
+                        DayOfWeek.THURSDAY,
+                        DayOfWeek.FRIDAY,
+                        DayOfWeek.SATURDAY,
+                        DayOfWeek.SUNDAY
+                    )
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "Scheduled Fast Days",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            daysOfWeek.forEach { day ->
+                                val isSelected = FatLossAnalytics.isDayInMask(day, fastDaysOfWeek)
+                                val label = day.name.take(3).lowercase().replaceFirstChar { it.uppercase() }
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
+                                        val bit = FatLossAnalytics.dayOfWeekToBit(day)
+                                        fastDaysOfWeek = fastDaysOfWeek xor bit
+                                    },
+                                    label = { Text(label) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onTertiaryContainer
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "Scheduled Rest Days",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            daysOfWeek.forEach { day ->
+                                val isSelected = FatLossAnalytics.isDayInMask(day, restDaysOfWeek)
+                                val label = day.name.take(3).lowercase().replaceFirstChar { it.uppercase() }
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
+                                        val bit = FatLossAnalytics.dayOfWeekToBit(day)
+                                        restDaysOfWeek = restDaysOfWeek xor bit
+                                    },
+                                    label = { Text(label) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
                 DateField("Start", startDate, { startDate = it }, Modifier.fillMaxWidth())
                 DateField("End", endDate, { endDate = it }, Modifier.fillMaxWidth())
                 if (endDate != null) {
@@ -420,7 +562,10 @@ private fun CycleEditorDialog(
                         name = name.trim(),
                         startDate = startDate,
                         endDate = endDate,
-                        goal = goal.trim()
+                        goal = goal.trim(),
+                        type = cycleType,
+                        fastDaysOfWeek = fastDaysOfWeek,
+                        restDaysOfWeek = restDaysOfWeek
                     )
                     val finalGoals = goalDrafts.mapNotNull { d ->
                         val ex = d.exercise ?: return@mapNotNull null

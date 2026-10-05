@@ -13,6 +13,7 @@ import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
+import com.fractanomics.crosstraining.data.model.DailyLog
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
@@ -278,6 +279,8 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         data.repositoryFlow.flatMapLatest { it.allRepMaxes }.stateInDefault(emptyList())
     val weightEntries: StateFlow<List<com.fractanomics.crosstraining.data.model.WeightEntry>> =
         data.repositoryFlow.flatMapLatest { it.weightEntries }.stateInDefault(emptyList())
+    val dailyLogs: StateFlow<List<DailyLog>> =
+        data.repositoryFlow.flatMapLatest { it.dailyLogs }.stateInDefault(emptyList())
     val weightUnit: StateFlow<String> = data.weightUnit
 
     fun setWeightUnit(unit: String) {
@@ -305,6 +308,15 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     ) = viewModelScope.launch {
         repo.saveWeightEntry(weightKg = weightKg, date = date, notes = notes)
         UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    // --- Daily Logs (Fasting & Nutrition) --------------------------------------
+    fun saveDailyLog(dailyLog: DailyLog) = viewModelScope.launch {
+        repo.saveDailyLog(dailyLog)
+    }
+
+    fun deleteDailyLog(date: LocalDate) = viewModelScope.launch {
+        repo.deleteDailyLog(date)
     }
 
     private fun <T> kotlinx.coroutines.flow.Flow<T>.stateInDefault(initial: T): StateFlow<T> =
@@ -428,7 +440,8 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
                     resultValue = bd.resultValue,
                     section = bd.section,
                     exerciseIdsCsv = bd.exerciseIdsCsv,
-                    subBlock = bd.subBlock
+                    subBlock = bd.subBlock,
+                    isCompleted = bd.isCompleted
                 ),
                 sets = bd.sets.map { sd ->
                     BlockSet(

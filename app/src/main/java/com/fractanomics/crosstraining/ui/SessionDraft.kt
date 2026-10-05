@@ -33,7 +33,8 @@ data class BlockDraft(
     val newRepMaxWeight: Double?,
     val section: String = "",
     val exerciseIdsCsv: String = "",
-    val subBlock: String = ""
+    val subBlock: String = "",
+    val isCompleted: Boolean = false
 )
 
 data class SessionDraft(
