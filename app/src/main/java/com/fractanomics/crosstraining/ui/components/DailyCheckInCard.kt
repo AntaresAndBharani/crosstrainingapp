@@ -43,6 +43,9 @@ import java.time.LocalDate
 /**
  * Athlete daily check-in summary card displaying fasting status (Done / Ate something),
  * rest day indicator, and macro nutrition metrics.
+ *
+ * Supports inline quick-logging of fasting adherence and provides a launcher
+ * to [DailyCheckInBottomSheet] for comprehensive nutritional tracking.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
