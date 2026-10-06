@@ -493,6 +493,7 @@ object UserCloudSyncManager {
                 repo.cleanupDuplicateRoutines()
                 val ninetyDaysAgo = System.currentTimeMillis() - 90L * 24 * 60 * 60 * 1000L
                 repo.purgeOldWeightTombstones(ninetyDaysAgo)
+                repo.purgeOldDailyLogTombstones(ninetyDaysAgo)
 
                 val doc = if (documentWriterForTesting != null) null else userDoc(uid)
                 val collectionErrors = mutableMapOf<String, Throwable>()
@@ -585,7 +586,8 @@ object UserCloudSyncManager {
                                                 "description" to sb.block.description,
                                                 "resultText" to sb.block.resultText,
                                                 "resultValue" to sb.block.resultValue,
-                                                "notes" to sb.block.notes
+                                                "notes" to sb.block.notes,
+                                                "isCompleted" to sb.block.isCompleted
                                             ),
                                             "sets" to sb.sets.map { st ->
                                                 mapOf(
@@ -680,12 +682,41 @@ object UserCloudSyncManager {
                         }
                     }
 
+                    // Architecture Note: Cycle entities and their bitmask fields (fastDaysOfWeek, restDaysOfWeek)
+                    // are strictly local-only and intentionally excluded from Cloud Firestore synchronization.
+                    val taskDailyLogs = async {
+                        runCatching {
+                            val dailyLogs = repo.getAllDailyLogsIncludingTombstones()
+                            val dailyLogsPayload = dailyLogs.map { dl ->
+                                mapOf(
+                                    "date" to dl.date.toEpochDay(),
+                                    "fastCompleted" to dl.fastCompleted,
+                                    "isRestDay" to dl.isRestDay,
+                                    "caloriesKcal" to dl.caloriesKcal,
+                                    "proteinGrams" to dl.proteinGrams,
+                                    "carbsGrams" to dl.carbsGrams,
+                                    "fatGrams" to dl.fatGrams,
+                                    "notes" to dl.notes,
+                                    "updatedAtMillis" to dl.updatedAtMillis,
+                                    "deletedAtMillis" to dl.deletedAtMillis
+                                )
+                            }
+                            uploadCollectionWithGuard(
+                                collectionName = "daily_logs",
+                                docRef = doc?.collection("data")?.document("daily_logs"),
+                                payload = dailyLogsPayload,
+                                isLocallyEmpty = dailyLogsPayload.isEmpty()
+                            )
+                        }
+                    }
+
                     val resExercises = taskExercises.await()
                     val resRoutines = taskRoutines.await()
                     val resSessions = taskSessions.await()
                     val resGoals = taskGoals.await()
                     val resRepMaxes = taskRepMaxes.await()
                     val resWeightEntries = taskWeightEntries.await()
+                    val resDailyLogs = taskDailyLogs.await()
 
                     resExercises.exceptionOrNull()?.let { collectionErrors["exercises"] = it }
                     resRoutines.exceptionOrNull()?.let { collectionErrors["routines"] = it }
@@ -693,6 +724,7 @@ object UserCloudSyncManager {
                     resGoals.exceptionOrNull()?.let { collectionErrors["cycle_goals"] = it }
                     resRepMaxes.exceptionOrNull()?.let { collectionErrors["rep_maxes"] = it }
                     resWeightEntries.exceptionOrNull()?.let { collectionErrors["weight_entries"] = it }
+                    resDailyLogs.exceptionOrNull()?.let { collectionErrors["daily_logs"] = it }
                 }
 
                 if (collectionErrors.isNotEmpty()) {
@@ -746,8 +778,9 @@ object UserCloudSyncManager {
                 var goalsList = fetchCollection(uid, "cycle_goals")
                 var rmList = fetchCollection(uid, "rep_maxes")
                 var weightList = fetchCollection(uid, "weight_entries")
+                var dailyLogsList = fetchCollection(uid, "daily_logs")
 
-                val isNewUidEmpty = exList.isEmpty() && routList.isEmpty() && sessList.isEmpty() && goalsList.isEmpty() && rmList.isEmpty() && weightList.isEmpty()
+                val isNewUidEmpty = exList.isEmpty() && routList.isEmpty() && sessList.isEmpty() && goalsList.isEmpty() && rmList.isEmpty() && weightList.isEmpty() && dailyLogsList.isEmpty()
                 val userEmail = _userState.value?.email
                 var isMigratedFromLegacy = false
 
@@ -760,18 +793,20 @@ object UserCloudSyncManager {
                     var legacyGoals = fetchCollection(legacyUid, "cycle_goals")
                     var legacyRm = fetchCollection(legacyUid, "rep_maxes")
                     var legacyWeight = fetchCollection(legacyUid, "weight_entries")
+                    var legacyDailyLogs = fetchCollection(legacyUid, "daily_logs")
 
                     val normalizedLegacyUid = normalizeEmail(userEmail).replace("/", "_")
-                    if (legacyEx.isEmpty() && legacyRout.isEmpty() && legacySess.isEmpty() && legacyGoals.isEmpty() && legacyRm.isEmpty() && legacyWeight.isEmpty() && normalizedLegacyUid != legacyUid) {
+                    if (legacyEx.isEmpty() && legacyRout.isEmpty() && legacySess.isEmpty() && legacyGoals.isEmpty() && legacyRm.isEmpty() && legacyWeight.isEmpty() && legacyDailyLogs.isEmpty() && normalizedLegacyUid != legacyUid) {
                         legacyEx = fetchCollection(normalizedLegacyUid, "exercises")
                         legacyRout = fetchCollection(normalizedLegacyUid, "routines")
                         legacySess = fetchCollection(normalizedLegacyUid, "sessions")
                         legacyGoals = fetchCollection(normalizedLegacyUid, "cycle_goals")
                         legacyRm = fetchCollection(normalizedLegacyUid, "rep_maxes")
                         legacyWeight = fetchCollection(normalizedLegacyUid, "weight_entries")
+                        legacyDailyLogs = fetchCollection(normalizedLegacyUid, "daily_logs")
                     }
 
-                    val hasLegacyData = legacyEx.isNotEmpty() || legacyRout.isNotEmpty() || legacySess.isNotEmpty() || legacyGoals.isNotEmpty() || legacyRm.isNotEmpty() || legacyWeight.isNotEmpty()
+                    val hasLegacyData = legacyEx.isNotEmpty() || legacyRout.isNotEmpty() || legacySess.isNotEmpty() || legacyGoals.isNotEmpty() || legacyRm.isNotEmpty() || legacyWeight.isNotEmpty() || legacyDailyLogs.isNotEmpty()
                     if (hasLegacyData) {
                         exList = legacyEx
                         routList = legacyRout
@@ -779,6 +814,7 @@ object UserCloudSyncManager {
                         goalsList = legacyGoals
                         rmList = legacyRm
                         weightList = legacyWeight
+                        dailyLogsList = legacyDailyLogs
                         isMigratedFromLegacy = true
                     }
                 }
@@ -855,6 +891,12 @@ object UserCloudSyncManager {
                             val blockInserts = bList.mapIndexed { bIdx, bMapRaw ->
                                 @Suppress("UNCHECKED_CAST")
                                 val bMap = bMapRaw["block"] as? Map<String, Any> ?: bMapRaw
+                                val isCompleted = when (val c = bMap["isCompleted"]) {
+                                    is Boolean -> c
+                                    is Number -> c.toInt() != 0
+                                    null -> true
+                                    else -> true
+                                }
                                 val block = SessionBlock(
                                     id = 0,
                                     sessionId = 0,
@@ -868,7 +910,8 @@ object UserCloudSyncManager {
                                     description = bMap["description"] as? String ?: "",
                                     resultText = bMap["resultText"] as? String ?: "",
                                     resultValue = (bMap["resultValue"] as? Number)?.toDouble(),
-                                    notes = bMap["notes"] as? String ?: ""
+                                    notes = bMap["notes"] as? String ?: "",
+                                    isCompleted = isCompleted
                                 )
                                 @Suppress("UNCHECKED_CAST")
                                 val setList = bMapRaw["sets"] as? List<Map<String, Any>> ?: emptyList()
@@ -963,6 +1006,82 @@ object UserCloudSyncManager {
 
                     if (mergedWinningEntries.isNotEmpty()) {
                         repo.importWeightEntries(mergedWinningEntries)
+                    }
+                }
+
+                // 7. Download Daily Logs with Tombstone-Aware Last-Write-Wins Merge
+                if (dailyLogsList.isNotEmpty()) {
+                    val localDailyLogs = repo.getAllDailyLogsIncludingTombstones()
+                    val localByDate = localDailyLogs.associateBy { it.date }
+
+                    val mergedWinningEntries = mutableListOf<com.fractanomics.crosstraining.data.model.DailyLog>()
+
+                    dailyLogsList.forEach { map ->
+                        val rawDate = map["date"] ?: return@forEach
+                        val date = when (rawDate) {
+                            is Number -> LocalDate.ofEpochDay(rawDate.toLong())
+                            is String -> runCatching { LocalDate.parse(rawDate) }.getOrNull() ?: return@forEach
+                            else -> return@forEach
+                        }
+                        val fastCompleted = when (val fc = map["fastCompleted"]) {
+                            is Boolean -> fc
+                            is Number -> fc.toInt() != 0
+                            else -> null
+                        }
+                        val isRestDay = when (val rd = map["isRestDay"]) {
+                            is Boolean -> rd
+                            is Number -> rd.toInt() != 0
+                            else -> false
+                        }
+                        val caloriesKcal = (map["caloriesKcal"] as? Number)?.toInt()
+                        val proteinGrams = (map["proteinGrams"] as? Number)?.toInt()
+                        val carbsGrams = (map["carbsGrams"] as? Number)?.toInt()
+                        val fatGrams = (map["fatGrams"] as? Number)?.toInt()
+                        val notes = map["notes"] as? String ?: ""
+                        val updatedAtMillis = (map["updatedAtMillis"] as? Number)?.toLong() ?: 0L
+                        val deletedAtMillis = (map["deletedAtMillis"] as? Number)?.toLong()
+
+                        val remoteEffectiveTs = maxOf(updatedAtMillis, deletedAtMillis ?: 0L)
+                        val localEntry = localByDate[date]
+
+                        if (localEntry != null) {
+                            val localEffectiveTs = maxOf(localEntry.updatedAtMillis, localEntry.deletedAtMillis ?: 0L)
+                            if (remoteEffectiveTs >= localEffectiveTs) {
+                                mergedWinningEntries.add(
+                                    com.fractanomics.crosstraining.data.model.DailyLog(
+                                        date = date,
+                                        fastCompleted = fastCompleted,
+                                        isRestDay = isRestDay,
+                                        caloriesKcal = caloriesKcal,
+                                        proteinGrams = proteinGrams,
+                                        carbsGrams = carbsGrams,
+                                        fatGrams = fatGrams,
+                                        notes = notes,
+                                        updatedAtMillis = updatedAtMillis,
+                                        deletedAtMillis = deletedAtMillis
+                                    )
+                                )
+                            }
+                        } else {
+                            mergedWinningEntries.add(
+                                com.fractanomics.crosstraining.data.model.DailyLog(
+                                    date = date,
+                                    fastCompleted = fastCompleted,
+                                    isRestDay = isRestDay,
+                                    caloriesKcal = caloriesKcal,
+                                    proteinGrams = proteinGrams,
+                                    carbsGrams = carbsGrams,
+                                    fatGrams = fatGrams,
+                                    notes = notes,
+                                    updatedAtMillis = updatedAtMillis,
+                                    deletedAtMillis = deletedAtMillis
+                                )
+                            )
+                        }
+                    }
+
+                    if (mergedWinningEntries.isNotEmpty()) {
+                        repo.importDailyLogs(mergedWinningEntries)
                     }
                 }
 

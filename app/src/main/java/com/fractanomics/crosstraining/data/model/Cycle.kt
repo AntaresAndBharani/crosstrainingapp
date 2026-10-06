@@ -7,6 +7,9 @@ import java.time.LocalDate
 /**
  * A training block. The [endDate] is intentionally mutable so a cycle can be
  * extended or shortened mid-way. Only one cycle is [isActive] at a time.
+ *
+ * Architecture Note: Cycle configuration and bitmask fields ([fastDaysOfWeek], [restDaysOfWeek])
+ * are strictly local-only and intentionally excluded from Cloud Firestore synchronization.
  */
 @Entity(tableName = "cycles")
 data class Cycle(
@@ -17,6 +20,8 @@ data class Cycle(
     val goal: String = "",
     val isActive: Boolean = false,
     val type: CycleType = CycleType.STRENGTH_WEIGHTLIFTING,
+    /** Local-only bitmask for scheduled fast days (Monday=bit 0 .. Sunday=bit 6). Not synced to cloud. */
     val fastDaysOfWeek: Int = 0,
+    /** Local-only bitmask for scheduled rest days (Monday=bit 0 .. Sunday=bit 6). Not synced to cloud. */
     val restDaysOfWeek: Int = 0
 )
