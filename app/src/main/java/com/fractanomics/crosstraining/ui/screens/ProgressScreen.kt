@@ -94,6 +94,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.fractanomics.crosstraining.data.analytics.DayOfWeekCardio
 import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
+import com.fractanomics.crosstraining.data.analytics.PaceForecast
+import com.fractanomics.crosstraining.data.analytics.PaceRateResult
+import com.fractanomics.crosstraining.data.analytics.PaceTrend
 import com.fractanomics.crosstraining.data.analytics.Timeframe
 import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
 import com.fractanomics.crosstraining.data.model.CycleType
@@ -103,6 +106,10 @@ import com.fractanomics.crosstraining.ui.components.DailyCheckInBottomSheet
 import com.fractanomics.crosstraining.ui.components.DailyCheckInCard
 import com.fractanomics.crosstraining.ui.screens.weight.WeightEntryBottomSheet
 import com.fractanomics.crosstraining.ui.screens.weight.WeightSummaryCard
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.Button
+import androidx.compose.material3.Surface
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
 import java.util.Locale
@@ -248,7 +255,13 @@ fun ProgressScreen(
                             exercises = exercises,
                             sessions = sessions,
                             repMaxes = repMaxes,
-                            onSelectCycle = { selectedCycleGoalCycle = it }
+                            weightEntries = weightEntries,
+                            weightUnit = weightUnit,
+                            onSelectCycle = { selectedCycleGoalCycle = it },
+                            onLogWeight = {
+                                editingWeightEntry = null
+                                showWeightSheet = true
+                            }
                         )
                     }
                     ProgressMode.FAT_LOSS -> {
@@ -995,6 +1008,304 @@ private fun WeightOverviewContent(
     }
 }
 
+// --- Weight Progression View ---------------------------------------------------
+
+@Composable
+fun WeightProgressionCard(
+    cycle: Cycle,
+    weightEntries: List<WeightEntry>,
+    weightUnit: String,
+    onLogWeight: () -> Unit,
+    modifier: Modifier = Modifier,
+    today: LocalDate = LocalDate.now()
+) {
+    if (cycle.type != CycleType.FAT_LOSS_BODYBUILDING) return
+
+    val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+    val unitLabel = if (isImperial) "lbs" else "kg"
+
+    val activeEntries = remember(weightEntries, cycle.startDate, cycle.endDate, today) {
+        weightEntries
+            .filter { it.deletedAtMillis == null && !it.date.isBefore(cycle.startDate) && !it.date.isAfter(today) }
+            .sortedBy { it.date }
+    }
+
+    if (activeEntries.isEmpty()) {
+        SectionCard(
+            title = "Weight Progression (${cycle.name})",
+            modifier = modifier
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "No in-cycle weight entries logged yet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = "Check in to track your pace and goal forecast.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Button(onClick = onLogWeight) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "Log weight",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Log weight")
+                }
+            }
+        }
+        return
+    }
+
+    val startingKg = cycle.startingWeightKg ?: activeEntries.firstOrNull()?.weightKg
+    val latestEntry = activeEntries.lastOrNull()
+    val currentKg = latestEntry?.weightKg
+    val targetKg = cycle.targetWeightKg ?: cycle.targetBodyWeightKg
+
+    val startingDisplay = startingKg?.let { if (isImperial) WeightAnalytics.kgToLbs(it) else it }
+    val currentDisplay = currentKg?.let { if (isImperial) WeightAnalytics.kgToLbs(it) else it }
+    val targetDisplay = targetKg?.let { if (isImperial) WeightAnalytics.kgToLbs(it) else it }
+
+    val startSubtitle = if (cycle.startingWeightKg != null) cycle.startDate.formatShort() else (activeEntries.firstOrNull()?.date?.formatShort() ?: "No log")
+
+    val pace7 = remember(activeEntries, cycle, today) {
+        FatLossAnalytics.compute7DayPace(entries = weightEntries, cycle = cycle, today = today)
+    }
+    val pace14 = remember(activeEntries, cycle, today) {
+        FatLossAnalytics.compute14DayPace(entries = weightEntries, cycle = cycle, today = today)
+    }
+
+    val forecast = remember(activeEntries, cycle, today) {
+        FatLossAnalytics.computePaceForecast(
+            entries = weightEntries,
+            cycle = cycle,
+            today = today
+        )
+    }
+
+    SectionCard(
+        title = "Weight Progression (${cycle.name})",
+        modifier = modifier
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Header KPIs: Starting, Current, Goal
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                KpiCard(
+                    label = "Starting",
+                    value = startingDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" } ?: "—",
+                    sub = { SubText(startSubtitle) }
+                )
+                KpiCard(
+                    label = "Current",
+                    value = currentDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" } ?: "—",
+                    sub = { SubText(latestEntry?.date?.formatShort() ?: "—") }
+                )
+                KpiCard(
+                    label = "Goal",
+                    value = targetDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" } ?: "—",
+                    sub = {
+                        if (targetDisplay != null && currentDisplay != null) {
+                            val remaining = currentDisplay - targetDisplay
+                            if (remaining > 0.05) {
+                                SubText("${String.format(Locale.US, "%.1f", remaining)} $unitLabel left")
+                            } else {
+                                Text(
+                                    "Achieved",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.tertiary
+                                )
+                            }
+                        } else {
+                            SubText(if (targetDisplay == null) "No target" else "")
+                        }
+                    }
+                )
+            }
+
+            // Side-by-side Pace Chips: 7-Day & 14-Day
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                PaceChip(
+                    title = "7-Day Pace",
+                    paceResult = pace7,
+                    unit = weightUnit,
+                    modifier = Modifier.weight(1f)
+                )
+                PaceChip(
+                    title = "14-Day Pace",
+                    paceResult = pace14,
+                    unit = weightUnit,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            // Respective Forecast Banner
+            if (forecast != null) {
+                ForecastBanner(forecast = forecast)
+            }
+
+            // Check-in action button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = onLogWeight) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Log weigh-in")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PaceChip(
+    title: String,
+    paceResult: PaceRateResult?,
+    unit: String,
+    modifier: Modifier = Modifier
+) {
+    val trend = paceResult?.trend
+    val icon = when (trend) {
+        PaceTrend.LOSS -> "▼"
+        PaceTrend.GAIN -> "▲"
+        PaceTrend.NEUTRAL -> "—"
+        null -> null
+    }
+    val trendColor = when (trend) {
+        PaceTrend.LOSS -> MaterialTheme.colorScheme.tertiary
+        PaceTrend.GAIN -> MaterialTheme.colorScheme.error
+        PaceTrend.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
+        null -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.SemiBold
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (icon != null) {
+                    Text(
+                        text = icon,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = trendColor
+                    )
+                }
+                Text(
+                    text = paceResult?.formatDisplay(unit) ?: "Not enough data yet",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (paceResult != null) trendColor else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ForecastBanner(
+    forecast: PaceForecast,
+    modifier: Modifier = Modifier
+) {
+    val (containerColor, contentColor, icon) = when (forecast) {
+        is PaceForecast.GoalReached -> Triple(
+            MaterialTheme.colorScheme.primaryContainer,
+            MaterialTheme.colorScheme.onPrimaryContainer,
+            "🎉"
+        )
+        is PaceForecast.CycleEnded -> Triple(
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+            "🏁"
+        )
+        is PaceForecast.NotEnoughData -> Triple(
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+            "ℹ️"
+        )
+        is PaceForecast.Stalled -> Triple(
+            MaterialTheme.colorScheme.errorContainer,
+            MaterialTheme.colorScheme.onErrorContainer,
+            "⚠️"
+        )
+        is PaceForecast.Projected -> Triple(
+            MaterialTheme.colorScheme.secondaryContainer,
+            MaterialTheme.colorScheme.onSecondaryContainer,
+            "🎯"
+        )
+    }
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = containerColor
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(text = icon, fontSize = 20.sp)
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = forecast.displayText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = contentColor
+                )
+                if (forecast is PaceForecast.Projected && forecast.targetDate != null) {
+                    Text(
+                        text = "Projected arrival: ${forecast.targetDate.formatLong()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = contentColor.copy(alpha = 0.8f)
+                    )
+                }
+            }
+        }
+    }
+}
+
 // --- Cycle Goals View --------------------------------------------------------
 
 @Composable
@@ -1005,7 +1316,10 @@ private fun CycleGoalsProgress(
     exercises: List<Exercise>,
     sessions: List<SessionWithBlocks>,
     repMaxes: List<RepMax>,
-    onSelectCycle: (Cycle) -> Unit
+    weightEntries: List<WeightEntry> = emptyList(),
+    weightUnit: String = "kg",
+    onSelectCycle: (Cycle) -> Unit,
+    onLogWeight: () -> Unit = {}
 ) {
     Dropdown(
         label = "Training cycle",
@@ -1016,6 +1330,15 @@ private fun CycleGoalsProgress(
     )
 
     if (currentCycle == null) return
+
+    if (currentCycle.type == CycleType.FAT_LOSS_BODYBUILDING) {
+        WeightProgressionCard(
+            cycle = currentCycle,
+            weightEntries = weightEntries,
+            weightUnit = weightUnit,
+            onLogWeight = onLogWeight
+        )
+    }
 
     val goals = remember(cycleGoals, currentCycle.id) {
         cycleGoals.filter { it.cycleId == currentCycle.id }

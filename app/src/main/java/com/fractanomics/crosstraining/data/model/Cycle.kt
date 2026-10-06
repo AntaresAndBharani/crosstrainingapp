@@ -27,4 +27,41 @@ data class Cycle(
     val startingWeightKg: Double? = null,
     val targetWeightKg: Double? = null,
     val isBaselineAutoDerived: Boolean = false
-)
+) {
+    /**
+     * Target body weight in kilograms. Canonical alias for [targetWeightKg].
+     */
+    @get:androidx.room.Ignore
+    val targetBodyWeightKg: Double?
+        get() = targetWeightKg
+
+    @androidx.room.Ignore
+    constructor(
+        id: Long = 0,
+        name: String,
+        startDate: LocalDate,
+        endDate: LocalDate? = null,
+        goal: String = "",
+        isActive: Boolean = false,
+        type: CycleType = CycleType.STRENGTH_WEIGHTLIFTING,
+        fastDaysOfWeek: Int = 0,
+        restDaysOfWeek: Int = 0,
+        startingWeightKg: Double? = null,
+        targetWeightKg: Double? = null,
+        isBaselineAutoDerived: Boolean = false,
+        targetBodyWeightKg: Double? = null
+    ) : this(
+        id = id,
+        name = name,
+        startDate = startDate,
+        endDate = endDate,
+        goal = goal,
+        isActive = isActive,
+        type = type,
+        fastDaysOfWeek = fastDaysOfWeek,
+        restDaysOfWeek = restDaysOfWeek,
+        startingWeightKg = startingWeightKg,
+        targetWeightKg = targetWeightKg ?: targetBodyWeightKg,
+        isBaselineAutoDerived = isBaselineAutoDerived
+    )
+}
