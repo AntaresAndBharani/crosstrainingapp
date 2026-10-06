@@ -43,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -1108,16 +1109,22 @@ fun WeightProgressionCard(
                 KpiCard(
                     label = "Starting",
                     value = startingDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" } ?: "—",
+                    valueStyle = MaterialTheme.typography.titleMedium,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                     sub = { SubText(startSubtitle) }
                 )
                 KpiCard(
                     label = "Current",
                     value = currentDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" } ?: "—",
+                    valueStyle = MaterialTheme.typography.titleMedium,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                     sub = { SubText(latestEntry?.date?.formatShort() ?: "—") }
                 )
                 KpiCard(
                     label = "Goal",
                     value = targetDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" } ?: "—",
+                    valueStyle = MaterialTheme.typography.titleMedium,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                     sub = {
                         if (targetDisplay != null && currentDisplay != null) {
                             val remaining = currentDisplay - targetDisplay
@@ -1906,13 +1913,15 @@ private fun BlockHistoryCard(
 private fun RowScope.KpiCard(
     label: String,
     value: String,
+    valueStyle: TextStyle = MaterialTheme.typography.titleLarge,
+    contentPadding: PaddingValues = PaddingValues(12.dp),
     sub: @Composable () -> Unit
 ) {
     OutlinedCard(modifier = Modifier.weight(1f)) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(contentPadding),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Text(
@@ -1922,7 +1931,7 @@ private fun RowScope.KpiCard(
             )
             Text(
                 value,
-                style = MaterialTheme.typography.titleLarge,
+                style = valueStyle,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis

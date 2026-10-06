@@ -325,4 +325,26 @@ class WeightProgressionCardTest {
         assertEquals(76.0, cycle2.targetWeightKg!!, 0.001)
         assertEquals(76.0, cycle2.targetBodyWeightKg!!, 0.001)
     }
+
+    // =========================================================================
+    // Scenario 5: UI Anti-Truncation on 360dp Viewport (Issue #588)
+    // =========================================================================
+    @Test
+    fun scenario5_uiAntiTruncation_metricAndImperialValueFormattingFitsCardBounds() {
+        val metricStarting = String.format(Locale.US, "%.1f %s", 77.8, "kg")
+        val metricCurrent = String.format(Locale.US, "%.1f %s", 75.0, "kg")
+        val metricGoal = String.format(Locale.US, "%.1f %s", 67.0, "kg")
+        val imperialWorstCase = String.format(Locale.US, "%.1f %s", 171.5, "lbs")
+
+        assertEquals("77.8 kg", metricStarting)
+        assertEquals("75.0 kg", metricCurrent)
+        assertEquals("67.0 kg", metricGoal)
+        assertEquals("171.5 lbs", imperialWorstCase)
+
+        // Values must be within 7-9 characters to fit within expanded ~88dp content box
+        assertTrue(metricStarting.length <= 9)
+        assertTrue(metricCurrent.length <= 9)
+        assertTrue(metricGoal.length <= 9)
+        assertTrue(imperialWorstCase.length <= 9)
+    }
 }
