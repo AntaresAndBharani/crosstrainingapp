@@ -411,6 +411,9 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         }
     }
 
+    suspend fun refreshActiveCycleBaseline(): com.fractanomics.crosstraining.data.model.Cycle? =
+        repo.refreshActiveCycleBaseline()
+
     // --- Sessions -------------------------------------------------------------
     fun deleteSession(session: Session) = viewModelScope.launch { repo.deleteSession(session) }
 

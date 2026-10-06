@@ -3,6 +3,7 @@ package com.fractanomics.crosstraining.data
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
+import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
@@ -55,10 +56,11 @@ object BackupCsv {
         sb.append("#crosstraining-backup-v5\n")
 
         sb.append("#cycles\n")
-        sb.append(row(listOf("id", "name", "startDate", "endDate", "goal", "isActive")))
+        sb.append(row(listOf("id", "name", "startDate", "endDate", "goal", "isActive", "type", "startingWeightKg", "targetWeightKg", "isBaselineAutoDerived")))
         data.cycles.forEach {
             sb.append(row(listOf(
-                it.id.toString(), it.name, s(it.startDate), s(it.endDate), it.goal, b(it.isActive)
+                it.id.toString(), it.name, s(it.startDate), s(it.endDate), it.goal, b(it.isActive),
+                it.type.name, s(it.startingWeightKg), s(it.targetWeightKg), b(it.isBaselineAutoDerived)
             )))
         }
 
@@ -175,14 +177,26 @@ object BackupCsv {
             }
             if (skipHeader) { skipHeader = false; continue }
             when (section) {
-                "cycles" -> cycles += Cycle(
-                    id = rec.lng(0),
-                    name = rec.str(1),
-                    startDate = rec.date(2) ?: LocalDate.now(),
-                    endDate = rec.date(3),
-                    goal = rec.str(4),
-                    isActive = rec.str(5) == "1"
-                )
+                "cycles" -> {
+                    val rawType = rec.str(6).trim()
+                    val cycleType = when (rawType.uppercase()) {
+                        "FAT_LOSS", "FAT_LOSS_BODYBUILDING" -> CycleType.FAT_LOSS_BODYBUILDING
+                        "STRENGTH", "STRENGTH_WEIGHTLIFTING" -> CycleType.STRENGTH_WEIGHTLIFTING
+                        else -> CycleType.STRENGTH_WEIGHTLIFTING
+                    }
+                    cycles += Cycle(
+                        id = rec.lng(0),
+                        name = rec.str(1),
+                        startDate = rec.date(2) ?: LocalDate.now(),
+                        endDate = rec.date(3),
+                        goal = rec.str(4),
+                        isActive = rec.str(5) == "1",
+                        type = cycleType,
+                        startingWeightKg = rec.dblOrNull(7),
+                        targetWeightKg = rec.dblOrNull(8),
+                        isBaselineAutoDerived = rec.str(9) == "1"
+                    )
+                }
                 "exercises" -> exercises += Exercise(
                     id = rec.lng(0),
                     name = rec.str(1),

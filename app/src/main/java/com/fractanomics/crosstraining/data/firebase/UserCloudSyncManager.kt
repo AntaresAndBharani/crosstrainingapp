@@ -1006,6 +1006,7 @@ object UserCloudSyncManager {
 
                     if (mergedWinningEntries.isNotEmpty()) {
                         repo.importWeightEntries(mergedWinningEntries)
+                        repo.refreshActiveCycleBaseline()
                     }
                 }
 

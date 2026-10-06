@@ -286,8 +286,81 @@ class AppViewModelWeightTest {
     }
 
     // =========================================================================
-    // Scenario 7: Tombstone Exclusion in Baseline Lookups
+    // Scenario 6: Backdated Weight Edit/Soft-Delete Refreshes Active Auto-Derived Baseline
     // =========================================================================
+
+    @Test
+    fun scenario6_backdatedWeightEditAndSoftDelete_refreshesActiveAutoDerivedBaseline() = runTest {
+        val collectCycles = launch(testDispatcher) { viewModel.cycles.collect {} }
+        val startOct10 = LocalDate.of(2026, 10, 10)
+        val oct7 = LocalDate.of(2026, 10, 7)
+        val oct9 = LocalDate.of(2026, 10, 9)
+
+        // 1. Initial setup: Log weight on Oct 7 (81.0 kg)
+        viewModel.saveWeightEntry(weightKg = 81.0, date = oct7)
+
+        // Given an active Fat Loss cycle starting October 10 with isBaselineAutoDerived = true (baseline 81.0 kg from Oct 7)
+        realDb.cycleDao().clearActive()
+        val activeCycle = Cycle(
+            name = "October Cut",
+            startDate = startOct10,
+            goal = "Fat loss",
+            isActive = true,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 81.0,
+            targetWeightKg = 75.0,
+            isBaselineAutoDerived = true
+        )
+        val cycleId = realDb.cycleDao().insert(activeCycle)
+
+        // When a new weight entry of 80.5 kg is logged for October 9
+        viewModel.saveWeightEntry(weightKg = 80.5, date = oct9)
+
+        // Then the cycle baseline refreshes to 80.5 kg
+        var updatedCycle = realDb.cycleDao().byId(cycleId)
+        assertNotNull(updatedCycle)
+        assertEquals(80.5, updatedCycle!!.startingWeightKg!!, 0.001)
+        assertTrue(updatedCycle.isBaselineAutoDerived)
+
+        // When the October 9 entry is soft-deleted and the October 7 entry remains
+        viewModel.deleteWeightEntry(oct9)
+
+        // Then the cycle baseline refreshes back to 81.0 kg
+        updatedCycle = realDb.cycleDao().byId(cycleId)
+        assertNotNull(updatedCycle)
+        assertEquals(81.0, updatedCycle!!.startingWeightKg!!, 0.001)
+        assertTrue(updatedCycle.isBaselineAutoDerived)
+
+        // When all active entries in the 7-day window are soft-deleted
+        viewModel.deleteWeightEntry(oct7)
+
+        // Then the baseline clears to empty and isBaselineAutoDerived remains true
+        updatedCycle = realDb.cycleDao().byId(cycleId)
+        assertNotNull(updatedCycle)
+        assertNull("Baseline must clear to null when 7-day window is emptied", updatedCycle!!.startingWeightKg)
+        assertTrue("isBaselineAutoDerived must remain true", updatedCycle.isBaselineAutoDerived)
+
+        // When a manual baseline of 79.0 kg was explicitly entered (isBaselineAutoDerived = false)
+        realDb.cycleDao().update(updatedCycle.copy(startingWeightKg = 79.0, isBaselineAutoDerived = false))
+        // Log a new weight entry inside the window
+        viewModel.saveWeightEntry(weightKg = 78.5, date = oct9)
+        // Then the baseline remains 79.0 kg and is not overwritten
+        updatedCycle = realDb.cycleDao().byId(cycleId)
+        assertNotNull(updatedCycle)
+        assertEquals(79.0, updatedCycle!!.startingWeightKg!!, 0.001)
+        assertFalse(updatedCycle.isBaselineAutoDerived)
+
+        // When the cycle is completed/inactive (isActive = false)
+        realDb.cycleDao().update(updatedCycle.copy(isActive = false, isBaselineAutoDerived = true, startingWeightKg = 83.0))
+        // Log another weight entry
+        viewModel.saveWeightEntry(weightKg = 77.0, date = oct9)
+        // Then its baseline is never modified
+        updatedCycle = realDb.cycleDao().byId(cycleId)
+        assertNotNull(updatedCycle)
+        assertEquals(83.0, updatedCycle!!.startingWeightKg!!, 0.001)
+
+        collectCycles.cancel()
+    }
 
     @Test
     fun scenario7_tombstoneExclusionInBaselineLookups() = runTest {
