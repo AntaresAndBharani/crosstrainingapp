@@ -3,6 +3,7 @@ package com.fractanomics.crosstraining.data.analytics
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.BlockWithSets
+import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.DailyLog
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
@@ -595,4 +596,240 @@ class FatLossAnalyticsTest {
         assertEquals(50.0, weekly[1] ?: 0.0, 0.001)
         assertEquals(40.0, weekly[2] ?: 0.0, 0.001)
     }
+
+    // =========================================================================
+    // Issue #574 / #576 - Scenario 3: Modifier Chips and 0% Reset with 0.5 Rounding
+    // =========================================================================
+
+    @Test
+    fun `issue 576 - scenario 3 - modifier chips and 0 percent reset with 0_5 half-up rounding`() {
+        // Given a base RM of 73.0 kg populated in startWeight
+        val baseRm = 73.0
+
+        // When the +2.5% chip is selected
+        // Then targetWeight becomes 75.0 kg (73.0 * 1.025 = 74.825 -> 75.0 via half-up rounding)
+        val target2_5 = FatLossAnalytics.scaleRepMax(baseRm, 2.5)
+        assertEquals(75.0, target2_5, 0.001)
+
+        // When the +5% chip is selected
+        // Then targetWeight becomes 76.5 kg (73.0 * 1.05 = 76.65 -> 76.5 non-compounding)
+        val target5_0 = FatLossAnalytics.scaleRepMax(baseRm, 5.0)
+        assertEquals(76.5, target5_0, 0.001)
+
+        // When the +10% chip is selected
+        // Then targetWeight becomes 80.5 kg (73.0 * 1.10 = 80.3 -> 80.5)
+        val target10_0 = FatLossAnalytics.scaleRepMax(baseRm, 10.0)
+        assertEquals(80.5, target10_0, 0.001)
+
+        // When 0% is tapped
+        // Then targetWeight resets to 73.0 kg
+        val target0 = FatLossAnalytics.scaleRepMax(baseRm, 0.0)
+        assertEquals(73.0, target0, 0.001)
+
+        // Verify aliases work identically
+        assertEquals(75.0, FatLossAnalytics.scaleRepMaxWeight(baseRm, 2.5), 0.001)
+        assertEquals(76.5, FatLossAnalytics.scaleRm(baseRm, 5.0), 0.001)
+        assertEquals(73.0, FatLossAnalytics.scaleRmWeight(baseRm, 0.0), 0.001)
+    }
+
+    @Test
+    fun `issue 576 - scenario 3 boundary - half-up rounding to nearest 0_5 increment precision`() {
+        // Half-step boundary cases:
+        // .25 -> .50 (half-up)
+        assertEquals(70.5, FatLossAnalytics.roundToNearestHalf(70.25), 0.001)
+        // .75 -> next whole (half-up)
+        assertEquals(71.0, FatLossAnalytics.roundToNearestHalf(70.75), 0.001)
+        // .24 -> .00
+        assertEquals(70.0, FatLossAnalytics.roundToNearestHalf(70.24), 0.001)
+        // .26 -> .50
+        assertEquals(70.5, FatLossAnalytics.roundToNearestHalf(70.26), 0.001)
+        // .74 -> .50
+        assertEquals(70.5, FatLossAnalytics.roundToNearestHalf(70.74), 0.001)
+        // .76 -> 71.0
+        assertEquals(71.0, FatLossAnalytics.roundToNearestHalf(70.76), 0.001)
+
+        // Alias verification
+        assertEquals(75.0, FatLossAnalytics.roundToHalfStep(74.825), 0.001)
+        assertEquals(76.5, FatLossAnalytics.roundToHalfStep(76.65), 0.001)
+    }
+
+    @Test
+    fun `issue 576 - scenario 3 boundary - non-positive and nullable startWeight handling`() {
+        // 0.0 startWeight returns 0.0
+        assertEquals(0.0, FatLossAnalytics.scaleRepMax(0.0, 5.0), 0.001)
+        // Negative startWeight returns 0.0
+        assertEquals(0.0, FatLossAnalytics.scaleRepMax(-50.0, 5.0), 0.001)
+
+        // Nullable overload
+        val nullWeight: Double? = null
+        assertNull(FatLossAnalytics.scaleRepMax(nullWeight, 5.0))
+        assertNull(FatLossAnalytics.scaleRepMax(-10.0 as Double?, 5.0))
+        assertEquals(105.0, FatLossAnalytics.scaleRepMax(100.0 as Double?, 5.0) ?: 0.0, 0.001)
+    }
+
+    // =========================================================================
+    // Issue #574 / #576 - Scenario 8: Non-Positive & Invalid Target Weight Handling
+    // =========================================================================
+
+    @Test
+    fun `issue 576 - scenario 8 - invalid target weight greater than or equal to start weight returns na`() {
+        // Given a starting weight of 80.0 kg in Fat Loss mode
+        val startWeight = 80.0
+        // When the user enters a target weight of 82.0 kg (>= 80.0 kg)
+        val targetWeightGreater = 82.0
+        val currentWeight = 79.0
+
+        // When FatLossAnalytics evaluates progress with W_start = 80.0 and W_target = 82.0
+        val resultGreater = FatLossAnalytics.evaluateProgress(
+            startingWeightKg = startWeight,
+            targetWeightKg = targetWeightGreater,
+            currentWeightKg = currentWeight
+        )
+
+        // Then percent-to-target returns "n/a" (null numeric percentage, "n/a" displayText)
+        assertNull(resultGreater.percentToTarget)
+        assertEquals("n/a", resultGreater.displayText)
+        assertEquals("n/a", resultGreater.percentToTargetDisplayText)
+        // And delta is still validly computed (80.0 - 79.0 = 1.0 kg)
+        assertEquals(1.0, resultGreater.deltaKg ?: 0.0, 0.001)
+
+        // When target weight is equal to start weight (80.0 == 80.0)
+        val resultEqual = FatLossAnalytics.evaluateProgress(
+            startingWeightKg = startWeight,
+            targetWeightKg = 80.0,
+            currentWeightKg = currentWeight
+        )
+        assertNull(resultEqual.percentToTarget)
+        assertEquals("n/a", resultEqual.displayText)
+
+        // Direct computePercentToTarget calculation also returns null
+        assertNull(FatLossAnalytics.computePercentToTarget(startWeight, targetWeightGreater, currentWeight))
+        assertNull(FatLossAnalytics.computePercentToTargetRatio(startWeight, targetWeightGreater, currentWeight))
+        assertEquals("n/a", FatLossAnalytics.computePercentToTargetDisplayText(startWeight, targetWeightGreater, currentWeight))
+    }
+
+    @Test
+    fun `issue 576 - scenario 8 - non-positive weights return na and null progress`() {
+        // Zero or negative start weight
+        val zeroStart = FatLossAnalytics.evaluateProgress(startingWeightKg = 0.0, targetWeightKg = 75.0, currentWeightKg = 78.0)
+        assertNull(zeroStart.percentToTarget)
+        assertNull(zeroStart.deltaKg)
+        assertEquals("n/a", zeroStart.displayText)
+
+        val negStart = FatLossAnalytics.evaluateProgress(startingWeightKg = -80.0, targetWeightKg = 75.0, currentWeightKg = 78.0)
+        assertNull(negStart.percentToTarget)
+        assertNull(negStart.deltaKg)
+        assertEquals("n/a", negStart.displayText)
+
+        // Zero or negative target weight
+        val zeroTarget = FatLossAnalytics.evaluateProgress(startingWeightKg = 80.0, targetWeightKg = 0.0, currentWeightKg = 78.0)
+        assertNull(zeroTarget.percentToTarget)
+        assertEquals("n/a", zeroTarget.displayText)
+
+        // Zero or negative current weight
+        val zeroCurrent = FatLossAnalytics.evaluateProgress(startingWeightKg = 80.0, targetWeightKg = 75.0, currentWeightKg = 0.0)
+        assertNull(zeroCurrent.percentToTarget)
+        assertNull(zeroCurrent.deltaKg)
+        assertEquals("n/a", zeroCurrent.displayText)
+    }
+
+    @Test
+    fun `issue 576 - scenario 8 - null weights evaluate to na`() {
+        // Null startWeight
+        val nullStart = FatLossAnalytics.evaluateProgress(startingWeightKg = null, targetWeightKg = 75.0, currentWeightKg = 78.0)
+        assertNull(nullStart.percentToTarget)
+        assertNull(nullStart.deltaKg)
+        assertEquals("n/a", nullStart.displayText)
+
+        // Null targetWeight
+        val nullTarget = FatLossAnalytics.evaluateProgress(startingWeightKg = 80.0, targetWeightKg = null, currentWeightKg = 78.0)
+        assertNull(nullTarget.percentToTarget)
+        assertEquals(2.0, nullTarget.deltaKg ?: 0.0, 0.001) // delta still works if both start and current exist
+        assertEquals("n/a", nullTarget.displayText)
+
+        // Null currentWeight (e.g. evaluating cycle baseline and target before first weigh-in)
+        val nullCurrent = FatLossAnalytics.evaluateProgress(startingWeightKg = 80.0, targetWeightKg = 75.0, currentWeightKg = null)
+        assertNull(nullCurrent.percentToTarget)
+        assertNull(nullCurrent.deltaKg)
+        assertEquals("n/a", nullCurrent.displayText)
+
+        // Direct helper null safety
+        assertNull(FatLossAnalytics.computeWeightDelta(null, 75.0))
+        assertNull(FatLossAnalytics.computeWeightDelta(80.0, null))
+        assertNull(FatLossAnalytics.computePercentToTarget(null, 75.0, 78.0))
+        assertNull(FatLossAnalytics.computePercentToTarget(80.0, null, 78.0))
+        assertNull(FatLossAnalytics.computePercentToTarget(80.0, 75.0, null))
+    }
+
+    @Test
+    fun `issue 576 - valid fat loss progression computes weight delta and percent-to-target accurately`() {
+        val start = 80.0
+        val target = 75.0
+        // Total required loss = 5.0 kg
+
+        // 1. Day 0 (current = start = 80.0 kg): 0 kg lost, 0% complete
+        val day0 = FatLossAnalytics.evaluateProgress(start, target, 80.0)
+        assertEquals(0.0, day0.deltaKg ?: 0.0, 0.001)
+        assertEquals(0.0, day0.percentToTarget ?: 0.0, 0.001)
+        assertEquals("0%", day0.displayText)
+
+        // 2. Halfway (current = 77.5 kg): 2.5 kg lost, 50% complete
+        val halfway = FatLossAnalytics.evaluateProgress(start, target, 77.5)
+        assertEquals(2.5, halfway.deltaKg ?: 0.0, 0.001)
+        assertEquals(50.0, halfway.percentToTarget ?: 0.0, 0.001)
+        assertEquals("50%", halfway.displayText)
+
+        // 3. Goal reached (current = target = 75.0 kg): 5.0 kg lost, 100% complete
+        val reached = FatLossAnalytics.evaluateProgress(start, target, 75.0)
+        assertEquals(5.0, reached.deltaKg ?: 0.0, 0.001)
+        assertEquals(100.0, reached.percentToTarget ?: 0.0, 0.001)
+        assertEquals("100%", reached.displayText)
+
+        // 4. Goal exceeded (current = 74.0 kg): 6.0 kg lost, 120% complete
+        val exceeded = FatLossAnalytics.evaluateProgress(start, target, 74.0)
+        assertEquals(6.0, exceeded.deltaKg ?: 0.0, 0.001)
+        assertEquals(120.0, exceeded.percentToTarget ?: 0.0, 0.001)
+        assertEquals("120%", exceeded.displayText)
+
+        // 5. Weight gained (current = 81.0 kg): -1.0 kg lost, -20%
+        val gained = FatLossAnalytics.evaluateProgress(start, target, 81.0)
+        assertEquals(-1.0, gained.deltaKg ?: 0.0, 0.001)
+        assertEquals(-20.0, gained.percentToTarget ?: 0.0, 0.001)
+        assertEquals("-20%", gained.displayText)
+
+        // 6. Decimal percentage (current = 78.2 kg): 1.8 kg lost, 1.8 / 5.0 = 36%
+        val decimalPct = FatLossAnalytics.evaluateProgress(start, target, 78.2)
+        assertEquals(1.8, decimalPct.deltaKg ?: 0.0, 0.001)
+        assertEquals(36.0, decimalPct.percentToTarget ?: 0.0, 0.001)
+        assertEquals("36%", decimalPct.displayText)
+
+        // 7. Non-integer decimal percentage (current = 78.175 kg): 1.825 kg lost, 1.825 / 5.0 = 36.5%
+        val nonIntPct = FatLossAnalytics.evaluateProgress(start, target, 78.175)
+        assertEquals(1.825, nonIntPct.deltaKg ?: 0.0, 0.001)
+        assertEquals(36.5, nonIntPct.percentToTarget ?: 0.0, 0.001)
+        assertEquals("36.5%", nonIntPct.displayText)
+    }
+
+    @Test
+    fun `issue 576 - cycle entity integration evaluates weight progress`() {
+        val cycle = Cycle(
+            id = 1L,
+            name = "Summer Shred",
+            startDate = LocalDate.of(2026, 10, 1),
+            goal = "Cut to 78kg",
+            startingWeightKg = 85.0,
+            targetWeightKg = 78.0,
+            isBaselineAutoDerived = true
+        )
+
+        val progress = FatLossAnalytics.evaluateProgress(cycle, currentWeightKg = 81.5)
+        assertEquals(3.5, progress.deltaKg ?: 0.0, 0.001)
+        assertEquals(50.0, progress.percentToTarget ?: 0.0, 0.001) // 3.5 / 7.0 = 50%
+        assertEquals("50%", progress.displayText)
+        assertEquals("3.5 kg", progress.deltaDisplayText)
+
+        val pct = FatLossAnalytics.computePercentToTarget(cycle, currentWeightKg = 81.5)
+        assertEquals(50.0, pct ?: 0.0, 0.001)
+    }
 }
+
