@@ -8,8 +8,11 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -29,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -88,14 +92,23 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import com.fractanomics.crosstraining.data.analytics.DayOfWeekCardio
+import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
 import com.fractanomics.crosstraining.data.analytics.Timeframe
 import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
+import com.fractanomics.crosstraining.data.model.CycleType
+import com.fractanomics.crosstraining.data.model.DailyLog
 import com.fractanomics.crosstraining.data.model.WeightEntry
+import com.fractanomics.crosstraining.ui.components.DailyCheckInBottomSheet
+import com.fractanomics.crosstraining.ui.components.DailyCheckInCard
 import com.fractanomics.crosstraining.ui.screens.weight.WeightEntryBottomSheet
 import com.fractanomics.crosstraining.ui.screens.weight.WeightSummaryCard
 import kotlinx.coroutines.launch
+import java.time.DayOfWeek
+import java.util.Locale
+import kotlin.math.abs
 
-enum class ProgressMode { BY_EXERCISE, BY_ROUTINE, CYCLE_GOALS, BODY_WEIGHT }
+enum class ProgressMode { BY_EXERCISE, BY_ROUTINE, CYCLE_GOALS, BODY_WEIGHT, FAT_LOSS }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -115,10 +128,13 @@ fun ProgressScreen(
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
     val weightEntries by viewModel.weightEntries.collectAsStateWithLifecycle()
     val weightUnit by viewModel.weightUnit.collectAsStateWithLifecycle()
+    val dailyLogs by viewModel.dailyLogs.collectAsStateWithLifecycle()
 
     var selectedExercise by remember { mutableStateOf<Exercise?>(null) }
     var selectedRoutine by remember { mutableStateOf<Routine?>(null) }
     var selectedCycleGoalCycle by remember { mutableStateOf<Cycle?>(null) }
+    var selectedFatLossCycle by remember { mutableStateOf<Cycle?>(null) }
+    var showDailyCheckInSheet by remember { mutableStateOf(false) }
     val progressMode by viewModel.progressMode.collectAsStateWithLifecycle()
 
     // Bottom sheet & Snackbar state for Weight Logging
@@ -147,7 +163,7 @@ fun ProgressScreen(
         },
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         floatingActionButton = {
-            if (progressMode == ProgressMode.BODY_WEIGHT) {
+            if (progressMode == ProgressMode.BODY_WEIGHT || progressMode == ProgressMode.FAT_LOSS) {
                 FloatingActionButton(
                     onClick = {
                         editingWeightEntry = null
@@ -164,6 +180,7 @@ fun ProgressScreen(
                 ProgressMode.BY_EXERCISE,
                 if (routines.isNotEmpty()) ProgressMode.BY_ROUTINE else null,
                 if (cycles.isNotEmpty()) ProgressMode.CYCLE_GOALS else null,
+                if (cycles.isNotEmpty()) ProgressMode.FAT_LOSS else null,
                 ProgressMode.BODY_WEIGHT
             )
         }
@@ -199,6 +216,7 @@ fun ProgressScreen(
                                     ProgressMode.BY_EXERCISE -> "By exercise"
                                     ProgressMode.BY_ROUTINE -> "By routine"
                                     ProgressMode.CYCLE_GOALS -> "Cycle goals"
+                                    ProgressMode.FAT_LOSS -> "Fat loss"
                                     ProgressMode.BODY_WEIGHT -> "Body weight"
                                 }
                             )
@@ -231,6 +249,35 @@ fun ProgressScreen(
                             sessions = sessions,
                             repMaxes = repMaxes,
                             onSelectCycle = { selectedCycleGoalCycle = it }
+                        )
+                    }
+                    ProgressMode.FAT_LOSS -> {
+                        val currentFatLossCycle = selectedFatLossCycle
+                            ?: activeCycle?.takeIf { it.type == CycleType.FAT_LOSS_BODYBUILDING }
+                            ?: cycles.firstOrNull { it.type == CycleType.FAT_LOSS_BODYBUILDING }
+                            ?: activeCycle
+                            ?: cycles.firstOrNull()
+
+                        FatLossProgress(
+                            cycles = cycles,
+                            currentCycle = currentFatLossCycle,
+                            sessions = sessions,
+                            exercises = exercises,
+                            dailyLogs = dailyLogs,
+                            weightEntries = weightEntries,
+                            weightUnit = weightUnit,
+                            onToggleWeightUnit = { viewModel.setWeightUnit(it) },
+                            onSelectCycle = { selectedFatLossCycle = it },
+                            onLogWeight = {
+                                editingWeightEntry = null
+                                showWeightSheet = true
+                            },
+                            onSaveDailyLog = { log ->
+                                viewModel.saveDailyLog(log)
+                            },
+                            onOpenCheckInSheet = {
+                                showDailyCheckInSheet = true
+                            }
                         )
                     }
                     ProgressMode.BODY_WEIGHT -> {
@@ -319,6 +366,499 @@ fun ProgressScreen(
                 }
             }
         )
+    }
+
+    if (showDailyCheckInSheet) {
+        val today = LocalDate.now()
+        val currentFatLossCycle = selectedFatLossCycle
+            ?: activeCycle?.takeIf { it.type == CycleType.FAT_LOSS_BODYBUILDING }
+            ?: cycles.firstOrNull { it.type == CycleType.FAT_LOSS_BODYBUILDING }
+            ?: activeCycle
+            ?: cycles.firstOrNull()
+        val isFast = currentFatLossCycle?.let {
+            FatLossAnalytics.isScheduledFastDay(today, it.fastDaysOfWeek)
+        } ?: false
+        val isRest = currentFatLossCycle?.let {
+            FatLossAnalytics.isScheduledRestDay(today, it.restDaysOfWeek)
+        } ?: false
+
+        DailyCheckInBottomSheet(
+            date = today,
+            dailyLog = dailyLogs.firstOrNull { it.date == today && it.deletedAtMillis == null },
+            isScheduledFastDay = isFast,
+            isScheduledRestDay = isRest,
+            onDismiss = { showDailyCheckInSheet = false },
+            onSave = {
+                viewModel.saveDailyLog(it)
+                showDailyCheckInSheet = false
+            },
+            onDelete = {
+                viewModel.deleteDailyLog(it)
+                showDailyCheckInSheet = false
+            }
+        )
+    }
+}
+
+// --- Fat Loss & Bodybuilding Progress View ----------------------------------
+
+@Composable
+private fun FatLossProgress(
+    cycles: List<Cycle>,
+    currentCycle: Cycle?,
+    sessions: List<SessionWithBlocks>,
+    exercises: List<Exercise>,
+    dailyLogs: List<DailyLog>,
+    weightEntries: List<WeightEntry>,
+    weightUnit: String,
+    onToggleWeightUnit: (String) -> Unit,
+    onSelectCycle: (Cycle) -> Unit,
+    onLogWeight: () -> Unit,
+    onSaveDailyLog: (DailyLog) -> Unit,
+    onOpenCheckInSheet: () -> Unit
+) {
+    Dropdown(
+        label = "Training cycle",
+        options = cycles,
+        selected = currentCycle,
+        labelOf = {
+            val typeSuffix = if (it.type == CycleType.FAT_LOSS_BODYBUILDING) " (Fat Loss)" else ""
+            if (it.isActive) "${it.name} (Active)$typeSuffix" else "${it.name}$typeSuffix"
+        },
+        onSelect = onSelectCycle
+    )
+
+    if (currentCycle == null) {
+        SectionCard(title = "Fat Loss & Bodybuilding") {
+            EmptyState("No training cycles found.\nCreate a cycle in the Cycles tab to track fat loss progress.")
+        }
+        return
+    }
+
+    val isFatLossCycle = currentCycle.type == CycleType.FAT_LOSS_BODYBUILDING
+
+    // Cycle Overview & Scheduling Chips
+    SectionCard(title = "Cycle Overview (${currentCycle.name})") {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val startDate = currentCycle.startDate
+            val endDate = currentCycle.endDate
+            val dateRangeStr = if (endDate != null) {
+                "${startDate.formatShort()} – ${endDate.formatShort()}"
+            } else {
+                "Started ${startDate.formatShort()} (Ongoing)"
+            }
+
+            Text(
+                text = dateRangeStr,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+
+            val typeBadge = if (isFatLossCycle) "Fat Loss & Bodybuilding" else "Strength & Weightlifting"
+            Text(
+                text = "Cycle Type: $typeBadge",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (isFatLossCycle) {
+                val fastDays = remember(currentCycle.fastDaysOfWeek) {
+                    FatLossAnalytics.maskToDayOfWeekSet(currentCycle.fastDaysOfWeek)
+                }
+                val restDays = remember(currentCycle.restDaysOfWeek) {
+                    FatLossAnalytics.maskToDayOfWeekSet(currentCycle.restDaysOfWeek)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val fastDaysText = if (fastDays.isNotEmpty()) {
+                        fastDays.joinToString { it.name.take(3).lowercase().replaceFirstChar { c -> c.uppercase() } }
+                    } else {
+                        "None"
+                    }
+                    Text(
+                        text = "Fast Days: $fastDaysText",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text("·", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
+                    val restDaysText = if (restDays.isNotEmpty()) {
+                        restDays.joinToString { it.name.take(3).lowercase().replaceFirstChar { c -> c.uppercase() } }
+                    } else {
+                        "None"
+                    }
+                    Text(
+                        text = "Rest Days: $restDaysText",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
+        }
+    }
+
+    // 1. Daily Check-In Card for Today (if Fat Loss cycle)
+    if (isFatLossCycle) {
+        val today = LocalDate.now()
+        val todayLog = remember(dailyLogs, today) {
+            dailyLogs.firstOrNull { it.date == today && it.deletedAtMillis == null }
+        }
+        val isFast = FatLossAnalytics.isScheduledFastDay(today, currentCycle.fastDaysOfWeek)
+        val isRest = FatLossAnalytics.isScheduledRestDay(today, currentCycle.restDaysOfWeek)
+
+        DailyCheckInCard(
+            date = today,
+            dailyLog = todayLog,
+            isScheduledFastDay = isFast,
+            isScheduledRestDay = isRest,
+            onSaveDailyLog = onSaveDailyLog,
+            onOpenFullCheckIn = onOpenCheckInSheet
+        )
+    }
+
+    // 2. Adherence KPI Cards (Block Completion & Fasting Adherence)
+    val cycleSessions = remember(sessions, currentCycle) {
+        sessions.filter { s ->
+            val date = s.session.date
+            val afterStart = !date.isBefore(currentCycle.startDate)
+            val beforeEnd = currentCycle.endDate == null || !date.isAfter(currentCycle.endDate)
+            val matchesCycle = s.session.cycleId == currentCycle.id
+            afterStart && beforeEnd && matchesCycle
+        }
+    }
+    val allCycleBlocks = remember(cycleSessions) {
+        cycleSessions.flatMap { it.blocks.map { bws -> bws.block } }
+    }
+    val blockAdherence = remember(allCycleBlocks) {
+        FatLossAnalytics.computeDailyBlockAdherence(allCycleBlocks)
+    }
+
+    val dailyLogsMap = remember(dailyLogs) {
+        dailyLogs.filter { it.deletedAtMillis == null }.associateBy { it.date }
+    }
+    val fastingAdherence = remember(currentCycle, dailyLogsMap) {
+        FatLossAnalytics.computeFastingAdherence(
+            cycleStartDate = currentCycle.startDate,
+            fastDaysOfWeek = currentCycle.fastDaysOfWeek,
+            dailyLogs = dailyLogsMap,
+            referenceDate = LocalDate.now(),
+            cycleEndDate = currentCycle.endDate
+        )
+    }
+
+    SectionCard(title = "Adherence & Completion") {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            KpiCard(
+                label = "Block Completion",
+                value = blockAdherence.displayText,
+                sub = {
+                    if (blockAdherence.percentage != null) {
+                        SubText("${blockAdherence.completedBlocks} of ${blockAdherence.totalBlocks} completed")
+                        Spacer(Modifier.height(4.dp))
+                        LinearProgressIndicator(
+                            progress = { (blockAdherence.percentage / 100.0).toFloat().coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        SubText("0 blocks logged")
+                    }
+                }
+            )
+
+            KpiCard(
+                label = "Fasting Adherence",
+                value = fastingAdherence.displayText,
+                sub = {
+                    if (currentCycle.fastDaysOfWeek == 0) {
+                        SubText("No scheduled fast days")
+                    } else if (fastingAdherence.percentage != null) {
+                        SubText("${fastingAdherence.completedFastDays} of ${fastingAdherence.totalEligibleFastDays} fast days completed")
+                        Spacer(Modifier.height(4.dp))
+                        LinearProgressIndicator(
+                            progress = { (fastingAdherence.percentage / 100.0).toFloat().coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        SubText("0 fast days elapsed")
+                    }
+                }
+            )
+        }
+    }
+
+    // 3. Cardio Day/Week & Mon–Sun Averages Bar Chart
+    val exerciseMap = remember(exercises) { exercises.associateBy { it.id } }
+    val dailyCardioMinutes = remember(cycleSessions, exerciseMap) {
+        FatLossAnalytics.computeDailyCardioMinutes(cycleSessions, exerciseMap)
+    }
+    val dayOfWeekCardioList = remember(currentCycle, dailyCardioMinutes) {
+        FatLossAnalytics.computeDayOfWeekCardioList(
+            cycleStartDate = currentCycle.startDate,
+            referenceDate = LocalDate.now(),
+            cycleEndDate = currentCycle.endDate,
+            dailyCardioMinutes = dailyCardioMinutes
+        )
+    }
+    val totalCardioMinutes = remember(dailyCardioMinutes) {
+        dailyCardioMinutes.values.sum()
+    }
+    val today = LocalDate.now()
+    val elapsedDays = remember(currentCycle.startDate, currentCycle.endDate, today) {
+        val windowEnd = if (currentCycle.endDate != null && currentCycle.endDate.isBefore(today)) {
+            currentCycle.endDate
+        } else {
+            today
+        }
+        java.time.temporal.ChronoUnit.DAYS.between(currentCycle.startDate, windowEnd).coerceAtLeast(0) + 1
+    }
+    val dailyAvgCardio = if (elapsedDays > 0) totalCardioMinutes / elapsedDays else 0.0
+    val weeklyAvgCardio = dailyAvgCardio * 7.0
+
+    SectionCard(title = "Cardio Analytics") {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                KpiCard(
+                    label = "Total Cardio",
+                    value = "${totalCardioMinutes.toInt()} min",
+                    sub = { SubText("${String.format(Locale.US, "%.1f", totalCardioMinutes / 60.0)} hrs") }
+                )
+                KpiCard(
+                    label = "Daily Average",
+                    value = "${dailyAvgCardio.toInt()} min",
+                    sub = { SubText("${weeklyAvgCardio.toInt()} min / wk") }
+                )
+            }
+
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Mon–Sun Cardio Averages",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                "Average cardio minutes accumulated per weekday across cycle weeks",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            CardioDayOfWeekBarChart(dayOfWeekCardioList)
+        }
+    }
+
+    // 4. Integrated Weight Trend
+    val activeWeightEntries = remember(weightEntries) {
+        weightEntries.filter { it.deletedAtMillis == null }.sortedBy { it.date }
+    }
+    val cycleWeightEntries = remember(activeWeightEntries, currentCycle) {
+        activeWeightEntries.filter { entry ->
+            val afterStart = !entry.date.isBefore(currentCycle.startDate)
+            val beforeEnd = currentCycle.endDate == null || !entry.date.isAfter(currentCycle.endDate)
+            afterStart && beforeEnd
+        }
+    }
+    var selectedTimeframe by rememberSaveable { mutableStateOf(Timeframe.THIRTY_DAYS) }
+
+    SectionCard(title = "Integrated Weight Trend") {
+        if (activeWeightEntries.isEmpty()) {
+            EmptyState("No weight entries logged yet.\nTap 'Log Weigh-In' below to start tracking your weight.")
+        } else {
+            val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+            val startEntry = cycleWeightEntries.firstOrNull() ?: activeWeightEntries.firstOrNull()
+            val latestEntry = activeWeightEntries.lastOrNull()
+
+            val startDisplay = startEntry?.let { if (isImperial) WeightAnalytics.kgToLbs(it.weightKg) else it.weightKg }
+            val latestDisplay = latestEntry?.let { if (isImperial) WeightAnalytics.kgToLbs(it.weightKg) else it.weightKg }
+            val deltaDisplay = if (startDisplay != null && latestDisplay != null) latestDisplay - startDisplay else null
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                KpiCard(
+                    label = "Cycle Start",
+                    value = startDisplay?.let { "${String.format(Locale.US, "%.1f", it)} ${weightUnit.lowercase()}" } ?: "—",
+                    sub = { SubText(startEntry?.date?.formatShort() ?: "No start log") }
+                )
+                KpiCard(
+                    label = "Latest",
+                    value = latestDisplay?.let { "${String.format(Locale.US, "%.1f", it)} ${weightUnit.lowercase()}" } ?: "—",
+                    sub = { SubText(latestEntry?.date?.formatShort() ?: "No weigh-in") }
+                )
+                KpiCard(
+                    label = "Cycle Delta",
+                    value = deltaDisplay?.let {
+                        val sign = if (it > 0) "+" else ""
+                        "$sign${String.format(Locale.US, "%.1f", it)} ${weightUnit.lowercase()}"
+                    } ?: "—",
+                    sub = {
+                        when {
+                            deltaDisplay == null -> SubText("baseline")
+                            deltaDisplay < 0.0 -> Text(
+                                "▼ ${String.format(Locale.US, "%.1f", abs(deltaDisplay))} lost",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.tertiary
+                            )
+                            deltaDisplay > 0.0 -> Text(
+                                "▲ +${String.format(Locale.US, "%.1f", deltaDisplay)} gained",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            else -> SubText("= no change")
+                        }
+                    }
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Timeframe Filter Chips
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Timeframe.entries.forEach { tf ->
+                    FilterChip(
+                        selected = selectedTimeframe == tf,
+                        onClick = { selectedTimeframe = tf },
+                        label = { Text(tf.label) }
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Weight Chart Series
+            val chartPoints = remember(activeWeightEntries, selectedTimeframe, isImperial) {
+                val seriesPoints = WeightAnalytics.prepareChartSeries(activeWeightEntries, selectedTimeframe)
+                val rawChart = seriesPoints.map { p ->
+                    val displayVal = if (isImperial) WeightAnalytics.kgToLbs(p.rawValue) else p.rawValue
+                    ChartPoint(p.label, displayVal.toFloat())
+                }
+                val smaChart = seriesPoints.map { p ->
+                    val displayVal = p.smaValue?.let {
+                        if (isImperial) WeightAnalytics.kgToLbs(it) else it
+                    }
+                    ChartPoint(p.label, displayVal?.toFloat())
+                }
+                Pair(rawChart, smaChart)
+            }
+
+            val chartSeries = listOf(
+                ChartSeries(
+                    name = "Daily (${weightUnit.lowercase()})",
+                    points = chartPoints.first,
+                    color = MaterialTheme.colorScheme.secondary
+                ),
+                ChartSeries(
+                    name = "7D Average",
+                    points = chartPoints.second,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            )
+
+            MultiLineChart(series = chartSeries)
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = {
+                val nextUnit = if (weightUnit.equals("kg", ignoreCase = true)) "lbs" else "kg"
+                onToggleWeightUnit(nextUnit)
+            }) {
+                Text("Unit: ${weightUnit.uppercase()}")
+            }
+            androidx.compose.material3.OutlinedButton(onClick = onLogWeight) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Log Weigh-In")
+            }
+        }
+    }
+}
+
+/**
+ * Bar chart rendering Day-of-Week cardio averages (Monday through Sunday) across cycle weeks.
+ */
+@Composable
+private fun CardioDayOfWeekBarChart(
+    items: List<DayOfWeekCardio>,
+    modifier: Modifier = Modifier
+) {
+    val maxAvg = (items.maxOfOrNull { it.averageMinutes } ?: 0.0).coerceAtLeast(1.0)
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(140.dp)
+                .padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom
+        ) {
+            items.forEach { dayCardio ->
+                val dayLabel = when (dayCardio.dayOfWeek) {
+                    DayOfWeek.MONDAY -> "Mon"
+                    DayOfWeek.TUESDAY -> "Tue"
+                    DayOfWeek.WEDNESDAY -> "Wed"
+                    DayOfWeek.THURSDAY -> "Thu"
+                    DayOfWeek.FRIDAY -> "Fri"
+                    DayOfWeek.SATURDAY -> "Sat"
+                    DayOfWeek.SUNDAY -> "Sun"
+                }
+                val avg = dayCardio.averageMinutes
+                val heightFraction = if (maxAvg > 0) (avg / maxAvg).toFloat().coerceIn(0f, 1f) else 0f
+                val valueText = if (avg > 0.0) {
+                    if (avg >= 10.0) "${avg.toInt()}m" else String.format(Locale.US, "%.1fm", avg)
+                } else {
+                    "—"
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Bottom
+                ) {
+                    Text(
+                        text = valueText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (avg > 0.0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (avg > 0.0) FontWeight.Bold else FontWeight.Normal
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(0.55f)
+                            .height((80 * heightFraction).coerceAtLeast(if (avg > 0.0) 6f else 2f).dp)
+                            .background(
+                                color = if (avg > 0.0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                shape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)
+                            )
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = dayLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+        HorizontalDivider(modifier = Modifier.padding(top = 2.dp))
     }
 }
 
