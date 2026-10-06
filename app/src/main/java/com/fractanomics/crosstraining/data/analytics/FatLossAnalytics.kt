@@ -4,11 +4,13 @@ import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.BlockWithSets
 import com.fractanomics.crosstraining.data.model.Cycle
+import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.DailyLog
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
+import com.fractanomics.crosstraining.data.model.WeightEntry
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.DayOfWeek
@@ -121,6 +123,131 @@ enum class FastingDayStatus(val label: String) {
     MISSED("Missed"),
     UPCOMING("Upcoming")
 }
+
+/**
+ * Directional trend classification for weekly body weight rate of change.
+ *
+ * Mapped to UI iconography:
+ * - [LOSS]: Weekly change < -0.05 (tertiary / downward arrow ▼)
+ * - [GAIN]: Weekly change > +0.05 (error / upward arrow ▲)
+ * - [NEUTRAL]: Weekly change in [-0.05, +0.05] (neutral)
+ */
+enum class PaceTrend {
+    LOSS,
+    GAIN,
+    NEUTRAL
+}
+
+/**
+ * Result representation for signed weekly pace rate of change.
+ *
+ * @property rateKgPerWeek Signed rate in kg/wk: (W_current - W_anchor) / elapsedDays * 7 (loss is negative).
+ * @property anchorWeightKg Weight at the resolved anchor date in kg.
+ * @property anchorDate Date of the resolved anchor entry.
+ * @property currentWeightKg Current or latest weight in kg.
+ * @property currentDate Date of the current weight entry.
+ * @property elapsedDays Actual elapsed calendar days between anchor and current entry.
+ * @property trend [PaceTrend] categorization for UI iconography and coloring.
+ */
+data class PaceRateResult(
+    val rateKgPerWeek: Double,
+    val anchorWeightKg: Double,
+    val anchorDate: LocalDate,
+    val currentWeightKg: Double,
+    val currentDate: LocalDate,
+    val elapsedDays: Long,
+    val trend: PaceTrend
+) {
+    /**
+     * Positive deficit velocity in kg/wk: -rateKgPerWeek.
+     */
+    val deficitVelocityKgPerWeek: Double
+        get() = -rateKgPerWeek
+
+    /**
+     * Formats the weekly rate for UI chip display with directional sign and localized unit.
+     * E.g., "-0.5 kg/wk", "+0.4 kg/wk", "0.0 kg/wk", or "-1.1 lbs/wk".
+     */
+    fun formatDisplay(unit: String = "kg"): String {
+        val rateInUnit = if (unit.equals("lbs", ignoreCase = true)) {
+            WeightAnalytics.kgToLbs(rateKgPerWeek)
+        } else {
+            rateKgPerWeek
+        }
+        val unitLabel = if (unit.equals("lbs", ignoreCase = true)) "lbs/wk" else "kg/wk"
+        return when {
+            rateInUnit < -0.05 -> String.format(Locale.US, "%.1f %s", rateInUnit, unitLabel)
+            rateInUnit > 0.05 -> String.format(Locale.US, "+%.1f %s", rateInUnit, unitLabel)
+            else -> String.format(Locale.US, "0.0 %s", unitLabel)
+        }
+    }
+}
+
+/**
+ * Sealed hierarchy representing the goal pace forecast state.
+ *
+ * Follows strict precedence order:
+ * 1. [GoalReached]: W_current <= W_target (when W_target is set)
+ * 2. [CycleEnded]: today > cycle.endDate (when endDate is set)
+ * 3. [NotEnoughData]: < 2 entries or span < 7 calendar days
+ * 4. [Stalled]: Active deficit velocity <= 0.0 (rounded to 0.1)
+ * 5. [Projected]: Positive deficit velocity with projected weeks and target calendar date (capped at 52w)
+ */
+sealed class PaceForecast {
+    abstract val displayText: String
+
+    /**
+     * Target goal weight has been achieved or surpassed.
+     */
+    object GoalReached : PaceForecast() {
+        override val displayText: String = "Goal reached! 🎉"
+    }
+
+    /**
+     * Cycle has concluded and athlete is beyond the scheduled end date.
+     */
+    object CycleEnded : PaceForecast() {
+        override val displayText: String = "Cycle ended"
+    }
+
+    /**
+     * Insufficient sampling history (< 2 entries or entries span < 7 calendar days).
+     */
+    object NotEnoughData : PaceForecast() {
+        override val displayText: String = "Logging check-ins for 7 days enables pace projections"
+    }
+
+    /**
+     * Weight loss pace is stalled or gaining (deficit velocity <= 0.0). Projections suppressed.
+     */
+    object Stalled : PaceForecast() {
+        override val displayText: String = "Pace stalled — insufficient deficit to project"
+    }
+
+    /**
+     * Valid positive deficit projection toward target weight.
+     *
+     * @property weeks Estimated weeks to reach goal, capped at 52.0.
+     * @property targetDate Projected calendar date of goal arrival, or null if capped (> 52w).
+     * @property rawWeeks Uncapped calculated weeks.
+     */
+    data class Projected(
+        val weeks: Double,
+        val targetDate: LocalDate? = null,
+        val rawWeeks: Double = weeks
+    ) : PaceForecast() {
+        val isCapped: Boolean
+            get() = targetDate == null || rawWeeks > 52.0
+
+        override val displayText: String
+            get() = if (isCapped) {
+                "Estimated: > 1 year"
+            } else {
+                String.format(Locale.US, "Estimated: %.1f weeks", weeks)
+            }
+    }
+}
+
 
 /**
  * Pure Kotlin domain analytics engine for Fat Loss & Bodybuilding cycles.
@@ -812,5 +939,364 @@ object FatLossAnalytics {
         cycle: Cycle,
         currentWeightKg: Double?
     ): WeightProgressResult = evaluateProgress(cycle, currentWeightKg)
+
+    // =========================================================================
+    // 7. Rolling Velocity & Pacing Engine
+    // =========================================================================
+
+    /**
+     * Evaluates whether a cycle is a Fat Loss / Bodybuilding cycle eligible for pacing.
+     */
+    fun isFatLossCycle(cycle: Cycle): Boolean =
+        cycle.type == CycleType.FAT_LOSS_BODYBUILDING
+
+    /**
+     * Classifies a signed weekly rate of change into [PaceTrend].
+     *
+     * - Rate < -0.05: [PaceTrend.LOSS] (tertiary / downward arrow ▼)
+     * - Rate > +0.05: [PaceTrend.GAIN] (error / upward arrow ▲)
+     * - In between: [PaceTrend.NEUTRAL] (neutral)
+     */
+    fun getPaceTrend(rateKgPerWeek: Double): PaceTrend = when {
+        rateKgPerWeek < -0.05 -> PaceTrend.LOSS
+        rateKgPerWeek > 0.05 -> PaceTrend.GAIN
+        else -> PaceTrend.NEUTRAL
+    }
+
+    /**
+     * Computes signed weekly rate: (W_current - W_anchor) / elapsedDays * 7.
+     * Loss is negative (e.g. -0.5 kg/wk).
+     */
+    fun computeSignedWeeklyRate(
+        currentWeightKg: Double,
+        anchorWeightKg: Double,
+        elapsedDays: Long
+    ): Double? {
+        if (elapsedDays <= 0) return null
+        return ((currentWeightKg - anchorWeightKg) / elapsedDays.toDouble()) * 7.0
+    }
+
+    /**
+     * Computes positive deficit velocity: (W_anchor - W_current) / elapsedDays * 7.
+     * Loss is positive (e.g. 0.5 kg/wk).
+     */
+    fun computeDeficitVelocity(
+        currentWeightKg: Double,
+        anchorWeightKg: Double,
+        elapsedDays: Long
+    ): Double? {
+        if (elapsedDays <= 0) return null
+        return ((anchorWeightKg - currentWeightKg) / elapsedDays.toDouble()) * 7.0
+    }
+
+    /**
+     * Formats a weekly pace rate for display in the given unit (kg or lbs).
+     * Returns "Not enough data yet" when rate is null.
+     */
+    fun formatPaceRate(rateKgPerWeek: Double?, unit: String = "kg"): String {
+        if (rateKgPerWeek == null) return "Not enough data yet"
+        val rateInUnit = if (unit.equals("lbs", ignoreCase = true)) {
+            WeightAnalytics.kgToLbs(rateKgPerWeek)
+        } else {
+            rateKgPerWeek
+        }
+        val unitLabel = if (unit.equals("lbs", ignoreCase = true)) "lbs/wk" else "kg/wk"
+        return when {
+            rateInUnit < -0.05 -> String.format(Locale.US, "%.1f %s", rateInUnit, unitLabel)
+            rateInUnit > 0.05 -> String.format(Locale.US, "+%.1f %s", rateInUnit, unitLabel)
+            else -> String.format(Locale.US, "0.0 %s", unitLabel)
+        }
+    }
+
+    /**
+     * Formats a [PaceRateResult] for UI chip display.
+     */
+    fun formatPaceChip(rateResult: PaceRateResult?, unit: String = "kg"): String {
+        return rateResult?.formatDisplay(unit) ?: "Not enough data yet"
+    }
+
+    /**
+     * Resolves the closest anchor entry on or before [targetCutoffDate] that is on or after [cycleStartDate].
+     * Excludes soft-deleted records.
+     */
+    fun resolveAnchorEntry(
+        entries: List<WeightEntry>,
+        targetCutoffDate: LocalDate,
+        cycleStartDate: LocalDate
+    ): WeightEntry? {
+        return entries
+            .filter { it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(targetCutoffDate) }
+            .maxByOrNull { it.date }
+    }
+
+    /**
+     * Overload of [resolveAnchorEntry] computing cutoff as [referenceDate] minus [windowDays].
+     */
+    fun resolveAnchorEntry(
+        entries: List<WeightEntry>,
+        referenceDate: LocalDate,
+        windowDays: Int,
+        cycleStartDate: LocalDate
+    ): WeightEntry? = resolveAnchorEntry(
+        entries = entries,
+        targetCutoffDate = referenceDate.minusDays(windowDays.toLong()),
+        cycleStartDate = cycleStartDate
+    )
+
+    /**
+     * Computes the signed pace rate for a given rolling window (e.g. 7 or 14 days).
+     *
+     * Invariants:
+     * - Minimum sampling guard: requires >= 2 active entries spanning >= 7 calendar days.
+     * - Anchor resolution: finds the most recent entry on or before t - windowDays (within cycle).
+     * - Normalization: normalized by actual elapsed days between anchor and current weigh-in.
+     * - Returns null if sampling guard fails, anchor cannot be resolved, or elapsed days <= 0.
+     */
+    fun computePaceRate(
+        entries: List<WeightEntry>,
+        windowDays: Int,
+        cycleStartDate: LocalDate,
+        today: LocalDate = LocalDate.now()
+    ): PaceRateResult? {
+        val activeEntries = entries
+            .filter { it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(today) }
+            .sortedBy { it.date }
+
+        if (activeEntries.size < 2) return null
+        val oldest = activeEntries.first()
+        val newest = activeEntries.last()
+
+        val spanDays = ChronoUnit.DAYS.between(oldest.date, newest.date)
+        if (spanDays < 7) return null
+
+        val cutoffDate = newest.date.minusDays(windowDays.toLong())
+        val anchor = resolveAnchorEntry(activeEntries, cutoffDate, cycleStartDate) ?: return null
+
+        val elapsedDays = ChronoUnit.DAYS.between(anchor.date, newest.date)
+        if (elapsedDays <= 0) return null
+
+        val rate = ((newest.weightKg - anchor.weightKg) / elapsedDays.toDouble()) * 7.0
+        val trend = getPaceTrend(rate)
+
+        return PaceRateResult(
+            rateKgPerWeek = rate,
+            anchorWeightKg = anchor.weightKg,
+            anchorDate = anchor.date,
+            currentWeightKg = newest.weightKg,
+            currentDate = newest.date,
+            elapsedDays = elapsedDays,
+            trend = trend
+        )
+    }
+
+    /**
+     * Computes 7-day rolling pace rate.
+     */
+    fun compute7DayPace(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        today: LocalDate = LocalDate.now()
+    ): PaceRateResult? = computePaceRate(entries, windowDays = 7, cycleStartDate = cycleStartDate, today = today)
+
+    fun compute7DayPace(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        today: LocalDate = LocalDate.now()
+    ): PaceRateResult? = compute7DayPace(entries, cycle.startDate, today)
+
+    /**
+     * Computes 14-day rolling pace rate.
+     */
+    fun compute14DayPace(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        today: LocalDate = LocalDate.now()
+    ): PaceRateResult? = computePaceRate(entries, windowDays = 14, cycleStartDate = cycleStartDate, today = today)
+
+    fun compute14DayPace(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        today: LocalDate = LocalDate.now()
+    ): PaceRateResult? = compute14DayPace(entries, cycle.startDate, today)
+
+    /**
+     * Computes the goal pace forecast evaluating the strict precedence hierarchy:
+     * 1. [PaceForecast.GoalReached]: W_current <= W_target
+     * 2. [PaceForecast.CycleEnded]: today > cycleEndDate (and W_current > W_target or target is null)
+     * 3. [PaceForecast.NotEnoughData]: < 2 entries or span < 7 days
+     * 4. [PaceForecast.Stalled]: Active deficit velocity <= 0.0 (rounded to 0.1)
+     * 5. [PaceForecast.Projected]: Positive deficit velocity with projected arrival date (52w cap)
+     *
+     * Unset Target Behavior:
+     * When targetWeightKg is null or non-positive, returns null (or CycleEnded if cycle has ended).
+     */
+    fun computePaceForecast(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        cycleEndDate: LocalDate? = null,
+        targetWeightKg: Double?,
+        startingWeightKg: Double? = null,
+        today: LocalDate = LocalDate.now()
+    ): PaceForecast? {
+        val activeEntries = entries
+            .filter { it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(today) }
+            .sortedBy { it.date }
+
+        val isCycleEnded = cycleEndDate != null && today.isAfter(cycleEndDate)
+
+        if (activeEntries.isEmpty()) {
+            return if (isCycleEnded) PaceForecast.CycleEnded else PaceForecast.NotEnoughData
+        }
+
+        val newest = activeEntries.last()
+        val currentWeight = newest.weightKg
+
+        // 1. GoalReached
+        if (targetWeightKg != null && targetWeightKg > 0.0 && currentWeight <= targetWeightKg) {
+            return PaceForecast.GoalReached
+        }
+
+        // 2. CycleEnded
+        if (isCycleEnded) {
+            return PaceForecast.CycleEnded
+        }
+
+        // Unset or non-positive target weight -> skip forecast calculation
+        if (targetWeightKg == null || targetWeightKg <= 0.0) {
+            return null
+        }
+
+        // Guard: target weight cannot be >= start weight in Fat Loss mode
+        val effectiveStartWeight = startingWeightKg ?: activeEntries.first().weightKg
+        if (targetWeightKg >= effectiveStartWeight) {
+            return null
+        }
+
+        // 3. NotEnoughData
+        if (activeEntries.size < 2) {
+            return PaceForecast.NotEnoughData
+        }
+        val oldest = activeEntries.first()
+        val spanDays = ChronoUnit.DAYS.between(oldest.date, newest.date)
+        if (spanDays < 7) {
+            return PaceForecast.NotEnoughData
+        }
+
+        // Velocity resolution: primary 14d anchor, fallback to cycle velocity
+        val anchor14 = resolveAnchorEntry(
+            entries = activeEntries,
+            targetCutoffDate = newest.date.minusDays(14),
+            cycleStartDate = cycleStartDate
+        )
+
+        val vActive = if (anchor14 != null) {
+            val elapsed = ChronoUnit.DAYS.between(anchor14.date, newest.date)
+            if (elapsed > 0) {
+                ((anchor14.weightKg - currentWeight) / elapsed.toDouble()) * 7.0
+            } else {
+                0.0
+            }
+        } else {
+            // Cold-start fallback to cycle pace
+            val elapsed = ChronoUnit.DAYS.between(oldest.date, newest.date)
+            if (elapsed > 0) {
+                ((oldest.weightKg - currentWeight) / elapsed.toDouble()) * 7.0
+            } else {
+                0.0
+            }
+        }
+
+        // 4. Stalled
+        val roundedV = kotlin.math.round(vActive * 10.0) / 10.0
+        if (roundedV <= 0.0) {
+            return PaceForecast.Stalled
+        }
+
+        // 5. Projected
+        val remainingKg = currentWeight - targetWeightKg
+        val rawWeeks = remainingKg / vActive
+
+        return if (rawWeeks > 52.0) {
+            PaceForecast.Projected(
+                weeks = 52.0,
+                targetDate = null,
+                rawWeeks = rawWeeks
+            )
+        } else {
+            val daysRemaining = kotlin.math.round(rawWeeks * 7.0).toLong()
+            val targetDate = today.plusDays(daysRemaining)
+            PaceForecast.Projected(
+                weeks = rawWeeks,
+                targetDate = targetDate,
+                rawWeeks = rawWeeks
+            )
+        }
+    }
+
+    /**
+     * Overload of [computePaceForecast] taking a [Cycle] entity.
+     */
+    fun computePaceForecast(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        today: LocalDate = LocalDate.now(),
+        targetWeightKg: Double? = cycle.targetWeightKg
+    ): PaceForecast? = computePaceForecast(
+        entries = entries,
+        cycleStartDate = cycle.startDate,
+        cycleEndDate = cycle.endDate,
+        targetWeightKg = targetWeightKg,
+        startingWeightKg = cycle.startingWeightKg,
+        today = today
+    )
+
+    /**
+     * Direct mathematical calculation of [PaceForecast] given current weight, target weight, and velocity.
+     */
+    fun computePaceForecast(
+        currentWeightKg: Double,
+        targetWeightKg: Double?,
+        velocityKgPerWeek: Double,
+        cycleEndDate: LocalDate? = null,
+        today: LocalDate = LocalDate.now()
+    ): PaceForecast? {
+        val isCycleEnded = cycleEndDate != null && today.isAfter(cycleEndDate)
+
+        if (targetWeightKg != null && targetWeightKg > 0.0 && currentWeightKg <= targetWeightKg) {
+            return PaceForecast.GoalReached
+        }
+
+        if (isCycleEnded) {
+            return PaceForecast.CycleEnded
+        }
+
+        if (targetWeightKg == null || targetWeightKg <= 0.0) {
+            return null
+        }
+
+        val roundedV = kotlin.math.round(velocityKgPerWeek * 10.0) / 10.0
+        if (roundedV <= 0.0) {
+            return PaceForecast.Stalled
+        }
+
+        val remainingKg = currentWeightKg - targetWeightKg
+        val rawWeeks = remainingKg / velocityKgPerWeek
+
+        return if (rawWeeks > 52.0) {
+            PaceForecast.Projected(
+                weeks = 52.0,
+                targetDate = null,
+                rawWeeks = rawWeeks
+            )
+        } else {
+            val daysRemaining = kotlin.math.round(rawWeeks * 7.0).toLong()
+            val targetDate = today.plusDays(daysRemaining)
+            PaceForecast.Projected(
+                weeks = rawWeeks,
+                targetDate = targetDate,
+                rawWeeks = rawWeeks
+            )
+        }
+    }
 }
 
