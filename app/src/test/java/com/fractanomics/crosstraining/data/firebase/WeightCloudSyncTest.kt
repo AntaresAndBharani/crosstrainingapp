@@ -3,6 +3,8 @@ package com.fractanomics.crosstraining.data.firebase
 import com.fractanomics.crosstraining.data.FakeSampleAppDatabase
 import com.fractanomics.crosstraining.data.FakeTransactionRunner
 import com.fractanomics.crosstraining.data.Repository
+import com.fractanomics.crosstraining.data.model.Cycle
+import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.WeightEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -326,4 +328,52 @@ class WeightCloudSyncTest {
          assertNotNull("Payload must be written", uploadedList)
          assertEquals(2, uploadedList!!.size)
      }
+
+    @Test
+    fun downloadUserData_winningWeightEntries_triggersActiveCycleBaselineRefresh() = runTest {
+        val startOct10 = LocalDate.of(2026, 10, 10)
+        val oct9 = LocalDate.of(2026, 10, 9)
+
+        // Given active Fat Loss cycle starting Oct 10 with isBaselineAutoDerived = true and startingWeightKg = null
+        val activeCycle = Cycle(
+            id = 1L,
+            name = "Cloud Cut",
+            startDate = startOct10,
+            goal = "Cut",
+            isActive = true,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = null,
+            targetWeightKg = 75.0,
+            isBaselineAutoDerived = true
+        )
+        db.cycleDao().insert(activeCycle)
+
+        // Remote cloud has a new weight entry on Oct 9 (80.2 kg)
+        val remoteWeightList: List<Map<String, Any>> = listOf(
+            mapOf(
+                "date" to oct9.toEpochDay(),
+                "weightKg" to 80.2,
+                "notes" to "Cloud sync weigh-in",
+                "updatedAtMillis" to 5000L
+            )
+        )
+
+        UserCloudSyncManager.documentReaderForTesting = { uid: String, collection: String ->
+            if (uid == "test-uid-505" && collection == "weight_entries") {
+                remoteWeightList
+            } else {
+                emptyList()
+            }
+        }
+
+        // When downloading cloud data
+        val result = UserCloudSyncManager.downloadUserData(repo)
+        assertTrue("Download must succeed", result.isSuccess)
+
+        // Then the active cycle's starting weight baseline refreshes to 80.2 kg
+        val updatedCycle = db.cycleDao().byId(1L)
+        assertNotNull(updatedCycle)
+        assertEquals(80.2, updatedCycle!!.startingWeightKg!!, 0.001)
+        assertTrue("isBaselineAutoDerived must remain true", updatedCycle.isBaselineAutoDerived)
+    }
 }

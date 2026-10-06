@@ -361,26 +361,58 @@ class Repository(
         weightKg: Double,
         date: LocalDate = LocalDate.now(),
         notes: String = ""
-    ): Long = weightDao.upsert(
-        com.fractanomics.crosstraining.data.model.WeightEntry(
-            date = date,
-            weightKg = weightKg,
-            notes = notes,
-            updatedAtMillis = System.currentTimeMillis(),
-            deletedAtMillis = null
+    ): Long {
+        val id = weightDao.upsert(
+            com.fractanomics.crosstraining.data.model.WeightEntry(
+                date = date,
+                weightKg = weightKg,
+                notes = notes,
+                updatedAtMillis = System.currentTimeMillis(),
+                deletedAtMillis = null
+            )
         )
-    )
+        refreshActiveCycleBaseline()
+        return id
+    }
 
     suspend fun deleteWeightEntry(
         date: LocalDate,
         deletedAt: Long = System.currentTimeMillis()
-    ) = weightDao.markDeleted(date, deletedAt)
+    ) {
+        weightDao.markDeleted(date, deletedAt)
+        refreshActiveCycleBaseline()
+    }
 
     suspend fun purgeOldWeightTombstones(cutoffMillis: Long) =
         weightDao.purgeOldTombstones(cutoffMillis)
 
-    suspend fun importWeightEntries(entries: List<com.fractanomics.crosstraining.data.model.WeightEntry>) =
+    suspend fun importWeightEntries(entries: List<com.fractanomics.crosstraining.data.model.WeightEntry>) {
         weightDao.upsertAll(entries)
+        refreshActiveCycleBaseline()
+    }
+
+    /**
+     * Refreshes the active cycle's starting weight baseline if [isBaselineAutoDerived] is true.
+     * Searches for the latest active weight entry in the 7-day lookback window [startDate - 7d, startDate].
+     * If no active entries exist in the window (e.g. all were soft-deleted), clears [startingWeightKg]
+     * to null while preserving [isBaselineAutoDerived] = true.
+     * Inactive cycles and cycles with manual baselines ([isBaselineAutoDerived] = false) are never modified.
+     */
+    suspend fun refreshActiveCycleBaseline(): Cycle? {
+        val activeCycle = cycleDao.getAllOnce().find { it.isActive } ?: return null
+        if (!activeCycle.isBaselineAutoDerived) return activeCycle
+
+        val minDate = activeCycle.startDate.minusDays(7)
+        val latestEntry = weightDao.getLatestOnOrBefore(activeCycle.startDate, minDate)
+        val newStartingWeight = latestEntry?.weightKg
+
+        if (activeCycle.startingWeightKg != newStartingWeight) {
+            val updated = activeCycle.copy(startingWeightKg = newStartingWeight)
+            cycleDao.update(updated)
+            return updated
+        }
+        return activeCycle
+    }
 
     // --- Daily Logs -----------------------------------------------------------
     val dailyLogs: Flow<List<com.fractanomics.crosstraining.data.model.DailyLog>> = dailyLogDao.observeAllActive()
