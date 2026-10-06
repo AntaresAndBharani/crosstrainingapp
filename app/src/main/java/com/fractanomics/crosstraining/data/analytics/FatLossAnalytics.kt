@@ -3,11 +3,14 @@ package com.fractanomics.crosstraining.data.analytics
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.BlockWithSets
+import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.DailyLog
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
@@ -65,6 +68,43 @@ data class FastingAdherenceResult(
         get() = if (percentage != null) {
             if (percentage % 1.0 == 0.0) "${percentage.toInt()}%"
             else String.format(Locale.US, "%.1f%%", percentage)
+        } else {
+            "n/a"
+        }
+}
+
+/**
+ * Result representation for cycle weight progress evaluation in Fat Loss mode.
+ *
+ * @property startingWeightKg Starting baseline weight of the cycle, or null if unset.
+ * @property targetWeightKg Target goal weight of the cycle, or null if unset.
+ * @property currentWeightKg Current or latest weigh-in log, or null if unset.
+ * @property deltaKg Weight lost so far (startingWeightKg - currentWeightKg), or null if undefined.
+ * @property percentToTarget Completion percentage in [0.0, 100.0] (or beyond if exceeded),
+ *                           or null when target >= start, non-positive, or any required weight is null ("n/a").
+ */
+data class WeightProgressResult(
+    val startingWeightKg: Double?,
+    val targetWeightKg: Double?,
+    val currentWeightKg: Double?,
+    val deltaKg: Double?,
+    val percentToTarget: Double?
+) {
+    val displayText: String
+        get() = percentToTargetDisplayText
+
+    val percentToTargetDisplayText: String
+        get() = if (percentToTarget != null) {
+            val roundedInt = kotlin.math.round(percentToTarget).toInt()
+            if (kotlin.math.abs(percentToTarget - roundedInt) < 1e-6) "${roundedInt}%"
+            else String.format(Locale.US, "%.1f%%", percentToTarget)
+        } else {
+            "n/a"
+        }
+
+    val deltaDisplayText: String
+        get() = if (deltaKg != null) {
+            String.format(Locale.US, "%.1f kg", deltaKg)
         } else {
             "n/a"
         }
@@ -566,4 +606,211 @@ object FatLossAnalytics {
             else -> FastingDayStatus.UPCOMING
         }
     }
+
+    // =========================================================================
+    // 5. Rep-Max (RM) Percentage Scaling & Rounding Math
+    // =========================================================================
+
+    /**
+     * Rounds a numeric value to the nearest 0.5 increment using standard half-up rounding.
+     *
+     * Example:
+     * - 74.825 / 0.5 = 149.65 -> 150 -> 75.0
+     * - 76.65 / 0.5 = 153.3 -> 153 -> 76.5
+     * - 73.25 / 0.5 = 146.5 -> 147 -> 73.5
+     */
+    fun roundToNearestHalf(value: Double): Double {
+        val doubled = BigDecimal.valueOf(value).multiply(BigDecimal.valueOf(2))
+        val rounded = doubled.setScale(0, RoundingMode.HALF_UP)
+        return rounded.divide(BigDecimal.valueOf(2)).toDouble()
+    }
+
+    /**
+     * Alias for [roundToNearestHalf].
+     */
+    fun roundToHalfStep(value: Double): Double = roundToNearestHalf(value)
+
+    /**
+     * Scales a baseline Rep-Max weight by a percentage modifier [percentage] (+2.5, +5, +10, 0)
+     * using the pure formula: round(startWeight * (1 + p / 100)) with half-up rounding to the
+     * nearest 0.5 step increment.
+     *
+     * Invariants:
+     * - Scaling is non-compounding and always calculated against [startWeight].
+     * - Percentage of 0.0 returns [startWeight] rounded to nearest 0.5 step.
+     * - Non-positive [startWeight] (<= 0.0) returns 0.0.
+     *
+     * @param startWeight The baseline RM load in the exercise's native unit (kg/lbs).
+     * @param percentage The percentage modifier (e.g., 2.5 for +2.5%, 5.0 for +5%, 0.0 for 0%).
+     * @return Scaled target load rounded half-up to nearest 0.5 increment.
+     */
+    fun scaleRepMax(startWeight: Double, percentage: Double): Double {
+        if (startWeight <= 0.0) return 0.0
+        val raw = startWeight * (1.0 + (percentage / 100.0))
+        return roundToNearestHalf(raw)
+    }
+
+    fun scaleRepMax(startWeight: Double?, percentage: Double): Double? {
+        if (startWeight == null || startWeight <= 0.0) return null
+        return scaleRepMax(startWeight, percentage)
+    }
+
+    fun scaleRepMaxWeight(startWeight: Double, percentage: Double): Double =
+        scaleRepMax(startWeight, percentage)
+
+    fun scaleRepMaxWeight(startWeight: Double?, percentage: Double): Double? =
+        scaleRepMax(startWeight, percentage)
+
+    fun scaleRm(startWeight: Double, percentage: Double): Double =
+        scaleRepMax(startWeight, percentage)
+
+    fun scaleRm(startWeight: Double?, percentage: Double): Double? =
+        scaleRepMax(startWeight, percentage)
+
+    fun scaleRmWeight(startWeight: Double, percentage: Double): Double =
+        scaleRepMax(startWeight, percentage)
+
+    fun scaleRmWeight(startWeight: Double?, percentage: Double): Double? =
+        scaleRepMax(startWeight, percentage)
+
+    // =========================================================================
+    // 6. Body Weight Delta & Percent-to-Target Analytics
+    // =========================================================================
+
+    /**
+     * Computes body weight delta: W_start - W_current.
+     *
+     * Invariants:
+     * - Returns null ("n/a") if either [startingWeightKg] or [currentWeightKg] is null.
+     * - Returns null if either weight is non-positive (<= 0.0).
+     *
+     * @param startingWeightKg The baseline starting body weight in kg.
+     * @param currentWeightKg The athlete's current / latest weigh-in log in kg.
+     * @return Body weight delta in kg (positive indicates weight lost), or null when undefined.
+     */
+    fun computeWeightDelta(
+        startingWeightKg: Double?,
+        currentWeightKg: Double?
+    ): Double? {
+        if (startingWeightKg == null || currentWeightKg == null) return null
+        if (startingWeightKg <= 0.0 || currentWeightKg <= 0.0) return null
+        return startingWeightKg - currentWeightKg
+    }
+
+    /**
+     * Computes completion percentage toward target weight in Fat Loss mode:
+     *   (W_start - W_current) / (W_start - W_target) * 100.0
+     *
+     * Invariants:
+     * - Guard: Returns null ("n/a") when [targetWeightKg] >= [startingWeightKg].
+     * - Guard: Returns null ("n/a") when any of [startingWeightKg], [targetWeightKg], or [currentWeightKg] is null.
+     * - Guard: Returns null ("n/a") when any weight is non-positive (<= 0.0).
+     * - Formula calculates completion percentage on a 0.0 to 100.0 scale (or beyond if exceeded).
+     *
+     * @param startingWeightKg Starting baseline weight in kg.
+     * @param targetWeightKg Target goal weight in kg (must be strictly < startingWeightKg).
+     * @param currentWeightKg Current weight in kg.
+     * @return Completion percentage in [0.0, 100.0] (or > 100.0 if surpassed), or null if guarded / undefined.
+     */
+    fun computePercentToTarget(
+        startingWeightKg: Double?,
+        targetWeightKg: Double?,
+        currentWeightKg: Double? = null
+    ): Double? {
+        if (startingWeightKg == null || targetWeightKg == null || currentWeightKg == null) return null
+        if (startingWeightKg <= 0.0 || targetWeightKg <= 0.0 || currentWeightKg <= 0.0) return null
+        if (targetWeightKg >= startingWeightKg) return null
+
+        val totalLossRequired = startingWeightKg - targetWeightKg
+        val currentLoss = startingWeightKg - currentWeightKg
+        return (currentLoss / totalLossRequired) * 100.0
+    }
+
+    /**
+     * Computes completion ratio toward target weight (fraction in 0.0 to 1.0, not multiplied by 100.0).
+     * Returns null ("n/a") under the exact same guard conditions as [computePercentToTarget].
+     */
+    fun computePercentToTargetRatio(
+        startingWeightKg: Double?,
+        targetWeightKg: Double?,
+        currentWeightKg: Double? = null
+    ): Double? = computePercentToTarget(startingWeightKg, targetWeightKg, currentWeightKg)?.let { it / 100.0 }
+
+    /**
+     * Computes percent-to-target for an active [Cycle] entity.
+     */
+    fun computePercentToTarget(
+        cycle: Cycle,
+        currentWeightKg: Double?
+    ): Double? = computePercentToTarget(
+        startingWeightKg = cycle.startingWeightKg,
+        targetWeightKg = cycle.targetWeightKg,
+        currentWeightKg = currentWeightKg
+    )
+
+    /**
+     * Returns formatted display text for percent-to-target (e.g., "50%", "36.5%", or "n/a").
+     */
+    fun computePercentToTargetDisplayText(
+        startingWeightKg: Double?,
+        targetWeightKg: Double?,
+        currentWeightKg: Double? = null
+    ): String {
+        val pct = computePercentToTarget(startingWeightKg, targetWeightKg, currentWeightKg)
+        return if (pct != null) {
+            val roundedInt = kotlin.math.round(pct).toInt()
+            if (kotlin.math.abs(pct - roundedInt) < 1e-6) "${roundedInt}%"
+            else String.format(Locale.US, "%.1f%%", pct)
+        } else {
+            "n/a"
+        }
+    }
+
+    /**
+     * Evaluates comprehensive weight progress for a cycle, returning [WeightProgressResult]
+     * with delta, percentToTarget, and user-facing display strings.
+     *
+     * Invariants:
+     * - Returns null percentToTarget / displayText = "n/a" when targetWeightKg >= startingWeightKg
+     *   or when either starting/target/current weight is null or non-positive.
+     */
+    fun evaluateProgress(
+        startingWeightKg: Double?,
+        targetWeightKg: Double?,
+        currentWeightKg: Double? = null
+    ): WeightProgressResult {
+        val delta = computeWeightDelta(startingWeightKg, currentWeightKg)
+        val pct = computePercentToTarget(startingWeightKg, targetWeightKg, currentWeightKg)
+        return WeightProgressResult(
+            startingWeightKg = startingWeightKg,
+            targetWeightKg = targetWeightKg,
+            currentWeightKg = currentWeightKg,
+            deltaKg = delta,
+            percentToTarget = pct
+        )
+    }
+
+    /**
+     * Evaluates weight progress for a given [Cycle] and current weigh-in.
+     */
+    fun evaluateProgress(
+        cycle: Cycle,
+        currentWeightKg: Double?
+    ): WeightProgressResult = evaluateProgress(
+        startingWeightKg = cycle.startingWeightKg,
+        targetWeightKg = cycle.targetWeightKg,
+        currentWeightKg = currentWeightKg
+    )
+
+    fun computeWeightProgress(
+        startingWeightKg: Double?,
+        targetWeightKg: Double?,
+        currentWeightKg: Double? = null
+    ): WeightProgressResult = evaluateProgress(startingWeightKg, targetWeightKg, currentWeightKg)
+
+    fun computeWeightProgress(
+        cycle: Cycle,
+        currentWeightKg: Double?
+    ): WeightProgressResult = evaluateProgress(cycle, currentWeightKg)
 }
+
