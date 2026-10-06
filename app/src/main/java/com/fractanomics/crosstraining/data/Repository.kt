@@ -351,6 +351,9 @@ class Repository(
     suspend fun getAllWeightEntriesIncludingTombstones(): List<com.fractanomics.crosstraining.data.model.WeightEntry> =
         weightDao.getAllEntriesIncludingTombstones()
 
+    suspend fun getLatestWeightOnOrBefore(date: LocalDate, minDate: LocalDate): com.fractanomics.crosstraining.data.model.WeightEntry? =
+        weightDao.getLatestOnOrBefore(date, minDate)
+
     suspend fun saveWeightEntry(
         weightKg: Double,
         date: LocalDate = LocalDate.now(),

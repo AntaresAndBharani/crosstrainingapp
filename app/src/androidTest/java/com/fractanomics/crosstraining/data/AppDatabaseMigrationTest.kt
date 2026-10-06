@@ -270,4 +270,69 @@ class AppDatabaseMigrationTest {
         assertTrue("deletedAtMillis should be null", logCursor.isNull(9))
         logCursor.close()
     }
+
+    @Test
+    @Throws(IOException::class)
+    fun migrate9To10_addsCycleWeightFieldsAndValidatesSchema() {
+        // Given an existing Room database at version 9 with existing cycles
+        val dbV9 = helper.createDatabase(TEST_DB, 9).apply {
+            val cycleValues = ContentValues().apply {
+                put("id", 1L)
+                put("name", "Strength Cycle")
+                put("startDate", 19000L)
+                putNull("endDate")
+                put("goal", "Base")
+                put("isActive", 1)
+                put("type", "STRENGTH_WEIGHTLIFTING")
+                put("fastDaysOfWeek", 0)
+                put("restDaysOfWeek", 0)
+            }
+            insert("cycles", SQLiteDatabase.CONFLICT_REPLACE, cycleValues)
+            close()
+        }
+
+        // When MIGRATION_9_10 executes during upgrade to version 10
+        val dbV10 = helper.runMigrationsAndValidate(
+            TEST_DB,
+            10,
+            true,
+            AppDatabase.MIGRATION_9_10
+        )
+
+        // Then verify pre-existing cycle survives migration and new fields have correct defaults
+        val cursor = dbV10.query("SELECT id, name, startingWeightKg, targetWeightKg, isBaselineAutoDerived FROM cycles WHERE id = 1")
+        assertTrue("Cycle data should survive migration", cursor.moveToFirst())
+        assertEquals(1L, cursor.getLong(0))
+        assertEquals("Strength Cycle", cursor.getString(1))
+        assertTrue("startingWeightKg should default to null", cursor.isNull(2))
+        assertTrue("targetWeightKg should default to null", cursor.isNull(3))
+        assertEquals(0L, cursor.getLong(4)) // isBaselineAutoDerived == false (0)
+        cursor.close()
+
+        // And verify updating and inserting records with new weight fields
+        val newCycleValues = ContentValues().apply {
+            put("id", 2L)
+            put("name", "Fat Loss Cycle")
+            put("startDate", 19500L)
+            putNull("endDate")
+            put("goal", "Cut")
+            put("isActive", 1)
+            put("type", "FAT_LOSS_BODYBUILDING")
+            put("fastDaysOfWeek", 5)
+            put("restDaysOfWeek", 2)
+            put("startingWeightKg", 85.5)
+            put("targetWeightKg", 78.0)
+            put("isBaselineAutoDerived", 1)
+        }
+        dbV10.insert("cycles", SQLiteDatabase.CONFLICT_REPLACE, newCycleValues)
+
+        val newCursor = dbV10.query("SELECT id, name, startingWeightKg, targetWeightKg, isBaselineAutoDerived FROM cycles WHERE id = 2")
+        assertTrue("New cycle data should be found", newCursor.moveToFirst())
+        assertEquals(2L, newCursor.getLong(0))
+        assertEquals("Fat Loss Cycle", newCursor.getString(1))
+        assertEquals(85.5, newCursor.getDouble(2), 0.001)
+        assertEquals(78.0, newCursor.getDouble(3), 0.001)
+        assertEquals(1L, newCursor.getLong(4))
+        newCursor.close()
+    }
 }

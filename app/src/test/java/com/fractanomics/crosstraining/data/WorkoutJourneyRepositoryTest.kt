@@ -685,6 +685,7 @@ private class FakeTestAppDatabase : AppDatabase() {
         override suspend fun getAllActiveEntriesOnce(): List<WeightEntry> = emptyList()
         override suspend fun getAllEntriesIncludingTombstones(): List<WeightEntry> = emptyList()
         override suspend fun getEntryByDate(date: LocalDate): WeightEntry? = null
+        override suspend fun getLatestOnOrBefore(date: LocalDate, minDate: LocalDate): WeightEntry? = null
         override suspend fun markDeleted(date: LocalDate, deletedAt: Long) {}
         override suspend fun purgeOldTombstones(cutoffMillis: Long) {}
         override suspend fun deleteAll() {}
