@@ -1182,32 +1182,46 @@ object FatLossAnalytics {
             return PaceForecast.NotEnoughData
         }
 
-        // Velocity resolution: primary 14d anchor, fallback to cycle velocity
+        // Tier 1: Primary 14-day rolling anchor
         val anchor14 = resolveAnchorEntry(
             entries = activeEntries,
             targetCutoffDate = newest.date.minusDays(14),
             cycleStartDate = cycleStartDate
         )
 
-        val vActive = if (anchor14 != null) {
-            val elapsed = ChronoUnit.DAYS.between(anchor14.date, newest.date)
-            if (elapsed > 0) {
-                ((anchor14.weightKg - currentWeight) / elapsed.toDouble()) * 7.0
-            } else {
-                0.0
+        // Tier 2: Secondary 7-day rolling anchor (used during cycle days 7–13)
+        val anchor7 = if (anchor14 == null) {
+            resolveAnchorEntry(
+                entries = activeEntries,
+                targetCutoffDate = newest.date.minusDays(7),
+                cycleStartDate = cycleStartDate
+            )
+        } else null
+
+        // Tier 3: Tertiary cycle-wide anchor (defensive fallback)
+        val (anchor, elapsed) = when {
+            anchor14 != null -> {
+                val d = ChronoUnit.DAYS.between(anchor14.date, newest.date)
+                if (d > 0) anchor14 to d else null to 0L
             }
-        } else {
-            // Cold-start fallback to cycle pace
-            val elapsed = ChronoUnit.DAYS.between(oldest.date, newest.date)
-            if (elapsed > 0) {
-                ((oldest.weightKg - currentWeight) / elapsed.toDouble()) * 7.0
-            } else {
-                0.0
+            anchor7 != null -> {
+                val d = ChronoUnit.DAYS.between(anchor7.date, newest.date)
+                if (d > 0) anchor7 to d else null to 0L
+            }
+            else -> {
+                val d = ChronoUnit.DAYS.between(oldest.date, newest.date)
+                if (d > 0) oldest to d else null to 0L
             }
         }
 
+        val vActive = if (anchor != null && elapsed > 0) {
+            ((anchor.weightKg - currentWeight) / elapsed.toDouble()) * 7.0
+        } else {
+            0.0
+        }
+
         // 4. Stalled
-        val roundedV = kotlin.math.round(vActive * 10.0) / 10.0
+        val roundedV = kotlin.math.round((vActive + 1e-5) * 10.0) / 10.0
         if (roundedV <= 0.0) {
             return PaceForecast.Stalled
         }
