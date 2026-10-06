@@ -342,6 +342,9 @@ class Repository(
         )
     )
 
+    suspend fun getBestRepMaxWeight(exerciseId: Long, reps: Int): Double? =
+        repMaxDao.bestWeight(exerciseId, reps)
+
     // --- Weight Entries ------------------------------------------------------
     val weightEntries: Flow<List<com.fractanomics.crosstraining.data.model.WeightEntry>> = weightDao.getAllActiveEntries()
 

@@ -389,6 +389,28 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
 
     fun deleteRepMax(repMax: RepMax) = viewModelScope.launch { repo.deleteRepMax(repMax) }
 
+    suspend fun getBestRepMaxWeight(exerciseId: Long, reps: Int): Double? =
+        repo.getBestRepMaxWeight(exerciseId, reps)
+
+    suspend fun getLatestWeightOnOrBefore(date: LocalDate, minDate: LocalDate): com.fractanomics.crosstraining.data.model.WeightEntry? =
+        repo.getLatestWeightOnOrBefore(date, minDate)
+
+    suspend fun resolveHistoricalBaselineWeight(
+        startDate: LocalDate,
+        referenceDate: LocalDate = LocalDate.now()
+    ): Pair<Double?, Boolean> {
+        if (startDate.isAfter(referenceDate)) {
+            return Pair(null, false)
+        }
+        val minDate = startDate.minusDays(7)
+        val entry = repo.getLatestWeightOnOrBefore(startDate, minDate)
+        return if (entry != null) {
+            Pair(entry.weightKg, true)
+        } else {
+            Pair(null, false)
+        }
+    }
+
     // --- Sessions -------------------------------------------------------------
     fun deleteSession(session: Session) = viewModelScope.launch { repo.deleteSession(session) }
 
