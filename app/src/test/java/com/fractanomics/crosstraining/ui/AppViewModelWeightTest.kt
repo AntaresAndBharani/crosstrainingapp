@@ -7,6 +7,10 @@ import com.fractanomics.crosstraining.data.FakeTransactionRunner
 import com.fractanomics.crosstraining.data.Repository
 import com.fractanomics.crosstraining.data.analytics.Timeframe
 import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
+import com.fractanomics.crosstraining.data.model.Cycle
+import com.fractanomics.crosstraining.data.model.CycleGoal
+import com.fractanomics.crosstraining.data.model.CycleType
+import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.WeightEntry
 import com.fractanomics.crosstraining.ui.screens.ProgressMode
 import kotlinx.coroutines.Dispatchers
@@ -230,5 +234,142 @@ class AppViewModelWeightTest {
 
         viewModel.setProgressMode(ProgressMode.BY_EXERCISE)
         assertEquals(ProgressMode.BY_EXERCISE, viewModel.progressMode.value)
+    }
+
+    // =========================================================================
+    // Scenario 5: Historical Baseline Resolution Within 7-Day Window
+    // =========================================================================
+
+    @Test
+    fun scenario5_historicalBaselineResolution_within7DayWindow() = runTest {
+        val today = LocalDate.of(2026, 10, 10)
+
+        // Case 1: Entry exists on exact cycle start date (October 10, 80.0 kg)
+        viewModel.saveWeightEntry(weightKg = 80.0, date = today)
+        val (resExact, isAutoExact) = viewModel.resolveHistoricalBaselineWeight(
+            startDate = today,
+            referenceDate = today
+        )
+        assertEquals(80.0, resExact!!, 0.001)
+        assertTrue("isBaselineAutoDerived must be true", isAutoExact)
+
+        // Case 2: No entry on start date, but entry exists on October 7 (3 days prior, within 7-day window, 81.0 kg)
+        realDb.weightDao().deleteAll()
+        val oct7 = LocalDate.of(2026, 10, 7)
+        viewModel.saveWeightEntry(weightKg = 81.0, date = oct7)
+        val (resOct7, isAutoOct7) = viewModel.resolveHistoricalBaselineWeight(
+            startDate = today,
+            referenceDate = today
+        )
+        assertEquals(81.0, resOct7!!, 0.001)
+        assertTrue("isBaselineAutoDerived must be true when within 7-day window", isAutoOct7)
+
+        // Case 3: Nearest entry is October 1 (9 days prior, outside 7-day window)
+        realDb.weightDao().deleteAll()
+        val oct1 = LocalDate.of(2026, 10, 1)
+        viewModel.saveWeightEntry(weightKg = 82.0, date = oct1)
+        val (resOct1, isAutoOct1) = viewModel.resolveHistoricalBaselineWeight(
+            startDate = today,
+            referenceDate = today
+        )
+        assertNull("Baseline must remain empty when outside 7-day window", resOct1)
+        assertFalse("isBaselineAutoDerived must be false when outside 7-day window", isAutoOct1)
+
+        // Case 4: Future cycle start date (e.g. October 15 with referenceDate = October 10)
+        val futureStart = LocalDate.of(2026, 10, 15)
+        val (resFuture, isAutoFuture) = viewModel.resolveHistoricalBaselineWeight(
+            startDate = futureStart,
+            referenceDate = today
+        )
+        assertNull("Future cycles must not auto-resolve baseline weight", resFuture)
+        assertFalse("isBaselineAutoDerived must be false for future cycles", isAutoFuture)
+    }
+
+    // =========================================================================
+    // Scenario 7: Tombstone Exclusion in Baseline Lookups
+    // =========================================================================
+
+    @Test
+    fun scenario7_tombstoneExclusionInBaselineLookups() = runTest {
+        val oct10 = LocalDate.of(2026, 10, 10)
+        val oct9 = LocalDate.of(2026, 10, 9)
+
+        // Given a weight entry on October 9 with deletedAtMillis != null (soft-deleted)
+        viewModel.saveWeightEntry(weightKg = 79.5, date = oct9)
+        viewModel.deleteWeightEntry(oct9)
+
+        // When resolving baseline weight for October 10
+        val (baseline, isAuto) = viewModel.resolveHistoricalBaselineWeight(
+            startDate = oct10,
+            referenceDate = oct10
+        )
+
+        // Then the soft-deleted entry is ignored and not retrieved
+        assertNull("Soft-deleted entry must be excluded from baseline resolution", baseline)
+        assertFalse("isBaselineAutoDerived must be false when only tombstones exist", isAuto)
+    }
+
+    // =========================================================================
+    // RM Query & Cycle Persistence Integration
+    // =========================================================================
+
+    @Test
+    fun repMaxBestWeight_queryIntegration() = runTest {
+        // Given rep max records for exercise 1: 1RM = 100kg, 5RM = 85kg
+        viewModel.recordRepMax(exerciseId = 1L, reps = 1, weight = 100.0, date = LocalDate.now(), cycleId = null)
+        viewModel.recordRepMax(exerciseId = 1L, reps = 5, weight = 85.0, date = LocalDate.now(), cycleId = null)
+
+        // When querying best weights
+        val best1Rm = viewModel.getBestRepMaxWeight(exerciseId = 1L, reps = 1)
+        val best5Rm = viewModel.getBestRepMaxWeight(exerciseId = 1L, reps = 5)
+        val best8Rm = viewModel.getBestRepMaxWeight(exerciseId = 1L, reps = 8)
+
+        // Then best weights are resolved correctly without interpolation
+        assertEquals(100.0, best1Rm!!, 0.001)
+        assertEquals(85.0, best5Rm!!, 0.001)
+        assertNull("Unrecorded 8RM must return null", best8Rm)
+    }
+
+    @Test
+    fun saveCycleWithGoals_persistsStartWeightAndFatLossAttributes() = runTest {
+        val collectCycles = launch(testDispatcher) { viewModel.cycles.collect {} }
+        val collectGoals = launch(testDispatcher) { viewModel.cycleGoals.collect {} }
+
+        val cycle = Cycle(
+            name = "Summer Shred",
+            startDate = LocalDate.of(2026, 10, 1),
+            endDate = LocalDate.of(2026, 11, 30),
+            goal = "Cut body fat",
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 85.0,
+            targetWeightKg = 78.0,
+            isBaselineAutoDerived = true
+        )
+        val goal = CycleGoal(
+            exerciseId = 1L,
+            targetReps = 3,
+            startWeight = 90.0,
+            targetWeight = 95.0
+        )
+
+        viewModel.saveCycleWithGoals(cycle, listOf(goal), makeActive = true)
+
+        val savedCycles = realDb.cycleDao().getAllOnce()
+        val savedCycle = savedCycles.firstOrNull { it.name == "Summer Shred" }
+        assertNotNull("Summer Shred cycle must be saved", savedCycle)
+        assertEquals("Summer Shred", savedCycle!!.name)
+        assertEquals(CycleType.FAT_LOSS_BODYBUILDING, savedCycle.type)
+        assertEquals(85.0, savedCycle.startingWeightKg!!, 0.001)
+        assertEquals(78.0, savedCycle.targetWeightKg!!, 0.001)
+        assertTrue(savedCycle.isBaselineAutoDerived)
+
+        val savedGoals = realDb.cycleGoalDao().snapshot()
+        val savedGoal = savedGoals.firstOrNull { it.cycleId == savedCycle.id }
+        assertNotNull("CycleGoal must be saved", savedGoal)
+        assertEquals(90.0, savedGoal!!.startWeight, 0.001)
+        assertEquals(95.0, savedGoal.targetWeight, 0.001)
+
+        collectCycles.cancel()
+        collectGoals.cancel()
     }
 }

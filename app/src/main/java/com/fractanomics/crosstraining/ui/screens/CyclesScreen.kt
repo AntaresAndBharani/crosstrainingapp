@@ -38,10 +38,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +55,7 @@ import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.Exercise
+import com.fractanomics.crosstraining.data.model.WeightEntry
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.components.DateField
 import com.fractanomics.crosstraining.ui.components.Dropdown
@@ -60,6 +63,7 @@ import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.ScreenList
 import com.fractanomics.crosstraining.ui.formatLong
 import com.fractanomics.crosstraining.ui.trimmed
+import kotlinx.coroutines.launch
 import java.time.DayOfWeek
 import java.time.LocalDate
 
@@ -159,7 +163,9 @@ fun CyclesScreen(
             onSave = { cycle, goals, makeActive ->
                 viewModel.saveCycleWithGoals(cycle, goals, makeActive)
                 showEditor = false
-            }
+            },
+            onFetchBestRm = { exerciseId, reps -> viewModel.getBestRepMaxWeight(exerciseId, reps) },
+            onFetchLatestWeight = { date, minDate -> viewModel.getLatestWeightOnOrBefore(date, minDate) }
         )
     }
 }
@@ -263,6 +269,22 @@ private fun CycleCard(
                         )
                     }
                 }
+
+                if (cycle.startingWeightKg != null || cycle.targetWeightKg != null) {
+                    val weightSummary = buildString {
+                        append("Weight: ")
+                        if (cycle.startingWeightKg != null) append("${cycle.startingWeightKg.trimmed()} kg") else append("—")
+                        append(" → ")
+                        if (cycle.targetWeightKg != null) append("${cycle.targetWeightKg.trimmed()} kg") else append("—")
+                        if (cycle.isBaselineAutoDerived) append(" (Auto)")
+                    }
+                    Text(
+                        weightSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                }
             }
 
             if (cycle.goal.isNotBlank()) {
@@ -290,8 +312,13 @@ private fun CycleCard(
                             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
                             modifier = Modifier.padding(vertical = 2.dp)
                         ) {
+                            val goalLabel = if (g.startWeight > 0.0) {
+                                "${ex?.name ?: "Lift"} (${g.targetReps}RM): ${g.startWeight.trimmed()} → ${g.targetWeight.trimmed()}$unit"
+                            } else {
+                                "${ex?.name ?: "Lift"} (${g.targetReps}RM): ${g.targetWeight.trimmed()}$unit"
+                            }
                             Text(
-                                "${ex?.name ?: "Lift"} (${g.targetReps}RM): ${g.targetWeight.trimmed()}$unit",
+                                goalLabel,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -321,20 +348,151 @@ private fun CycleCard(
     }
 }
 
-private data class GoalDraftState(
-    val exercise: Exercise?,
-    val reps: String,
-    val targetWeight: String
-)
+object FatLossValidation {
+    /**
+     * Rejects non-positive or negative input, returning an empty string.
+     * Otherwise returns the input.
+     */
+    fun sanitizeInlineWeightInput(input: String): String {
+        if (input.startsWith("-")) return ""
+        val parsed = input.replace(',', '.').toDoubleOrNull()
+        if (parsed != null && parsed <= 0.0) return ""
+        return input
+    }
+
+    /**
+     * Checks if target weight is greater than or equal to start weight (both positive).
+     */
+    fun isTargetWeightInvalid(startWeight: Double?, targetWeight: Double?): Boolean {
+        if (startWeight == null || targetWeight == null) return false
+        return targetWeight >= startWeight
+    }
+}
+
+data class GoalDraftState(
+    val id: Long = 0,
+    val exercise: Exercise? = null,
+    val reps: String = "1",
+    val startWeight: String = "",
+    val targetWeight: String = "",
+    val selectedModifier: Double? = null,
+    val isManuallyEdited: Boolean = false
+) {
+    val hasStartWeight: Boolean
+        get() = startWeight.replace(',', '.').toDoubleOrNull()?.let { it > 0.0 } == true
+
+    fun onExerciseChanged(newExercise: Exercise?, bestWeight: Double?): GoalDraftState {
+        return if (bestWeight != null && bestWeight > 0.0) {
+            val weightStr = bestWeight.trimmed().replace(',', '.')
+            copy(
+                exercise = newExercise,
+                startWeight = weightStr,
+                targetWeight = weightStr,
+                selectedModifier = 0.0,
+                isManuallyEdited = false
+            )
+        } else {
+            copy(
+                exercise = newExercise,
+                startWeight = "",
+                targetWeight = "",
+                selectedModifier = null,
+                isManuallyEdited = false
+            )
+        }
+    }
+
+    fun onRepsChanged(newReps: String, bestWeight: Double?): GoalDraftState {
+        val parsedReps = newReps.toIntOrNull()
+        return if (parsedReps != null && parsedReps > 0 && bestWeight != null && bestWeight > 0.0) {
+            val weightStr = bestWeight.trimmed().replace(',', '.')
+            copy(
+                reps = newReps,
+                startWeight = weightStr,
+                targetWeight = weightStr,
+                selectedModifier = 0.0,
+                isManuallyEdited = false
+            )
+        } else {
+            copy(
+                reps = newReps,
+                startWeight = "",
+                targetWeight = "",
+                selectedModifier = null,
+                isManuallyEdited = false
+            )
+        }
+    }
+
+    fun onStartWeightChanged(newStart: String): GoalDraftState {
+        val parsed = newStart.replace(',', '.').toDoubleOrNull()
+        val newTarget = if (selectedModifier != null && parsed != null && parsed > 0.0) {
+            FatLossAnalytics.scaleRepMax(parsed, selectedModifier).trimmed().replace(',', '.')
+        } else {
+            targetWeight
+        }
+        return copy(
+            startWeight = newStart,
+            targetWeight = newTarget,
+            isManuallyEdited = true
+        )
+    }
+
+    fun onTargetWeightChanged(newTarget: String): GoalDraftState {
+        return copy(
+            targetWeight = newTarget,
+            selectedModifier = null,
+            isManuallyEdited = true
+        )
+    }
+
+    fun applyModifier(percentage: Double): GoalDraftState {
+        val base = startWeight.replace(',', '.').toDoubleOrNull() ?: return this
+        if (base <= 0.0) return this
+        val scaled = FatLossAnalytics.scaleRepMax(base, percentage)
+        return copy(
+            targetWeight = scaled.trimmed().replace(',', '.'),
+            selectedModifier = percentage
+        )
+    }
+
+    fun resetModifier(): GoalDraftState {
+        val base = startWeight.replace(',', '.').toDoubleOrNull() ?: return this
+        if (base <= 0.0) return this
+        val scaled = FatLossAnalytics.scaleRepMax(base, 0.0)
+        return copy(
+            targetWeight = scaled.trimmed().replace(',', '.'),
+            selectedModifier = 0.0
+        )
+    }
+
+    fun toCycleGoal(cycleId: Long): CycleGoal? {
+        val ex = exercise ?: return null
+        val targetReps = reps.toIntOrNull() ?: 1
+        val startVal = startWeight.replace(',', '.').toDoubleOrNull() ?: 0.0
+        val targetVal = targetWeight.replace(',', '.').toDoubleOrNull() ?: 0.0
+        if (targetVal <= 0.0) return null
+        return CycleGoal(
+            id = id,
+            cycleId = cycleId,
+            exerciseId = ex.id,
+            targetReps = targetReps,
+            startWeight = startVal,
+            targetWeight = targetVal
+        )
+    }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CycleEditorDialog(
+fun CycleEditorDialog(
     original: Cycle?,
     existingGoals: List<CycleGoal>,
     exercises: List<Exercise>,
     onDismiss: () -> Unit,
-    onSave: (Cycle, List<CycleGoal>, Boolean) -> Unit
+    onSave: (Cycle, List<CycleGoal>, Boolean) -> Unit,
+    onFetchBestRm: (suspend (exerciseId: Long, reps: Int) -> Double?)? = null,
+    onFetchLatestWeight: (suspend (date: LocalDate, minDate: LocalDate) -> WeightEntry?)? = null
 ) {
     var name by remember { mutableStateOf(original?.name ?: "") }
     var goal by remember { mutableStateOf(original?.goal ?: "") }
@@ -345,20 +503,60 @@ private fun CycleEditorDialog(
     var fastDaysOfWeek by remember { mutableStateOf(original?.fastDaysOfWeek ?: 0) }
     var restDaysOfWeek by remember { mutableStateOf(original?.restDaysOfWeek ?: 0) }
 
+    var startingWeightStr by remember {
+        mutableStateOf(original?.startingWeightKg?.trimmed()?.replace(',', '.') ?: "")
+    }
+    var targetWeightStr by remember {
+        mutableStateOf(original?.targetWeightKg?.trimmed()?.replace(',', '.') ?: "")
+    }
+    var isBaselineAutoDerived by remember {
+        mutableStateOf(original?.isBaselineAutoDerived ?: false)
+    }
+    var isStartManuallyEdited by remember {
+        mutableStateOf(original?.startingWeightKg != null)
+    }
+
+    val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(startDate, cycleType) {
+        if (cycleType == CycleType.FAT_LOSS_BODYBUILDING && !isStartManuallyEdited && (original == null || original.startingWeightKg == null)) {
+            if (onFetchLatestWeight != null && !startDate.isAfter(LocalDate.now())) {
+                val minDate = startDate.minusDays(7)
+                val entry = onFetchLatestWeight(startDate, minDate)
+                if (entry != null) {
+                    startingWeightStr = entry.weightKg.trimmed().replace(',', '.')
+                    isBaselineAutoDerived = true
+                } else {
+                    startingWeightStr = ""
+                    isBaselineAutoDerived = false
+                }
+            }
+        }
+    }
+
     val goalDrafts = remember(existingGoals, exercises) {
         mutableStateListOf<GoalDraftState>().apply {
             existingGoals.forEach { g ->
                 val ex = exercises.firstOrNull { it.id == g.exerciseId }
                 add(
                     GoalDraftState(
+                        id = g.id,
                         exercise = ex,
                         reps = g.targetReps.toString(),
-                        targetWeight = if (g.targetWeight > 0.0) g.targetWeight.trimmed() else ""
+                        startWeight = if (g.startWeight > 0.0) g.startWeight.trimmed().replace(',', '.') else "",
+                        targetWeight = if (g.targetWeight > 0.0) g.targetWeight.trimmed().replace(',', '.') else "",
+                        selectedModifier = null,
+                        isManuallyEdited = true
                     )
                 )
             }
         }
     }
+
+    val startVal = startingWeightStr.replace(',', '.').toDoubleOrNull()
+    val targetVal = targetWeightStr.replace(',', '.').toDoubleOrNull()
+    val isTargetInvalid = cycleType == CycleType.FAT_LOSS_BODYBUILDING &&
+        FatLossValidation.isTargetWeightInvalid(startVal, targetVal)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -398,8 +596,77 @@ private fun CycleEditorDialog(
                     }
                 }
 
-                // If FAT_LOSS_BODYBUILDING: Render Fast Days & Rest Days bitmask chip selectors
+                // If FAT_LOSS_BODYBUILDING: Render Body Weight Goals and Fast/Rest Day Selectors
                 if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
+                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Body Weight Goals (Fat Loss)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.tertiary
+                                )
+                                if (isBaselineAutoDerived && startVal != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = MaterialTheme.colorScheme.tertiaryContainer
+                                    ) {
+                                        Text(
+                                            "Auto-Derived Baseline",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = startingWeightStr,
+                                    onValueChange = { input ->
+                                        val sanitized = FatLossValidation.sanitizeInlineWeightInput(input)
+                                        startingWeightStr = sanitized
+                                        isStartManuallyEdited = true
+                                        isBaselineAutoDerived = false
+                                    },
+                                    label = { Text("Starting (kg)") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                OutlinedTextField(
+                                    value = targetWeightStr,
+                                    onValueChange = { input ->
+                                        val sanitized = FatLossValidation.sanitizeInlineWeightInput(input)
+                                        targetWeightStr = sanitized
+                                    },
+                                    label = { Text("Target (kg)") },
+                                    singleLine = true,
+                                    isError = isTargetInvalid,
+                                    supportingText = if (isTargetInvalid) {
+                                        { Text("Target weight must be less than starting weight (${startVal?.trimmed()} kg)") }
+                                    } else null,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+
                     val daysOfWeek = listOf(
                         DayOfWeek.MONDAY,
                         DayOfWeek.TUESDAY,
@@ -489,7 +756,17 @@ private fun CycleEditorDialog(
                 ) {
                     Text("Basic Movement Goals", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     TextButton(onClick = {
-                        goalDrafts.add(GoalDraftState(exercises.firstOrNull(), "1", ""))
+                        val defaultEx = exercises.firstOrNull()
+                        val newIndex = goalDrafts.size
+                        val newDraft = GoalDraftState(exercise = defaultEx, reps = "1")
+                        goalDrafts.add(newDraft)
+                        if (defaultEx != null && onFetchBestRm != null) {
+                            coroutineScope.launch {
+                                val best = onFetchBestRm(defaultEx.id, 1)
+                                val cur = goalDrafts.getOrNull(newIndex) ?: return@launch
+                                goalDrafts[newIndex] = cur.onExerciseChanged(defaultEx, best)
+                            }
+                        }
                     }) {
                         Icon(Icons.Filled.Add, contentDescription = "Add goal")
                         Text("Add Movement")
@@ -525,7 +802,16 @@ private fun CycleEditorDialog(
                                 selected = draft.exercise,
                                 labelOf = { it.name },
                                 onSelect = { selectedEx ->
-                                    goalDrafts[index] = draft.copy(exercise = selectedEx)
+                                    val repsInt = draft.reps.toIntOrNull() ?: 1
+                                    if (onFetchBestRm != null) {
+                                        coroutineScope.launch {
+                                            val best = onFetchBestRm(selectedEx.id, repsInt)
+                                            val cur = goalDrafts.getOrNull(index) ?: return@launch
+                                            goalDrafts[index] = cur.onExerciseChanged(selectedEx, best)
+                                        }
+                                    } else {
+                                        goalDrafts[index] = draft.copy(exercise = selectedEx)
+                                    }
                                 }
                             )
 
@@ -533,21 +819,67 @@ private fun CycleEditorDialog(
                                 OutlinedTextField(
                                     value = draft.reps,
                                     onValueChange = { newReps ->
-                                        goalDrafts[index] = draft.copy(reps = newReps)
+                                        val repsInt = newReps.toIntOrNull()
+                                        val ex = draft.exercise
+                                        if (onFetchBestRm != null && ex != null && repsInt != null && repsInt > 0) {
+                                            coroutineScope.launch {
+                                                val best = onFetchBestRm(ex.id, repsInt)
+                                                val cur = goalDrafts.getOrNull(index) ?: return@launch
+                                                goalDrafts[index] = cur.onRepsChanged(newReps, best)
+                                            }
+                                        } else {
+                                            goalDrafts[index] = draft.onRepsChanged(newReps, null)
+                                        }
                                     },
                                     label = { Text("Reps (RM)") },
                                     singleLine = true,
                                     modifier = Modifier.weight(1f)
                                 )
+
+                                OutlinedTextField(
+                                    value = draft.startWeight,
+                                    onValueChange = { newStart ->
+                                        goalDrafts[index] = draft.onStartWeightChanged(newStart)
+                                    },
+                                    label = { Text("Start (${draft.exercise?.unit ?: "kg"})") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1.2f)
+                                )
+
                                 OutlinedTextField(
                                     value = draft.targetWeight,
                                     onValueChange = { newTarget ->
-                                        goalDrafts[index] = draft.copy(targetWeight = newTarget)
+                                        goalDrafts[index] = draft.onTargetWeightChanged(newTarget)
                                     },
-                                    label = { Text("Target Goal (${draft.exercise?.unit ?: "kg"})") },
+                                    label = { Text("Target (${draft.exercise?.unit ?: "kg"})") },
                                     singleLine = true,
-                                    modifier = Modifier.weight(1.5f)
+                                    modifier = Modifier.weight(1.2f)
                                 )
+                            }
+
+                            // Modifier Chips Row
+                            val hasStart = draft.hasStartWeight
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Scale:",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (hasStart) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                )
+                                listOf(2.5 to "+2.5%", 5.0 to "+5%", 10.0 to "+10%", 0.0 to "0%").forEach { (pct, label) ->
+                                    FilterChip(
+                                        selected = draft.selectedModifier == pct,
+                                        enabled = hasStart,
+                                        onClick = {
+                                            goalDrafts[index] = if (pct == 0.0) draft.resetModifier() else draft.applyModifier(pct)
+                                        },
+                                        label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                }
                             }
                         }
                     }
@@ -556,8 +888,20 @@ private fun CycleEditorDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = name.isNotBlank(),
+                enabled = name.isNotBlank() && !isTargetInvalid,
                 onClick = {
+                    val finalStartWeight = if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
+                        startingWeightStr.replace(',', '.').toDoubleOrNull()
+                    } else null
+
+                    val finalTargetWeight = if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
+                        targetWeightStr.replace(',', '.').toDoubleOrNull()
+                    } else null
+
+                    val finalIsAutoDerived = if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
+                        isBaselineAutoDerived && finalStartWeight != null
+                    } else false
+
                     val finalCycle = (original ?: Cycle(name = "", startDate = startDate)).copy(
                         name = name.trim(),
                         startDate = startDate,
@@ -565,21 +909,12 @@ private fun CycleEditorDialog(
                         goal = goal.trim(),
                         type = cycleType,
                         fastDaysOfWeek = fastDaysOfWeek,
-                        restDaysOfWeek = restDaysOfWeek
+                        restDaysOfWeek = restDaysOfWeek,
+                        startingWeightKg = finalStartWeight,
+                        targetWeightKg = finalTargetWeight,
+                        isBaselineAutoDerived = finalIsAutoDerived
                     )
-                    val finalGoals = goalDrafts.mapNotNull { d ->
-                        val ex = d.exercise ?: return@mapNotNull null
-                        val reps = d.reps.toIntOrNull() ?: 1
-                        val targetVal = d.targetWeight.toDoubleOrNull() ?: 0.0
-                        if (targetVal <= 0.0) return@mapNotNull null
-                        CycleGoal(
-                            cycleId = finalCycle.id,
-                            exerciseId = ex.id,
-                            targetReps = reps,
-                            startWeight = 0.0,
-                            targetWeight = targetVal
-                        )
-                    }
+                    val finalGoals = goalDrafts.mapNotNull { it.toCycleGoal(finalCycle.id) }
                     onSave(finalCycle, finalGoals, makeActive)
                 }
             ) { Text("Save") }
