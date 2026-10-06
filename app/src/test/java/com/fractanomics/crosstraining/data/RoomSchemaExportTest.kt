@@ -21,7 +21,7 @@ import java.io.File
 class RoomSchemaExportTest {
 
     @Test
-    fun appDatabaseSource_hasExportSchemaEnabledAtVersion9() {
+    fun appDatabaseSource_hasExportSchemaEnabledAtVersion10() {
         val candidatePaths = listOf(
             File("src/main/java/com/fractanomics/crosstraining/data/AppDatabase.kt"),
             File("app/src/main/java/com/fractanomics/crosstraining/data/AppDatabase.kt"),
@@ -31,7 +31,7 @@ class RoomSchemaExportTest {
         assertNotNull("AppDatabase.kt source file must be found", sourceFile)
 
         val content = sourceFile!!.readText()
-        assertTrue("AppDatabase must have version = 9", Regex("""version\s*=\s*9""").containsMatchIn(content))
+        assertTrue("AppDatabase must have version = 10", Regex("""version\s*=\s*10""").containsMatchIn(content))
         assertTrue("AppDatabase must have exportSchema = true", Regex("""exportSchema\s*=\s*true""").containsMatchIn(content))
     }
 
@@ -158,5 +158,22 @@ class RoomSchemaExportTest {
         assertTrue("Schema 9.json must contain fastDaysOfWeek in cycles", content9.contains("\"columnName\": \"fastDaysOfWeek\""))
         assertTrue("Schema 9.json must contain restDaysOfWeek in cycles", content9.contains("\"columnName\": \"restDaysOfWeek\""))
         assertTrue("Schema 9.json must contain isCompleted in session_blocks", content9.contains("\"columnName\": \"isCompleted\""))
+
+        // Now verify 10.json
+        val candidatePaths10 = listOf(
+            File("schemas/com.fractanomics.crosstraining.data.AppDatabase/10.json"),
+            File("app/schemas/com.fractanomics.crosstraining.data.AppDatabase/10.json"),
+            File("../app/schemas/com.fractanomics.crosstraining.data.AppDatabase/10.json")
+        )
+        val schemaFile10 = candidatePaths10.firstOrNull { it.exists() }
+        assertNotNull("Schema artifact 10.json must exist in schemas directory", schemaFile10)
+
+        val content10 = schemaFile10!!.readText()
+        assertTrue("Schema 10.json must have formatVersion 1", content10.contains("\"formatVersion\": 1"))
+        assertTrue("Schema 10.json must specify database version 10", content10.contains("\"version\": 10"))
+        assertTrue("Schema 10.json must contain identityHash", content10.contains("\"identityHash\":"))
+        assertTrue("Schema 10.json must contain startingWeightKg in cycles", content10.contains("\"columnName\": \"startingWeightKg\""))
+        assertTrue("Schema 10.json must contain targetWeightKg in cycles", content10.contains("\"columnName\": \"targetWeightKg\""))
+        assertTrue("Schema 10.json must contain isBaselineAutoDerived in cycles", content10.contains("\"columnName\": \"isBaselineAutoDerived\""))
     }
 }

@@ -1,4 +1,4 @@
-﻿package com.fractanomics.crosstraining.data.dao
+package com.fractanomics.crosstraining.data.dao
 
 import androidx.room.Dao
 import androidx.room.Query
@@ -27,6 +27,9 @@ interface WeightDao {
 
     @Query("SELECT * FROM weight_entries WHERE date = :date LIMIT 1")
     suspend fun getEntryByDate(date: LocalDate): WeightEntry?
+
+    @Query("SELECT * FROM weight_entries WHERE date <= :date AND date >= :minDate AND deletedAtMillis IS NULL ORDER BY date DESC LIMIT 1")
+    suspend fun getLatestOnOrBefore(date: LocalDate, minDate: LocalDate): WeightEntry?
 
     @Query("UPDATE weight_entries SET deletedAtMillis = :deletedAt, updatedAtMillis = :deletedAt WHERE date = :date")
     suspend fun markDeleted(date: LocalDate, deletedAt: Long)

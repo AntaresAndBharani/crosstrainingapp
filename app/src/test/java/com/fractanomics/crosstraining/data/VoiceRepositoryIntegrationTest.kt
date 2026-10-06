@@ -751,6 +751,11 @@ class FakeSampleAppDatabase : AppDatabase() {
         override suspend fun getEntryByDate(date: LocalDate): com.fractanomics.crosstraining.data.model.WeightEntry? =
             weightStorage.find { it.date == date }
 
+        override suspend fun getLatestOnOrBefore(date: LocalDate, minDate: LocalDate): com.fractanomics.crosstraining.data.model.WeightEntry? =
+            weightStorage
+                .filter { it.deletedAtMillis == null && !it.date.isAfter(date) && !it.date.isBefore(minDate) }
+                .maxByOrNull { it.date }
+
         override suspend fun markDeleted(date: LocalDate, deletedAt: Long) {
             val idx = weightStorage.indexOfFirst { it.date == date }
             if (idx >= 0) {

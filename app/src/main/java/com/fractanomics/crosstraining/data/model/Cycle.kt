@@ -23,5 +23,8 @@ data class Cycle(
     /** Local-only bitmask for scheduled fast days (Monday=bit 0 .. Sunday=bit 6). Not synced to cloud. */
     val fastDaysOfWeek: Int = 0,
     /** Local-only bitmask for scheduled rest days (Monday=bit 0 .. Sunday=bit 6). Not synced to cloud. */
-    val restDaysOfWeek: Int = 0
+    val restDaysOfWeek: Int = 0,
+    val startingWeightKg: Double? = null,
+    val targetWeightKg: Double? = null,
+    val isBaselineAutoDerived: Boolean = false
 )
