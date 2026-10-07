@@ -3,6 +3,9 @@ package com.fractanomics.crosstraining.ui.screens
 import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
 import com.fractanomics.crosstraining.data.analytics.PaceForecast
 import com.fractanomics.crosstraining.data.analytics.PaceRateResult
+import com.fractanomics.crosstraining.data.analytics.PaceTargetsState
+import com.fractanomics.crosstraining.data.analytics.ColumnState
+import com.fractanomics.crosstraining.data.analytics.PaceTargetStatus
 import com.fractanomics.crosstraining.data.analytics.PaceTrend
 import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
 import com.fractanomics.crosstraining.data.model.Cycle
@@ -502,6 +505,98 @@ class WeightProgressionCardTest {
         )
         val matureSubtitle = resolvePace14Subtitle(pace14)
         assertEquals("Smoothed trend", matureSubtitle)
+    }
+
+    // =========================================================================
+    // Issue #596: 7-Day Pace Targets Box Text Resolution & Semantics Tests
+    // =========================================================================
+
+    @Test
+    fun issue596_paceTargetsContainerStateTextResolution() {
+        val unavailText = resolvePaceTargetsContainerStateText(PaceTargetsState.Unavailable)
+        assertEquals("Pace Targets Unavailable: Needs 7 days of weigh-in history", unavailText)
+
+        val stalledText = resolvePaceTargetsContainerStateText(PaceTargetsState.Stalled)
+        assertEquals("Pace Stalled: Surplus/maintenance pace detected", stalledText)
+
+        val available = PaceTargetsState.Available(
+            today = ColumnState.InsufficientHistory,
+            tomorrow = ColumnState.InsufficientHistory
+        )
+        assertNull(resolvePaceTargetsContainerStateText(available))
+    }
+
+    @Test
+    fun issue596_expectedTodayColumnTextAndSemanticsResolution() {
+        val insuff = ColumnState.InsufficientHistory
+        assertEquals("—", resolveExpectedTodayValue(insuff))
+        assertEquals("Needs 7 days history", resolveExpectedTodaySubtitle(insuff))
+        assertEquals("Expected Today: Needs 7 days history", resolveExpectedTodayContentDescription(insuff))
+
+        val reqDate = LocalDate.of(2026, 9, 30)
+        val needsLog = ColumnState.NeedsLog(reqDate)
+        assertEquals("—", resolveExpectedTodayValue(needsLog))
+        assertEquals("Needs log from ${reqDate.formatShort()}", resolveExpectedTodaySubtitle(needsLog))
+        assertEquals("Expected Today: Needs log from ${reqDate.formatShort()}", resolveExpectedTodayContentDescription(needsLog))
+
+        val onPace = ColumnState.Value(76.4, deltaDisplay = 0.0, status = PaceTargetStatus.ON_PACE, unitLabel = "kg")
+        assertEquals("76.4 kg", resolveExpectedTodayValue(onPace))
+        assertEquals("On pace", resolveExpectedTodaySubtitle(onPace))
+        assertEquals("Expected Today: 76.4 kg, On pace", resolveExpectedTodayContentDescription(onPace))
+
+        val offPace = ColumnState.Value(76.4, deltaDisplay = 0.1, status = PaceTargetStatus.OFF_PACE, unitLabel = "kg")
+        assertEquals("76.4 kg", resolveExpectedTodayValue(offPace))
+        assertEquals("+0.1 kg off pace", resolveExpectedTodaySubtitle(offPace))
+        assertEquals("Expected Today: 76.4 kg, +0.1 kg off pace", resolveExpectedTodayContentDescription(offPace))
+
+        val ahead = ColumnState.Value(76.4, deltaDisplay = -0.3, status = PaceTargetStatus.AHEAD, unitLabel = "kg")
+        assertEquals("76.4 kg", resolveExpectedTodayValue(ahead))
+        assertEquals("-0.3 kg ahead", resolveExpectedTodaySubtitle(ahead))
+        assertEquals("Expected Today: 76.4 kg, -0.3 kg ahead", resolveExpectedTodayContentDescription(ahead))
+
+        val unlogged = ColumnState.Value(76.4, deltaDisplay = null, status = null, unitLabel = "kg")
+        assertEquals("76.4 kg", resolveExpectedTodayValue(unlogged))
+        assertNull(resolveExpectedTodaySubtitle(unlogged))
+        assertEquals("Expected Today: 76.4 kg", resolveExpectedTodayContentDescription(unlogged))
+
+        val imperialOffPace = ColumnState.Value(168.4, deltaDisplay = 0.2, status = PaceTargetStatus.OFF_PACE, unitLabel = "lbs")
+        assertEquals("168.4 lbs", resolveExpectedTodayValue(imperialOffPace))
+        assertEquals("+0.2 lbs off pace", resolveExpectedTodaySubtitle(imperialOffPace))
+        assertEquals("Expected Today: 168.4 lbs, +0.2 lbs off pace", resolveExpectedTodayContentDescription(imperialOffPace))
+    }
+
+    @Test
+    fun issue596_targetTomorrowColumnTextAndSemanticsResolution() {
+        val insuff = ColumnState.InsufficientHistory
+        assertEquals("—", resolveTargetTomorrowValue(insuff))
+        assertEquals("Needs 7 days history", resolveTargetTomorrowSubtitle(insuff))
+        assertEquals("Target Tomorrow: Needs 7 days history", resolveTargetTomorrowContentDescription(insuff))
+
+        val reqDate = LocalDate.of(2026, 10, 1)
+        val needsLog = ColumnState.NeedsLog(reqDate)
+        assertEquals("—", resolveTargetTomorrowValue(needsLog))
+        assertEquals("Needs log from ${reqDate.formatShort()}", resolveTargetTomorrowSubtitle(needsLog))
+        assertEquals("Target Tomorrow: Needs log from ${reqDate.formatShort()}", resolveTargetTomorrowContentDescription(needsLog))
+
+        val overnight = ColumnState.Value(76.1, deltaDisplay = -0.4, status = null, unitLabel = "kg")
+        assertEquals("76.1 kg", resolveTargetTomorrowValue(overnight))
+        assertEquals("-0.4 kg overnight", resolveTargetTomorrowSubtitle(overnight))
+        assertEquals("Target Tomorrow: 76.1 kg, -0.4 kg overnight", resolveTargetTomorrowContentDescription(overnight))
+
+        val matched = ColumnState.Value(76.5, deltaDisplay = null, status = null, unitLabel = "kg")
+        assertEquals("76.5 kg", resolveTargetTomorrowValue(matched))
+        assertNull(resolveTargetTomorrowSubtitle(matched))
+        assertEquals("Target Tomorrow: 76.5 kg", resolveTargetTomorrowContentDescription(matched))
+
+        val below = ColumnState.AlreadyBelowTarget(targetWeightDisplay = 76.1, marginDisplay = 0.3, unitLabel = "kg")
+        assertEquals("76.1 kg", resolveTargetTomorrowValue(below))
+        assertEquals("Already below target (-0.3 kg)", resolveTargetTomorrowSubtitle(below))
+        assertEquals("Target Tomorrow: 76.1 kg, Already below target (-0.3 kg)", resolveTargetTomorrowContentDescription(below))
+
+        val imperialOvernight = ColumnState.Value(167.8, deltaDisplay = -0.9, status = null, unitLabel = "lbs")
+        assertEquals("167.8 lbs", resolveTargetTomorrowValue(imperialOvernight))
+        assertEquals("-0.9 lbs overnight", resolveTargetTomorrowSubtitle(imperialOvernight))
+        assertEquals("Target Tomorrow: 167.8 lbs, -0.9 lbs overnight", resolveTargetTomorrowContentDescription(imperialOvernight))
     }
 }
 

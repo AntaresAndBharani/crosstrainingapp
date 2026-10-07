@@ -2032,5 +2032,299 @@ class FatLossAnalyticsTest {
         val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comp, "kg", LocalDate.of(2026, 10, 7))
         assertEquals("14% faster loss vs yesterday", subtitle)
     }
+
+    // =========================================================================
+    // Issue #596: 7-Day Pace Targets for Daily Expected Weight & Tomorrow Target
+    // =========================================================================
+
+    @Test
+    fun `issue 596 - scenario 1 - normal active progress weigh-in-only fixture`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 28)
+        val t = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 29), weightKg = 75.91, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 77.3, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.9, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 75.0, updatedAtMillis = 4L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.5, updatedAtMillis = 5L)
+        )
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "kg")
+        assertTrue("State must be Available", state is PaceTargetsState.Available)
+        val avail = state as PaceTargetsState.Available
+
+        assertTrue("today must be Value", avail.today is ColumnState.Value)
+        val todayVal = avail.today as ColumnState.Value
+        assertEquals(76.4, todayVal.targetWeightDisplay, 1e-4)
+        assertEquals(0.1, todayVal.deltaDisplay!!, 1e-4)
+        assertEquals(PaceTargetStatus.OFF_PACE, todayVal.status)
+        assertEquals("kg", todayVal.unitLabel)
+
+        assertTrue("tomorrow must be Value", avail.tomorrow is ColumnState.Value)
+        val tomorrowVal = avail.tomorrow as ColumnState.Value
+        assertEquals(76.1, tomorrowVal.targetWeightDisplay, 1e-4)
+        assertEquals(-0.4, tomorrowVal.deltaDisplay!!, 1e-4)
+        assertNull(tomorrowVal.status)
+        assertEquals("kg", tomorrowVal.unitLabel)
+    }
+
+    @Test
+    fun `issue 596 - scenario 2 - missing t minus 7d baseline log`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 28)
+        val t = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 29), weightKg = 77.4, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.9, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 75.0, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.5, updatedAtMillis = 4L)
+        )
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "kg")
+        assertTrue("State must be Available", state is PaceTargetsState.Available)
+        val avail = state as PaceTargetsState.Available
+
+        assertTrue("today must be NeedsLog", avail.today is ColumnState.NeedsLog)
+        val todayNeeds = avail.today as ColumnState.NeedsLog
+        assertEquals(LocalDate.of(2026, 9, 30), todayNeeds.requiredDate)
+
+        assertTrue("tomorrow must be Value", avail.tomorrow is ColumnState.Value)
+        val tomorrowVal = avail.tomorrow as ColumnState.Value
+        assertEquals(76.1, tomorrowVal.targetWeightDisplay, 1e-4)
+        assertEquals(-0.4, tomorrowVal.deltaDisplay!!, 1e-4)
+        assertEquals("kg", tomorrowVal.unitLabel)
+    }
+
+    @Test
+    fun `issue 596 - scenario 3 - missing t minus 6d log triggers tomorrow fallback`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 28)
+        val t = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 29), weightKg = 75.91, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 77.3, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 75.0, updatedAtMillis = 4L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.5, updatedAtMillis = 5L)
+        )
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "kg")
+        assertTrue("State must be Available", state is PaceTargetsState.Available)
+        val avail = state as PaceTargetsState.Available
+
+        assertTrue("tomorrow must be Value", avail.tomorrow is ColumnState.Value)
+        val tomorrowVal = avail.tomorrow as ColumnState.Value
+        assertEquals(76.4, tomorrowVal.targetWeightDisplay, 1e-4)
+        assertEquals(-0.1, tomorrowVal.deltaDisplay!!, 1e-4)
+    }
+
+    @Test
+    fun `issue 596 - scenario 4 - early cycle with under 7 days history returns unavailable`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val t = LocalDate.of(2026, 10, 4)
+        val entries = (1..4).map { day ->
+            WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 80.0 - day * 0.2, updatedAtMillis = day.toLong())
+        }
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "kg")
+        assertEquals(PaceTargetsState.Unavailable, state)
+    }
+
+    @Test
+    fun `issue 596 - scenario 5 - stalled or positive pace returns stalled`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 28)
+        val t = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 77.0, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 77.2, updatedAtMillis = 2L)
+        )
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "kg")
+        assertEquals(PaceTargetsState.Stalled, state)
+    }
+
+    @Test
+    fun `issue 596 - scenario 6 - no weigh-in logged today`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 28)
+        val t = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 29), weightKg = 75.91, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 77.3, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.9, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 75.0, updatedAtMillis = 4L)
+        )
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "kg")
+        assertTrue("State must be Available", state is PaceTargetsState.Available)
+        val avail = state as PaceTargetsState.Available
+
+        assertTrue(avail.today is ColumnState.Value)
+        val todayVal = avail.today as ColumnState.Value
+        assertEquals(76.4, todayVal.targetWeightDisplay, 1e-4)
+        assertNull(todayVal.deltaDisplay)
+        assertNull(todayVal.status)
+
+        assertTrue(avail.tomorrow is ColumnState.Value)
+        val tomorrowVal = avail.tomorrow as ColumnState.Value
+        assertNull(tomorrowVal.deltaDisplay)
+
+        val entriesWithoutTMinus6 = entries.filterNot { it.date == LocalDate.of(2026, 10, 1) }
+        val stateWithoutTMinus6 = FatLossAnalytics.compute7DayPaceTargets(entriesWithoutTMinus6, cycleStartDate, t, "kg")
+        assertTrue(stateWithoutTMinus6 is PaceTargetsState.Available)
+        val avail2 = stateWithoutTMinus6 as PaceTargetsState.Available
+        assertTrue(avail2.tomorrow is ColumnState.NeedsLog)
+        assertEquals(LocalDate.of(2026, 10, 1), (avail2.tomorrow as ColumnState.NeedsLog).requiredDate)
+    }
+
+    @Test
+    fun `issue 596 - scenario 7 - boundary attainment actual less than target tomorrow`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 28)
+        val t = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 77.3, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 77.6, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 75.8, updatedAtMillis = 3L)
+        )
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "kg")
+        assertTrue("State must be Available", state is PaceTargetsState.Available)
+        val avail = state as PaceTargetsState.Available
+
+        assertTrue("tomorrow must be AlreadyBelowTarget", avail.tomorrow is ColumnState.AlreadyBelowTarget)
+        val tomorrowBelow = avail.tomorrow as ColumnState.AlreadyBelowTarget
+        assertEquals(76.1, tomorrowBelow.targetWeightDisplay, 1e-4)
+        assertEquals(0.3, tomorrowBelow.marginDisplay, 1e-4)
+        assertEquals("kg", tomorrowBelow.unitLabel)
+
+        assertEquals(ColumnState.InsufficientHistory, avail.today)
+    }
+
+    @Test
+    fun `issue 596 - scenario 7b - rounded equality at target tomorrow overnight label hidden`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 28)
+        val t = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 29), weightKg = 75.91, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 77.3, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 77.3, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 75.0, updatedAtMillis = 4L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.5, updatedAtMillis = 5L)
+        )
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "kg")
+        assertTrue(state is PaceTargetsState.Available)
+        val avail = state as PaceTargetsState.Available
+
+        assertTrue(avail.tomorrow is ColumnState.Value)
+        val tomorrowVal = avail.tomorrow as ColumnState.Value
+        assertEquals(76.5, tomorrowVal.targetWeightDisplay, 1e-4)
+        assertNull(tomorrowVal.deltaDisplay)
+        assertNull(tomorrowVal.status)
+        assertEquals("kg", tomorrowVal.unitLabel)
+    }
+
+    @Test
+    fun `issue 596 - scenario 8 - exactly on pace rounded equality`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 28)
+        val t = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 29), weightKg = 75.91, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 77.3, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.9, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 75.0, updatedAtMillis = 4L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.4, updatedAtMillis = 5L)
+        )
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "kg")
+        assertTrue(state is PaceTargetsState.Available)
+        val avail = state as PaceTargetsState.Available
+
+        assertTrue(avail.today is ColumnState.Value)
+        val todayVal = avail.today as ColumnState.Value
+        assertEquals(76.4, todayVal.targetWeightDisplay, 1e-4)
+        assertEquals(0.0, todayVal.deltaDisplay!!, 1e-4)
+        assertEquals(PaceTargetStatus.ON_PACE, todayVal.status)
+
+        assertTrue(avail.tomorrow is ColumnState.Value)
+        val tomorrowVal = avail.tomorrow as ColumnState.Value
+        assertEquals(76.0, tomorrowVal.targetWeightDisplay, 1e-4)
+    }
+
+    @Test
+    fun `issue 596 - scenario 9 - imperial unit conversion lbs`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 28)
+        val t = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 29), weightKg = 75.91, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 77.3, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.9, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 75.0, updatedAtMillis = 4L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.5, updatedAtMillis = 5L)
+        )
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "lbs")
+        assertTrue(state is PaceTargetsState.Available)
+        val avail = state as PaceTargetsState.Available
+
+        assertTrue(avail.today is ColumnState.Value)
+        val todayVal = avail.today as ColumnState.Value
+        assertEquals(168.4, todayVal.targetWeightDisplay, 1e-4)
+        assertEquals(0.2, todayVal.deltaDisplay!!, 1e-4)
+        assertEquals(PaceTargetStatus.OFF_PACE, todayVal.status)
+        assertEquals("lbs", todayVal.unitLabel)
+
+        assertTrue(avail.tomorrow is ColumnState.Value)
+        val tomorrowVal = avail.tomorrow as ColumnState.Value
+        assertEquals(167.8, tomorrowVal.targetWeightDisplay, 1e-4)
+        assertEquals(-0.9, tomorrowVal.deltaDisplay!!, 1e-4)
+        assertEquals("lbs", tomorrowVal.unitLabel)
+    }
+
+    @Test
+    fun `issue 596 - scenario 10 - modifying todays logged weigh-in single entry invariant`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 28)
+        val t = LocalDate.of(2026, 10, 7)
+        val baseEntries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 29), weightKg = 75.91, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 77.3, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.9, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 75.0, updatedAtMillis = 4L)
+        )
+
+        val entriesV1 = baseEntries + WeightEntry(date = t, weightKg = 76.4, updatedAtMillis = 5L)
+        val stateV1 = FatLossAnalytics.compute7DayPaceTargets(entriesV1, cycleStartDate, t, "kg") as PaceTargetsState.Available
+        val todayV1 = stateV1.today as ColumnState.Value
+        assertEquals(76.4, todayV1.targetWeightDisplay, 1e-4)
+        assertEquals(0.0, todayV1.deltaDisplay!!, 1e-4)
+        assertEquals(PaceTargetStatus.ON_PACE, todayV1.status)
+
+        val entriesV2 = baseEntries + WeightEntry(date = t, weightKg = 76.8, updatedAtMillis = 6L)
+        val stateV2 = FatLossAnalytics.compute7DayPaceTargets(entriesV2, cycleStartDate, t, "kg") as PaceTargetsState.Available
+        val todayV2 = stateV2.today as ColumnState.Value
+        assertEquals(76.4, todayV2.targetWeightDisplay, 1e-4)
+        assertEquals(0.4, todayV2.deltaDisplay!!, 1e-4)
+        assertEquals(PaceTargetStatus.OFF_PACE, todayV2.status)
+    }
+
+    @Test
+    fun `issue 596 - scenario 11 - day 7 of cycle declining entries expected today insufficient history`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val t = LocalDate.of(2026, 10, 8)
+        val entries = (0..7).map { offset ->
+            WeightEntry(
+                date = cycleStartDate.plusDays(offset.toLong()),
+                weightKg = 80.0 - (offset * 0.2),
+                updatedAtMillis = offset.toLong()
+            )
+        }
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(entries, cycleStartDate, t, "kg")
+        assertTrue(state is PaceTargetsState.Available)
+        val avail = state as PaceTargetsState.Available
+
+        assertEquals(ColumnState.InsufficientHistory, avail.today)
+
+        assertTrue(avail.tomorrow is ColumnState.Value)
+        val tomorrowVal = avail.tomorrow as ColumnState.Value
+        assertEquals(78.4, tomorrowVal.targetWeightDisplay, 1e-4)
+        assertEquals(-0.2, tomorrowVal.deltaDisplay!!, 1e-4)
+    }
 }
 
