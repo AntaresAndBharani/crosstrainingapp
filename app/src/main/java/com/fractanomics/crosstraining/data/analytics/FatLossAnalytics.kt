@@ -269,13 +269,15 @@ sealed interface ColumnState {
         val targetWeightDisplay: Double,
         val deltaDisplay: Double?,
         val status: PaceTargetStatus? = null,
-        val unitLabel: String
+        val unitLabel: String,
+        val baselineWeightDisplay: Double? = null
     ) : ColumnState
 
     data class AlreadyBelowTarget(
         val targetWeightDisplay: Double,
         val marginDisplay: Double,
-        val unitLabel: String
+        val unitLabel: String,
+        val baselineWeightDisplay: Double? = null
     ) : ColumnState
 
     data class NeedsLog(
@@ -1293,13 +1295,15 @@ object FatLossAnalytics {
             else -> {
                 val wTheoTodayKg = entryTMinus7.weightKg + paceYesterday.rateKgPerWeek
                 val targetDisplay = if (isImperial) round1(WeightAnalytics.kgToLbs(wTheoTodayKg)) else round1(wTheoTodayKg)
+                val baselineTodayDisplay = if (isImperial) round1(WeightAnalytics.kgToLbs(entryTMinus7.weightKg)) else round1(entryTMinus7.weightKg)
 
                 if (entryToday == null) {
                     ColumnState.Value(
                         targetWeightDisplay = targetDisplay,
                         deltaDisplay = null,
                         status = null,
-                        unitLabel = unitLabel
+                        unitLabel = unitLabel,
+                        baselineWeightDisplay = baselineTodayDisplay
                     )
                 } else {
                     val deltaKg = diff1(round1(entryToday.weightKg), round1(wTheoTodayKg))
@@ -1313,7 +1317,8 @@ object FatLossAnalytics {
                         targetWeightDisplay = targetDisplay,
                         deltaDisplay = deltaDisp,
                         status = status,
-                        unitLabel = unitLabel
+                        unitLabel = unitLabel,
+                        baselineWeightDisplay = baselineTodayDisplay
                     )
                 }
             }
@@ -1326,6 +1331,11 @@ object FatLossAnalytics {
             entryToday != null -> entryToday.weightKg + (paceToday.rateKgPerWeek / 7.0)
             else -> null
         }
+        val baselineTomorrowDisplay = if (entryTMinus6 != null) {
+            if (isImperial) round1(WeightAnalytics.kgToLbs(entryTMinus6.weightKg)) else round1(entryTMinus6.weightKg)
+        } else {
+            null
+        }
 
         val tomorrowColumn: ColumnState = when {
             wTheoTomorrowKg == null -> ColumnState.NeedsLog(requiredDate = referenceDate.minusDays(6))
@@ -1335,7 +1345,8 @@ object FatLossAnalytics {
                     targetWeightDisplay = targetTomorrowDisplay,
                     deltaDisplay = null,
                     status = null,
-                    unitLabel = unitLabel
+                    unitLabel = unitLabel,
+                    baselineWeightDisplay = baselineTomorrowDisplay
                 )
             }
             else -> {
@@ -1350,7 +1361,8 @@ object FatLossAnalytics {
                             targetWeightDisplay = targetTomorrowDisplay,
                             deltaDisplay = deltaDisp,
                             status = null,
-                            unitLabel = unitLabel
+                            unitLabel = unitLabel,
+                            baselineWeightDisplay = baselineTomorrowDisplay
                         )
                     }
                     actualTodayDisplay == targetTomorrowDisplay -> {
@@ -1358,7 +1370,8 @@ object FatLossAnalytics {
                             targetWeightDisplay = targetTomorrowDisplay,
                             deltaDisplay = null,
                             status = null,
-                            unitLabel = unitLabel
+                            unitLabel = unitLabel,
+                            baselineWeightDisplay = baselineTomorrowDisplay
                         )
                     }
                     else -> {
@@ -1367,7 +1380,8 @@ object FatLossAnalytics {
                         ColumnState.AlreadyBelowTarget(
                             targetWeightDisplay = targetTomorrowDisplay,
                             marginDisplay = marginDisp,
-                            unitLabel = unitLabel
+                            unitLabel = unitLabel,
+                            baselineWeightDisplay = baselineTomorrowDisplay
                         )
                     }
                 }
