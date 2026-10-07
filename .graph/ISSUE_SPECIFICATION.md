@@ -1,139 +1,206 @@
 ## 🎯 Final Decision Plan & User Story Specification
 
-### Title: fix: weight progression pace card text truncation and velocity acceleration semantics
+### Title: feat: 7-day pace targets for daily expected weight and tomorrow target
 
 ### 📖 User Story
-**As a** cross-training athlete tracking a fat-loss or body recomposition cycle,  
-**I want** the 7-Day and 14-Day Pace cards in the Weight Progression card to display their full metrics and contextual subtitles without horizontal text truncation, and to provide unambiguous, mathematically consistent pace acceleration indicators,  
-**So that** I have immediate visual clarity on whether my rate of weight loss is accelerating or decelerating without truncated messages like `"12% slower vs yest..."` or `"Not enough d..."`.
+**As a** cross-training athlete tracking a fat loss or recomposition cycle,  
+**I want** a dedicated "7-Day Pace Targets" container displaying today's expected weight vs actual and tomorrow's target weigh-in with overnight drop,  
+**So that** I have actionable daily targets derived directly from my weekly pace without guesswork.
+
+### Scope Boundary
+The `7-DAY PACE TARGETS` container (`TheoreticalPaceTargetsBox`) inside `WeightProgressionHeroCard` in [`ProgressScreen.kt`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/ui/screens/ProgressScreen.kt) is the only new UI addition. The surrounding progress bar, Current Weight hero, 14-Day pace card, and forecast banner pre-exist and remain unchanged.
 
 ---
 
 ### 1. Architectural Decisions & Changes
 
-#### 1.1 UI Layout & Multi-Line Subtitles in `ProgressScreen.kt`
-In [`ProgressScreen.kt:1338-1422`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/ui/screens/ProgressScreen.kt#L1338-L1422):
-1. **Dynamic 2-Line Subtitle Container (`minLines = 2, maxLines = 2`):**
-   - For both the 7-Day and 14-Day Pace cards, update the subtitle `Text` composable:
-     - Set `minLines = 2`
-     - Set `maxLines = 2`
-     - Set `overflow = TextOverflow.Ellipsis`
-   - Retain the enclosing `Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp))` with `fillMaxHeight()` on both half-width cards. This equalizes height dynamically across devices and ensures neither card clips vertically under 1.3× font scaling.
-2. **Symmetric Inline Null Placeholder (`"—"`):**
-   - In `ProgressScreen.kt:1363, 1403`, replace `"Not enough data yet"` in the primary metric value slot with `"—"` for both 7-Day and 14-Day cards when pace is `null`.
-   - Add TalkBack accessibility semantics: `modifier = Modifier.semantics { contentDescription = "No data" }`.
-   - Preserve existing contract stability: [`FatLossAnalytics.formatPaceChip`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/data/analytics/FatLossAnalytics.kt#L1578) remains untouched to safeguard existing unit test assertions.
-3. **Deterministic 14-Day Null Subtitle:**
-   - In `ProgressScreen.kt:1413`, when `pace14 == null`, pin the subtitle strictly to `"Needs weigh-in 14+ days ago"`.
-4. **Testable UI Logic Helpers for PR CI Parity:**
-   - Extract pure helper functions for null value fallback and 14-day subtitle resolution (e.g. `resolvePaceChipValue(paceRate, weightUnit)` and `resolvePace14Subtitle(pace14)`), making UI text mapping directly testable via standard JVM unit tests in [`WeightProgressionCardTest.kt`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/test/java/com/fractanomics/crosstraining/ui/screens/WeightProgressionCardTest.kt) to ensure PR CI verification without requiring device instrumentation.
+#### 1.1 Pure Calculation Engine & Sealed Domain Model (`FatLossAnalytics.kt`)
+In [`FatLossAnalytics.kt`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/data/analytics/FatLossAnalytics.kt):
+1. **Domain Sealed Hierarchy:**
+   ```kotlin
+   sealed interface PaceTargetsState {
+       object Unavailable : PaceTargetsState // when P_7d(t) == null (< 7 elapsed days)
+       object Stalled : PaceTargetsState     // when P_7d(t) >= 0.0 (surplus or maintenance)
+       data class Available(
+           val today: ColumnState,
+           val tomorrow: ColumnState
+       ) : PaceTargetsState
+   }
 
-#### 1.2 Domain Velocity Acceleration Qualifier (Option A) in `FatLossAnalytics.kt`
-In [`FatLossAnalytics.kt:1590-1594`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/data/analytics/FatLossAnalytics.kt#L1590-L1594):
-Update the percentage subtitle template:
-```kotlin
-if (comparison.percentChange != null) {
-    val pct = kotlin.math.round(kotlin.math.abs(comparison.percentChange)).toInt()
-    val descriptor = if (comparison.isAcceleratingDeficit) "faster" else "slower"
-    return "$pct% $descriptor loss $vsPart"
-}
-```
-* **Production Evidence Case:** Produces `"12% slower loss vs yesterday"` (and `"14% faster loss vs yesterday"`, `"33% faster loss vs 5 Oct"`).
-* **Domain Integrity:** Because this code branch executes *strictly* under `isLossToLoss` (both `currentRate < 0.0` and `priorRate < 0.0`), appending `"loss"` is always factually and semantically correct. It resolves athlete ambiguity regarding signed values versus loss magnitudes without altering underlying math.
-* **Deferred Follow-Up Context:** Displaying the athlete's prior baseline rate (e.g. `"was -0.9 kg/wk"`) is explicitly deferred to a future user story to prevent exceeding the 2-line visual budget under 1.3× font scale.
+   sealed interface ColumnState {
+       data class Value(
+           val targetWeightDisplay: Double,
+           val deltaDisplay: Double?,
+           val status: PaceTargetStatus? = null, // AHEAD, ON_PACE, OFF_PACE (null for Target Tomorrow or unlogged today)
+           val unitLabel: String
+       ) : ColumnState
 
-#### 1.3 Acceleration Engine Precedence & Contract (Documentation Only, No Code Change)
-This documents runtime precedence rules in [`FatLossAnalytics.kt:1580-1602`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/data/analytics/FatLossAnalytics.kt#L1580-L1602):
+       data class AlreadyBelowTarget(
+           val targetWeightDisplay: Double,
+           val marginDisplay: Double,
+           val unitLabel: String
+       ) : ColumnState
 
-| Precedence | Condition | Mathematical Definition | Output Template (after §3.1.2) |
-|---|---|---|---|
-| **1. Noise Deadband** | Absolute delta rate $< 0.05\text{ kg/wk}$ | $\|R_t - R_{t-1}\| < 0.05$ | `"Pace unchanged"` |
-| **2. Accelerating Loss** | Both rates negative & magnitude increased | $R_t < 0 \land R_{t-1} < 0 \land \|R_t\| > \|R_{t-1}\|$ | `"$pct% faster loss $vsPart"` |
-| **3. Decelerating Loss** | Both rates negative & magnitude decreased | $R_t < 0 \land R_{t-1} < 0 \land \|R_t\| < \|R_{t-1}\|$ | `"$pct% slower loss $vsPart"` |
-| **4. Near-Zero Baseline Guard** | Prior rate magnitude $< 0.1\text{ kg/wk}$ | $R_t < 0 \land R_{t-1} < 0 \land \|R_{t-1}\| < 0.1$ | `"±Δ unit/wk $vsPart"` (suppresses explosive %) |
-| **5. Mixed-Sign / Non-Deficit** | At least one rate $\ge 0$ | $R_t \ge 0 \lor R_{t-1} \ge 0$ | `"±Δ unit/wk $vsPart"` (signed difference) |
-| **6. Cold Start (< 7d)** | Prior comparison is `null` | N/A | `"Baseline 7d pace"` |
+       data class NeedsLog(
+           val requiredDate: LocalDate
+       ) : ColumnState
 
-*(Note: Subtitle text color remains `MaterialTheme.colorScheme.onSurfaceVariant`; no color branching is added).*
+       object InsufficientHistory : ColumnState // e.g. Day 7 of cycle for Expected Today
+   }
+
+   enum class PaceTargetStatus {
+       AHEAD, ON_PACE, OFF_PACE
+   }
+   ```
+2. **Benchmark Mathematical Rules:**
+   - **Expected Today ($W_{\text{theo, today}}$):**
+     $$W_{\text{theo, today}} = W_{t - 7\text{d}} + P_{7\text{d}}(t - 1\text{d})$$
+     where $P_{7\text{d}}(t - 1\text{d}) = \text{compute7DayPace}(entries, cycleStartDate, referenceDate.minusDays(1))$.
+     - *Anchoring Invariant:* Exact-day calendar matching applies strictly to baseline $W$ terms ($W_{t-7\text{d}}$, $W_{t-6\text{d}}$); pace $P_{7\text{d}}$ retains `resolveAnchorEntry` on-or-before lookup tolerance.
+     - *Delta vs Actual:* $\Delta W_{\text{pace}} = W_{\text{actual, today}} - W_{\text{theo, today}}$.
+   - **Target Tomorrow ($W_{\text{theo, tomorrow}}$):**
+     $$W_{\text{theo, tomorrow}} = W_{t - 6\text{d}} + P_{7\text{d}}(t)$$
+     Fallback when $t - 6\text{d}$ is unlogged:
+     $$W_{\text{theo, tomorrow}} = W_{\text{actual, today}} + \frac{P_{7\text{d}}(t)}{7}$$
+     - *Tomorrow Sign Convention:* For Target Tomorrow, `deltaDisplay = round1(target) - round1(actual)`.
+   - **1-Decimal Display Equality & Sign Rules:**
+     - For Expected Today: $\Delta_{\text{display}} = \text{round1}(W_{\text{actual, display}}) - \text{round1}(W_{\text{target, display}})$.
+       - $\Delta_{\text{display}} == 0.0 \rightarrow \text{ON\_PACE}$ (`"On pace"`).
+       - $\Delta_{\text{display}} < 0.0 \rightarrow \text{AHEAD}$ (`"-$X unit ahead"` in `primary`).
+       - $\Delta_{\text{display}} > 0.0 \rightarrow \text{OFF\_PACE}$ (`"+$X unit off pace"` in `tertiary` warning token).
+     - For Target Tomorrow:
+       - If $\text{round1}(W_{\text{actual, display}}) > \text{round1}(W_{\text{target, display}})$: Renders `"-$X unit overnight"`.
+       - If $\text{round1}(W_{\text{actual, display}}) == \text{round1}(W_{\text{target, display}})$: Renders `ColumnState.Value` with overnight micro-label hidden (target hit, no `"-0.0"`).
+       - If $\text{round1}(W_{\text{actual, display}}) < \text{round1}(W_{\text{target, display}})$: Renders `ColumnState.AlreadyBelowTarget` with micro-label `"Already below target (-$X unit)"` formatted via `abs()`.
+       - If no weigh-in today: Overnight micro-label is hidden (only benchmark $W_{\text{theo, tomorrow}}$ is shown).
+3. **State Precedence Rules:**
+   - Container Level: `PaceTargetsState.Stalled` > `PaceTargetsState.Unavailable` > `PaceTargetsState.Available`.
+   - Column Level (within `Available`): `ColumnState.InsufficientHistory` > `ColumnState.NeedsLog` > `ColumnState.AlreadyBelowTarget` > `ColumnState.Value`.
+
+#### 1.2 UI Presentation (`ProgressScreen.kt`)
+In [`ProgressScreen.kt:1169-1335`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/ui/screens/ProgressScreen.kt#L1169-L1335):
+- Add `TheoreticalPaceTargetsBox` composable immediately beneath the Current Weight hero and its day-over-day delta pill inside `WeightProgressionHeroCard`.
+- Renders rounded corners (12.dp) with `surfaceContainerHighest` fill.
+- Left column displays Expected Today ($W_{\text{theo, today}}$); right column displays Target Tomorrow ($W_{\text{theo, tomorrow}}$) separated by a 1dp divider.
+- Full localization support: converts to `lbs` via `WeightAnalytics.kgToLbs` and formats with `Double.trimmed()`.
 
 ---
 
 ### 2. Acceptance Criteria & Test Matrix (Given-When-Then)
 
-#### Scenario 1: No-Truncation Gate for Half-Width Pace Cards (Parameterised Subtitle Gate)
-* **Given** a 360dp mobile viewport with font scale set to 1.3× in `WeightProgressionCardComposeTest.kt`, imperial units (`weightUnit = "lbs"`), and 14-day pace `null`.
-* **When** `WeightProgressionHeroCard` is composed and evaluated across each parameterised 7-day subtitle variant:
-  1. Percentage decelerating loss: `"12% slower loss vs yesterday"`
-  2. Non-consecutive date percentage accelerating loss: `"33% faster loss vs 5 Oct"`
-  3. Imperial delta rate fallback: `"-1.1 lbs/wk vs yesterday"`
+#### Scenario 1: Normal Active Progress (Weigh-in-Only Fixture)
+* **Given** an active cycle starting on `2026-09-28` with weigh-ins on:
+  - `t - 8d` (`2026-09-29`): `75.91 kg`
+  - `t - 7d` (`2026-09-30`): `77.3 kg`
+  - `t - 6d` (`2026-10-01`): `76.9 kg`
+  - `t - 1d` (`2026-10-06`): `75.0 kg`
+  - `t` (`2026-10-07`): `76.5 kg`
+* **When** `compute7DayPaceTargets` is evaluated on day `t` (`2026-10-07`).
 * **Then**:
-  - The 7-day pace primary value (`"▼ -1.8 lbs/wk"`) reports `lineCount == 1` and `!hasVisualOverflow`.
-  - The 7-day pace subtitle in all 3 variants reports `lineCount <= 2` and `!hasVisualOverflow` (zero ellipsis).
-  - The 14-day pace primary value reports `lineCount == 1` and `!hasVisualOverflow` displaying `"—"` (with `contentDescription = "No data"`).
-  - The 14-day pace subtitle (`"Needs weigh-in 14+ days ago"`) reports `lineCount <= 2` and `!hasVisualOverflow` (zero ellipsis).
-  - Both 7-Day and 14-Day cards share equal measured height via `IntrinsicSize.Max`.
+  - $P_{7\text{d}}(t-1\text{d}) = -0.91\text{ kg/wk}$ anchoring to $t-8\text{d}$, yielding Expected Today $W_{\text{theo, today}} = 76.39 \approx 76.4\text{ kg}$.
+  - $P_{7\text{d}}(t) = -0.80\text{ kg/wk}$ anchoring to $t-7\text{d}$, yielding Target Tomorrow $W_{\text{theo, tomorrow}} = 76.1\text{ kg}$.
+  - `Expected Today` returns `ColumnState.Value` with `targetWeight = 76.4`, `delta = +0.1`, `status = OFF_PACE` (`"+0.1 kg off pace"`).
+  - `Target Tomorrow` returns `ColumnState.Value` with `targetWeight = 76.1`, `delta = -0.4`, `status = null` (`"-0.4 kg overnight"`).
 
-#### Scenario 1b: Dual-Null Cold-Start Gate
-* **Given** a new cycle with $< 7$ days of data where both `pace7` and `pace14` are `null`.
-* **When** `WeightProgressionHeroCard` is rendered at 360dp viewport with 1.3× font scale.
+#### Scenario 2: Missing $t-7\text{d}$ Baseline Log
+* **Given** an active cycle starting on `2026-09-28` with weigh-ins on `t - 8d` (`77.4 kg`), `t - 6d` (`76.9 kg`), `t - 1d` (`75.0 kg`), and `t` (`76.5 kg`), with day `t - 7d` missing.
+* **When** `compute7DayPaceTargets` is evaluated on day $t$.
 * **Then**:
-  - 7-day pace value displays `"—"` with `lineCount == 1` and `!hasVisualOverflow` (`contentDescription = "No data"`).
-  - 7-day pace subtitle displays `"Baseline 7d pace"` with `lineCount <= 2` and `!hasVisualOverflow`.
-  - 14-day pace value displays `"—"` with `lineCount == 1` and `!hasVisualOverflow` (`contentDescription = "No data"`).
-  - 14-day pace subtitle displays `"Needs weigh-in 14+ days ago"` with `lineCount <= 2` and `!hasVisualOverflow`.
+  - $P_{7\text{d}}(t)$ anchors to $t-8\text{d}$ (8 elapsed days), yielding $-0.7875\text{ kg/wk} < 0$, keeping state `PaceTargetsState.Available`.
+  - `Expected Today` returns `ColumnState.NeedsLog(requiredDate = t - 7d)` (`"Expected Today: Needs log from [Date]"`).
+  - `Target Tomorrow` returns `ColumnState.Value` with target $76.9 - 0.7875 = 76.11 \approx 76.1\text{ kg}$ and micro-label `"-0.4 kg overnight"`.
 
-#### Scenario 2: 7-Day Pace Decelerating Deficit Reproduction (User Evidence Case)
-* **Given** a `PaceComparisonResult` constructed with:
-  - `currentRateKgPerWeek = -0.80`
-  - `priorRateKgPerWeek = -0.91`
-  - `percentChange = -12.08`
-  - `isAcceleratingDeficit = false`
-  - `priorDate = 2026-10-06`
-  - `isConsecutive = true`
-* **When** `format7DayPaceSubtitle` is evaluated on `2026-10-07` with `Locale.US` and `weightUnit = "kg"`.
+#### Scenario 3: Missing $t-6\text{d}$ Log (Tomorrow Fallback Triggered)
+* **Given** the Scenario 1 fixture with day `t - 6d` missing.
+* **When** `compute7DayPaceTargets` is evaluated on day $t$.
 * **Then**:
-  - `format7DayPaceSubtitle` returns `"12% slower loss vs yesterday"`.
+  - `Target Tomorrow` evaluates fallback $76.5 + \frac{-0.80}{7} = 76.386 \approx 76.4\text{ kg}$.
+  - Overnight needed drop renders `"-0.1 kg overnight"`.
 
-#### Scenario 3: 7-Day Pace Accelerating Deficit
-* **Given** a `PaceComparisonResult` constructed with:
-  - `currentRateKgPerWeek = -0.80`
-  - `priorRateKgPerWeek = -0.70`
-  - `percentChange = 14.28`
-  - `isAcceleratingDeficit = true`
-  - `priorDate = 2026-10-06`
-  - `isConsecutive = true`
-* **When** `format7DayPaceSubtitle` is evaluated on `2026-10-07` with `Locale.US` and `weightUnit = "kg"`.
+#### Scenario 4: Early Cycle (< 7 Days History, Null Pace)
+* **Given** a new cycle with only 4 days of weigh-in logs ($P_{7\text{d}}(t) == \text{null}$).
+* **When** `compute7DayPaceTargets` is evaluated.
 * **Then**:
-  - `format7DayPaceSubtitle` returns `"14% faster loss vs yesterday"`.
+  - State returns `PaceTargetsState.Unavailable`.
+  - Container displays `"Pace Targets Unavailable: Needs 7 days of weigh-in history"`.
 
-#### Scenario 4: 14-Day Null Pace Placeholder & Subtitle Formatting (JVM CI Parity)
-* **Given** a cycle where 14-day pace is `null`.
-* **When** evaluated in `WeightProgressionCardTest` and rendered in Compose at 1.3× font scale.
+#### Scenario 5: Stalled or Positive Pace ($P_{7\text{d}}(t) \ge 0$)
+* **Given** an active cycle with weigh-ins on $t-7\text{d} = 77.0\text{ kg}$ and $t = 77.2\text{ kg}$ ($P_{7\text{d}}(t) = +0.2\text{ kg/wk} \ge 0$).
+* **When** `compute7DayPaceTargets` is evaluated.
 * **Then**:
-  - 14-day pace primary value displays `"—"` with TalkBack `contentDescription = "No data"`.
-  - 14-day pace subtitle displays `"Needs weigh-in 14+ days ago"`.
-  - Subtitle occupies $\le 2$ lines without ellipsis or horizontal truncation.
+  - State returns `PaceTargetsState.Stalled`.
+  - Container displays `"Pace Stalled: Surplus/maintenance pace detected"`.
+
+#### Scenario 6: No Weigh-in Logged Today
+* **Given** day $t-7\text{d}$ and $t-6\text{d}$ exist, but the athlete has not logged a weigh-in for day $t$.
+* **When** `compute7DayPaceTargets` is evaluated ($P_{7\text{d}}(t)$ resolved from newest logged entry in history).
+* **Then**:
+  - `Expected Today` displays target weight without actual-based delta.
+  - `Target Tomorrow` displays target weight without overnight delta.
+  - If $t-6\text{d}$ is unlogged, `Target Tomorrow` transitions to `NeedsLog(t - 6d)`.
+
+#### Scenario 7: Boundary Attainment (Actual < Target Tomorrow)
+* **Given** an active cycle with weigh-ins on $t-7\text{d} = 77.3\text{ kg}$, $t-6\text{d} = 77.6\text{ kg}$, and $t = 75.8\text{ kg}$.
+* **When** `compute7DayPaceTargets` is evaluated on day $t$.
+* **Then**:
+  - $P_{7\text{d}}(t) = -1.5\text{ kg/wk}$, Target Tomorrow is $76.1\text{ kg}$.
+  - Actual weight $75.8\text{ kg} < 76.1\text{ kg}$ (margin $0.3\text{ kg}$).
+  - `Target Tomorrow` returns `ColumnState.AlreadyBelowTarget(targetWeightDisplay = 76.1, marginDisplay = 0.3, unitLabel = "kg")`.
+  - Subtitle renders `"Already below target (-0.3 kg)"` with `abs()` formatting (no `"--"`).
+  - `Expected Today` returns `ColumnState.InsufficientHistory`.
+
+#### Scenario 7b: Rounded Equality at Target Tomorrow (Overnight Label Hidden)
+* **Given** the Scenario 1 fixture with $t-6\text{d} = 77.3\text{ kg}$ (so Target Tomorrow is $77.3 - 0.80 = 76.5\text{ kg}$, equal to actual $76.5\text{ kg}$).
+* **When** `compute7DayPaceTargets` is evaluated on day $t$.
+* **Then**:
+  - Rounded actual equals rounded target ($76.5\text{ kg}$).
+  - `Target Tomorrow` returns `ColumnState.Value(76.5, deltaDisplay = null, status = null, unitLabel = "kg")` with overnight micro-label hidden.
+
+#### Scenario 8: Exactly On Pace (1-Decimal Rounded Equality)
+* **Given** the Scenario 1 fixture with today's actual weight $t = 76.4\text{ kg}$.
+* **When** `compute7DayPaceTargets` is evaluated on day $t$.
+* **Then**:
+  - Expected Today is $76.39 \approx 76.4\text{ kg}$.
+  - Rounded display delta is $0.0$.
+  - `Expected Today` status is `ON_PACE` and micro-label renders `"On pace"`.
+  - Target Tomorrow returns $76.0\text{ kg}$.
+
+#### Scenario 9: Imperial Unit Conversion (`lbs`)
+* **Given** the Scenario 1 fixture with user preference `weightUnit == "lbs"`.
+* **When** `compute7DayPaceTargets` is evaluated.
+* **Then**:
+  - Expected Today target $76.39\text{ kg} \rightarrow 168.4\text{ lbs}$, delta $+0.1\text{ kg} \rightarrow +0.2\text{ lbs off pace}$.
+  - Target Tomorrow target $76.1\text{ kg} \rightarrow 167.8\text{ lbs}$, delta $-0.4\text{ kg} \rightarrow -0.9\text{ lbs overnight}$.
+  - All values display with `"lbs"` suffix.
+
+#### Scenario 10: Modifying Today's Logged Weigh-in (Single Entry Invariant)
+* **Given** an athlete has logged day $t$ at `76.4 kg` and subsequently updates today's entry to `76.8 kg` (Room single-entry-per-day `@PrimaryKey date` invariant).
+* **When** `compute7DayPaceTargets` is evaluated.
+* **Then**:
+  - $P_{\text{ref}}$ for Expected Today is evaluated strictly at `today.minusDays(1)`, so Expected Today's benchmark ($76.4\text{ kg}$) remains unchanged.
+  - Only the actual-based delta updates to reflect the modified weigh-in ($76.8\text{ kg} - 76.4\text{ kg} = +0.4\text{ kg off pace}$).
+
+#### Scenario 11: Day 7 of Cycle (Declining Entries, Expected Today Insufficient History)
+* **Given** day 7 of a cycle with daily declining weigh-ins from day 0 to day 7 ($80.0\text{ kg}$ down to $78.6\text{ kg}$, $P_{7\text{d}}(t) < 0$), where $P_{7\text{d}}(t)$ exists (7 elapsed days), but $P_{7\text{d}}(t-1\text{d})$ spans only 6 days and returns `null`.
+* **When** `compute7DayPaceTargets` is evaluated.
+* **Then**:
+  - `Expected Today` returns `ColumnState.InsufficientHistory` (`"Expected Today: Needs 7 days history"`).
+  - `Target Tomorrow` returns `ColumnState.Value` with target $W_{t-6\text{d}} + P_{7\text{d}}(t)$ and overnight delta.
 
 ---
 
 ### 3. Implementation Tasks (Pattern A - Standalone Task)
 
-* **Task 1 (Pace Card Multi-Line Layout & Acceleration Semantics):**
-  - In [`ProgressScreen.kt`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/ui/screens/ProgressScreen.kt):
-    - Extract pure testable helpers (e.g. `resolvePaceChipValue`, `resolvePace14Subtitle`) to facilitate JVM unit test coverage.
-    - Set `minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis` on subtitle `Text` composables for both 7-Day and 14-Day pace cards.
-    - Render `"—"` with `semantics { contentDescription = "No data" }` for null `pace7Text` and `pace14Text`.
-    - Pin 14-day null subtitle strictly to `"Needs weigh-in 14+ days ago"`.
+* **Task 1 (7-Day Pace Targets Container & Pacing Engine):**
   - In [`FatLossAnalytics.kt`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/data/analytics/FatLossAnalytics.kt):
-    - Update percentage subtitle template at line 1593 to `"$pct% $descriptor loss $vsPart"`.
-    - Leave `formatPaceChip` untouched.
+    - Implement sealed interfaces `PaceTargetsState` (`Unavailable`, `Stalled`, `Available`) and `ColumnState` (`Value`, `AlreadyBelowTarget`, `NeedsLog`, `InsufficientHistory`).
+    - Implement pure domain function `compute7DayPaceTargets(entries, cycleStartDate, referenceDate, weightUnit)` enforcing exact-day baseline terms, `resolveAnchorEntry` tolerance for pace, 1-decimal rounded display equality, and state precedence rules.
+  - In [`ProgressScreen.kt`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/ui/screens/ProgressScreen.kt):
+    - Implement `TheoreticalPaceTargetsBox` composable rendered inside `WeightProgressionHeroCard` immediately below the Current Weight day-over-day delta pill.
+    - Support unit conversion, state transitions (`Available`, `NeedsLog`, `Stalled`, `Unavailable`, `InsufficientHistory`, `AlreadyBelowTarget`), and accessibility semantics.
   - In [`FatLossAnalyticsTest.kt`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/test/java/com/fractanomics/crosstraining/data/analytics/FatLossAnalyticsTest.kt):
-    - Update the 4 existing test assertions at lines 1758, 1777, 1812, and 2001 to expect `"loss"` (e.g. `"14% faster loss vs yesterday"`, `"25% slower loss vs yesterday"`).
-    - Add unit test for Scenario 2 reproduction case (`"12% slower loss vs yesterday"`).
+    - Implement unit test methods covering Scenarios 1–11 (including Scenario 7b) with deterministic assertions.
   - In [`WeightProgressionCardTest.kt`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/test/java/com/fractanomics/crosstraining/ui/screens/WeightProgressionCardTest.kt):
-    - Add pure JVM unit tests verifying null placeholder `"—"`, TalkBack description, and 14-day subtitle string resolution for PR CI verification.
-  - In [`WeightProgressionCardComposeTest.kt`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/androidTest/java/com/fractanomics/crosstraining/ui/screens/WeightProgressionCardComposeTest.kt):
-    - Update Scenario 1 layout test asserting `lineCount <= 2 && !hasVisualOverflow` across the parameterised subtitle set under 360dp / 1.3× font scale in lbs mode.
-    - Add Scenario 1b dual-null cold start test.
+    - Add JVM unit tests verifying composable text resolution and state rendering for CI verification parity.
   - In [`CHANGELOG.md`](file:///C:/Users/rogal/workspaces/ws-gym/crosstrainingapp/CHANGELOG.md):
-    - Document pace card multi-line layout fix, em-dash placeholder, and Option A `"loss"` qualifier under `## [Unreleased]`.
+    - Add entry under `## [Unreleased]` describing the 7-Day Pace Targets container.

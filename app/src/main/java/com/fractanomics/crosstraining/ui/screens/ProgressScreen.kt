@@ -21,6 +21,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
 import com.fractanomics.crosstraining.data.analytics.DayOverDayDelta
 import com.fractanomics.crosstraining.data.analytics.PaceComparisonResult
+import com.fractanomics.crosstraining.data.analytics.PaceTargetsState
+import com.fractanomics.crosstraining.data.analytics.ColumnState
+import com.fractanomics.crosstraining.data.analytics.PaceTargetStatus
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -1104,6 +1107,9 @@ fun WeightProgressionCard(
     val forecast = remember(weightEntries, cycle, today) {
         FatLossAnalytics.computePaceForecast(weightEntries, cycle, today)
     }
+    val paceTargets = remember(weightEntries, cycle, today, weightUnit) {
+        FatLossAnalytics.compute7DayPaceTargets(weightEntries, cycle, today, weightUnit)
+    }
 
     WeightProgressionHeroCard(
         title = "Weight Progression (${cycle.name})",
@@ -1121,7 +1127,8 @@ fun WeightProgressionCard(
         forecast = forecast,
         onLogWeight = onLogWeight,
         modifier = modifier,
-        referenceDate = today
+        referenceDate = today,
+        paceTargets = paceTargets
     )
 }
 
@@ -1154,6 +1161,237 @@ internal fun resolvePace14Subtitle(pace14: PaceRateResult?): String {
     return if (pace14 == null) PACE_14_NULL_SUBTITLE else PACE_14_MATURE_SUBTITLE
 }
 
+internal fun resolvePaceTargetsContainerStateText(state: PaceTargetsState): String? = when (state) {
+    is PaceTargetsState.Unavailable -> "Pace Targets Unavailable: Needs 7 days of weigh-in history"
+    is PaceTargetsState.Stalled -> "Pace Stalled: Surplus/maintenance pace detected"
+    is PaceTargetsState.Available -> null
+}
+
+internal fun resolveExpectedTodayValue(column: ColumnState): String = when (column) {
+    is ColumnState.Value -> "${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+    is ColumnState.AlreadyBelowTarget -> "${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+    is ColumnState.NeedsLog -> NO_DATA_PLACEHOLDER
+    is ColumnState.InsufficientHistory -> NO_DATA_PLACEHOLDER
+}
+
+internal fun resolveExpectedTodaySubtitle(column: ColumnState): String? = when (column) {
+    is ColumnState.InsufficientHistory -> "Needs 7 days history"
+    is ColumnState.NeedsLog -> "Needs log from ${column.requiredDate.formatShort()}"
+    is ColumnState.AlreadyBelowTarget -> null
+    is ColumnState.Value -> {
+        if (column.deltaDisplay == null || column.status == null) null
+        else when (column.status) {
+            PaceTargetStatus.ON_PACE -> "On pace"
+            PaceTargetStatus.AHEAD -> "-${kotlin.math.abs(column.deltaDisplay).trimmed()} ${column.unitLabel} ahead"
+            PaceTargetStatus.OFF_PACE -> "+${kotlin.math.abs(column.deltaDisplay).trimmed()} ${column.unitLabel} off pace"
+        }
+    }
+}
+
+internal fun resolveExpectedTodayContentDescription(column: ColumnState): String = when (column) {
+    is ColumnState.InsufficientHistory -> "Expected Today: Needs 7 days history"
+    is ColumnState.NeedsLog -> "Expected Today: Needs log from ${column.requiredDate.formatShort()}"
+    is ColumnState.AlreadyBelowTarget -> "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+    is ColumnState.Value -> {
+        val sub = resolveExpectedTodaySubtitle(column)
+        if (sub != null) "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
+        else "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+    }
+}
+
+internal fun resolveTargetTomorrowValue(column: ColumnState): String = when (column) {
+    is ColumnState.Value -> "${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+    is ColumnState.AlreadyBelowTarget -> "${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+    is ColumnState.NeedsLog -> NO_DATA_PLACEHOLDER
+    is ColumnState.InsufficientHistory -> NO_DATA_PLACEHOLDER
+}
+
+internal fun resolveTargetTomorrowSubtitle(column: ColumnState): String? = when (column) {
+    is ColumnState.InsufficientHistory -> "Needs 7 days history"
+    is ColumnState.NeedsLog -> "Needs log from ${column.requiredDate.formatShort()}"
+    is ColumnState.AlreadyBelowTarget ->
+        "Already below target (-${kotlin.math.abs(column.marginDisplay).trimmed()} ${column.unitLabel})"
+    is ColumnState.Value -> {
+        if (column.deltaDisplay == null) null
+        else "-${kotlin.math.abs(column.deltaDisplay).trimmed()} ${column.unitLabel} overnight"
+    }
+}
+
+internal fun resolveTargetTomorrowContentDescription(column: ColumnState): String = when (column) {
+    is ColumnState.InsufficientHistory -> "Target Tomorrow: Needs 7 days history"
+    is ColumnState.NeedsLog -> "Target Tomorrow: Needs log from ${column.requiredDate.formatShort()}"
+    is ColumnState.AlreadyBelowTarget -> {
+        val sub = resolveTargetTomorrowSubtitle(column)
+        "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
+    }
+    is ColumnState.Value -> {
+        val sub = resolveTargetTomorrowSubtitle(column)
+        if (sub != null) "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
+        else "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+    }
+}
+
+@Composable
+fun TheoreticalPaceTargetsBox(
+    paceTargets: PaceTargetsState,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest
+    ) {
+        when (paceTargets) {
+            is PaceTargetsState.Unavailable -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = resolvePaceTargetsContainerStateText(paceTargets) ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+            is PaceTargetsState.Stalled -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = resolvePaceTargetsContainerStateText(paceTargets) ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+            is PaceTargetsState.Available -> {
+                val fontScale = LocalDensity.current.fontScale
+                val targetTextStyle = if (fontScale >= 1.25f) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "7-DAY PACE TARGETS",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Left Column: Expected Today
+                        val todayDesc = resolveExpectedTodayContentDescription(paceTargets.today)
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .semantics(mergeDescendants = true) {
+                                    contentDescription = todayDesc
+                                },
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "Expected Today",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = resolveExpectedTodayValue(paceTargets.today),
+                                style = targetTextStyle,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val todaySub = resolveExpectedTodaySubtitle(paceTargets.today)
+                            val todaySubColor = when ((paceTargets.today as? ColumnState.Value)?.status) {
+                                PaceTargetStatus.AHEAD -> MaterialTheme.colorScheme.primary
+                                PaceTargetStatus.OFF_PACE -> MaterialTheme.colorScheme.tertiary
+                                PaceTargetStatus.ON_PACE -> MaterialTheme.colorScheme.onSurfaceVariant
+                                null -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            if (todaySub != null) {
+                                Text(
+                                    text = todaySub,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = todaySubColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        // 1dp vertical divider
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(1.dp)
+                                .background(MaterialTheme.colorScheme.outlineVariant)
+                        )
+
+                        // Right Column: Target Tomorrow
+                        val tomorrowDesc = resolveTargetTomorrowContentDescription(paceTargets.tomorrow)
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .semantics(mergeDescendants = true) {
+                                    contentDescription = tomorrowDesc
+                                },
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "Target Tomorrow",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = resolveTargetTomorrowValue(paceTargets.tomorrow),
+                                style = targetTextStyle,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val tomorrowSub = resolveTargetTomorrowSubtitle(paceTargets.tomorrow)
+                            val tomorrowSubColor = if (paceTargets.tomorrow is ColumnState.AlreadyBelowTarget) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            if (tomorrowSub != null) {
+                                Text(
+                                    text = tomorrowSub,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = tomorrowSubColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 internal data class PaceTrendStyle(val icon: String?, val color: Color)
 
 @Composable
@@ -1182,7 +1420,8 @@ fun WeightProgressionHeroCard(
     forecast: PaceForecast?,
     onLogWeight: () -> Unit,
     modifier: Modifier = Modifier,
-    referenceDate: LocalDate = LocalDate.now()
+    referenceDate: LocalDate = LocalDate.now(),
+    paceTargets: PaceTargetsState? = null
 ) {
     val isImperial = weightUnit.equals("lbs", ignoreCase = true)
 
@@ -1360,6 +1599,11 @@ fun WeightProgressionHeroCard(
                         }
                     }
                 }
+            }
+
+            // 7-Day Pace Targets Container
+            if (paceTargets != null) {
+                TheoreticalPaceTargetsBox(paceTargets = paceTargets)
             }
 
             // 3. Bottom Pace Metrics Split (7-Day & 14-Day Cards)
