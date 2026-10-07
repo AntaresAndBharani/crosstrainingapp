@@ -1188,14 +1188,31 @@ internal fun resolveExpectedTodaySubtitle(column: ColumnState): String? = when (
     }
 }
 
+private fun resolveSpokenUnit(unitLabel: String): String =
+    if (unitLabel.equals("kg", ignoreCase = true)) "kilograms" else "lbs"
+
 internal fun resolveExpectedTodayContentDescription(column: ColumnState): String = when (column) {
     is ColumnState.InsufficientHistory -> "Expected Today: Needs 7 days history"
     is ColumnState.NeedsLog -> "Expected Today: Needs log from ${column.requiredDate.formatShort()}"
-    is ColumnState.AlreadyBelowTarget -> "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+    is ColumnState.AlreadyBelowTarget -> {
+        val base = "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+        if (column.baselineWeightDisplay != null) {
+            val spokenUnit = resolveSpokenUnit(column.unitLabel)
+            "$base, Last week, same day: ${column.baselineWeightDisplay.trimmed()} $spokenUnit"
+        } else {
+            base
+        }
+    }
     is ColumnState.Value -> {
         val sub = resolveExpectedTodaySubtitle(column)
-        if (sub != null) "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
+        val base = if (sub != null) "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
         else "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+        if (column.baselineWeightDisplay != null) {
+            val spokenUnit = resolveSpokenUnit(column.unitLabel)
+            "$base, Last week, same day: ${column.baselineWeightDisplay.trimmed()} $spokenUnit"
+        } else {
+            base
+        }
     }
 }
 
@@ -1222,13 +1239,32 @@ internal fun resolveTargetTomorrowContentDescription(column: ColumnState): Strin
     is ColumnState.NeedsLog -> "Target Tomorrow: Needs log from ${column.requiredDate.formatShort()}"
     is ColumnState.AlreadyBelowTarget -> {
         val sub = resolveTargetTomorrowSubtitle(column)
-        "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
+        val base = "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
+        if (column.baselineWeightDisplay != null) {
+            val spokenUnit = resolveSpokenUnit(column.unitLabel)
+            "$base, Last week, same day as tomorrow: ${column.baselineWeightDisplay.trimmed()} $spokenUnit"
+        } else {
+            base
+        }
     }
     is ColumnState.Value -> {
         val sub = resolveTargetTomorrowSubtitle(column)
-        if (sub != null) "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
+        val base = if (sub != null) "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
         else "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+        if (column.baselineWeightDisplay != null) {
+            val spokenUnit = resolveSpokenUnit(column.unitLabel)
+            "$base, Last week, same day as tomorrow: ${column.baselineWeightDisplay.trimmed()} $spokenUnit"
+        } else {
+            base
+        }
     }
+}
+
+internal fun resolveColumnBaselineText(column: ColumnState): String? = when (column) {
+    is ColumnState.Value -> column.baselineWeightDisplay?.let { "Last week: ${it.trimmed()} ${column.unitLabel}" }
+    is ColumnState.AlreadyBelowTarget -> column.baselineWeightDisplay?.let { "Last week: ${it.trimmed()} ${column.unitLabel}" }
+    is ColumnState.NeedsLog -> null
+    is ColumnState.InsufficientHistory -> null
 }
 
 @Composable
@@ -1336,6 +1372,16 @@ fun TheoreticalPaceTargetsBox(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
+                            val todayBaselineText = resolveColumnBaselineText(paceTargets.today)
+                            if (todayBaselineText != null) {
+                                Text(
+                                    text = todayBaselineText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
 
                         // 1dp vertical divider
@@ -1380,6 +1426,16 @@ fun TheoreticalPaceTargetsBox(
                                     text = tomorrowSub,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = tomorrowSubColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            val tomorrowBaselineText = resolveColumnBaselineText(paceTargets.tomorrow)
+                            if (tomorrowBaselineText != null) {
+                                Text(
+                                    text = tomorrowBaselineText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )

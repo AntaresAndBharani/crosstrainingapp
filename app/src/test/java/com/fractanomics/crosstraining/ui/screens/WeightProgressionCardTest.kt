@@ -598,5 +598,99 @@ class WeightProgressionCardTest {
         assertEquals("-0.9 lbs overnight", resolveTargetTomorrowSubtitle(imperialOvernight))
         assertEquals("Target Tomorrow: 167.8 lbs, -0.9 lbs overnight", resolveTargetTomorrowContentDescription(imperialOvernight))
     }
+
+    // =========================================================================
+    // Issue #598: Baseline Weight Micro-Label Text & TalkBack Resolution Tests
+    // =========================================================================
+
+    @Test
+    fun issue598_resolveColumnBaselineText_formatsMicroLabelCorrectly() {
+        val todayValue = ColumnState.Value(76.4, 0.1, PaceTargetStatus.OFF_PACE, "kg", 77.3)
+        assertEquals("Last week: 77.3 kg", resolveColumnBaselineText(todayValue))
+
+        val todayWholeNumber = ColumnState.Value(76.4, 0.1, PaceTargetStatus.OFF_PACE, "kg", 77.0)
+        assertEquals("Last week: 77 kg", resolveColumnBaselineText(todayWholeNumber))
+
+        val tomorrowValue = ColumnState.Value(74.5, -2.0, null, "kg", 75.3)
+        assertEquals("Last week: 75.3 kg", resolveColumnBaselineText(tomorrowValue))
+
+        val tomorrowBelow = ColumnState.AlreadyBelowTarget(74.5, 0.5, "kg", 75.3)
+        assertEquals("Last week: 75.3 kg", resolveColumnBaselineText(tomorrowBelow))
+
+        val imperialValue = ColumnState.Value(168.4, 0.2, PaceTargetStatus.OFF_PACE, "lbs", 170.4)
+        assertEquals("Last week: 170.4 lbs", resolveColumnBaselineText(imperialValue))
+
+        // Null baseline yields null (micro-label omitted, no placeholder)
+        val nullBaselineValue = ColumnState.Value(76.4, -0.1, null, "kg", null)
+        assertNull(resolveColumnBaselineText(nullBaselineValue))
+
+        val nullBaselineBelow = ColumnState.AlreadyBelowTarget(74.5, 0.5, "kg", null)
+        assertNull(resolveColumnBaselineText(nullBaselineBelow))
+
+        assertNull(resolveColumnBaselineText(ColumnState.NeedsLog(LocalDate.of(2026, 9, 30))))
+        assertNull(resolveColumnBaselineText(ColumnState.InsufficientHistory))
+    }
+
+    @Test
+    fun issue598_expectedTodayContentDescription_withBaseline_resolvesTalkBackPhrase() {
+        val activeWithSub = ColumnState.Value(76.4, 0.1, PaceTargetStatus.OFF_PACE, "kg", 77.3)
+        assertEquals(
+            "Expected Today: 76.4 kg, +0.1 kg off pace, Last week, same day: 77.3 kilograms",
+            resolveExpectedTodayContentDescription(activeWithSub)
+        )
+
+        val unloggedToday = ColumnState.Value(76.4, null, null, "kg", 77.3)
+        assertEquals(
+            "Expected Today: 76.4 kg, Last week, same day: 77.3 kilograms",
+            resolveExpectedTodayContentDescription(unloggedToday)
+        )
+
+        val imperialWithSub = ColumnState.Value(168.4, 0.2, PaceTargetStatus.OFF_PACE, "lbs", 170.4)
+        assertEquals(
+            "Expected Today: 168.4 lbs, +0.2 lbs off pace, Last week, same day: 170.4 lbs",
+            resolveExpectedTodayContentDescription(imperialWithSub)
+        )
+
+        // Null baseline preserves byte-identical pre-existing output
+        val nullBaseline = ColumnState.Value(76.4, 0.1, PaceTargetStatus.OFF_PACE, "kg", null)
+        assertEquals(
+            "Expected Today: 76.4 kg, +0.1 kg off pace",
+            resolveExpectedTodayContentDescription(nullBaseline)
+        )
+    }
+
+    @Test
+    fun issue598_targetTomorrowContentDescription_withBaseline_resolvesTalkBackPhrase() {
+        val activeOvernight = ColumnState.Value(74.5, -2.0, null, "kg", 75.3)
+        assertEquals(
+            "Target Tomorrow: 74.5 kg, -2 kg overnight, Last week, same day as tomorrow: 75.3 kilograms",
+            resolveTargetTomorrowContentDescription(activeOvernight)
+        )
+
+        val unloggedToday = ColumnState.Value(74.5, null, null, "kg", 75.3)
+        assertEquals(
+            "Target Tomorrow: 74.5 kg, Last week, same day as tomorrow: 75.3 kilograms",
+            resolveTargetTomorrowContentDescription(unloggedToday)
+        )
+
+        val alreadyBelow = ColumnState.AlreadyBelowTarget(74.5, 0.5, "kg", 75.3)
+        assertEquals(
+            "Target Tomorrow: 74.5 kg, Already below target (-0.5 kg), Last week, same day as tomorrow: 75.3 kilograms",
+            resolveTargetTomorrowContentDescription(alreadyBelow)
+        )
+
+        val imperialOvernight = ColumnState.Value(167.8, -0.9, null, "lbs", 170.4)
+        assertEquals(
+            "Target Tomorrow: 167.8 lbs, -0.9 lbs overnight, Last week, same day as tomorrow: 170.4 lbs",
+            resolveTargetTomorrowContentDescription(imperialOvernight)
+        )
+
+        // Fallback calculation path with null baseline preserves byte-identical output
+        val fallbackNullBaseline = ColumnState.Value(76.4, -0.1, null, "kg", null)
+        assertEquals(
+            "Target Tomorrow: 76.4 kg, -0.1 kg overnight",
+            resolveTargetTomorrowContentDescription(fallbackNullBaseline)
+        )
+    }
 }
 
