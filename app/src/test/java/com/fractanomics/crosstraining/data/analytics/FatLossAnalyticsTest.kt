@@ -1449,5 +1449,185 @@ class FatLossAnalyticsTest {
         assertTrue(projected.isCapped)
         assertEquals("Estimated: > 1 year", projected.displayText)
     }
+
+    // =========================================================================
+    // Issue #590: 7-Day Average Weight for Cycle Progress and Forecast Estimation
+    // =========================================================================
+
+    @Test
+    fun `issue 590 - scenario 1 - daily water spike smoothing synthetic reproduction fixture`() {
+        // Given a fat loss cycle starting on 2026-09-28 with target weight 67.0 kg
+        val startDate = LocalDate.of(2026, 9, 28)
+        val today = LocalDate.of(2026, 10, 7)
+        val cycle = Cycle(
+            id = 5901L,
+            name = "Cut Cycle",
+            startDate = startDate,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 77.8,
+            targetWeightKg = 67.0
+        )
+        // And weight entries:
+        // - 2026-09-28: 77.8 kg (starting weigh-in, anchor)
+        // - 2026-10-01 to 2026-10-06 (6 days): daily weigh-ins at 75.0 kg
+        // - 2026-10-07: daily weigh-in spike at 76.5 kg (+1.5 kg water jump)
+        val entries = mutableListOf(
+            WeightEntry(date = startDate, weightKg = 77.8, updatedAtMillis = 1L)
+        )
+        for (day in 1..6) {
+            entries.add(
+                WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 75.0, updatedAtMillis = (day + 1).toLong())
+            )
+        }
+        entries.add(
+            WeightEntry(date = today, weightKg = 76.5, updatedAtMillis = 8L)
+        )
+
+        // When computeCurrent7DayAverageWeight and computePaceForecast are evaluated on 2026-10-07
+        val avg7d = FatLossAnalytics.computeCurrent7DayAverageWeight(entries, cycle, today)
+        val forecast = FatLossAnalytics.computePaceForecast(entries, cycle, today)
+
+        // Then:
+        // - Span days = 9 (>= 7, passing the sampling guard)
+        val oldest = entries.first()
+        val newest = entries.last()
+        val spanDays = java.time.temporal.ChronoUnit.DAYS.between(oldest.date, newest.date)
+        assertEquals(9L, spanDays)
+
+        // - The 7-day average weight is (6 * 75.0 + 76.5) / 7 = 526.5 / 7 ≈ 75.214 kg (± 1e-4)
+        assertNotNull(avg7d)
+        assertEquals(526.5 / 7.0, avg7d!!, 1e-4)
+
+        // - V_active ≈ 1.011 kg/wk, remainingKg = 8.214 kg, and rawWeeks ≈ 8.12 weeks (± 0.05)
+        // - rawWeeks (8.12) is strictly less than the unmitigated raw baseline ((76.5 - 67.0) / 1.011 ≈ 9.40 weeks)
+        assertTrue(forecast is PaceForecast.Projected)
+        val projected = forecast as PaceForecast.Projected
+        val expectedVActive = ((77.8 - 76.5) / 9.0) * 7.0 // ≈ 1.011111...
+        val expectedRemaining = (526.5 / 7.0) - 67.0       // ≈ 8.2142857...
+        val expectedRawWeeks = expectedRemaining / expectedVActive // ≈ 8.124...
+        assertEquals(expectedRawWeeks, projected.rawWeeks, 0.05)
+        assertEquals(8.12, projected.weeks, 0.05)
+
+        val unmitigatedRawWeeks = (76.5 - 67.0) / expectedVActive
+        assertTrue("rawWeeks must be strictly less than unmitigated raw baseline", projected.rawWeeks < unmitigatedRawWeeks)
+    }
+
+    @Test
+    fun `issue 590 - scenario 2 - cold start on day 1 and day 2`() {
+        // Given a new cycle starting on 2026-10-01 with initial entry 80.0 kg on 2026-10-01
+        val startDate = LocalDate.of(2026, 10, 1)
+        val entryDay1 = WeightEntry(date = startDate, weightKg = 80.0, updatedAtMillis = 1L)
+        val entries = mutableListOf(entryDay1)
+
+        // When computeCurrent7DayAverageWeight is evaluated on 2026-10-01
+        val avgDay1 = FatLossAnalytics.computeCurrent7DayAverageWeight(entries, startDate, startDate)
+
+        // Then returns 80.0 kg (N = 1)
+        assertNotNull(avgDay1)
+        assertEquals(80.0, avgDay1!!, 1e-6)
+
+        // When an entry 79.0 kg is added on 2026-10-02
+        val day2 = LocalDate.of(2026, 10, 2)
+        entries.add(WeightEntry(date = day2, weightKg = 79.0, updatedAtMillis = 2L))
+        val avgDay2 = FatLossAnalytics.computeCurrent7DayAverageWeight(entries, startDate, day2)
+
+        // Then returns 79.5 kg ((80.0 + 79.0) / 2, N = 2)
+        assertNotNull(avgDay2)
+        assertEquals(79.5, avgDay2!!, 1e-6)
+    }
+
+    @Test
+    fun `issue 590 - scenario 3 - logging inactivity 7-day window gap fallback`() {
+        // Given a cycle starting on 2026-09-01 with weigh-ins on 2026-09-01 (80.0 kg) and 2026-09-02 (79.8 kg)
+        // And no weigh-ins between 2026-09-03 and 2026-09-15
+        val startDate = LocalDate.of(2026, 9, 1)
+        val entries = listOf(
+            WeightEntry(date = startDate, weightKg = 80.0, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 9, 2), weightKg = 79.8, updatedAtMillis = 2L)
+        )
+        val referenceDate = LocalDate.of(2026, 9, 15)
+
+        // When computeCurrent7DayAverageWeight is evaluated on 2026-09-15 (window [2026-09-09, 2026-09-15] is empty)
+        val avg = FatLossAnalytics.computeCurrent7DayAverageWeight(entries, startDate, referenceDate)
+
+        // Then returns 79.8 kg (falls back to latest entry within cycle)
+        assertNotNull(avg)
+        assertEquals(79.8, avg!!, 1e-6)
+    }
+
+    @Test
+    fun `issue 590 - scenario 5 - soft deletions and pre-cycle entries ignored`() {
+        // Given an entry on 2026-10-03 marked soft-deleted (deletedAtMillis != null) and an entry prior to cycleStartDate
+        val startDate = LocalDate.of(2026, 10, 1)
+        val referenceDate = LocalDate.of(2026, 10, 5)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 25), weightKg = 90.0, updatedAtMillis = 1L), // Pre-cycle
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 80.0, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 3), weightKg = 70.0, updatedAtMillis = 3L, deletedAtMillis = 123456L), // Soft-deleted
+            WeightEntry(date = LocalDate.of(2026, 10, 5), weightKg = 78.0, updatedAtMillis = 4L),
+            WeightEntry(date = LocalDate.of(2026, 10, 10), weightKg = 76.0, updatedAtMillis = 5L) // Future entry
+        )
+
+        // When computeCurrent7DayAverageWeight is evaluated
+        val avg = FatLossAnalytics.computeCurrent7DayAverageWeight(entries, startDate, referenceDate)
+
+        // Then both pre-cycle, soft-deleted, and future entries are completely excluded from the 7-day average calculation
+        // Window [2026-09-29, 2026-10-05] only includes 2026-10-01 (80.0) and 2026-10-05 (78.0)
+        assertNotNull(avg)
+        assertEquals(79.0, avg!!, 1e-6)
+    }
+
+    @Test
+    fun `issue 590 - scenario 6 - goal reached gating on 7-day average`() {
+        // Given a target weight of 67.0 kg, an anchor entry on 2026-09-30 at 67.5 kg,
+        // six daily entries at 67.5 kg, and a newest entry on day 7 at 66.8 kg
+        // (7-day window [10-01, 10-07] average = (6 * 67.5 + 66.8) / 7 = 67.4 kg > 67.0 kg)
+        val startDate = LocalDate.of(2026, 9, 30)
+        val day7 = LocalDate.of(2026, 10, 7)
+        val cycle = Cycle(
+            id = 5906L,
+            name = "Cut Gating",
+            startDate = startDate,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 70.0,
+            targetWeightKg = 67.0
+        )
+        val entries = mutableListOf<WeightEntry>(
+            WeightEntry(date = startDate, weightKg = 67.5, updatedAtMillis = 0L)
+        )
+        for (day in 1..6) {
+            entries.add(
+                WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 67.5, updatedAtMillis = day.toLong())
+            )
+        }
+        entries.add(
+            WeightEntry(date = day7, weightKg = 66.8, updatedAtMillis = 7L)
+        )
+
+        val avg7d = FatLossAnalytics.computeCurrent7DayAverageWeight(entries, cycle, day7)
+        assertNotNull(avg7d)
+        assertEquals(67.4, avg7d!!, 1e-4)
+
+        // When computePaceForecast is evaluated on day 7
+        val forecastDay7 = FatLossAnalytics.computePaceForecast(entries, cycle, day7)
+
+        // Then the forecast does NOT return GoalReached (since 7-day average 67.4 kg > 67.0 kg)
+        assertFalse("Forecast must not be GoalReached while 7-day average > target", forecastDay7 is PaceForecast.GoalReached)
+        assertTrue("Forecast should be Projected when velocity > 0 and 7d avg > target", forecastDay7 is PaceForecast.Projected)
+
+        // When subsequent weigh-ins bring the 7-day average to <= 67.0 kg
+        val matureEntries = (8..14).map { day ->
+            WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 66.8, updatedAtMillis = day.toLong())
+        }
+        val allEntries = entries + matureEntries
+
+        val avg7dDay14 = FatLossAnalytics.computeCurrent7DayAverageWeight(allEntries, cycle, LocalDate.of(2026, 10, 14))
+        assertNotNull(avg7dDay14)
+        assertTrue("7-day average must be <= 67.0 kg", avg7dDay14!! <= 67.0)
+
+        // Then computePaceForecast returns PaceForecast.GoalReached
+        val forecastDay14 = FatLossAnalytics.computePaceForecast(allEntries, cycle, LocalDate.of(2026, 10, 14))
+        assertEquals(PaceForecast.GoalReached, forecastDay14)
+    }
 }
 

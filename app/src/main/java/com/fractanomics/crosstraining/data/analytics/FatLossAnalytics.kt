@@ -940,6 +940,54 @@ object FatLossAnalytics {
         currentWeightKg: Double?
     ): WeightProgressResult = evaluateProgress(cycle, currentWeightKg)
 
+    /**
+     * Computes the 7-day Simple Moving Average (SMA) of body weight over the closed
+     * calendar interval [referenceDate - 6 days, referenceDate] within the active cycle.
+     *
+     * Invariants & Guarantees:
+     * 1. Filtering: soft-deleted entries (deletedAtMillis != null), pre-cycle entries (date < cycleStartDate),
+     *    and future entries (date > referenceDate) are strictly excluded.
+     * 2. Uniqueness: WeightEntry.date is the natural @PrimaryKey; per-entry and per-day averages are mathematically identical.
+     * 3. Window aggregation: entries whose date is in [referenceDate - 6 days, referenceDate].
+     *    If N >= 1, returns the arithmetic mean (sum / count).
+     * 4. Cold-start progression:
+     *    - Day 1 (N = 1): returns the starting weigh-in exactly without null gaps.
+     *    - Days 2–6 (N = 2..6): arithmetic mean over elapsed days in cycle.
+     *    - Days 7+ (N >= 7): true 7-day rolling average over [referenceDate - 6, referenceDate].
+     * 5. Domain safety fallback: if no entries exist in [referenceDate - 6, referenceDate] (e.g. logging gap > 7 days),
+     *    falls back to activeEntries.last().weightKg. Returns null if active cycle entries are empty.
+     */
+    fun computeCurrent7DayAverageWeight(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        referenceDate: LocalDate = LocalDate.now()
+    ): Double? {
+        val activeEntries = entries
+            .filter { it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(referenceDate) }
+            .sortedBy { it.date }
+
+        if (activeEntries.isEmpty()) return null
+
+        val windowStart = referenceDate.minusDays(6)
+        val windowEntries = activeEntries.filter { !it.date.isBefore(windowStart) }
+
+        return if (windowEntries.isNotEmpty()) {
+            windowEntries.map { it.weightKg }.average()
+        } else {
+            activeEntries.last().weightKg
+        }
+    }
+
+    fun computeCurrent7DayAverageWeight(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        referenceDate: LocalDate = LocalDate.now()
+    ): Double? = computeCurrent7DayAverageWeight(
+        entries = entries,
+        cycleStartDate = cycle.startDate,
+        referenceDate = referenceDate
+    )
+
     // =========================================================================
     // 7. Rolling Velocity & Pacing Engine
     // =========================================================================
@@ -1149,7 +1197,11 @@ object FatLossAnalytics {
         }
 
         val newest = activeEntries.last()
-        val currentWeight = newest.weightKg
+        val currentWeight = computeCurrent7DayAverageWeight(
+            entries = activeEntries,
+            cycleStartDate = cycleStartDate,
+            referenceDate = newest.date
+        ) ?: newest.weightKg
 
         // 1. GoalReached
         if (targetWeightKg != null && targetWeightKg > 0.0 && currentWeight <= targetWeightKg) {
@@ -1215,7 +1267,7 @@ object FatLossAnalytics {
         }
 
         val vActive = if (anchor != null && elapsed > 0) {
-            ((anchor.weightKg - currentWeight) / elapsed.toDouble()) * 7.0
+            ((anchor.weightKg - newest.weightKg) / elapsed.toDouble()) * 7.0
         } else {
             0.0
         }

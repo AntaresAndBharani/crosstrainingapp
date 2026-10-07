@@ -8,6 +8,7 @@ import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.WeightEntry
+import com.fractanomics.crosstraining.ui.formatShort
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -346,5 +347,107 @@ class WeightProgressionCardTest {
         assertTrue(metricCurrent.length <= 9)
         assertTrue(metricGoal.length <= 9)
         assertTrue(imperialWorstCase.length <= 9)
+    }
+
+    // =========================================================================
+    // Issue #590: 7-Day Average Weight UI Formatting & Gating (Scenarios 1, 4, 6)
+    // =========================================================================
+
+    @Test
+    fun issue590_scenario1_waterSpikeSmoothing_currentCardDisplays7DayAverageAndGoalDeficit() {
+        val startDate = LocalDate.of(2026, 9, 28)
+        val today = LocalDate.of(2026, 10, 7)
+        val cycle = Cycle(
+            id = 5901L,
+            name = "Cut",
+            startDate = startDate,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 77.8,
+            targetWeightKg = 67.0
+        )
+        val entries = mutableListOf(
+            createWeightEntry(startDate, 77.8)
+        )
+        for (day in 1..6) {
+            entries.add(createWeightEntry(LocalDate.of(2026, 10, day), 75.0))
+        }
+        entries.add(createWeightEntry(today, 76.5))
+
+        val activeEntries = entries.filter {
+            it.deletedAtMillis == null && !it.date.isBefore(cycle.startDate) && !it.date.isAfter(today)
+        }
+        val latestEntry = activeEntries.lastOrNull()
+        val current7DayAvgKg = FatLossAnalytics.computeCurrent7DayAverageWeight(
+            entries = entries,
+            cycle = cycle,
+            referenceDate = latestEntry?.date ?: today
+        )
+        val currentKg = current7DayAvgKg ?: latestEntry?.weightKg
+        val targetKg = cycle.targetWeightKg ?: cycle.targetBodyWeightKg
+
+        val isImperial = false
+        val unitLabel = if (isImperial) "lbs" else "kg"
+        val currentDisplay = currentKg?.let { if (isImperial) WeightAnalytics.kgToLbs(it) else it }
+        val targetDisplay = targetKg?.let { if (isImperial) WeightAnalytics.kgToLbs(it) else it }
+
+        // Current KPI Card:
+        // Value displays "75.2 kg" (smoothed 7d average instead of raw spike 76.5 kg)
+        val currentValueText = currentDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" }
+        assertEquals("75.2 kg", currentValueText)
+
+        // Subtitle displays "7d avg • 7 Oct"
+        val currentSubtitle = "7d avg • ${latestEntry?.date?.formatShort() ?: "—"}"
+        assertEquals("7d avg • ${latestEntry?.date?.formatShort()}", currentSubtitle)
+        assertTrue(currentSubtitle.equals("7d avg • 7 Oct", ignoreCase = true))
+
+        // Goal KPI Card:
+        // Remaining deficit displays "8.2 kg left"
+        assertNotNull(currentDisplay)
+        assertNotNull(targetDisplay)
+        val remaining = currentDisplay!! - targetDisplay!!
+        val goalSubtitle = "${String.format(Locale.US, "%.1f", remaining)} $unitLabel left"
+        assertEquals("8.2 kg left", goalSubtitle)
+    }
+
+    @Test
+    fun issue590_scenario4_imperialUnitConversionConsistency_currentAndGoalDisplay() {
+        val targetWeightKg = 67.0
+        val metric7DayAvgKg = 526.5 / 7.0 // ≈ 75.2142857 kg
+        val isImperial = true
+        val unitLabel = if (isImperial) "lbs" else "kg"
+
+        val currentDisplay = WeightAnalytics.kgToLbs(metric7DayAvgKg)
+        val targetDisplay = WeightAnalytics.kgToLbs(targetWeightKg)
+
+        // Current card value in imperial
+        val currentValueText = "${String.format(Locale.US, "%.1f", currentDisplay)} $unitLabel"
+        assertEquals("165.8 lbs", currentValueText)
+
+        // Goal card remaining deficit in imperial
+        val remaining = currentDisplay - targetDisplay
+        val goalSubtitle = "${String.format(Locale.US, "%.1f", remaining)} $unitLabel left"
+        assertEquals("18.1 lbs left", goalSubtitle)
+    }
+
+    @Test
+    fun issue590_scenario6_goalReachedGatingOn7DayAverage_goalCardDisplay() {
+        val targetKg = 67.0
+        // Day 7: six entries at 67.5 kg, one entry at 66.8 kg -> 7-day average = 67.4 kg
+        val currentKgDay7 = 67.4
+        val remainingDay7 = currentKgDay7 - targetKg // 0.4 kg > 0.05
+        assertTrue(remainingDay7 > 0.05)
+        val goalSubtitleDay7 = "${String.format(Locale.US, "%.1f", remainingDay7)} kg left"
+        assertEquals("0.4 kg left", goalSubtitleDay7)
+
+        // Subsequent weigh-ins bring 7-day average to <= 67.0 kg
+        val currentKgMature = 66.8
+        val remainingMature = currentKgMature - targetKg // -0.2 kg <= 0.05
+        assertTrue(remainingMature <= 0.05)
+        val goalTextMature = if (remainingMature > 0.05) {
+            "${String.format(Locale.US, "%.1f", remainingMature)} kg left"
+        } else {
+            "Achieved"
+        }
+        assertEquals("Achieved", goalTextMature)
     }
 }

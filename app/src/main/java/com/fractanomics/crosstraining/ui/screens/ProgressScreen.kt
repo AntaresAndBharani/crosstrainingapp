@@ -1072,7 +1072,14 @@ fun WeightProgressionCard(
 
     val startingKg = cycle.startingWeightKg ?: activeEntries.firstOrNull()?.weightKg
     val latestEntry = activeEntries.lastOrNull()
-    val currentKg = latestEntry?.weightKg
+    val current7DayAvgKg = remember(weightEntries, activeEntries, cycle, today) {
+        FatLossAnalytics.computeCurrent7DayAverageWeight(
+            entries = weightEntries,
+            cycle = cycle,
+            referenceDate = latestEntry?.date ?: today
+        )
+    }
+    val currentKg = current7DayAvgKg ?: latestEntry?.weightKg
     val targetKg = cycle.targetWeightKg ?: cycle.targetBodyWeightKg
 
     val startingDisplay = startingKg?.let { if (isImperial) WeightAnalytics.kgToLbs(it) else it }
@@ -1118,7 +1125,7 @@ fun WeightProgressionCard(
                     value = currentDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" } ?: "—",
                     valueStyle = MaterialTheme.typography.titleMedium,
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                    sub = { SubText(latestEntry?.date?.formatShort() ?: "—") }
+                    sub = { SubText("7d avg • ${latestEntry?.date?.formatShort() ?: "—"}") }
                 )
                 KpiCard(
                     label = "Goal",
