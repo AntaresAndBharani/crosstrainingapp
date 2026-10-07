@@ -50,6 +50,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
@@ -1123,13 +1125,42 @@ fun WeightProgressionCard(
     )
 }
 
+internal const val NO_DATA_PLACEHOLDER = "—"
+internal const val NO_DATA_CONTENT_DESCRIPTION = "No data"
+internal const val PACE_14_NULL_SUBTITLE = "Needs weigh-in 14+ days ago"
+internal const val PACE_14_MATURE_SUBTITLE = "Smoothed trend"
+
+internal fun paceTrendIcon(trend: PaceTrend?): String? = when (trend) {
+    PaceTrend.LOSS -> "▼ "
+    PaceTrend.GAIN -> "▲ "
+    PaceTrend.NEUTRAL -> "— "
+    null -> null
+}
+
+internal fun resolvePaceChipValue(pace: PaceRateResult?, weightUnit: String): String {
+    return if (pace != null) {
+        val icon = paceTrendIcon(pace.trend) ?: ""
+        "$icon${pace.formatDisplay(weightUnit)}"
+    } else {
+        NO_DATA_PLACEHOLDER
+    }
+}
+
+internal fun resolvePaceChipContentDescription(pace: PaceRateResult?): String? {
+    return if (pace == null) NO_DATA_CONTENT_DESCRIPTION else null
+}
+
+internal fun resolvePace14Subtitle(pace14: PaceRateResult?): String {
+    return if (pace14 == null) PACE_14_NULL_SUBTITLE else PACE_14_MATURE_SUBTITLE
+}
+
 internal data class PaceTrendStyle(val icon: String?, val color: Color)
 
 @Composable
 internal fun paceTrendStyle(trend: PaceTrend?): PaceTrendStyle = when (trend) {
-    PaceTrend.LOSS -> PaceTrendStyle("▼ ", MaterialTheme.colorScheme.tertiary)
-    PaceTrend.GAIN -> PaceTrendStyle("▲ ", MaterialTheme.colorScheme.error)
-    PaceTrend.NEUTRAL -> PaceTrendStyle("— ", MaterialTheme.colorScheme.onSurfaceVariant)
+    PaceTrend.LOSS -> PaceTrendStyle(paceTrendIcon(trend), MaterialTheme.colorScheme.tertiary)
+    PaceTrend.GAIN -> PaceTrendStyle(paceTrendIcon(trend), MaterialTheme.colorScheme.error)
+    PaceTrend.NEUTRAL -> PaceTrendStyle(paceTrendIcon(trend), MaterialTheme.colorScheme.onSurfaceVariant)
     null -> PaceTrendStyle(null, MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
@@ -1360,10 +1391,16 @@ fun WeightProgressionHeroCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         val style7 = paceTrendStyle(pace7?.trend)
-                        val pace7Text = if (pace7 != null) "${style7.icon ?: ""}${pace7.formatDisplay(weightUnit)}" else "Not enough data yet"
+                        val pace7Text = resolvePaceChipValue(pace7, weightUnit)
                         val pace7Color = if (pace7 != null) style7.color else MaterialTheme.colorScheme.onSurfaceVariant
+                        val pace7Modifier = if (pace7 == null) {
+                            Modifier.semantics { contentDescription = NO_DATA_CONTENT_DESCRIPTION }
+                        } else {
+                            Modifier
+                        }
                         Text(
                             text = pace7Text,
+                            modifier = pace7Modifier,
                             style = paceTextStyle,
                             fontWeight = FontWeight.Bold,
                             color = pace7Color,
@@ -1375,7 +1412,8 @@ fun WeightProgressionHeroCard(
                             text = sub7,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
+                            minLines = 2,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -1400,22 +1438,29 @@ fun WeightProgressionHeroCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         val style14 = paceTrendStyle(pace14?.trend)
-                        val pace14Text = if (pace14 != null) "${style14.icon ?: ""}${pace14.formatDisplay(weightUnit)}" else "Not enough data yet"
+                        val pace14Text = resolvePaceChipValue(pace14, weightUnit)
                         val pace14Color = if (pace14 != null) style14.color else MaterialTheme.colorScheme.onSurfaceVariant
+                        val pace14Modifier = if (pace14 == null) {
+                            Modifier.semantics { contentDescription = NO_DATA_CONTENT_DESCRIPTION }
+                        } else {
+                            Modifier
+                        }
                         Text(
                             text = pace14Text,
+                            modifier = pace14Modifier,
                             style = paceTextStyle,
                             fontWeight = FontWeight.Bold,
                             color = pace14Color,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        val sub14 = if (pace14 == null) "Needs a weigh-in from 14+ days ago" else "Smoothed trend"
+                        val sub14 = resolvePace14Subtitle(pace14)
                         Text(
                             text = sub14,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
+                            minLines = 2,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
                     }

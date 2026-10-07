@@ -2,6 +2,7 @@ package com.fractanomics.crosstraining.ui.screens
 
 import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
 import com.fractanomics.crosstraining.data.analytics.PaceForecast
+import com.fractanomics.crosstraining.data.analytics.PaceRateResult
 import com.fractanomics.crosstraining.data.analytics.PaceTrend
 import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
 import com.fractanomics.crosstraining.data.model.Cycle
@@ -450,4 +451,57 @@ class WeightProgressionCardTest {
         }
         assertEquals("Achieved", goalTextMature)
     }
+
+    // =========================================================================
+    // Issue #594: 14-Day & 7-Day Null Pace Placeholders, TalkBack, and Subtitle Resolution
+    // =========================================================================
+    @Test
+    fun issue594_scenario4_nullPacePlaceholderAndTalkBackDescription() {
+        // Null 7-day and 14-day pace resolves to em-dash "—"
+        val pace7NullValue = resolvePaceChipValue(null, "kg")
+        val pace14NullValue = resolvePaceChipValue(null, "lbs")
+        assertEquals("—", pace7NullValue)
+        assertEquals("—", pace14NullValue)
+
+        // Null pace resolves to TalkBack content description "No data"
+        val pace7ContentDesc = resolvePaceChipContentDescription(null)
+        val pace14ContentDesc = resolvePaceChipContentDescription(null)
+        assertEquals("No data", pace7ContentDesc)
+        assertEquals("No data", pace14ContentDesc)
+
+        // Non-null pace does not override TalkBack content description
+        val pace7Mature = PaceRateResult(
+            rateKgPerWeek = -0.8,
+            anchorWeightKg = 80.0,
+            anchorDate = LocalDate.of(2026, 9, 30),
+            currentWeightKg = 79.2,
+            currentDate = LocalDate.of(2026, 10, 7),
+            elapsedDays = 7L,
+            trend = PaceTrend.LOSS
+        )
+        assertNull(resolvePaceChipContentDescription(pace7Mature))
+        assertEquals("▼ -0.8 kg/wk", resolvePaceChipValue(pace7Mature, "kg"))
+        assertEquals("▼ -1.8 lbs/wk", resolvePaceChipValue(pace7Mature, "lbs"))
+    }
+
+    @Test
+    fun issue594_scenario4_14DaySubtitleResolution() {
+        // When 14-day pace is null, subtitle is strictly pinned to "Needs weigh-in 14+ days ago"
+        val nullSubtitle = resolvePace14Subtitle(null)
+        assertEquals("Needs weigh-in 14+ days ago", nullSubtitle)
+
+        // When 14-day pace is available, subtitle is "Smoothed trend"
+        val pace14 = PaceRateResult(
+            rateKgPerWeek = -0.68,
+            anchorWeightKg = 78.0,
+            anchorDate = LocalDate.of(2026, 9, 23),
+            currentWeightKg = 76.7,
+            currentDate = LocalDate.of(2026, 10, 7),
+            elapsedDays = 14L,
+            trend = PaceTrend.LOSS
+        )
+        val matureSubtitle = resolvePace14Subtitle(pace14)
+        assertEquals("Smoothed trend", matureSubtitle)
+    }
 }
+
