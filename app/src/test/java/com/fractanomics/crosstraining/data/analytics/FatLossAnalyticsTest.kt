@@ -1755,7 +1755,39 @@ class FatLossAnalyticsTest {
         assertTrue(comparison.isAcceleratingDeficit)
 
         val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
-        assertEquals("14% faster vs yesterday", subtitle)
+        assertEquals("14% faster loss vs yesterday", subtitle)
+    }
+
+    @Test
+    fun `issue 594 - scenario 2 - 7-day pace decelerating deficit reproduction`() {
+        Locale.setDefault(Locale.US)
+        val comparison = FatLossAnalytics.PaceComparisonResult(
+            currentRateKgPerWeek = -0.80,
+            priorRateKgPerWeek = -0.91,
+            deltaRateKgPerWeek = 0.11,
+            percentChange = -12.08,
+            isAcceleratingDeficit = false,
+            priorDate = LocalDate.of(2026, 10, 6),
+            isConsecutive = true
+        )
+        val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
+        assertEquals("12% slower loss vs yesterday", subtitle)
+    }
+
+    @Test
+    fun `issue 594 - scenario 3 - 7-day pace accelerating deficit`() {
+        Locale.setDefault(Locale.US)
+        val comparison = FatLossAnalytics.PaceComparisonResult(
+            currentRateKgPerWeek = -0.80,
+            priorRateKgPerWeek = -0.70,
+            deltaRateKgPerWeek = -0.10,
+            percentChange = 14.28,
+            isAcceleratingDeficit = true,
+            priorDate = LocalDate.of(2026, 10, 6),
+            isConsecutive = true
+        )
+        val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
+        assertEquals("14% faster loss vs yesterday", subtitle)
     }
 
     @Test
@@ -1774,7 +1806,7 @@ class FatLossAnalyticsTest {
         assertFalse(comparison.isAcceleratingDeficit)
 
         val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
-        assertEquals("25% slower vs yesterday", subtitle)
+        assertEquals("25% slower loss vs yesterday", subtitle)
     }
 
     @Test
@@ -1809,7 +1841,7 @@ class FatLossAnalyticsTest {
         assertTrue(comparison.isAcceleratingDeficit)
 
         val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
-        assertEquals("33% faster vs 5 Oct", subtitle)
+        assertEquals("33% faster loss vs 5 Oct", subtitle)
     }
 
     @Test
@@ -1998,7 +2030,7 @@ class FatLossAnalyticsTest {
         assertTrue(comp.isConsecutive)
 
         val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comp, "kg", LocalDate.of(2026, 10, 7))
-        assertEquals("14% faster vs yesterday", subtitle)
+        assertEquals("14% faster loss vs yesterday", subtitle)
     }
 }
 

@@ -6,8 +6,12 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
@@ -212,7 +216,7 @@ class WeightProgressionCardComposeTest {
     }
 
     // =========================================================================
-    // Helper Assertion for Single Line and No Visual Overflow
+    // Helper Assertions for Line Count and Visual Overflow
     // =========================================================================
     private fun assertSingleLineNoOverflow(matcher: androidx.compose.ui.test.SemanticsNodeInteraction) {
         val results = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
@@ -226,16 +230,27 @@ class WeightProgressionCardComposeTest {
         assertFalse("Should not have visual overflow", result.hasVisualOverflow)
     }
 
+    private fun assertMaxTwoLinesNoOverflow(matcher: androidx.compose.ui.test.SemanticsNodeInteraction) {
+        val results = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        matcher.assertIsDisplayed()
+        matcher.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action ->
+            action(results)
+        }
+        assertTrue("TextLayoutResult should be returned", results.isNotEmpty())
+        val result = results.first()
+        assertTrue("Should be <= 2 lines (was ${result.lineCount})", result.lineCount <= 2)
+        assertFalse("Should not have visual overflow", result.hasVisualOverflow)
+    }
+
     // =========================================================================
-    // Scenario 1: Hero Card Layout & Visual Hierarchy (Worst-Case Automated Gate)
+    // Scenario 1: No-Truncation Gate for Half-Width Pace Cards (Parameterised Subtitle Gate)
     // =========================================================================
     @Test
-    fun scenario1_heroCardLayoutAndVisualHierarchy_worstCaseAutomatedGate() {
+    fun scenario1_noTruncationGateForHalfWidthPaceCards_parameterisedSubtitleGate() {
         val referenceDate = LocalDate.of(2026, 10, 7)
         val staleLatestDate = LocalDate.of(2026, 10, 5)
         val priorDate = LocalDate.of(2026, 10, 4)
 
-        // Day-over-day delta: 76.7 - 77.0 = -0.3 kg (-0.7 lbs)
         val dayOverDayDelta = DayOverDayDelta(
             deltaKg = -0.3,
             priorDate = priorDate,
@@ -251,24 +266,107 @@ class WeightProgressionCardComposeTest {
             elapsedDays = 7L,
             trend = PaceTrend.LOSS
         )
-        val pace14 = PaceRateResult(
-            rateKgPerWeek = -0.68, // -1.5 lbs/wk
-            anchorWeightKg = 78.0,
-            anchorDate = staleLatestDate.minusDays(14),
-            currentWeightKg = 76.7,
-            currentDate = staleLatestDate,
-            elapsedDays = 14L,
-            trend = PaceTrend.LOSS
-        )
-        val paceComparison7d = PaceComparisonResult(
-            currentRateKgPerWeek = -0.816,
-            priorRateKgPerWeek = -0.7,
-            deltaRateKgPerWeek = -0.116,
-            percentChange = 16.6,
-            isAcceleratingDeficit = true,
-            priorDate = priorDate,
+        val pace14: PaceRateResult? = null
+
+        // Parameterised subtitle variants:
+        // 1. Percentage decelerating loss: "12% slower loss vs yesterday"
+        val comp1 = PaceComparisonResult(
+            currentRateKgPerWeek = -0.80,
+            priorRateKgPerWeek = -0.91,
+            deltaRateKgPerWeek = 0.11,
+            percentChange = -12.08,
+            isAcceleratingDeficit = false,
+            priorDate = referenceDate.minusDays(1),
             isConsecutive = true
         )
+        // 2. Non-consecutive date percentage accelerating loss: "33% faster loss vs 5 Oct"
+        val comp2 = PaceComparisonResult(
+            currentRateKgPerWeek = -0.80,
+            priorRateKgPerWeek = -0.60,
+            deltaRateKgPerWeek = -0.20,
+            percentChange = 33.33,
+            isAcceleratingDeficit = true,
+            priorDate = LocalDate.of(2026, 10, 5),
+            isConsecutive = true
+        )
+        // 3. Imperial delta rate fallback: "-1.1 lbs/wk vs yesterday"
+        val comp3 = PaceComparisonResult(
+            currentRateKgPerWeek = -0.80,
+            priorRateKgPerWeek = -0.30,
+            deltaRateKgPerWeek = -0.50,
+            percentChange = null,
+            isAcceleratingDeficit = true,
+            priorDate = referenceDate.minusDays(1),
+            isConsecutive = true
+        )
+
+        val variants = listOf(
+            comp1 to "12% slower loss vs yesterday",
+            comp2 to "33% faster loss vs 5 Oct",
+            comp3 to "-1.1 lbs/wk vs yesterday"
+        )
+
+        for ((comp, expectedSubtitle) in variants) {
+            composeTestRule.setContent {
+                CompositionLocalProvider(
+                    LocalDensity provides Density(density = 1f, fontScale = 1.3f)
+                ) {
+                    Box(modifier = Modifier.width(360.dp)) {
+                        WeightProgressionHeroCard(
+                            title = "Weight Progression (Cut)",
+                            startWeightKg = 77.8,
+                            startDateFormatted = "28 Sep",
+                            currentWeightKg = 76.7,
+                            currentDate = staleLatestDate,
+                            goalWeightKg = 70.0,
+                            weightUnit = "lbs",
+                            dayOverDayDelta = dayOverDayDelta,
+                            dropStreakDays = 3,
+                            pace7 = pace7,
+                            pace14 = pace14,
+                            paceComparison7d = comp,
+                            forecast = null,
+                            onLogWeight = {},
+                            referenceDate = referenceDate
+                        )
+                    }
+                }
+            }
+
+            // Verify START metric label ("START 171.5 lbs") and date subtext ("(28 Sep)")
+            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("START 171.5 lbs"))
+            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("(28 Sep)"))
+
+            // Verify GOAL metric label ("GOAL 154.3 lbs") and remaining subtext ("(-14.8 lbs left)")
+            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("GOAL 154.3 lbs"))
+            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("(-14.8 lbs left)"))
+
+            // Verify delta pill ("5 Oct · ▼ -0.7 lbs vs 4 Oct") and streak pill ("📉 3-day streak")
+            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("5 Oct · ▼ -0.7 lbs vs 4 Oct"))
+            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("📉 3-day streak"))
+
+            // Verify 7-day pace value ("▼ -1.8 lbs/wk")
+            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("▼ -1.8 lbs/wk"))
+
+            // Verify 7-day pace subtitle reports lineCount <= 2 and !hasVisualOverflow
+            assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText(expectedSubtitle))
+
+            // Verify 14-day pace value reports lineCount == 1 and !hasVisualOverflow displaying "—" (with contentDescription = "No data")
+            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("—"))
+            composeTestRule.onNodeWithContentDescription("No data").assertIsDisplayed()
+
+            // Verify 14-day pace subtitle ("Needs weigh-in 14+ days ago") reports lineCount <= 2 and !hasVisualOverflow
+            assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Needs weigh-in 14+ days ago"))
+        }
+    }
+
+    // =========================================================================
+    // Scenario 1b: Dual-Null Cold-Start Gate
+    // =========================================================================
+    @Test
+    fun scenario1b_dualNullColdStartGate() {
+        val referenceDate = LocalDate.of(2026, 10, 7)
+        val currentDate = LocalDate.of(2026, 10, 7)
 
         composeTestRule.setContent {
             CompositionLocalProvider(
@@ -278,16 +376,16 @@ class WeightProgressionCardComposeTest {
                     WeightProgressionHeroCard(
                         title = "Weight Progression (Cut)",
                         startWeightKg = 77.8,
-                        startDateFormatted = "28 Sep",
-                        currentWeightKg = 76.7,
-                        currentDate = staleLatestDate,
+                        startDateFormatted = "5 Oct",
+                        currentWeightKg = 77.5,
+                        currentDate = currentDate,
                         goalWeightKg = 70.0,
                         weightUnit = "lbs",
-                        dayOverDayDelta = dayOverDayDelta,
-                        dropStreakDays = 3,
-                        pace7 = pace7,
-                        pace14 = pace14,
-                        paceComparison7d = paceComparison7d,
+                        dayOverDayDelta = null,
+                        dropStreakDays = 0,
+                        pace7 = null,
+                        pace14 = null,
+                        paceComparison7d = null,
                         forecast = null,
                         onLogWeight = {},
                         referenceDate = referenceDate
@@ -296,21 +394,21 @@ class WeightProgressionCardComposeTest {
             }
         }
 
-        // Verify START metric label ("START 171.5 lbs") and date subtext ("(28 Sep)")
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("START 171.5 lbs"))
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("(28 Sep)"))
+        // 7-day pace value and 14-day pace value display "—" with lineCount == 1 and contentDescription = "No data"
+        val noDataNodes = composeTestRule.onAllNodesWithText("—")
+        noDataNodes.assertCountEquals(2)
+        val noDataDescriptions = composeTestRule.onAllNodesWithContentDescription("No data")
+        noDataDescriptions.assertCountEquals(2)
 
-        // Verify GOAL metric label ("GOAL 154.3 lbs") and remaining subtext ("(-14.8 lbs left)")
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("GOAL 154.3 lbs"))
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("(-14.8 lbs left)"))
+        for (i in 0 until 2) {
+            assertSingleLineNoOverflow(noDataNodes[i])
+        }
 
-        // Verify delta pill ("5 Oct · ▼ -0.7 lbs vs 4 Oct") and streak pill ("📉 3-day streak")
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("5 Oct · ▼ -0.7 lbs vs 4 Oct"))
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("📉 3-day streak"))
+        // 7-day pace subtitle displays "Baseline 7d pace" with lineCount <= 2 and !hasVisualOverflow
+        assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Baseline 7d pace"))
 
-        // Verify 7-day pace value ("▼ -1.8 lbs/wk") and 14-day pace value ("▼ -1.5 lbs/wk")
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("▼ -1.8 lbs/wk"))
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("▼ -1.5 lbs/wk"))
+        // 14-day pace subtitle displays "Needs weigh-in 14+ days ago" with lineCount <= 2 and !hasVisualOverflow
+        assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Needs weigh-in 14+ days ago"))
     }
 
     // =========================================================================

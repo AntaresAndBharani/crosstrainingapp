@@ -1590,7 +1590,7 @@ object FatLossAnalytics {
         if (comparison.percentChange != null) {
             val pct = kotlin.math.round(kotlin.math.abs(comparison.percentChange)).toInt()
             val descriptor = if (comparison.isAcceleratingDeficit) "faster" else "slower"
-            return "$pct% $descriptor $vsPart"
+            return "$pct% $descriptor loss $vsPart"
         }
 
         val isImperial = weightUnit.equals("lbs", ignoreCase = true)
