@@ -7,12 +7,20 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.sp
+import com.fractanomics.crosstraining.data.analytics.DayOverDayDelta
+import com.fractanomics.crosstraining.data.analytics.PaceComparisonResult
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -1022,13 +1030,8 @@ fun WeightProgressionCard(
 ) {
     if (cycle.type != CycleType.FAT_LOSS_BODYBUILDING) return
 
-    val isImperial = weightUnit.equals("lbs", ignoreCase = true)
-    val unitLabel = if (isImperial) "lbs" else "kg"
-
     val activeEntries = remember(weightEntries, cycle.startDate, cycle.endDate, today) {
-        weightEntries
-            .filter { it.deletedAtMillis == null && !it.date.isBefore(cycle.startDate) && !it.date.isAfter(today) }
-            .sortedBy { it.date }
+        FatLossAnalytics.getActiveWeightEntries(weightEntries, cycle.startDate, today)
     }
 
     if (activeEntries.isEmpty()) {
@@ -1070,112 +1073,360 @@ fun WeightProgressionCard(
         return
     }
 
-    val startingKg = cycle.startingWeightKg ?: activeEntries.firstOrNull()?.weightKg
-    val latestEntry = activeEntries.lastOrNull()
-    val current7DayAvgKg = remember(weightEntries, activeEntries, cycle, today) {
-        FatLossAnalytics.computeCurrent7DayAverageWeight(
-            entries = weightEntries,
-            cycle = cycle,
-            referenceDate = latestEntry?.date ?: today
-        )
-    }
-    val currentKg = current7DayAvgKg ?: latestEntry?.weightKg
-    val targetKg = cycle.targetWeightKg ?: cycle.targetBodyWeightKg
-
-    val startingDisplay = startingKg?.let { if (isImperial) WeightAnalytics.kgToLbs(it) else it }
-    val currentDisplay = currentKg?.let { if (isImperial) WeightAnalytics.kgToLbs(it) else it }
-    val targetDisplay = targetKg?.let { if (isImperial) WeightAnalytics.kgToLbs(it) else it }
-
-    val startSubtitle = if (cycle.startingWeightKg != null) cycle.startDate.formatShort() else (activeEntries.firstOrNull()?.date?.formatShort() ?: "No log")
-
-    val pace7 = remember(activeEntries, cycle, today) {
-        FatLossAnalytics.compute7DayPace(entries = weightEntries, cycle = cycle, today = today)
-    }
-    val pace14 = remember(activeEntries, cycle, today) {
-        FatLossAnalytics.compute14DayPace(entries = weightEntries, cycle = cycle, today = today)
+    val startWeightKg: Double? = cycle.startingWeightKg ?: activeEntries.firstOrNull()?.weightKg
+    val goalWeightKg: Double? = cycle.targetWeightKg ?: cycle.targetBodyWeightKg
+    val latestEntry = activeEntries.last()
+    val currentWeightKg: Double = latestEntry.weightKg
+    val currentDate: LocalDate = latestEntry.date
+    val startDateFormatted: String = if (cycle.startingWeightKg != null) {
+        cycle.startDate.formatShort()
+    } else {
+        activeEntries.firstOrNull()?.date?.formatShort() ?: "No log"
     }
 
-    val forecast = remember(activeEntries, cycle, today) {
-        FatLossAnalytics.computePaceForecast(
-            entries = weightEntries,
-            cycle = cycle,
-            today = today
-        )
+    val dayOverDayDelta = remember(activeEntries, cycle.startDate, today) {
+        FatLossAnalytics.computeDayOverDayDelta(activeEntries, cycle.startDate, today)
     }
+    val dropStreakDays = remember(activeEntries, cycle.startDate, today) {
+        FatLossAnalytics.computeWeightDecreasingStreak(activeEntries, cycle.startDate, today)
+    }
+    val pace7 = remember(weightEntries, cycle, today) {
+        FatLossAnalytics.compute7DayPace(weightEntries, cycle, today)
+    }
+    val pace14 = remember(weightEntries, cycle, today) {
+        FatLossAnalytics.compute14DayPace(weightEntries, cycle, today)
+    }
+    val paceComparison7d = remember(activeEntries, cycle.startDate, today) {
+        FatLossAnalytics.compute7DayPaceComparison(activeEntries, cycle.startDate, today)
+    }
+    val forecast = remember(weightEntries, cycle, today) {
+        FatLossAnalytics.computePaceForecast(weightEntries, cycle, today)
+    }
+
+    WeightProgressionHeroCard(
+        title = "Weight Progression (${cycle.name})",
+        startWeightKg = startWeightKg,
+        startDateFormatted = startDateFormatted,
+        currentWeightKg = currentWeightKg,
+        currentDate = currentDate,
+        goalWeightKg = goalWeightKg,
+        weightUnit = weightUnit,
+        dayOverDayDelta = dayOverDayDelta,
+        dropStreakDays = dropStreakDays,
+        pace7 = pace7,
+        pace14 = pace14,
+        paceComparison7d = paceComparison7d,
+        forecast = forecast,
+        onLogWeight = onLogWeight,
+        modifier = modifier,
+        referenceDate = today
+    )
+}
+
+internal data class PaceTrendStyle(val icon: String?, val color: Color)
+
+@Composable
+internal fun paceTrendStyle(trend: PaceTrend?): PaceTrendStyle = when (trend) {
+    PaceTrend.LOSS -> PaceTrendStyle("▼ ", MaterialTheme.colorScheme.tertiary)
+    PaceTrend.GAIN -> PaceTrendStyle("▲ ", MaterialTheme.colorScheme.error)
+    PaceTrend.NEUTRAL -> PaceTrendStyle("— ", MaterialTheme.colorScheme.onSurfaceVariant)
+    null -> PaceTrendStyle(null, MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun WeightProgressionHeroCard(
+    title: String,
+    startWeightKg: Double?,
+    startDateFormatted: String,
+    currentWeightKg: Double,
+    currentDate: LocalDate,
+    goalWeightKg: Double?,
+    weightUnit: String,
+    dayOverDayDelta: DayOverDayDelta?,
+    dropStreakDays: Int,
+    pace7: PaceRateResult?,
+    pace14: PaceRateResult?,
+    paceComparison7d: PaceComparisonResult?,
+    forecast: PaceForecast?,
+    onLogWeight: () -> Unit,
+    modifier: Modifier = Modifier,
+    referenceDate: LocalDate = LocalDate.now()
+) {
+    val isImperial = weightUnit.equals("lbs", ignoreCase = true)
 
     SectionCard(
-        title = "Weight Progression (${cycle.name})",
+        title = title,
         modifier = modifier
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            // Header KPIs: Starting, Current, Goal
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            // 1. Top Reference Track (Start & Goal Anchors)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                KpiCard(
-                    label = "Starting",
-                    value = startingDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" } ?: "—",
-                    valueStyle = MaterialTheme.typography.titleMedium,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                    sub = { SubText(startSubtitle) }
-                )
-                KpiCard(
-                    label = "Current",
-                    value = currentDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" } ?: "—",
-                    valueStyle = MaterialTheme.typography.titleMedium,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                    sub = { SubText("7d avg • ${latestEntry?.date?.formatShort() ?: "—"}") }
-                )
-                KpiCard(
-                    label = "Goal",
-                    value = targetDisplay?.let { "${String.format(Locale.US, "%.1f", it)} $unitLabel" } ?: "—",
-                    valueStyle = MaterialTheme.typography.titleMedium,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                    sub = {
-                        if (targetDisplay != null && currentDisplay != null) {
-                            val remaining = currentDisplay - targetDisplay
-                            if (remaining > 0.05) {
-                                SubText("${String.format(Locale.US, "%.1f", remaining)} $unitLabel left")
-                            } else {
-                                Text(
-                                    "Achieved",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.tertiary
-                                )
-                            }
+                // Start Anchor (Left)
+                Column(
+                    modifier = Modifier.weight(1f, fill = false),
+                    horizontalAlignment = Alignment.Start
+                ) {
+                    val startLine1 = if (startWeightKg != null) {
+                        val startDisplay = if (isImperial) WeightAnalytics.kgToLbs(startWeightKg) else startWeightKg
+                        "START ${String.format(Locale.US, "%.1f", startDisplay)} $weightUnit"
+                    } else {
+                        "START -- $weightUnit"
+                    }
+                    Text(
+                        text = startLine1,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "($startDateFormatted)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                // Progress bar between anchors (hidden when goal or start is null)
+                if (startWeightKg != null && goalWeightKg != null) {
+                    val totalDistance = startWeightKg - goalWeightKg
+                    val progressFraction = if (totalDistance > 0.0) {
+                        ((startWeightKg - currentWeightKg) / totalDistance).toFloat().coerceIn(0f, 1f)
+                    } else 1f
+
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = String.format(Locale.US, "%.1f%% to goal", progressFraction * 100f),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        LinearProgressIndicator(
+                            progress = { progressFraction },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                        )
+                    }
+                }
+
+                // Goal Anchor (Right)
+                Column(
+                    modifier = Modifier.weight(1f, fill = false),
+                    horizontalAlignment = Alignment.End
+                ) {
+                    val goalLine1 = if (goalWeightKg != null) {
+                        val goalDisplay = if (isImperial) WeightAnalytics.kgToLbs(goalWeightKg) else goalWeightKg
+                        "GOAL ${String.format(Locale.US, "%.1f", goalDisplay)} $weightUnit"
+                    } else {
+                        "GOAL: No target"
+                    }
+                    Text(
+                        text = goalLine1,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (goalWeightKg != null) {
+                        val isGoalReached = currentWeightKg <= goalWeightKg
+                        val goalLine2 = if (isGoalReached) {
+                            "Goal reached"
                         } else {
-                            SubText(if (targetDisplay == null) "No target" else "")
+                            val remainingKg = currentWeightKg - goalWeightKg
+                            val remainingDisplay = if (isImperial) WeightAnalytics.kgToLbs(remainingKg) else remainingKg
+                            "(-${String.format(Locale.US, "%.1f", remainingDisplay)} $weightUnit left)"
+                        }
+                        Text(
+                            text = goalLine2,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isGoalReached) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            // 2. Hero Centerpiece (Current Weight & Intelligence Pills)
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = "CURRENT WEIGHT",
+                    style = MaterialTheme.typography.labelSmall,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                val displayCurrent = if (isImperial) WeightAnalytics.kgToLbs(currentWeightKg) else currentWeightKg
+                val currentFormatted = String.format(Locale.US, "%.1f", displayCurrent)
+                Text(
+                    text = "$currentFormatted $weightUnit",
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.Bold
+                )
+
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (dayOverDayDelta != null) {
+                        val deltaText = FatLossAnalytics.formatCurrentWeightSubtitle(dayOverDayDelta, weightUnit, referenceDate)
+                        val (pillBg, pillFg) = when {
+                            dayOverDayDelta.deltaKg < -FatLossAnalytics.NOISE_THRESHOLD_KG ->
+                                MaterialTheme.colorScheme.tertiaryContainer to MaterialTheme.colorScheme.onTertiaryContainer
+                            dayOverDayDelta.deltaKg > FatLossAnalytics.NOISE_THRESHOLD_KG ->
+                                MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
+                            else ->
+                                MaterialTheme.colorScheme.surfaceContainerHighest to MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = pillBg
+                        ) {
+                            Text(
+                                text = deltaText,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = pillFg,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
-                )
+
+                    if (dropStreakDays >= 2 && !currentDate.isBefore(referenceDate.minusDays(1))) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = "📉 ${dropStreakDays}-day streak",
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
             }
 
-            // Side-by-side Pace Chips: 7-Day & 14-Day
+            // 3. Bottom Pace Metrics Split (7-Day & 14-Day Cards)
+            val fontScale = LocalDensity.current.fontScale
+            val paceTextStyle = if (fontScale >= 1.25f) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
+
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Max),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                PaceChip(
-                    title = "7-Day Pace",
-                    paceResult = pace7,
-                    unit = weightUnit,
-                    modifier = Modifier.weight(1f)
-                )
-                PaceChip(
-                    title = "14-Day Pace",
-                    paceResult = pace14,
-                    unit = weightUnit,
-                    modifier = Modifier.weight(1f)
-                )
+                // 7-Day Pace Card
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "7-Day Pace",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        val style7 = paceTrendStyle(pace7?.trend)
+                        val pace7Text = if (pace7 != null) "${style7.icon ?: ""}${pace7.formatDisplay(weightUnit)}" else "Not enough data yet"
+                        val pace7Color = if (pace7 != null) style7.color else MaterialTheme.colorScheme.onSurfaceVariant
+                        Text(
+                            text = pace7Text,
+                            style = paceTextStyle,
+                            fontWeight = FontWeight.Bold,
+                            color = pace7Color,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        val sub7 = FatLossAnalytics.format7DayPaceSubtitle(paceComparison7d, weightUnit, referenceDate)
+                        Text(
+                            text = sub7,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                // 14-Day Pace Card
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "14-Day Pace",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        val style14 = paceTrendStyle(pace14?.trend)
+                        val pace14Text = if (pace14 != null) "${style14.icon ?: ""}${pace14.formatDisplay(weightUnit)}" else "Not enough data yet"
+                        val pace14Color = if (pace14 != null) style14.color else MaterialTheme.colorScheme.onSurfaceVariant
+                        Text(
+                            text = pace14Text,
+                            style = paceTextStyle,
+                            fontWeight = FontWeight.Bold,
+                            color = pace14Color,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        val sub14 = if (pace14 == null) "Needs a weigh-in from 14+ days ago" else "Smoothed trend"
+                        Text(
+                            text = sub14,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
 
-            // Respective Forecast Banner
+            // 4. Forecast Banner & CTA
             if (forecast != null) {
                 ForecastBanner(forecast = forecast)
             }
 
-            // Check-in action button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
@@ -1189,69 +1440,6 @@ fun WeightProgressionCard(
                     Spacer(Modifier.width(4.dp))
                     Text("Log weigh-in")
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PaceChip(
-    title: String,
-    paceResult: PaceRateResult?,
-    unit: String,
-    modifier: Modifier = Modifier
-) {
-    val trend = paceResult?.trend
-    val icon = when (trend) {
-        PaceTrend.LOSS -> "▼"
-        PaceTrend.GAIN -> "▲"
-        PaceTrend.NEUTRAL -> "—"
-        null -> null
-    }
-    val trendColor = when (trend) {
-        PaceTrend.LOSS -> MaterialTheme.colorScheme.tertiary
-        PaceTrend.GAIN -> MaterialTheme.colorScheme.error
-        PaceTrend.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
-        null -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        border = BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.SemiBold
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                if (icon != null) {
-                    Text(
-                        text = icon,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Bold,
-                        color = trendColor
-                    )
-                }
-                Text(
-                    text = paceResult?.formatDisplay(unit) ?: "Not enough data yet",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = if (paceResult != null) trendColor else MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
     }

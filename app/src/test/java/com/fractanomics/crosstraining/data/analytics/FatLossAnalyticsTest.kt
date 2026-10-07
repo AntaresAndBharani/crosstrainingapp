@@ -21,6 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.util.Locale
 
 /**
  * Unit test suite for [FatLossAnalytics].
@@ -1628,6 +1629,376 @@ class FatLossAnalyticsTest {
         // Then computePaceForecast returns PaceForecast.GoalReached
         val forecastDay14 = FatLossAnalytics.computePaceForecast(allEntries, cycle, LocalDate.of(2026, 10, 14))
         assertEquals(PaceForecast.GoalReached, forecastDay14)
+    }
+
+    // =========================================================================
+    // Issue #592: Weight Progression Hero Redesign & Pace Analytics (Scenarios 2–15)
+    // =========================================================================
+
+    @Test
+    fun `issue 592 - scenario 2 - consecutive daily weight drop and drop streak`() {
+        Locale.setDefault(Locale.US)
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val referenceDate = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 4), weightKg = 76.8, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 5), weightKg = 76.5, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 76.2, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.0, updatedAtMillis = 4L)
+        )
+
+        val delta = FatLossAnalytics.computeDayOverDayDelta(entries, cycleStartDate, referenceDate)
+        assertNotNull(delta)
+        assertEquals(-0.2, delta!!.deltaKg, 1e-4)
+        assertTrue(delta.isConsecutive)
+
+        val streak = FatLossAnalytics.computeWeightDecreasingStreak(entries, cycleStartDate, referenceDate)
+        assertEquals(3, streak)
+
+        val subtitle = FatLossAnalytics.formatCurrentWeightSubtitle(delta, "kg", referenceDate)
+        assertEquals("▼ -0.2 kg vs yesterday", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 3 - weight gain resets decreasing streak`() {
+        Locale.setDefault(Locale.US)
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val referenceDate = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 75.0, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.5, updatedAtMillis = 2L)
+        )
+
+        val delta = FatLossAnalytics.computeDayOverDayDelta(entries, cycleStartDate, referenceDate)
+        assertNotNull(delta)
+        assertEquals(1.5, delta!!.deltaKg, 1e-4)
+        assertTrue(delta.isConsecutive)
+
+        val streak = FatLossAnalytics.computeWeightDecreasingStreak(entries, cycleStartDate, referenceDate)
+        assertEquals(0, streak)
+
+        val subtitle = FatLossAnalytics.formatCurrentWeightSubtitle(delta, "kg", referenceDate)
+        assertEquals("▲ +1.5 kg vs yesterday", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 4 - non-consecutive weigh-in logging gap`() {
+        Locale.setDefault(Locale.US)
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val referenceDate = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 3), weightKg = 76.6, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.0, updatedAtMillis = 2L)
+        )
+
+        val delta = FatLossAnalytics.computeDayOverDayDelta(entries, cycleStartDate, referenceDate)
+        assertNotNull(delta)
+        assertEquals(-0.6, delta!!.deltaKg, 1e-4)
+        assertFalse(delta.isConsecutive)
+
+        val streak = FatLossAnalytics.computeWeightDecreasingStreak(entries, cycleStartDate, referenceDate)
+        assertEquals(0, streak)
+
+        val subtitle = FatLossAnalytics.formatCurrentWeightSubtitle(delta, "kg", referenceDate)
+        assertEquals("▼ -0.6 kg vs 3 Oct", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 5 - stale weigh-in date preservation`() {
+        Locale.setDefault(Locale.US)
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val referenceDate = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 4), weightKg = 76.5, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 5), weightKg = 76.2, updatedAtMillis = 2L)
+        )
+
+        val delta = FatLossAnalytics.computeDayOverDayDelta(entries, cycleStartDate, referenceDate)
+        assertNotNull(delta)
+        assertEquals(-0.3, delta!!.deltaKg, 1e-4)
+
+        val subtitle = FatLossAnalytics.formatCurrentWeightSubtitle(delta, "kg", referenceDate)
+        assertEquals("5 Oct · ▼ -0.3 kg vs 4 Oct", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 6 - neutral delta within noise deadband`() {
+        Locale.setDefault(Locale.US)
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val referenceDate = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 76.02, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.00, updatedAtMillis = 2L)
+        )
+
+        val streak = FatLossAnalytics.computeWeightDecreasingStreak(entries, cycleStartDate, referenceDate)
+        assertEquals(0, streak)
+
+        val delta = FatLossAnalytics.computeDayOverDayDelta(entries, cycleStartDate, referenceDate)
+        val subtitle = FatLossAnalytics.formatCurrentWeightSubtitle(delta, "kg", referenceDate)
+        assertEquals("0.0 kg vs yesterday", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 7 - 7-day pace accelerating deficit`() {
+        Locale.setDefault(Locale.US)
+        val comparison = FatLossAnalytics.PaceComparisonResult(
+            currentRateKgPerWeek = -0.8,
+            priorRateKgPerWeek = -0.7,
+            deltaRateKgPerWeek = -0.1,
+            percentChange = 14.2857,
+            isAcceleratingDeficit = true,
+            priorDate = LocalDate.of(2026, 10, 6),
+            isConsecutive = true
+        )
+        assertEquals(14.3, comparison.percentChange!!, 0.1)
+        assertTrue(comparison.isAcceleratingDeficit)
+
+        val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
+        assertEquals("14% faster vs yesterday", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 8 - 7-day pace decelerating deficit`() {
+        Locale.setDefault(Locale.US)
+        val comparison = FatLossAnalytics.PaceComparisonResult(
+            currentRateKgPerWeek = -0.6,
+            priorRateKgPerWeek = -0.8,
+            deltaRateKgPerWeek = 0.2,
+            percentChange = -25.0,
+            isAcceleratingDeficit = false,
+            priorDate = LocalDate.of(2026, 10, 6),
+            isConsecutive = true
+        )
+        assertEquals(-25.0, comparison.percentChange!!, 0.1)
+        assertFalse(comparison.isAcceleratingDeficit)
+
+        val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
+        assertEquals("25% slower vs yesterday", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 9a - 7-day pace unchanged within noise threshold`() {
+        Locale.setDefault(Locale.US)
+        val comparison = FatLossAnalytics.PaceComparisonResult(
+            currentRateKgPerWeek = -0.72,
+            priorRateKgPerWeek = -0.70,
+            deltaRateKgPerWeek = -0.02,
+            percentChange = 2.857,
+            isAcceleratingDeficit = true,
+            priorDate = LocalDate.of(2026, 10, 6),
+            isConsecutive = true
+        )
+        val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
+        assertEquals("Pace unchanged", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 9b - 7-day pace with stale weigh-in date`() {
+        Locale.setDefault(Locale.US)
+        val comparison = FatLossAnalytics.PaceComparisonResult(
+            currentRateKgPerWeek = -0.8,
+            priorRateKgPerWeek = -0.6,
+            deltaRateKgPerWeek = -0.2,
+            percentChange = 33.333,
+            isAcceleratingDeficit = true,
+            priorDate = LocalDate.of(2026, 10, 5),
+            isConsecutive = true
+        )
+        assertEquals(33.3, comparison.percentChange!!, 0.1)
+        assertTrue(comparison.isAcceleratingDeficit)
+
+        val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
+        assertEquals("33% faster vs 5 Oct", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 10 - 7-day pace near-zero baseline guardrail`() {
+        Locale.setDefault(Locale.US)
+        val comparison = FatLossAnalytics.PaceComparisonResult(
+            currentRateKgPerWeek = -0.25,
+            priorRateKgPerWeek = -0.05,
+            deltaRateKgPerWeek = -0.20,
+            percentChange = null,
+            isAcceleratingDeficit = true,
+            priorDate = LocalDate.of(2026, 10, 6),
+            isConsecutive = true
+        )
+        assertNull(comparison.percentChange)
+
+        val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
+        assertEquals("-0.2 kg/wk vs yesterday", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 11 - 7-day pace weight gain trajectory`() {
+        Locale.setDefault(Locale.US)
+        val comparison = FatLossAnalytics.PaceComparisonResult(
+            currentRateKgPerWeek = 0.8,
+            priorRateKgPerWeek = 0.5,
+            deltaRateKgPerWeek = 0.3,
+            percentChange = null,
+            isAcceleratingDeficit = false,
+            priorDate = LocalDate.of(2026, 10, 6),
+            isConsecutive = true
+        )
+        assertNull(comparison.percentChange)
+        assertFalse(comparison.isAcceleratingDeficit)
+
+        val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
+        assertEquals("+0.3 kg/wk vs yesterday", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 12a - single weigh-in cold start`() {
+        Locale.setDefault(Locale.US)
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 78.0, updatedAtMillis = 1L)
+        )
+
+        val delta = FatLossAnalytics.computeDayOverDayDelta(entries, cycleStartDate)
+        assertNull(delta)
+
+        val streak = FatLossAnalytics.computeWeightDecreasingStreak(entries, cycleStartDate)
+        assertEquals(0, streak)
+
+        val currentSubtitle = FatLossAnalytics.formatCurrentWeightSubtitle(delta, "kg")
+        assertEquals("First weigh-in", currentSubtitle)
+
+        val paceComparison = FatLossAnalytics.compute7DayPaceComparison(entries, cycleStartDate)
+        assertNull(paceComparison)
+
+        val paceSubtitle = FatLossAnalytics.format7DayPaceSubtitle(paceComparison, "kg")
+        assertEquals("Baseline 7d pace", paceSubtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 12b - initial week elapsed history under 7 days`() {
+        Locale.setDefault(Locale.US)
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val day2 = LocalDate.of(2026, 10, 2)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.5, updatedAtMillis = 1L),
+            WeightEntry(date = day2, weightKg = 76.2, updatedAtMillis = 2L)
+        )
+
+        val delta = FatLossAnalytics.computeDayOverDayDelta(entries, cycleStartDate, day2)
+        assertNotNull(delta)
+        assertEquals(-0.3, delta!!.deltaKg, 1e-4)
+        assertTrue(delta.isConsecutive)
+
+        val currentSubtitle = FatLossAnalytics.formatCurrentWeightSubtitle(delta, "kg", day2)
+        assertEquals("▼ -0.3 kg vs yesterday", currentSubtitle)
+
+        val paceComparison = FatLossAnalytics.compute7DayPaceComparison(entries, cycleStartDate, day2)
+        assertNull("Pace comparison is null because 7d rolling pace requires >= 7 elapsed days", paceComparison)
+
+        val paceSubtitle = FatLossAnalytics.format7DayPaceSubtitle(paceComparison, "kg", day2)
+        assertEquals("Baseline 7d pace", paceSubtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 13 - stale drop streak reset`() {
+        Locale.setDefault(Locale.US)
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 3), weightKg = 76.8, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 4), weightKg = 76.5, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 5), weightKg = 76.2, updatedAtMillis = 3L)
+        )
+
+        // Evaluated on 2026-10-07: stale because latest entry (10-05) is older than yesterday (10-06)
+        val streakOct7 = FatLossAnalytics.computeWeightDecreasingStreak(entries, cycleStartDate, LocalDate.of(2026, 10, 7))
+        assertEquals(0, streakOct7)
+
+        // Evaluated on 2026-10-06: active because latest entry (10-05) is yesterday relative to 10-06
+        val streakOct6 = FatLossAnalytics.computeWeightDecreasingStreak(entries, cycleStartDate, LocalDate.of(2026, 10, 6))
+        assertEquals(2, streakOct6)
+    }
+
+    @Test
+    fun `issue 592 - scenario 14 - slowing weight gain deficit acceleration guard`() {
+        Locale.setDefault(Locale.US)
+        val comparison = FatLossAnalytics.PaceComparisonResult(
+            currentRateKgPerWeek = 0.2,
+            priorRateKgPerWeek = 0.5,
+            deltaRateKgPerWeek = -0.3,
+            percentChange = null,
+            isAcceleratingDeficit = false,
+            priorDate = LocalDate.of(2026, 10, 6),
+            isConsecutive = true
+        )
+        assertNull(comparison.percentChange)
+        assertFalse("Slowing gain is not accelerating deficit", comparison.isAcceleratingDeficit)
+
+        val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comparison, "kg", LocalDate.of(2026, 10, 7))
+        assertEquals("-0.3 kg/wk vs yesterday", subtitle)
+    }
+
+    @Test
+    fun `issue 592 - scenario 15 - 14-day pace anchor window boundary`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        // Daily weigh-ins logged from Oct 1 to Oct 14 (14 entries spanning 13 days)
+        val entries14 = (1..14).map { day ->
+            WeightEntry(
+                date = LocalDate.of(2026, 10, day),
+                weightKg = 80.0 - (day * 0.1),
+                updatedAtMillis = day.toLong()
+            )
+        }
+
+        // On Oct 14: cutoff is Oct 14 - 14 = Sep 30, which is pre-cycle -> null anchor
+        val paceOct14 = FatLossAnalytics.compute14DayPace(entries14, cycleStartDate, LocalDate.of(2026, 10, 14))
+        assertNull("compute14DayPace must return null when anchor 14 days ago is before cycleStartDate", paceOct14)
+
+        // On Oct 15: 15th entry spanning 14 days from Oct 1
+        val entries15 = entries14 + WeightEntry(
+            date = LocalDate.of(2026, 10, 15),
+            weightKg = 78.5,
+            updatedAtMillis = 15L
+        )
+        val paceOct15 = FatLossAnalytics.compute14DayPace(entries15, cycleStartDate, LocalDate.of(2026, 10, 15))
+        assertNotNull("compute14DayPace returns PaceRateResult when span >= 14 days", paceOct15)
+        assertTrue(paceOct15!!.formatDisplay("kg").endsWith("kg/wk"))
+    }
+
+    @Test
+    fun `issue 592 - boundary test - drop streak 1 increments streak while pill hidden in UI`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val referenceDate = LocalDate.of(2026, 10, 7)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 76.5, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 76.2, updatedAtMillis = 2L)
+        )
+
+        val streak = FatLossAnalytics.computeWeightDecreasingStreak(entries, cycleStartDate, referenceDate)
+        assertEquals(1, streak)
+        // In UI, streak pill condition requires dropStreakDays >= 2, so streak == 1 is correctly hidden
+        assertFalse(streak >= 2)
+    }
+
+    @Test
+    fun `issue 592 - end-to-end compute7DayPaceComparison with entries`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 29)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 29), weightKg = 80.0, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 80.0, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 79.3, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 79.2, updatedAtMillis = 4L)
+        )
+
+        val comp = FatLossAnalytics.compute7DayPaceComparison(entries, cycleStartDate, LocalDate.of(2026, 10, 7))
+        assertNotNull(comp)
+        assertEquals(-0.8, comp!!.currentRateKgPerWeek, 1e-4)
+        assertEquals(-0.7, comp.priorRateKgPerWeek, 1e-4)
+        assertEquals(-0.1, comp.deltaRateKgPerWeek, 1e-4)
+        assertEquals(14.3, comp.percentChange!!, 0.1)
+        assertTrue(comp.isAcceleratingDeficit)
+        assertTrue(comp.isConsecutive)
+
+        val subtitle = FatLossAnalytics.format7DayPaceSubtitle(comp, "kg", LocalDate.of(2026, 10, 7))
+        assertEquals("14% faster vs yesterday", subtitle)
     }
 }
 

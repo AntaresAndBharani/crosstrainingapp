@@ -15,6 +15,7 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 
@@ -248,6 +249,8 @@ sealed class PaceForecast {
     }
 }
 
+typealias DayOverDayDelta = FatLossAnalytics.DayOverDayDelta
+typealias PaceComparisonResult = FatLossAnalytics.PaceComparisonResult
 
 /**
  * Pure Kotlin domain analytics engine for Fat Loss & Bodybuilding cycles.
@@ -263,6 +266,33 @@ sealed class PaceForecast {
  *    once reported. Past unlogged fast days count as broken/not done. Zero denominator evaluates to "n/a".
  */
 object FatLossAnalytics {
+
+    // =========================================================================
+    // Noise Deadband Constants & Presentation Models
+    // =========================================================================
+
+    const val NOISE_THRESHOLD_KG = 0.05
+    const val PACE_NOISE_THRESHOLD_KG_PER_WEEK = 0.05
+
+    private val shortDateFormatter: DateTimeFormatter =
+        DateTimeFormatter.ofPattern("d MMM", Locale.US)
+
+    data class DayOverDayDelta(
+        val deltaKg: Double,
+        val priorDate: LocalDate,
+        val currentDate: LocalDate,
+        val isConsecutive: Boolean
+    )
+
+    data class PaceComparisonResult(
+        val currentRateKgPerWeek: Double,
+        val priorRateKgPerWeek: Double,
+        val deltaRateKgPerWeek: Double,
+        val percentChange: Double?, // null when not loss-to-loss or |priorRate| < 0.1
+        val isAcceleratingDeficit: Boolean,
+        val priorDate: LocalDate,
+        val isConsecutive: Boolean
+    )
 
     // =========================================================================
     // Bitmask Helpers for Days of Week
@@ -1363,6 +1393,212 @@ object FatLossAnalytics {
                 rawWeeks = rawWeeks
             )
         }
+    }
+
+    // =========================================================================
+    // Weight Progression Analytics & Pace Comparison
+    // =========================================================================
+
+    /**
+     * Filters active weight entries within cycle boundaries up to [referenceDate],
+     * excluding soft-deleted records and sorted chronologically.
+     */
+    fun getActiveWeightEntries(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        referenceDate: LocalDate = LocalDate.now()
+    ): List<WeightEntry> = entries
+        .filter { it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(referenceDate) }
+        .sortedBy { it.date }
+
+    /**
+     * Computes day-over-day delta between the latest two in-cycle weigh-ins.
+     * Returns null if fewer than 2 active entries exist.
+     */
+    fun computeDayOverDayDelta(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        referenceDate: LocalDate = LocalDate.now()
+    ): DayOverDayDelta? {
+        val active = getActiveWeightEntries(entries, cycleStartDate, referenceDate)
+        if (active.size < 2) return null
+        val latest = active.last()
+        val prior = active[active.size - 2]
+        return DayOverDayDelta(
+            deltaKg = latest.weightKg - prior.weightKg,
+            priorDate = prior.date,
+            currentDate = latest.date,
+            isConsecutive = prior.date == latest.date.minusDays(1)
+        )
+    }
+
+    fun computeDayOverDayDelta(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        referenceDate: LocalDate = LocalDate.now()
+    ): DayOverDayDelta? = computeDayOverDayDelta(entries, cycle.startDate, referenceDate)
+
+    /**
+     * Computes the number of consecutive calendar days where body weight decreased
+     * by more than [noiseThresholdKg].
+     *
+     * Stale recency guard: returns 0 if the latest entry is older than yesterday
+     * (i.e. before referenceDate - 1 day).
+     */
+    fun computeWeightDecreasingStreak(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        referenceDate: LocalDate = LocalDate.now(),
+        noiseThresholdKg: Double = NOISE_THRESHOLD_KG
+    ): Int {
+        val active = getActiveWeightEntries(entries, cycleStartDate, referenceDate)
+        if (active.size < 2) return 0
+        if (active.last().date.isBefore(referenceDate.minusDays(1))) return 0 // Stale recency guard
+
+        var streak = 0
+        for (i in active.indices.reversed()) {
+            if (i == 0) break
+            val current = active[i]
+            val previous = active[i - 1]
+            val isConsecutiveDay = previous.date == current.date.minusDays(1)
+            val isMeaningfulDrop = (previous.weightKg - current.weightKg) > noiseThresholdKg
+            if (isConsecutiveDay && isMeaningfulDrop) {
+                streak++
+            } else {
+                break
+            }
+        }
+        return streak
+    }
+
+    fun computeWeightDecreasingStreak(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        referenceDate: LocalDate = LocalDate.now(),
+        noiseThresholdKg: Double = NOISE_THRESHOLD_KG
+    ): Int = computeWeightDecreasingStreak(entries, cycle.startDate, referenceDate, noiseThresholdKg)
+
+    /**
+     * Compares the 7-day rolling pace rate at the latest entry against the prior entry.
+     * Evaluates strict loss-to-loss conditions, acceleration/deceleration, and baseline guards.
+     */
+    fun compute7DayPaceComparison(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        referenceDate: LocalDate = LocalDate.now(),
+        minPercentageDenominatorKgPerWeek: Double = 0.1
+    ): PaceComparisonResult? {
+        val active = getActiveWeightEntries(entries, cycleStartDate, referenceDate)
+        if (active.size < 2) return null
+        val latest = active.last()
+        val prior = active[active.size - 2]
+
+        val currentPace = compute7DayPace(active, cycleStartDate, latest.date) ?: return null
+        val priorPace = compute7DayPace(active, cycleStartDate, prior.date) ?: return null
+
+        val currentRate = currentPace.rateKgPerWeek
+        val priorRate = priorPace.rateKgPerWeek
+        val deltaRate = currentRate - priorRate
+
+        // Strict loss-to-loss condition: both rates must be negative (deficit)
+        val isLossToLoss = currentRate < 0.0 && priorRate < 0.0
+        val isAcceleratingDeficit = isLossToLoss && (-currentRate) > (-priorRate)
+
+        val percentChange = if (isLossToLoss && kotlin.math.abs(priorRate) >= minPercentageDenominatorKgPerWeek) {
+            ((kotlin.math.abs(currentRate) - kotlin.math.abs(priorRate)) / kotlin.math.abs(priorRate)) * 100.0
+        } else {
+            null
+        }
+
+        return PaceComparisonResult(
+            currentRateKgPerWeek = currentRate,
+            priorRateKgPerWeek = priorRate,
+            deltaRateKgPerWeek = deltaRate,
+            percentChange = percentChange,
+            isAcceleratingDeficit = isAcceleratingDeficit,
+            priorDate = prior.date,
+            isConsecutive = prior.date == latest.date.minusDays(1)
+        )
+    }
+
+    fun compute7DayPaceComparison(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        referenceDate: LocalDate = LocalDate.now(),
+        minPercentageDenominatorKgPerWeek: Double = 0.1
+    ): PaceComparisonResult? = compute7DayPaceComparison(entries, cycle.startDate, referenceDate, minPercentageDenominatorKgPerWeek)
+
+    /**
+     * Formats current weight subtitle / delta pill text.
+     * Includes stale date prefix if latest entry is before referenceDate.
+     */
+    fun formatCurrentWeightSubtitle(
+        delta: DayOverDayDelta?,
+        weightUnit: String,
+        referenceDate: LocalDate = LocalDate.now()
+    ): String {
+        if (delta == null) return "First weigh-in"
+
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val unitLabel = if (isImperial) "lbs" else "kg"
+        val deltaInUnit = if (isImperial) WeightAnalytics.kgToLbs(delta.deltaKg) else delta.deltaKg
+
+        val stalePrefix = if (delta.currentDate.isBefore(referenceDate)) {
+            "${delta.currentDate.format(shortDateFormatter)} · "
+        } else {
+            ""
+        }
+
+        val deltaPart = when {
+            delta.deltaKg < -NOISE_THRESHOLD_KG ->
+                String.format(Locale.US, "▼ %.1f %s", deltaInUnit, unitLabel)
+            delta.deltaKg > NOISE_THRESHOLD_KG ->
+                String.format(Locale.US, "▲ +%.1f %s", deltaInUnit, unitLabel)
+            else ->
+                String.format(Locale.US, "0.0 %s", unitLabel)
+        }
+
+        val vsPart = if (delta.isConsecutive && delta.currentDate == referenceDate) {
+            "vs yesterday"
+        } else {
+            "vs ${delta.priorDate.format(shortDateFormatter)}"
+        }
+
+        return "$stalePrefix$deltaPart $vsPart"
+    }
+
+    /**
+     * Formats 7-day pace subtitle describing acceleration, deceleration, noise deadbands, or absolute rate delta.
+     */
+    fun format7DayPaceSubtitle(
+        comparison: PaceComparisonResult?,
+        weightUnit: String,
+        referenceDate: LocalDate = LocalDate.now()
+    ): String {
+        if (comparison == null) return "Baseline 7d pace"
+
+        if (kotlin.math.abs(comparison.deltaRateKgPerWeek) < PACE_NOISE_THRESHOLD_KG_PER_WEEK) {
+            return "Pace unchanged"
+        }
+
+        val vsPart = if (comparison.isConsecutive && comparison.priorDate == referenceDate.minusDays(1)) {
+            "vs yesterday"
+        } else {
+            "vs ${comparison.priorDate.format(shortDateFormatter)}"
+        }
+
+        if (comparison.percentChange != null) {
+            val pct = kotlin.math.round(kotlin.math.abs(comparison.percentChange)).toInt()
+            val descriptor = if (comparison.isAcceleratingDeficit) "faster" else "slower"
+            return "$pct% $descriptor $vsPart"
+        }
+
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val unitLabel = if (isImperial) "lbs/wk" else "kg/wk"
+        val deltaInUnit = if (isImperial) WeightAnalytics.kgToLbs(comparison.deltaRateKgPerWeek) else comparison.deltaRateKgPerWeek
+
+        val sign = if (deltaInUnit > 0.0) "+" else ""
+        return String.format(Locale.US, "%s%.1f %s %s", sign, deltaInUnit, unitLabel, vsPart)
     }
 }
 
