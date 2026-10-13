@@ -21,9 +21,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
 import com.fractanomics.crosstraining.data.analytics.DayOverDayDelta
 import com.fractanomics.crosstraining.data.analytics.PaceComparisonResult
+import com.fractanomics.crosstraining.data.analytics.ProgressiveAverageResult
 import com.fractanomics.crosstraining.data.analytics.PaceTargetsState
 import com.fractanomics.crosstraining.data.analytics.ColumnState
 import com.fractanomics.crosstraining.data.analytics.PaceTargetStatus
+import java.time.format.DateTimeFormatter
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -1089,6 +1091,12 @@ fun WeightProgressionCard(
         activeEntries.firstOrNull()?.date?.formatShort() ?: "No log"
     }
 
+    val lastWeekEntry = remember(activeEntries, currentDate) {
+        activeEntries.firstOrNull { it.date == currentDate.minusDays(7) }
+    }
+    val progressiveAverage = remember(activeEntries, cycle.startDate, today) {
+        FatLossAnalytics.computeProgressiveAverage(activeEntries, cycle.startDate, today)
+    }
     val dayOverDayDelta = remember(activeEntries, cycle.startDate, today) {
         FatLossAnalytics.computeDayOverDayDelta(activeEntries, cycle.startDate, today)
     }
@@ -1102,7 +1110,10 @@ fun WeightProgressionCard(
         FatLossAnalytics.compute14DayPace(weightEntries, cycle, today)
     }
     val paceComparison7d = remember(activeEntries, cycle.startDate, today) {
-        FatLossAnalytics.compute7DayPaceComparison(activeEntries, cycle.startDate, today)
+        FatLossAnalytics.computePaceComparisonVsLastWeek(activeEntries, cycle.startDate, 7, today)
+    }
+    val paceComparison14d = remember(activeEntries, cycle.startDate, today) {
+        FatLossAnalytics.computePaceComparisonVsLastWeek(activeEntries, cycle.startDate, 14, today)
     }
     val forecast = remember(weightEntries, cycle, today) {
         FatLossAnalytics.computePaceForecast(weightEntries, cycle, today)
@@ -1128,7 +1139,10 @@ fun WeightProgressionCard(
         onLogWeight = onLogWeight,
         modifier = modifier,
         referenceDate = today,
-        paceTargets = paceTargets
+        paceTargets = paceTargets,
+        lastWeekEntry = lastWeekEntry,
+        progressiveAverage = progressiveAverage,
+        paceComparison14d = paceComparison14d
     )
 }
 
@@ -1136,6 +1150,67 @@ internal const val NO_DATA_PLACEHOLDER = "—"
 internal const val NO_DATA_CONTENT_DESCRIPTION = "No data"
 internal const val PACE_14_NULL_SUBTITLE = "Needs weigh-in 14+ days ago"
 internal const val PACE_14_MATURE_SUBTITLE = "Smoothed trend"
+
+private val pillarDateFormatter: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("d MMM", Locale.US)
+
+internal fun resolveLeftPillarHeader(currentDate: LocalDate): String {
+    val dayName = currentDate.minusDays(7).dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, Locale.US).uppercase()
+    return "LAST WEEK ($dayName)"
+}
+
+internal fun resolveLeftPillarValue(lastWeekEntry: WeightEntry?, weightUnit: String): String {
+    return if (lastWeekEntry != null) {
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val display = if (isImperial) WeightAnalytics.kgToLbs(lastWeekEntry.weightKg) else lastWeekEntry.weightKg
+        "${String.format(Locale.US, "%.1f", display)} $weightUnit"
+    } else {
+        NO_DATA_PLACEHOLDER
+    }
+}
+
+internal fun resolveLeftPillarSubtitle(lastWeekEntry: WeightEntry?): String {
+    return if (lastWeekEntry != null) {
+        "(${lastWeekEntry.date.format(pillarDateFormatter)})"
+    } else {
+        "No log"
+    }
+}
+
+internal fun resolveCenterPillarHeader(currentDate: LocalDate, referenceDate: LocalDate = LocalDate.now()): String {
+    return if (currentDate == referenceDate) "TODAY" else "LATEST"
+}
+
+internal fun resolveCenterPillarValue(currentWeightKg: Double, weightUnit: String): String {
+    val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+    val display = if (isImperial) WeightAnalytics.kgToLbs(currentWeightKg) else currentWeightKg
+    return "${String.format(Locale.US, "%.1f", display)} $weightUnit"
+}
+
+internal fun resolveRightPillarHeader(progressiveAverage: ProgressiveAverageResult?): String {
+    val window = progressiveAverage?.windowSpanDays ?: 14
+    return "${window}D AVG"
+}
+
+internal fun resolveRightPillarValue(progressiveAverage: ProgressiveAverageResult?, weightUnit: String): String {
+    return if (progressiveAverage != null) {
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val display = if (isImperial) WeightAnalytics.kgToLbs(progressiveAverage.averageKg) else progressiveAverage.averageKg
+        "${String.format(Locale.US, "%.1f", display)} $weightUnit"
+    } else {
+        NO_DATA_PLACEHOLDER
+    }
+}
+
+internal fun resolveRightPillarSubtitle(progressiveAverage: ProgressiveAverageResult?): String {
+    return if (progressiveAverage != null) {
+        val count = progressiveAverage.loggedDaysCount
+        val countLabel = if (count == 1) "1 log" else "$count logs"
+        "($countLabel)"
+    } else {
+        "No log"
+    }
+}
 
 internal fun paceTrendIcon(trend: PaceTrend?): String? = when (trend) {
     PaceTrend.LOSS -> "▼ "
@@ -1157,8 +1232,13 @@ internal fun resolvePaceChipContentDescription(pace: PaceRateResult?): String? {
     return if (pace == null) NO_DATA_CONTENT_DESCRIPTION else null
 }
 
-internal fun resolvePace14Subtitle(pace14: PaceRateResult?): String {
-    return if (pace14 == null) PACE_14_NULL_SUBTITLE else PACE_14_MATURE_SUBTITLE
+internal fun resolvePace14Subtitle(
+    pace14: PaceRateResult?,
+    comparison: PaceComparisonResult? = null,
+    weightUnit: String = "kg",
+    referenceDate: LocalDate = LocalDate.now()
+): String {
+    return FatLossAnalytics.format14DayPaceSubtitle(comparison, pace14, weightUnit, referenceDate)
 }
 
 internal fun resolvePaceTargetsContainerStateText(state: PaceTargetsState): String? = when (state) {
@@ -1477,7 +1557,10 @@ fun WeightProgressionHeroCard(
     onLogWeight: () -> Unit,
     modifier: Modifier = Modifier,
     referenceDate: LocalDate = LocalDate.now(),
-    paceTargets: PaceTargetsState? = null
+    paceTargets: PaceTargetsState? = null,
+    lastWeekEntry: WeightEntry? = null,
+    progressiveAverage: ProgressiveAverageResult? = null,
+    paceComparison14d: PaceComparisonResult? = null
 ) {
     val isImperial = weightUnit.equals("lbs", ignoreCase = true)
 
@@ -1588,27 +1671,111 @@ fun WeightProgressionHeroCard(
                 }
             }
 
-            // 2. Hero Centerpiece (Current Weight & Intelligence Pills)
+            // 2. Hero Centerpiece (3-Pillar Row & Intelligence Pills)
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = "CURRENT WEIGHT",
-                    style = MaterialTheme.typography.labelSmall,
-                    letterSpacing = 1.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Left Pillar: LAST WEEK (DAY)
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = resolveLeftPillarHeader(currentDate),
+                            style = MaterialTheme.typography.labelSmall,
+                            letterSpacing = 1.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = resolveLeftPillarValue(lastWeekEntry, weightUnit),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = resolveLeftPillarSubtitle(lastWeekEntry),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
 
-                val displayCurrent = if (isImperial) WeightAnalytics.kgToLbs(currentWeightKg) else currentWeightKg
-                val currentFormatted = String.format(Locale.US, "%.1f", displayCurrent)
-                Text(
-                    text = "$currentFormatted $weightUnit",
-                    style = MaterialTheme.typography.displaySmall,
-                    fontWeight = FontWeight.Bold
-                )
+                    // Center Hero Pillar: TODAY / LATEST
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = resolveCenterPillarHeader(currentDate, referenceDate),
+                            style = MaterialTheme.typography.labelSmall,
+                            letterSpacing = 1.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        val fontScale = LocalDensity.current.fontScale
+                        val centerTextStyle = if (fontScale >= 1.25f) {
+                            MaterialTheme.typography.headlineMedium
+                        } else {
+                            MaterialTheme.typography.displaySmall
+                        }
+                        Text(
+                            text = resolveCenterPillarValue(currentWeightKg, weightUnit),
+                            style = centerTextStyle,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
 
+                    // Right Pillar: {N}D AVG
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = resolveRightPillarHeader(progressiveAverage),
+                            style = MaterialTheme.typography.labelSmall,
+                            letterSpacing = 1.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = resolveRightPillarValue(progressiveAverage, weightUnit),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = resolveRightPillarSubtitle(progressiveAverage),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                // Centered row for Intelligence Pills (dayOverDayDelta and dropStreakDays)
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
@@ -1754,7 +1921,7 @@ fun WeightProgressionHeroCard(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        val sub14 = resolvePace14Subtitle(pace14)
+                        val sub14 = resolvePace14Subtitle(pace14, paceComparison14d, weightUnit, referenceDate)
                         Text(
                             text = sub14,
                             style = MaterialTheme.typography.bodySmall,

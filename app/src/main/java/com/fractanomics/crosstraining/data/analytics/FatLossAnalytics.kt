@@ -16,6 +16,7 @@ import java.math.RoundingMode
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 
@@ -294,6 +295,19 @@ enum class PaceTargetStatus {
     AHEAD, ON_PACE, OFF_PACE
 }
 
+/**
+ * Result representation for progressive moving average of body weight.
+ *
+ * @property averageKg Arithmetic mean weight across active in-cycle entries in window.
+ * @property windowSpanDays Window span in calendar days: min(elapsedDaysFromStart + 1, maxWindowDays).
+ * @property loggedDaysCount Number of logged weigh-in entries within the window.
+ */
+data class ProgressiveAverageResult(
+    val averageKg: Double,
+    val windowSpanDays: Int,
+    val loggedDaysCount: Int
+)
+
 typealias DayOverDayDelta = FatLossAnalytics.DayOverDayDelta
 typealias PaceComparisonResult = FatLossAnalytics.PaceComparisonResult
 
@@ -336,7 +350,8 @@ object FatLossAnalytics {
         val percentChange: Double?, // null when not loss-to-loss or |priorRate| < 0.1
         val isAcceleratingDeficit: Boolean,
         val priorDate: LocalDate,
-        val isConsecutive: Boolean
+        val isConsecutive: Boolean = false,
+        val isExactDayMatch: Boolean = false
     )
 
     // =========================================================================
@@ -1703,22 +1718,73 @@ object FatLossAnalytics {
     ): Int = computeWeightDecreasingStreak(entries, cycle.startDate, referenceDate, noiseThresholdKg)
 
     /**
-     * Compares the 7-day rolling pace rate at the latest entry against the prior entry.
-     * Evaluates strict loss-to-loss conditions, acceleration/deceleration, and baseline guards.
+     * Computes the progressive moving average across active in-cycle entries in
+     * [max(cycleStartDate, t.minusDays(maxWindowDays - 1)), t] where t is the latest active entry.
+     *
+     * Window span N = min(ChronoUnit.DAYS.between(cycleStartDate, t).toInt() + 1, maxWindowDays).
+     * Returns null if no active entries exist or no entries exist in the window.
      */
-    fun compute7DayPaceComparison(
+    fun computeProgressiveAverage(
         entries: List<WeightEntry>,
         cycleStartDate: LocalDate,
+        referenceDate: LocalDate = LocalDate.now(),
+        maxWindowDays: Int = 14
+    ): ProgressiveAverageResult? {
+        val active = getActiveWeightEntries(entries, cycleStartDate, referenceDate)
+        if (active.isEmpty()) return null
+        val t = active.last().date
+
+        val windowStart = if (t.minusDays((maxWindowDays - 1).toLong()).isBefore(cycleStartDate)) {
+            cycleStartDate
+        } else {
+            t.minusDays((maxWindowDays - 1).toLong())
+        }
+
+        val windowEntries = active.filter { !it.date.isBefore(windowStart) && !it.date.isAfter(t) }
+        val k = windowEntries.size
+        if (k == 0) return null
+
+        val avg = windowEntries.sumOf { it.weightKg } / k.toDouble()
+        val daysFromStart = ChronoUnit.DAYS.between(cycleStartDate, t).toInt() + 1
+        val n = kotlin.math.min(daysFromStart, maxWindowDays)
+
+        return ProgressiveAverageResult(
+            averageKg = avg,
+            windowSpanDays = n,
+            loggedDaysCount = k
+        )
+    }
+
+    fun computeProgressiveAverage(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        referenceDate: LocalDate = LocalDate.now(),
+        maxWindowDays: Int = 14
+    ): ProgressiveAverageResult? = computeProgressiveAverage(
+        entries = entries,
+        cycleStartDate = cycle.startDate,
+        referenceDate = referenceDate,
+        maxWindowDays = maxWindowDays
+    )
+
+    /**
+     * Compares the rolling pace rate (windowDays, e.g. 7 or 14) at anchor t against the prior pace at t - 7 days.
+     * Prior pace is resolved using [computePaceRate] on or before t - 7 days.
+     * Evaluates strict loss-to-loss conditions, acceleration/deceleration, and exact same-weekday matching.
+     */
+    fun computePaceComparisonVsLastWeek(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        windowDays: Int,
         referenceDate: LocalDate = LocalDate.now(),
         minPercentageDenominatorKgPerWeek: Double = 0.1
     ): PaceComparisonResult? {
         val active = getActiveWeightEntries(entries, cycleStartDate, referenceDate)
-        if (active.size < 2) return null
-        val latest = active.last()
-        val prior = active[active.size - 2]
+        if (active.isEmpty()) return null
+        val t = active.last().date
 
-        val currentPace = compute7DayPace(active, cycleStartDate, latest.date) ?: return null
-        val priorPace = compute7DayPace(active, cycleStartDate, prior.date) ?: return null
+        val currentPace = computePaceRate(active, windowDays, cycleStartDate, t) ?: return null
+        val priorPace = computePaceRate(active, windowDays, cycleStartDate, t.minusDays(7)) ?: return null
 
         val currentRate = currentPace.rateKgPerWeek
         val priorRate = priorPace.rateKgPerWeek
@@ -1740,17 +1806,25 @@ object FatLossAnalytics {
             deltaRateKgPerWeek = deltaRate,
             percentChange = percentChange,
             isAcceleratingDeficit = isAcceleratingDeficit,
-            priorDate = prior.date,
-            isConsecutive = prior.date == latest.date.minusDays(1)
+            priorDate = priorPace.currentDate,
+            isConsecutive = priorPace.currentDate == t.minusDays(1),
+            isExactDayMatch = priorPace.currentDate == t.minusDays(7)
         )
     }
 
-    fun compute7DayPaceComparison(
+    fun computePaceComparisonVsLastWeek(
         entries: List<WeightEntry>,
         cycle: Cycle,
+        windowDays: Int,
         referenceDate: LocalDate = LocalDate.now(),
         minPercentageDenominatorKgPerWeek: Double = 0.1
-    ): PaceComparisonResult? = compute7DayPaceComparison(entries, cycle.startDate, referenceDate, minPercentageDenominatorKgPerWeek)
+    ): PaceComparisonResult? = computePaceComparisonVsLastWeek(
+        entries = entries,
+        cycleStartDate = cycle.startDate,
+        windowDays = windowDays,
+        referenceDate = referenceDate,
+        minPercentageDenominatorKgPerWeek = minPercentageDenominatorKgPerWeek
+    )
 
     /**
      * Formats current weight subtitle / delta pill text.
@@ -1792,27 +1866,41 @@ object FatLossAnalytics {
     }
 
     /**
-     * Formats 7-day pace subtitle describing acceleration, deceleration, noise deadbands, or absolute rate delta.
+     * Formats pace subtitle describing same-weekday comparison, acceleration, deceleration,
+     * noise deadband, or absolute rate delta.
      */
-    fun format7DayPaceSubtitle(
+    fun formatPaceSubtitle(
         comparison: PaceComparisonResult?,
         weightUnit: String,
+        windowDays: Int,
+        pace: PaceRateResult? = null,
         referenceDate: LocalDate = LocalDate.now()
     ): String {
-        if (comparison == null) return "Baseline 7d pace"
+        if (comparison == null) {
+            return if (windowDays == 7) {
+                "Baseline 7d pace"
+            } else {
+                if (pace == null) "Needs weigh-in 14+ days ago" else "Smoothed trend"
+            }
+        }
 
         if (kotlin.math.abs(comparison.deltaRateKgPerWeek) < PACE_NOISE_THRESHOLD_KG_PER_WEEK) {
             return "Pace unchanged"
         }
 
-        val vsPart = if (comparison.isConsecutive && comparison.priorDate == referenceDate.minusDays(1)) {
-            "vs yesterday"
-        } else {
-            "vs ${comparison.priorDate.format(shortDateFormatter)}"
+        val vsPart = when {
+            comparison.isExactDayMatch -> {
+                val dayName = comparison.priorDate.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.US)
+                "vs last $dayName"
+            }
+            comparison.isConsecutive && comparison.priorDate == referenceDate.minusDays(1) -> "vs yesterday"
+            else -> "vs ${comparison.priorDate.format(shortDateFormatter)}"
         }
 
         if (comparison.percentChange != null) {
-            val pct = kotlin.math.round(kotlin.math.abs(comparison.percentChange)).toInt()
+            val pct = java.math.BigDecimal.valueOf(kotlin.math.abs(comparison.percentChange))
+                .setScale(0, java.math.RoundingMode.HALF_UP)
+                .toInt()
             val descriptor = if (comparison.isAcceleratingDeficit) "faster" else "slower"
             return "$pct% $descriptor loss $vsPart"
         }
@@ -1824,5 +1912,36 @@ object FatLossAnalytics {
         val sign = if (deltaInUnit > 0.0) "+" else ""
         return String.format(Locale.US, "%s%.1f %s %s", sign, deltaInUnit, unitLabel, vsPart)
     }
+
+    /**
+     * Formats 7-day pace subtitle describing acceleration, deceleration, noise deadbands, or absolute rate delta.
+     */
+    fun format7DayPaceSubtitle(
+        comparison: PaceComparisonResult?,
+        weightUnit: String,
+        referenceDate: LocalDate = LocalDate.now()
+    ): String = formatPaceSubtitle(
+        comparison = comparison,
+        weightUnit = weightUnit,
+        windowDays = 7,
+        pace = null,
+        referenceDate = referenceDate
+    )
+
+    /**
+     * Formats 14-day pace subtitle describing same-weekday comparison or maturity fallback states.
+     */
+    fun format14DayPaceSubtitle(
+        comparison: PaceComparisonResult?,
+        pace14: PaceRateResult?,
+        weightUnit: String,
+        referenceDate: LocalDate = LocalDate.now()
+    ): String = formatPaceSubtitle(
+        comparison = comparison,
+        weightUnit = weightUnit,
+        windowDays = 14,
+        pace = pace14,
+        referenceDate = referenceDate
+    )
 }
 
