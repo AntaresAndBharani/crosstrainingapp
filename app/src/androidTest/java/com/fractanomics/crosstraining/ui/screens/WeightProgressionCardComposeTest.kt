@@ -209,7 +209,7 @@ class WeightProgressionCardComposeTest {
         // Then weight progression card renders normally with dynamic title
         composeTestRule.onNodeWithText("Weight Progression (Hypertrophy Cut)").assertIsDisplayed()
         composeTestRule.onNodeWithText("START", substring = true).assertIsDisplayed()
-        composeTestRule.onNodeWithText("CURRENT WEIGHT").assertIsDisplayed()
+        composeTestRule.onNodeWithText("TODAY").assertIsDisplayed()
         composeTestRule.onNodeWithText("GOAL", substring = true).assertIsDisplayed()
         composeTestRule.onNodeWithText("7-Day Pace").assertIsDisplayed()
         composeTestRule.onNodeWithText("14-Day Pace").assertIsDisplayed()
@@ -588,5 +588,68 @@ class WeightProgressionCardComposeTest {
         composeTestRule.onNodeWithText("START 171.5 lbs").assertIsDisplayed()
         // Goal weight: 70.0 kg -> 154.3 lbs
         composeTestRule.onNodeWithText("GOAL 154.3 lbs").assertIsDisplayed()
+    }
+
+    // =========================================================================
+    // Scenario 15: Responsive Layout (360dp / fontScale = 1.3f) (Issue #600)
+    // =========================================================================
+    @Test
+    fun scenario15_responsiveLayout360dpFontScale13() {
+        val referenceDate = LocalDate.of(2026, 10, 13) // Tuesday
+        val lastWeekDate = referenceDate.minusDays(7) // Tuesday 6 Oct
+        val lastWeekEntry = WeightEntry(date = lastWeekDate, weightKg = 77.2, notes = "", updatedAtMillis = 1L)
+        val progressiveAverage = com.fractanomics.crosstraining.data.analytics.ProgressiveAverageResult(
+            averageKg = 76.5,
+            windowSpanDays = 14,
+            loggedDaysCount = 12
+        )
+        val dayOverDayDelta = DayOverDayDelta(
+            deltaKg = -0.3,
+            priorDate = referenceDate.minusDays(1),
+            currentDate = referenceDate,
+            isConsecutive = true
+        )
+
+        composeTestRule.setContent {
+            CompositionLocalProvider(
+                LocalDensity provides Density(density = 1f, fontScale = 1.3f)
+            ) {
+                Box(modifier = Modifier.width(360.dp)) {
+                    WeightProgressionHeroCard(
+                        title = "Weight Progression (Cut)",
+                        startWeightKg = 80.0,
+                        startDateFormatted = "1 Sep",
+                        currentWeightKg = 76.1,
+                        currentDate = referenceDate,
+                        goalWeightKg = 70.0,
+                        weightUnit = "kg",
+                        dayOverDayDelta = dayOverDayDelta,
+                        dropStreakDays = 2,
+                        pace7 = null,
+                        pace14 = null,
+                        paceComparison7d = null,
+                        forecast = null,
+                        onLogWeight = {},
+                        referenceDate = referenceDate,
+                        lastWeekEntry = lastWeekEntry,
+                        progressiveAverage = progressiveAverage
+                    )
+                }
+            }
+        }
+
+        // Left pillar checks: "LAST WEEK (TUE)", "77.2 kg", "(6 Oct)"
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("LAST WEEK (TUE)"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("77.2 kg"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("(6 Oct)"))
+
+        // Center pillar checks: "TODAY", "76.1 kg"
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("TODAY"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("76.1 kg"))
+
+        // Right pillar checks: "14D AVG", "76.5 kg", "(12 logs)"
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("14D AVG"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("76.5 kg"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("(12 logs)"))
     }
 }

@@ -692,5 +692,101 @@ class WeightProgressionCardTest {
             resolveTargetTomorrowContentDescription(fallbackNullBaseline)
         )
     }
+
+    // =========================================================================
+    // Issue #600: 3-Pillar Weight Progression Hero Card Resolvers (Scenarios 5, 6, 13, 14)
+    // =========================================================================
+
+    @Test
+    fun issue600_leftPillarResolvers_formatsHeaderValueAndSubtitle() {
+        val tuesday = LocalDate.of(2026, 10, 13) // Tuesday
+        assertEquals("LAST WEEK (TUE)", resolveLeftPillarHeader(tuesday))
+
+        val sunday = LocalDate.of(2026, 10, 18) // Sunday
+        assertEquals("LAST WEEK (SUN)", resolveLeftPillarHeader(sunday))
+
+        // Present last week entry
+        val lastWeekEntry = createWeightEntry(LocalDate.of(2026, 10, 6), 77.2)
+        assertEquals("77.2 kg", resolveLeftPillarValue(lastWeekEntry, "kg"))
+        assertEquals("170.2 lbs", resolveLeftPillarValue(lastWeekEntry, "lbs"))
+        assertEquals("(6 Oct)", resolveLeftPillarSubtitle(lastWeekEntry))
+
+        // Null last week entry
+        assertEquals("—", resolveLeftPillarValue(null, "kg"))
+        assertEquals("No log", resolveLeftPillarSubtitle(null))
+    }
+
+    @Test
+    fun issue600_centerPillarResolvers_formatsTodayVsLatestAndUnit() {
+        val today = LocalDate.of(2026, 10, 13)
+        // Today weigh-in
+        assertEquals("TODAY", resolveCenterPillarHeader(today, today))
+        // Stale weigh-in (Scenario 13)
+        val yesterday = today.minusDays(1)
+        assertEquals("LATEST", resolveCenterPillarHeader(yesterday, today))
+
+        assertEquals("76.1 kg", resolveCenterPillarValue(76.1, "kg"))
+        assertEquals("167.8 lbs", resolveCenterPillarValue(76.1, "lbs"))
+    }
+
+    @Test
+    fun issue600_rightPillarResolvers_formatsWindowSpanCountAndValue() {
+        // Dynamic window span (Scenario 6)
+        val avg5 = com.fractanomics.crosstraining.data.analytics.ProgressiveAverageResult(
+            averageKg = 76.8,
+            windowSpanDays = 5,
+            loggedDaysCount = 4
+        )
+        assertEquals("5D AVG", resolveRightPillarHeader(avg5))
+        assertEquals("76.8 kg", resolveRightPillarValue(avg5, "kg"))
+        assertEquals("169.3 lbs", resolveRightPillarValue(avg5, "lbs"))
+        assertEquals("(4 logs)", resolveRightPillarSubtitle(avg5))
+
+        // 14D mature window with single log (count grammar)
+        val avg14Single = com.fractanomics.crosstraining.data.analytics.ProgressiveAverageResult(
+            averageKg = 76.5,
+            windowSpanDays = 14,
+            loggedDaysCount = 1
+        )
+        assertEquals("14D AVG", resolveRightPillarHeader(avg14Single))
+        assertEquals("(1 log)", resolveRightPillarSubtitle(avg14Single))
+
+        // Null progressive average fallback
+        assertEquals("14D AVG", resolveRightPillarHeader(null))
+        assertEquals("—", resolveRightPillarValue(null, "kg"))
+        assertEquals("No log", resolveRightPillarSubtitle(null))
+    }
+
+    @Test
+    fun issue600_pace14Subtitle_wiresCadenceStates() {
+        val today = LocalDate.of(2026, 10, 13)
+        // Null pace
+        assertEquals("Needs weigh-in 14+ days ago", resolvePace14Subtitle(null, null, "kg", today))
+
+        // Mature pace with null comparison
+        val pace = PaceRateResult(
+            rateKgPerWeek = -0.5,
+            anchorWeightKg = 77.0,
+            anchorDate = today.minusDays(14),
+            currentWeightKg = 76.0,
+            currentDate = today,
+            elapsedDays = 14L,
+            trend = PaceTrend.LOSS
+        )
+        assertEquals("Smoothed trend", resolvePace14Subtitle(pace, null, "kg", today))
+
+        // Mature pace with same-weekday comparison
+        val comp = com.fractanomics.crosstraining.data.analytics.PaceComparisonResult(
+            currentRateKgPerWeek = -0.5,
+            priorRateKgPerWeek = -0.3,
+            deltaRateKgPerWeek = -0.2,
+            percentChange = null,
+            isAcceleratingDeficit = true,
+            priorDate = LocalDate.of(2026, 10, 6),
+            isConsecutive = false,
+            isExactDayMatch = true
+        )
+        assertEquals("-0.2 kg/wk vs last Tue", resolvePace14Subtitle(pace, comp, "kg", today))
+    }
 }
 
