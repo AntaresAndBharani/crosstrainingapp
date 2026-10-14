@@ -514,7 +514,7 @@ class WeightProgressionCardTest {
     @Test
     fun issue596_paceTargetsContainerStateTextResolution() {
         val unavailText = resolvePaceTargetsContainerStateText(PaceTargetsState.Unavailable)
-        assertEquals("Pace Targets Unavailable: Needs 7 days of weigh-in history", unavailText)
+        assertEquals("Pace Targets Unavailable: Needs starting weight or initial weigh-in", unavailText)
 
         val stalledText = resolvePaceTargetsContainerStateText(PaceTargetsState.Stalled)
         assertEquals("Pace Stalled: Surplus/maintenance pace detected", stalledText)
@@ -787,6 +787,45 @@ class WeightProgressionCardTest {
             isExactDayMatch = true
         )
         assertEquals("-0.2 kg/wk vs last Tue", resolvePace14Subtitle(pace, comp, "kg", today))
+    }
+
+    // =========================================================================
+    // Issue #602: Responsive Weight Progression Hero & Monotonic Cycle Pace Targets
+    // =========================================================================
+
+    @Test
+    fun issue602_formatWeeklyDelta_formatsLossGainNeutralAndNull() {
+        // Loss
+        assertEquals("-0.5 kg", formatWeeklyDelta(-0.5, "kg"))
+        assertEquals("-1.1 lbs", formatWeeklyDelta(-0.5, "lbs"))
+
+        // Gain
+        assertEquals("+0.4 kg", formatWeeklyDelta(0.4, "kg"))
+        assertEquals("+0.9 lbs", formatWeeklyDelta(0.4, "lbs"))
+
+        // Neutral deadband
+        assertEquals("0.0 kg", formatWeeklyDelta(0.02, "kg"))
+        assertEquals("0.0 kg", formatWeeklyDelta(-0.03, "kg"))
+        assertEquals("0.0 lbs", formatWeeklyDelta(0.0, "lbs"))
+
+        // Null
+        assertEquals("—", formatWeeklyDelta(null, "kg"))
+        assertEquals("—", formatWeeklyDelta(null, "lbs"))
+    }
+
+    @Test
+    fun issue602_rollingHeroResolvers_formatNullableWeightsAndCounts() {
+        assertEquals("76.8 kg", resolvePillarWeightDisplay(76.8, "kg"))
+        assertEquals("169.3 lbs", resolvePillarWeightDisplay(76.8, "lbs"))
+        assertEquals("—", resolvePillarWeightDisplay(null, "kg"))
+
+        assertEquals("76.1 kg", resolveCenterPillarValue(76.1, "kg"))
+        assertEquals("167.8 lbs", resolveCenterPillarValue(76.1, "lbs"))
+        assertEquals("—", resolveCenterPillarValue(null, "kg"))
+
+        assertEquals("(1 log)", resolveRightPillarSubtitle(1))
+        assertEquals("(12 logs)", resolveRightPillarSubtitle(12))
+        assertEquals("No log", resolveRightPillarSubtitle(0))
     }
 }
 

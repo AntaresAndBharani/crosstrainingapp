@@ -308,6 +308,18 @@ data class ProgressiveAverageResult(
     val loggedDaysCount: Int
 )
 
+/**
+ * Result representation for rolling window averages and weekly deltas in WeightProgressionHeroCard.
+ */
+data class RollingWeightHeroState(
+    val today7dAvgKg: Double?,
+    val lastWeek7dAvgKg: Double?,
+    val delta7dKg: Double?,
+    val today14dAvgKg: Double?,
+    val delta14dKg: Double?,
+    val loggedDaysCount14d: Int
+)
+
 typealias DayOverDayDelta = FatLossAnalytics.DayOverDayDelta
 typealias PaceComparisonResult = FatLossAnalytics.PaceComparisonResult
 
@@ -1280,35 +1292,41 @@ object FatLossAnalytics {
         entries: List<WeightEntry>,
         cycleStartDate: LocalDate,
         referenceDate: LocalDate = LocalDate.now(),
-        weightUnit: String = "kg"
+        weightUnit: String = "kg",
+        startingWeightKg: Double? = null
     ): PaceTargetsState {
         val activeEntries = entries
             .filter { it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(referenceDate) }
             .sortedBy { it.date }
 
-        val paceToday = compute7DayPace(activeEntries, cycleStartDate, referenceDate)
-
-        // Container-level precedence: Stalled > Unavailable > Available
-        if (paceToday != null && paceToday.rateKgPerWeek >= 0.0) {
-            return PaceTargetsState.Stalled
-        }
-        if (paceToday == null) {
+        val startKg = startingWeightKg ?: activeEntries.firstOrNull()?.weightKg
+        if (startKg == null) {
             return PaceTargetsState.Unavailable
+        }
+
+        val entryTMinus7 = activeEntries.firstOrNull { it.date == referenceDate.minusDays(7) }
+        val entryTMinus6 = activeEntries.firstOrNull { it.date == referenceDate.minusDays(6) }
+
+        val isStalled = when {
+            entryTMinus7 != null -> (entryTMinus7.weightKg - startKg) >= 0.0
+            entryTMinus6 != null -> (entryTMinus6.weightKg - startKg) >= 0.0
+            else -> false
+        }
+        if (isStalled) {
+            return PaceTargetsState.Stalled
         }
 
         val isImperial = weightUnit.equals("lbs", ignoreCase = true)
         val unitLabel = if (isImperial) "lbs" else "kg"
         val entryToday = activeEntries.firstOrNull { it.date == referenceDate }
+        val dCycle = java.time.temporal.ChronoUnit.DAYS.between(cycleStartDate, referenceDate).toDouble().coerceAtLeast(1.0)
 
         // 1. Column: Expected Today
-        val paceYesterday = compute7DayPace(activeEntries, cycleStartDate, referenceDate.minusDays(1))
-        val entryTMinus7 = activeEntries.firstOrNull { it.date == referenceDate.minusDays(7) }
-
         val todayColumn: ColumnState = when {
-            paceYesterday == null -> ColumnState.InsufficientHistory
+            referenceDate.minusDays(7).isBefore(cycleStartDate) -> ColumnState.InsufficientHistory
             entryTMinus7 == null -> ColumnState.NeedsLog(requiredDate = referenceDate.minusDays(7))
             else -> {
-                val wTheoTodayKg = entryTMinus7.weightKg + paceYesterday.rateKgPerWeek
+                val wTheoTodayKg = entryTMinus7.weightKg + ((entryTMinus7.weightKg - startKg) / dCycle)
                 val targetDisplay = if (isImperial) round1(WeightAnalytics.kgToLbs(wTheoTodayKg)) else round1(wTheoTodayKg)
                 val baselineTodayDisplay = if (isImperial) round1(WeightAnalytics.kgToLbs(entryTMinus7.weightKg)) else round1(entryTMinus7.weightKg)
 
@@ -1340,64 +1358,55 @@ object FatLossAnalytics {
         }
 
         // 2. Column: Target Tomorrow
-        val entryTMinus6 = activeEntries.firstOrNull { it.date == referenceDate.minusDays(6) }
-        val wTheoTomorrowKg: Double? = when {
-            entryTMinus6 != null -> entryTMinus6.weightKg + paceToday.rateKgPerWeek
-            entryToday != null -> entryToday.weightKg + (paceToday.rateKgPerWeek / 7.0)
-            else -> null
-        }
-        val baselineTomorrowDisplay = if (entryTMinus6 != null) {
-            if (isImperial) round1(WeightAnalytics.kgToLbs(entryTMinus6.weightKg)) else round1(entryTMinus6.weightKg)
-        } else {
-            null
-        }
-
         val tomorrowColumn: ColumnState = when {
-            wTheoTomorrowKg == null -> ColumnState.NeedsLog(requiredDate = referenceDate.minusDays(6))
-            entryToday == null -> {
-                val targetTomorrowDisplay = if (isImperial) round1(WeightAnalytics.kgToLbs(wTheoTomorrowKg)) else round1(wTheoTomorrowKg)
-                ColumnState.Value(
-                    targetWeightDisplay = targetTomorrowDisplay,
-                    deltaDisplay = null,
-                    status = null,
-                    unitLabel = unitLabel,
-                    baselineWeightDisplay = baselineTomorrowDisplay
-                )
-            }
+            referenceDate.minusDays(6).isBefore(cycleStartDate) -> ColumnState.InsufficientHistory
+            entryTMinus6 == null -> ColumnState.NeedsLog(requiredDate = referenceDate.minusDays(6))
             else -> {
+                val wTheoTomorrowKg = entryTMinus6.weightKg + ((entryTMinus6.weightKg - startKg) / dCycle)
                 val targetTomorrowDisplay = if (isImperial) round1(WeightAnalytics.kgToLbs(wTheoTomorrowKg)) else round1(wTheoTomorrowKg)
-                val actualTodayDisplay = if (isImperial) round1(WeightAnalytics.kgToLbs(entryToday.weightKg)) else round1(entryToday.weightKg)
+                val baselineTomorrowDisplay = if (isImperial) round1(WeightAnalytics.kgToLbs(entryTMinus6.weightKg)) else round1(entryTMinus6.weightKg)
 
-                when {
-                    actualTodayDisplay > targetTomorrowDisplay -> {
-                        val deltaKg = diff1(round1(wTheoTomorrowKg), round1(entryToday.weightKg))
-                        val deltaDisp = if (isImperial) round1(WeightAnalytics.kgToLbs(deltaKg)) else deltaKg
-                        ColumnState.Value(
-                            targetWeightDisplay = targetTomorrowDisplay,
-                            deltaDisplay = deltaDisp,
-                            status = null,
-                            unitLabel = unitLabel,
-                            baselineWeightDisplay = baselineTomorrowDisplay
-                        )
-                    }
-                    actualTodayDisplay == targetTomorrowDisplay -> {
-                        ColumnState.Value(
-                            targetWeightDisplay = targetTomorrowDisplay,
-                            deltaDisplay = null,
-                            status = null,
-                            unitLabel = unitLabel,
-                            baselineWeightDisplay = baselineTomorrowDisplay
-                        )
-                    }
-                    else -> {
-                        val marginKg = diff1(round1(wTheoTomorrowKg), round1(entryToday.weightKg))
-                        val marginDisp = if (isImperial) round1(WeightAnalytics.kgToLbs(marginKg)) else marginKg
-                        ColumnState.AlreadyBelowTarget(
-                            targetWeightDisplay = targetTomorrowDisplay,
-                            marginDisplay = marginDisp,
-                            unitLabel = unitLabel,
-                            baselineWeightDisplay = baselineTomorrowDisplay
-                        )
+                if (entryToday == null) {
+                    ColumnState.Value(
+                        targetWeightDisplay = targetTomorrowDisplay,
+                        deltaDisplay = null,
+                        status = null,
+                        unitLabel = unitLabel,
+                        baselineWeightDisplay = baselineTomorrowDisplay
+                    )
+                } else {
+                    val actualTodayDisplay = if (isImperial) round1(WeightAnalytics.kgToLbs(entryToday.weightKg)) else round1(entryToday.weightKg)
+                    when {
+                        actualTodayDisplay > targetTomorrowDisplay -> {
+                            val deltaKg = diff1(round1(wTheoTomorrowKg), round1(entryToday.weightKg))
+                            val deltaDisp = if (isImperial) round1(WeightAnalytics.kgToLbs(deltaKg)) else deltaKg
+                            ColumnState.Value(
+                                targetWeightDisplay = targetTomorrowDisplay,
+                                deltaDisplay = deltaDisp,
+                                status = null,
+                                unitLabel = unitLabel,
+                                baselineWeightDisplay = baselineTomorrowDisplay
+                            )
+                        }
+                        actualTodayDisplay == targetTomorrowDisplay -> {
+                            ColumnState.Value(
+                                targetWeightDisplay = targetTomorrowDisplay,
+                                deltaDisplay = null,
+                                status = null,
+                                unitLabel = unitLabel,
+                                baselineWeightDisplay = baselineTomorrowDisplay
+                            )
+                        }
+                        else -> {
+                            val marginKg = diff1(round1(wTheoTomorrowKg), round1(entryToday.weightKg))
+                            val marginDisp = if (isImperial) round1(WeightAnalytics.kgToLbs(marginKg)) else marginKg
+                            ColumnState.AlreadyBelowTarget(
+                                targetWeightDisplay = targetTomorrowDisplay,
+                                marginDisplay = marginDisp,
+                                unitLabel = unitLabel,
+                                baselineWeightDisplay = baselineTomorrowDisplay
+                            )
+                        }
                     }
                 }
             }
@@ -1418,7 +1427,74 @@ object FatLossAnalytics {
         entries = entries,
         cycleStartDate = cycle.startDate,
         referenceDate = referenceDate,
-        weightUnit = weightUnit
+        weightUnit = weightUnit,
+        startingWeightKg = cycle.startingWeightKg
+    )
+
+    /**
+     * Computes the 7-day and 14-day rolling window averages and weekly deltas for the hero card.
+     *
+     * Windows:
+     * - Today 7D: [referenceDate - 6d, referenceDate]
+     * - Last Week 7D: [referenceDate - 13d, referenceDate - 7d]
+     * - Today 14D: [referenceDate - 13d, referenceDate]
+     * - Last Week 14D: [referenceDate - 20d, referenceDate - 7d]
+     *
+     * A window is non-null if it has >= 1 in-cycle entry.
+     * Deltas are null if either current or lagged window is null.
+     */
+    fun computeRollingWeightHero(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        referenceDate: LocalDate = LocalDate.now()
+    ): RollingWeightHeroState {
+        val activeEntries = entries.filter {
+            it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(referenceDate)
+        }
+
+        fun windowAverage(start: LocalDate, end: LocalDate): Double? {
+            val inWindow = activeEntries.filter { !it.date.isBefore(start) && !it.date.isAfter(end) }
+            return if (inWindow.isNotEmpty()) inWindow.map { it.weightKg }.average() else null
+        }
+
+        val today7dAvg = windowAverage(referenceDate.minusDays(6), referenceDate)
+        val lastWeek7dAvg = windowAverage(referenceDate.minusDays(13), referenceDate.minusDays(7))
+        val delta7d = if (today7dAvg != null && lastWeek7dAvg != null) {
+            today7dAvg - lastWeek7dAvg
+        } else {
+            null
+        }
+
+        val today14dAvg = windowAverage(referenceDate.minusDays(13), referenceDate)
+        val lastWeek14dAvg = windowAverage(referenceDate.minusDays(20), referenceDate.minusDays(7))
+        val delta14d = if (today14dAvg != null && lastWeek14dAvg != null) {
+            today14dAvg - lastWeek14dAvg
+        } else {
+            null
+        }
+
+        val loggedDaysCount14d = activeEntries.count {
+            !it.date.isBefore(referenceDate.minusDays(13)) && !it.date.isAfter(referenceDate)
+        }
+
+        return RollingWeightHeroState(
+            today7dAvgKg = today7dAvg,
+            lastWeek7dAvgKg = lastWeek7dAvg,
+            delta7dKg = delta7d,
+            today14dAvgKg = today14dAvg,
+            delta14dKg = delta14d,
+            loggedDaysCount14d = loggedDaysCount14d
+        )
+    }
+
+    fun computeRollingWeightHero(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        referenceDate: LocalDate = LocalDate.now()
+    ): RollingWeightHeroState = computeRollingWeightHero(
+        entries = entries,
+        cycleStartDate = cycle.startDate,
+        referenceDate = referenceDate
     )
 
     /**
