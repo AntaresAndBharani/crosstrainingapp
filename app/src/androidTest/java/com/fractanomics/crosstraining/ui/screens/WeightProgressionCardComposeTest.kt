@@ -550,6 +550,9 @@ class WeightProgressionCardComposeTest {
     // =========================================================================
     // Scenario 17: Imperial Units Lbs Mode
     // =========================================================================
+    // =========================================================================
+    // Scenario 17: Imperial Units Lbs Mode
+    // =========================================================================
     @Test
     fun scenario17_imperialUnitsLbsMode() {
         val referenceDate = LocalDate.of(2026, 10, 7)
@@ -582,8 +585,8 @@ class WeightProgressionCardComposeTest {
 
         // Current weight: 76.1 kg -> 167.8 lbs
         composeTestRule.onNodeWithText("167.8 lbs").assertIsDisplayed()
-        // Delta pill: -0.3 kg -> -0.7 lbs
-        composeTestRule.onNodeWithText("▼ -0.7 lbs vs yesterday").assertIsDisplayed()
+        // Yellow vs yesterday badge is removed in Issue #602
+        composeTestRule.onAllNodesWithText("vs yesterday", substring = true).assertCountEquals(0)
         // Start weight: 77.8 kg -> 171.5 lbs
         composeTestRule.onNodeWithText("START 171.5 lbs").assertIsDisplayed()
         // Goal weight: 70.0 kg -> 154.3 lbs
@@ -591,7 +594,7 @@ class WeightProgressionCardComposeTest {
     }
 
     // =========================================================================
-    // Scenario 15: Responsive Layout (360dp / fontScale = 1.3f) (Issue #600)
+    // Scenario 15: Responsive Layout (360dp / fontScale = 1.3f) (Issue #600 / #602)
     // =========================================================================
     @Test
     fun scenario15_responsiveLayout360dpFontScale13() {
@@ -638,10 +641,10 @@ class WeightProgressionCardComposeTest {
             }
         }
 
-        // Left pillar checks: "LAST WEEK (TUE)", "77.2 kg", "(6 Oct)"
+        // Left pillar checks: "LAST WEEK (TUE)", "77.2 kg", "-1.1 kg"
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("LAST WEEK (TUE)"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("77.2 kg"))
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("(6 Oct)"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("-1.1 kg"))
 
         // Center pillar checks: "TODAY", "76.1 kg"
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("TODAY"))

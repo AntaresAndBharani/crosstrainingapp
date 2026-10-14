@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import com.fractanomics.crosstraining.data.analytics.DayOverDayDelta
 import com.fractanomics.crosstraining.data.analytics.PaceComparisonResult
 import com.fractanomics.crosstraining.data.analytics.ProgressiveAverageResult
+import com.fractanomics.crosstraining.data.analytics.RollingWeightHeroState
 import com.fractanomics.crosstraining.data.analytics.PaceTargetsState
 import com.fractanomics.crosstraining.data.analytics.ColumnState
 import com.fractanomics.crosstraining.data.analytics.PaceTargetStatus
@@ -1121,6 +1122,9 @@ fun WeightProgressionCard(
     val paceTargets = remember(weightEntries, cycle, today, weightUnit) {
         FatLossAnalytics.compute7DayPaceTargets(weightEntries, cycle, today, weightUnit)
     }
+    val rollingWeightHero = remember(activeEntries, cycle.startDate, today) {
+        FatLossAnalytics.computeRollingWeightHero(activeEntries, cycle.startDate, today)
+    }
 
     WeightProgressionHeroCard(
         title = "Weight Progression (${cycle.name})",
@@ -1142,7 +1146,8 @@ fun WeightProgressionCard(
         paceTargets = paceTargets,
         lastWeekEntry = lastWeekEntry,
         progressiveAverage = progressiveAverage,
-        paceComparison14d = paceComparison14d
+        paceComparison14d = paceComparison14d,
+        rollingWeightHero = rollingWeightHero
     )
 }
 
@@ -1159,15 +1164,18 @@ internal fun resolveLeftPillarHeader(currentDate: LocalDate): String {
     return "LAST WEEK ($dayName)"
 }
 
-internal fun resolveLeftPillarValue(lastWeekEntry: WeightEntry?, weightUnit: String): String {
-    return if (lastWeekEntry != null) {
+internal fun resolvePillarWeightDisplay(weightKg: Double?, weightUnit: String): String {
+    return if (weightKg != null) {
         val isImperial = weightUnit.equals("lbs", ignoreCase = true)
-        val display = if (isImperial) WeightAnalytics.kgToLbs(lastWeekEntry.weightKg) else lastWeekEntry.weightKg
+        val display = if (isImperial) WeightAnalytics.kgToLbs(weightKg) else weightKg
         "${String.format(Locale.US, "%.1f", display)} $weightUnit"
     } else {
         NO_DATA_PLACEHOLDER
     }
 }
+
+internal fun resolveLeftPillarValue(lastWeekEntry: WeightEntry?, weightUnit: String): String =
+    resolvePillarWeightDisplay(lastWeekEntry?.weightKg, weightUnit)
 
 internal fun resolveLeftPillarSubtitle(lastWeekEntry: WeightEntry?): String {
     return if (lastWeekEntry != null) {
@@ -1177,38 +1185,44 @@ internal fun resolveLeftPillarSubtitle(lastWeekEntry: WeightEntry?): String {
     }
 }
 
+internal fun resolveLeftPillarSubtitle(delta7dKg: Double?, weightUnit: String): String =
+    formatWeeklyDelta(delta7dKg, weightUnit)
+
 internal fun resolveCenterPillarHeader(currentDate: LocalDate, referenceDate: LocalDate = LocalDate.now()): String {
     return if (currentDate == referenceDate) "TODAY" else "LATEST"
 }
 
-internal fun resolveCenterPillarValue(currentWeightKg: Double, weightUnit: String): String {
-    val isImperial = weightUnit.equals("lbs", ignoreCase = true)
-    val display = if (isImperial) WeightAnalytics.kgToLbs(currentWeightKg) else currentWeightKg
-    return "${String.format(Locale.US, "%.1f", display)} $weightUnit"
-}
+internal fun resolveCenterPillarValue(weightKg: Double?, weightUnit: String): String =
+    resolvePillarWeightDisplay(weightKg, weightUnit)
 
-internal fun resolveRightPillarHeader(progressiveAverage: ProgressiveAverageResult?): String {
+internal fun resolveRightPillarHeader(progressiveAverage: ProgressiveAverageResult? = null): String {
     val window = progressiveAverage?.windowSpanDays ?: 14
     return "${window}D AVG"
 }
 
-internal fun resolveRightPillarValue(progressiveAverage: ProgressiveAverageResult?, weightUnit: String): String {
-    return if (progressiveAverage != null) {
-        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
-        val display = if (isImperial) WeightAnalytics.kgToLbs(progressiveAverage.averageKg) else progressiveAverage.averageKg
-        "${String.format(Locale.US, "%.1f", display)} $weightUnit"
-    } else {
-        NO_DATA_PLACEHOLDER
-    }
-}
+internal fun resolveRightPillarValue(progressiveAverage: ProgressiveAverageResult?, weightUnit: String): String =
+    resolvePillarWeightDisplay(progressiveAverage?.averageKg, weightUnit)
 
-internal fun resolveRightPillarSubtitle(progressiveAverage: ProgressiveAverageResult?): String {
-    return if (progressiveAverage != null) {
-        val count = progressiveAverage.loggedDaysCount
-        val countLabel = if (count == 1) "1 log" else "$count logs"
+internal fun resolveRightPillarSubtitle(loggedDaysCount: Int): String {
+    return if (loggedDaysCount > 0) {
+        val countLabel = if (loggedDaysCount == 1) "1 log" else "$loggedDaysCount logs"
         "($countLabel)"
     } else {
         "No log"
+    }
+}
+
+internal fun resolveRightPillarSubtitle(progressiveAverage: ProgressiveAverageResult?): String =
+    resolveRightPillarSubtitle(progressiveAverage?.loggedDaysCount ?: 0)
+
+internal fun formatWeeklyDelta(deltaKg: Double?, weightUnit: String): String {
+    if (deltaKg == null) return NO_DATA_PLACEHOLDER
+    val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+    val deltaInUnit = if (isImperial) WeightAnalytics.kgToLbs(deltaKg) else deltaKg
+    return when {
+        deltaInUnit < -0.05 -> String.format(Locale.US, "%.1f %s", deltaInUnit, weightUnit)
+        deltaInUnit > 0.05 -> String.format(Locale.US, "+%.1f %s", deltaInUnit, weightUnit)
+        else -> String.format(Locale.US, "0.0 %s", weightUnit)
     }
 }
 
@@ -1242,7 +1256,7 @@ internal fun resolvePace14Subtitle(
 }
 
 internal fun resolvePaceTargetsContainerStateText(state: PaceTargetsState): String? = when (state) {
-    is PaceTargetsState.Unavailable -> "Pace Targets Unavailable: Needs 7 days of weigh-in history"
+    is PaceTargetsState.Unavailable -> "Pace Targets Unavailable: Needs starting weight or initial weigh-in"
     is PaceTargetsState.Stalled -> "Pace Stalled: Surplus/maintenance pace detected"
     is PaceTargetsState.Available -> null
 }
@@ -1452,16 +1466,6 @@ fun TheoreticalPaceTargetsBox(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            val todayBaselineText = resolveColumnBaselineText(paceTargets.today)
-                            if (todayBaselineText != null) {
-                                Text(
-                                    text = todayBaselineText,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
                         }
 
                         // 1dp vertical divider
@@ -1510,16 +1514,6 @@ fun TheoreticalPaceTargetsBox(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            val tomorrowBaselineText = resolveColumnBaselineText(paceTargets.tomorrow)
-                            if (tomorrowBaselineText != null) {
-                                Text(
-                                    text = tomorrowBaselineText,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
                         }
                     }
                 }
@@ -1560,9 +1554,22 @@ fun WeightProgressionHeroCard(
     paceTargets: PaceTargetsState? = null,
     lastWeekEntry: WeightEntry? = null,
     progressiveAverage: ProgressiveAverageResult? = null,
-    paceComparison14d: PaceComparisonResult? = null
+    paceComparison14d: PaceComparisonResult? = null,
+    rollingWeightHero: RollingWeightHeroState? = null,
+    today7dAvgKg: Double? = null,
+    lastWeek7dAvgKg: Double? = null,
+    delta7dKg: Double? = null,
+    today14dAvgKg: Double? = null,
+    delta14dKg: Double? = null,
+    loggedDaysCount14d: Int = 0
 ) {
     val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+    val resolvedToday7dAvgKg = today7dAvgKg ?: rollingWeightHero?.today7dAvgKg ?: currentWeightKg
+    val resolvedLastWeek7dAvgKg = lastWeek7dAvgKg ?: rollingWeightHero?.lastWeek7dAvgKg ?: lastWeekEntry?.weightKg
+    val resolvedToday14dAvgKg = today14dAvgKg ?: rollingWeightHero?.today14dAvgKg ?: progressiveAverage?.averageKg
+    val resolvedDelta7dKg = delta7dKg ?: rollingWeightHero?.delta7dKg ?: resolvedLastWeek7dAvgKg?.let { resolvedToday7dAvgKg - it }
+    val resolvedDelta14dKg = delta14dKg ?: rollingWeightHero?.delta14dKg
+    val resolvedLoggedDaysCount14d = if (loggedDaysCount14d > 0) loggedDaysCount14d else (rollingWeightHero?.loggedDaysCount14d ?: progressiveAverage?.loggedDaysCount ?: 0)
 
     SectionCard(
         title = title,
@@ -1684,7 +1691,7 @@ fun WeightProgressionHeroCard(
                 ) {
                     // Left Pillar: LAST WEEK (DAY)
                     Column(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1.0f),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
@@ -1695,27 +1702,30 @@ fun WeightProgressionHeroCard(
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = resolveLeftPillarValue(lastWeekEntry, weightUnit),
+                            text = resolvePillarWeightDisplay(resolvedLastWeek7dAvgKg, weightUnit),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = resolveLeftPillarSubtitle(lastWeekEntry),
+                            text = formatWeeklyDelta(resolvedDelta7dKg, weightUnit),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
 
                     // Center Hero Pillar: TODAY / LATEST
                     Column(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1.25f),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
@@ -1726,87 +1736,69 @@ fun WeightProgressionHeroCard(
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
-                        val fontScale = LocalDensity.current.fontScale
-                        val centerTextStyle = if (fontScale >= 1.25f) {
-                            MaterialTheme.typography.headlineMedium
-                        } else {
-                            MaterialTheme.typography.displaySmall
-                        }
                         Text(
-                            text = resolveCenterPillarValue(currentWeightKg, weightUnit),
-                            style = centerTextStyle,
+                            text = resolveCenterPillarValue(resolvedToday7dAvgKg, weightUnit),
+                            style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
 
-                    // Right Pillar: {N}D AVG
+                    // Right Pillar: 14D AVG
                     Column(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1.0f),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         Text(
-                            text = resolveRightPillarHeader(progressiveAverage),
+                            text = "14D AVG",
                             style = MaterialTheme.typography.labelSmall,
                             letterSpacing = 1.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = resolveRightPillarValue(progressiveAverage, weightUnit),
+                            text = resolvePillarWeightDisplay(resolvedToday14dAvgKg, weightUnit),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = resolveRightPillarSubtitle(progressiveAverage),
+                            text = formatWeeklyDelta(resolvedDelta14dKg, weightUnit),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = resolveRightPillarSubtitle(resolvedLoggedDaysCount14d),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
-                // Centered row for Intelligence Pills (dayOverDayDelta and dropStreakDays)
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    if (dayOverDayDelta != null) {
-                        val deltaText = FatLossAnalytics.formatCurrentWeightSubtitle(dayOverDayDelta, weightUnit, referenceDate)
-                        val (pillBg, pillFg) = when {
-                            dayOverDayDelta.deltaKg < -FatLossAnalytics.NOISE_THRESHOLD_KG ->
-                                MaterialTheme.colorScheme.tertiaryContainer to MaterialTheme.colorScheme.onTertiaryContainer
-                            dayOverDayDelta.deltaKg > FatLossAnalytics.NOISE_THRESHOLD_KG ->
-                                MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
-                            else ->
-                                MaterialTheme.colorScheme.surfaceContainerHighest to MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = pillBg
-                        ) {
-                            Text(
-                                text = deltaText,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = pillFg,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-
-                    if (dropStreakDays >= 2 && !currentDate.isBefore(referenceDate.minusDays(1))) {
+                // Centered row for Intelligence Pills (dropStreakDays preserved, vs yesterday removed)
+                if (dropStreakDays >= 2 && !currentDate.isBefore(referenceDate.minusDays(1))) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         Surface(
                             shape = RoundedCornerShape(16.dp),
                             color = MaterialTheme.colorScheme.primaryContainer
