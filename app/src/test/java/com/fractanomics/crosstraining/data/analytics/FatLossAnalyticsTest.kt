@@ -2814,5 +2814,179 @@ class FatLossAnalyticsTest {
         val percentSubtitleImperial = FatLossAnalytics.format7DayPaceSubtitle(percentComparison, "lbs", LocalDate.of(2026, 10, 13))
         assertEquals("13% faster loss vs last Tue", percentSubtitleImperial)
     }
+
+    // =========================================================================
+    // Issue #604: Same-Day Raw Weight Trio in Weight Progression Card
+    // =========================================================================
+
+    @Test
+    fun `issue 604 - scenario 1 - full same-day trio present`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 1)
+        val referenceDate = LocalDate.of(2026, 10, 15) // Thursday
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.5, updatedAtMillis = 1L), // t-14d
+            WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 75.8, updatedAtMillis = 2L), // t-7d
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 75.0, updatedAtMillis = 3L) // t
+        )
+
+        val trio = FatLossAnalytics.computeSameDayWeightTrio(entries, cycleStartDate, referenceDate)
+        assertEquals(75.0, trio.currentDailyWeightKg)
+        assertEquals(75.8, trio.lastWeekSameDayWeightKg)
+        assertEquals(-0.8, trio.deltaCurrentVsLastWeekSameDayKg)
+        assertEquals(76.5, trio.twoWeeksAgoSameDayWeightKg)
+        assertEquals(-1.5, trio.deltaCurrentVsTwoWeeksAgoSameDayKg)
+    }
+
+    @Test
+    fun `issue 604 - scenario 2 - unlogged anchor t evaluates to null deltas`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 1)
+        val referenceDate = LocalDate.of(2026, 10, 15)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.5, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 75.8, updatedAtMillis = 2L)
+        )
+
+        val trio = FatLossAnalytics.computeSameDayWeightTrio(entries, cycleStartDate, referenceDate)
+        assertNull(trio.currentDailyWeightKg)
+        assertEquals(75.8, trio.lastWeekSameDayWeightKg)
+        assertNull(trio.deltaCurrentVsLastWeekSameDayKg)
+        assertEquals(76.5, trio.twoWeeksAgoSameDayWeightKg)
+        assertNull(trio.deltaCurrentVsTwoWeeksAgoSameDayKg)
+    }
+
+    @Test
+    fun `issue 604 - scenario 3 - missing t minus 7d resolves to null delta`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 1)
+        val referenceDate = LocalDate.of(2026, 10, 15)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.5, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 75.0, updatedAtMillis = 3L)
+        )
+
+        val trio = FatLossAnalytics.computeSameDayWeightTrio(entries, cycleStartDate, referenceDate)
+        assertEquals(75.0, trio.currentDailyWeightKg)
+        assertNull(trio.lastWeekSameDayWeightKg)
+        assertNull(trio.deltaCurrentVsLastWeekSameDayKg)
+        assertEquals(76.5, trio.twoWeeksAgoSameDayWeightKg)
+        assertEquals(-1.5, trio.deltaCurrentVsTwoWeeksAgoSameDayKg)
+    }
+
+    @Test
+    fun `issue 604 - scenario 4 - missing t minus 14d resolves to null delta`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 1)
+        val referenceDate = LocalDate.of(2026, 10, 15)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 75.8, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 75.0, updatedAtMillis = 3L)
+        )
+
+        val trio = FatLossAnalytics.computeSameDayWeightTrio(entries, cycleStartDate, referenceDate)
+        assertEquals(75.0, trio.currentDailyWeightKg)
+        assertEquals(75.8, trio.lastWeekSameDayWeightKg)
+        assertEquals(-0.8, trio.deltaCurrentVsLastWeekSameDayKg)
+        assertNull(trio.twoWeeksAgoSameDayWeightKg)
+        assertNull(trio.deltaCurrentVsTwoWeeksAgoSameDayKg)
+    }
+
+    @Test
+    fun `issue 604 - scenario 5 - pre-cycle entries excluded`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 5)
+        val referenceDate = LocalDate.of(2026, 10, 15)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 77.0, updatedAtMillis = 1L), // Before cycleStartDate
+            WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 75.8, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 75.0, updatedAtMillis = 3L)
+        )
+
+        val trio = FatLossAnalytics.computeSameDayWeightTrio(entries, cycleStartDate, referenceDate)
+        assertEquals(75.0, trio.currentDailyWeightKg)
+        assertEquals(75.8, trio.lastWeekSameDayWeightKg)
+        assertEquals(-0.8, trio.deltaCurrentVsLastWeekSameDayKg)
+        assertNull(trio.twoWeeksAgoSameDayWeightKg)
+        assertNull(trio.deltaCurrentVsTwoWeeksAgoSameDayKg)
+    }
+
+    @Test
+    fun `issue 604 - scenario 6 - soft-deleted and future entries excluded`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 1)
+        val referenceDate = LocalDate.of(2026, 10, 15)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.5, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 75.8, deletedAtMillis = 9999L, updatedAtMillis = 2L), // Soft-deleted
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 75.0, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 16), weightKg = 74.0, updatedAtMillis = 4L) // Future
+        )
+
+        val trio = FatLossAnalytics.computeSameDayWeightTrio(entries, cycleStartDate, referenceDate)
+        assertEquals(75.0, trio.currentDailyWeightKg)
+        assertNull(trio.lastWeekSameDayWeightKg)
+        assertNull(trio.deltaCurrentVsLastWeekSameDayKg)
+        assertEquals(76.5, trio.twoWeeksAgoSameDayWeightKg)
+        assertEquals(-1.5, trio.deltaCurrentVsTwoWeeksAgoSameDayKg)
+    }
+
+    @Test
+    fun `issue 604 - scenario 7 - cycle overload delegates to cycle startDate`() {
+        val cycle = Cycle(
+            id = 1L,
+            name = "Cut",
+            startDate = LocalDate.of(2026, 9, 1),
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 80.0,
+            targetWeightKg = 72.0
+        )
+        val referenceDate = LocalDate.of(2026, 10, 15)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 75.0, updatedAtMillis = 1L)
+        )
+
+        val trio = FatLossAnalytics.computeSameDayWeightTrio(entries, cycle, referenceDate)
+        assertEquals(75.0, trio.currentDailyWeightKg)
+    }
+
+    @Test
+    fun `issue 604 - scenario 8 - diff1 precision prevents IEEE-754 inaccuracy`() {
+        val cycleStartDate = LocalDate.of(2026, 9, 1)
+        val referenceDate = LocalDate.of(2026, 10, 15)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 75.2, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 75.3, updatedAtMillis = 2L)
+        )
+
+        val trio = FatLossAnalytics.computeSameDayWeightTrio(entries, cycleStartDate, referenceDate)
+        assertEquals(0.1, trio.deltaCurrentVsLastWeekSameDayKg)
+    }
+
+    @Test
+    fun `issue 604 - scenario 9 - display-unit arithmetic consistency invariant`() {
+        Locale.setDefault(Locale.US)
+        val currentKg = 72.44
+        val priorKg = 72.36
+
+        // In lbs: 72.44 kg -> 159.7 lbs; 72.36 kg -> 159.5 lbs => +0.2 lbs
+        val deltaLbs = FatLossAnalytics.computeSameDayDisplayDelta(currentKg, priorKg, "lbs")
+        assertEquals(0.2, deltaLbs)
+        val formattedLbs = FatLossAnalytics.formatSameDayWeightDelta(currentKg, priorKg, "lbs")
+        assertEquals("+0.2 lbs", formattedLbs)
+
+        // In kg: 72.44 kg -> 72.4 kg; 72.36 kg -> 72.4 kg => 0.0 kg
+        val deltaKg = FatLossAnalytics.computeSameDayDisplayDelta(currentKg, priorKg, "kg")
+        assertEquals(0.0, deltaKg)
+        val formattedKg = FatLossAnalytics.formatSameDayWeightDelta(currentKg, priorKg, "kg")
+        assertEquals("0.0 kg", formattedKg)
+    }
+
+    @Test
+    fun `issue 604 - scenario 10 - deadband and null delta formatting`() {
+        Locale.setDefault(Locale.US)
+        assertEquals("0.0 kg", FatLossAnalytics.formatSameDayDisplayDelta(0.0, "kg"))
+        assertEquals("0.0 lbs", FatLossAnalytics.formatSameDayDisplayDelta(0.0, "lbs"))
+        assertEquals("+0.4 kg", FatLossAnalytics.formatSameDayDisplayDelta(0.4, "kg"))
+        assertEquals("-0.5 kg", FatLossAnalytics.formatSameDayDisplayDelta(-0.5, "kg"))
+        assertEquals("-1.1 lbs", FatLossAnalytics.formatSameDayDisplayDelta(-1.1, "lbs"))
+        assertEquals("—", FatLossAnalytics.formatSameDayDisplayDelta(null, "kg"))
+        assertEquals("—", FatLossAnalytics.formatSameDayWeightDelta(null, 75.0, "kg"))
+        assertEquals("—", FatLossAnalytics.formatSameDayWeightDelta(75.0, null, "kg"))
+    }
 }
 

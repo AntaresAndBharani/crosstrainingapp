@@ -4,6 +4,7 @@ import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
 import com.fractanomics.crosstraining.data.analytics.PaceForecast
 import com.fractanomics.crosstraining.data.analytics.PaceRateResult
 import com.fractanomics.crosstraining.data.analytics.PaceTargetsState
+import com.fractanomics.crosstraining.data.analytics.SameDayWeightTrioState
 import com.fractanomics.crosstraining.data.analytics.ColumnState
 import com.fractanomics.crosstraining.data.analytics.PaceTargetStatus
 import com.fractanomics.crosstraining.data.analytics.PaceTrend
@@ -826,6 +827,37 @@ class WeightProgressionCardTest {
         assertEquals("(1 log)", resolveRightPillarSubtitle(1))
         assertEquals("(12 logs)", resolveRightPillarSubtitle(12))
         assertEquals("No log", resolveRightPillarSubtitle(0))
+    }
+
+    @Test
+    fun issue604_sameDayTrioResolvers_formatWeightsAndConsistentDeltas() {
+        Locale.setDefault(Locale.US)
+        // Weight formatting
+        assertEquals("75.0 kg", resolveSameDayWeightDisplay(75.0, "kg"))
+        assertEquals("165.3 lbs", resolveSameDayWeightDisplay(75.0, "lbs"))
+        assertEquals("—", resolveSameDayWeightDisplay(null, "kg"))
+        assertEquals("—", resolveSameDayWeightDisplay(null, "lbs"))
+
+        // Consistent delta formatting
+        assertEquals("-0.8 kg", resolveSameDayDeltaDisplay(75.0, 75.8, "kg"))
+        assertEquals("—", resolveSameDayDeltaDisplay(null, 75.8, "kg"))
+        assertEquals("—", resolveSameDayDeltaDisplay(75.0, null, "kg"))
+
+        // Display arithmetic consistency invariant
+        assertEquals("+0.2 lbs", resolveSameDayDeltaDisplay(72.44, 72.36, "lbs"))
+        assertEquals("0.0 kg", resolveSameDayDeltaDisplay(72.44, 72.36, "kg"))
+
+        // SameDayWeightTrioState construction
+        val state = SameDayWeightTrioState(
+            currentDailyWeightKg = 72.44,
+            lastWeekSameDayWeightKg = 72.36,
+            deltaCurrentVsLastWeekSameDayKg = 0.1,
+            twoWeeksAgoSameDayWeightKg = 73.0,
+            deltaCurrentVsTwoWeeksAgoSameDayKg = -0.6
+        )
+        assertEquals("72.4 kg", resolveSameDayWeightDisplay(state.currentDailyWeightKg, "kg"))
+        assertEquals("72.4 kg", resolveSameDayWeightDisplay(state.lastWeekSameDayWeightKg, "kg"))
+        assertEquals("73.0 kg", resolveSameDayWeightDisplay(state.twoWeeksAgoSameDayWeightKg, "kg"))
     }
 }
 

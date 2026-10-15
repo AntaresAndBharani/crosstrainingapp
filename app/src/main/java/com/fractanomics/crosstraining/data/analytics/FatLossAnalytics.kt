@@ -320,6 +320,24 @@ data class RollingWeightHeroState(
     val loggedDaysCount14d: Int
 )
 
+/**
+ * Result representation for the secondary 3-column raw same-day weigh-in comparison row.
+ * Compares raw weigh-ins on identical weekdays across t, t-7d, and t-14d.
+ *
+ * @property currentDailyWeightKg Raw weigh-in at referenceDate (t), or null if unlogged.
+ * @property lastWeekSameDayWeightKg Raw weigh-in at t-7d within cycle, or null if missing/pre-cycle.
+ * @property deltaCurrentVsLastWeekSameDayKg diff1(W_t, W_{t-7d}), or null if either is null.
+ * @property twoWeeksAgoSameDayWeightKg Raw weigh-in at t-14d within cycle, or null if missing/pre-cycle.
+ * @property deltaCurrentVsTwoWeeksAgoSameDayKg diff1(W_t, W_{t-14d}), or null if either is null.
+ */
+data class SameDayWeightTrioState(
+    val currentDailyWeightKg: Double?,
+    val lastWeekSameDayWeightKg: Double?,
+    val deltaCurrentVsLastWeekSameDayKg: Double?,
+    val twoWeeksAgoSameDayWeightKg: Double?,
+    val deltaCurrentVsTwoWeeksAgoSameDayKg: Double?
+)
+
 typealias DayOverDayDelta = FatLossAnalytics.DayOverDayDelta
 typealias PaceComparisonResult = FatLossAnalytics.PaceComparisonResult
 
@@ -344,6 +362,7 @@ object FatLossAnalytics {
 
     const val NOISE_THRESHOLD_KG = 0.05
     const val PACE_NOISE_THRESHOLD_KG_PER_WEEK = 0.05
+    const val NO_DATA_PLACEHOLDER = "—"
 
     private val shortDateFormatter: DateTimeFormatter =
         DateTimeFormatter.ofPattern("d MMM", Locale.US)
@@ -1254,10 +1273,10 @@ object FatLossAnalytics {
         today: LocalDate = LocalDate.now()
     ): PaceRateResult? = compute7DayPace(entries, cycle.startDate, today)
 
-    private fun round1(value: Double): Double =
+    internal fun round1(value: Double): Double =
         BigDecimal.valueOf(value).setScale(1, RoundingMode.HALF_UP).toDouble()
 
-    private fun diff1(a: Double, b: Double): Double =
+    internal fun diff1(a: Double, b: Double): Double =
         BigDecimal.valueOf(a).setScale(1, RoundingMode.HALF_UP)
             .subtract(BigDecimal.valueOf(b).setScale(1, RoundingMode.HALF_UP))
             .toDouble()
@@ -2019,5 +2038,104 @@ object FatLossAnalytics {
         pace = pace14,
         referenceDate = referenceDate
     )
+
+    /**
+     * Computes the secondary 3-column raw same-day weigh-in comparison state.
+     * Compares raw weigh-ins on identical weekdays across t, t-7d, and t-14d.
+     *
+     * Anchor: t is strictly [referenceDate]. When t is unlogged, [SameDayWeightTrioState.currentDailyWeightKg]
+     * is null and both deltas evaluate to null.
+     * Eligibility Filter: deletedAtMillis == null && !date.isBefore(cycleStartDate) && !date.isAfter(referenceDate).
+     * Exact-Date Lookup: firstOrNull exact date match. Missing or pre-cycle entries resolve to null.
+     * State deltas are computed using diff1(W_t, W_prior).
+     */
+    fun computeSameDayWeightTrio(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        referenceDate: LocalDate = LocalDate.now()
+    ): SameDayWeightTrioState {
+        val active = getActiveWeightEntries(entries, cycleStartDate, referenceDate)
+        val currentEntry = active.firstOrNull { it.date == referenceDate }
+        val lastWeekEntry = active.firstOrNull { it.date == referenceDate.minusDays(7) }
+        val twoWeeksAgoEntry = active.firstOrNull { it.date == referenceDate.minusDays(14) }
+
+        val currentDailyWeightKg = currentEntry?.weightKg
+        val lastWeekSameDayWeightKg = lastWeekEntry?.weightKg
+        val twoWeeksAgoSameDayWeightKg = twoWeeksAgoEntry?.weightKg
+
+        val deltaCurrentVsLastWeek = if (currentDailyWeightKg != null && lastWeekSameDayWeightKg != null) {
+            diff1(currentDailyWeightKg, lastWeekSameDayWeightKg)
+        } else {
+            null
+        }
+
+        val deltaCurrentVsTwoWeeksAgo = if (currentDailyWeightKg != null && twoWeeksAgoSameDayWeightKg != null) {
+            diff1(currentDailyWeightKg, twoWeeksAgoSameDayWeightKg)
+        } else {
+            null
+        }
+
+        return SameDayWeightTrioState(
+            currentDailyWeightKg = currentDailyWeightKg,
+            lastWeekSameDayWeightKg = lastWeekSameDayWeightKg,
+            deltaCurrentVsLastWeekSameDayKg = deltaCurrentVsLastWeek,
+            twoWeeksAgoSameDayWeightKg = twoWeeksAgoSameDayWeightKg,
+            deltaCurrentVsTwoWeeksAgoSameDayKg = deltaCurrentVsTwoWeeksAgo
+        )
+    }
+
+    /**
+     * Overload of [computeSameDayWeightTrio] taking a [Cycle] entity.
+     */
+    fun computeSameDayWeightTrio(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        referenceDate: LocalDate = LocalDate.now()
+    ): SameDayWeightTrioState = computeSameDayWeightTrio(entries, cycle.startDate, referenceDate)
+
+    /**
+     * Evaluates displayed delta under the Display-Unit Arithmetic Consistency Invariant:
+     * Δ_display = diff1(round1(toDisplay(W_t)), round1(toDisplay(W_prior)))
+     */
+    fun computeSameDayDisplayDelta(
+        currentWeightKg: Double?,
+        priorWeightKg: Double?,
+        weightUnit: String
+    ): Double? {
+        if (currentWeightKg == null || priorWeightKg == null) return null
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val curDisplay = if (isImperial) WeightAnalytics.kgToLbs(currentWeightKg) else currentWeightKg
+        val priorDisplay = if (isImperial) WeightAnalytics.kgToLbs(priorWeightKg) else priorWeightKg
+        return diff1(round1(curDisplay), round1(priorDisplay))
+    }
+
+    /**
+     * Formats the displayed delta string for same-day weight comparisons.
+     * Evaluates deadband (|Δ_display| <= 0.05) to display "0.0 <unit>" without +/- sign.
+     */
+    fun formatSameDayDisplayDelta(
+        deltaDisplay: Double?,
+        weightUnit: String
+    ): String {
+        if (deltaDisplay == null) return NO_DATA_PLACEHOLDER
+        return when {
+            deltaDisplay < -NOISE_THRESHOLD_KG -> String.format(Locale.US, "%.1f %s", deltaDisplay, weightUnit)
+            deltaDisplay > NOISE_THRESHOLD_KG -> String.format(Locale.US, "+%.1f %s", deltaDisplay, weightUnit)
+            else -> String.format(Locale.US, "0.0 %s", weightUnit)
+        }
+    }
+
+    /**
+     * Convenience formatter taking raw kg values and localized weight unit.
+     */
+    fun formatSameDayWeightDelta(
+        currentWeightKg: Double?,
+        priorWeightKg: Double?,
+        weightUnit: String
+    ): String {
+        val deltaDisplay = computeSameDayDisplayDelta(currentWeightKg, priorWeightKg, weightUnit)
+            ?: return NO_DATA_PLACEHOLDER
+        return formatSameDayDisplayDelta(deltaDisplay, weightUnit)
+    }
 }
 
