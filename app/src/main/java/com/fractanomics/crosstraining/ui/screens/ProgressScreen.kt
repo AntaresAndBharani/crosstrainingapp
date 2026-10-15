@@ -24,6 +24,7 @@ import com.fractanomics.crosstraining.data.analytics.PaceComparisonResult
 import com.fractanomics.crosstraining.data.analytics.ProgressiveAverageResult
 import com.fractanomics.crosstraining.data.analytics.RollingWeightHeroState
 import com.fractanomics.crosstraining.data.analytics.PaceTargetsState
+import com.fractanomics.crosstraining.data.analytics.SameDayWeightTrioState
 import com.fractanomics.crosstraining.data.analytics.ColumnState
 import com.fractanomics.crosstraining.data.analytics.PaceTargetStatus
 import java.time.format.DateTimeFormatter
@@ -1125,6 +1126,13 @@ fun WeightProgressionCard(
     val rollingWeightHero = remember(activeEntries, cycle.startDate, today) {
         FatLossAnalytics.computeRollingWeightHero(activeEntries, cycle.startDate, today)
     }
+    val sameDayTrio = if (cycle.type == CycleType.FAT_LOSS_BODYBUILDING) {
+        remember(weightEntries, cycle.startDate, today) {
+            FatLossAnalytics.computeSameDayWeightTrio(weightEntries, cycle.startDate, today)
+        }
+    } else {
+        null
+    }
 
     WeightProgressionHeroCard(
         title = "Weight Progression (${cycle.name})",
@@ -1147,7 +1155,8 @@ fun WeightProgressionCard(
         lastWeekEntry = lastWeekEntry,
         progressiveAverage = progressiveAverage,
         paceComparison14d = paceComparison14d,
-        rollingWeightHero = rollingWeightHero
+        rollingWeightHero = rollingWeightHero,
+        sameDayTrio = sameDayTrio
     )
 }
 
@@ -1532,6 +1541,154 @@ internal fun paceTrendStyle(trend: PaceTrend?): PaceTrendStyle = when (trend) {
     null -> PaceTrendStyle(null, MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
+internal fun resolveSameDayWeightDisplay(weightKg: Double?, weightUnit: String): String {
+    if (weightKg == null) return NO_DATA_PLACEHOLDER
+    val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+    val displayWeight = if (isImperial) WeightAnalytics.kgToLbs(weightKg) else weightKg
+    return String.format(Locale.US, "%.1f %s", displayWeight, weightUnit)
+}
+
+internal fun resolveSameDayDeltaDisplay(
+    currentWeightKg: Double?,
+    priorWeightKg: Double?,
+    weightUnit: String
+): String = FatLossAnalytics.formatSameDayWeightDelta(currentWeightKg, priorWeightKg, weightUnit)
+
+@Composable
+fun SameDayWeightTrioRow(
+    sameDayTrio: SameDayWeightTrioState,
+    weightUnit: String,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Left Column: LAST WEEK
+        Column(
+            modifier = Modifier.weight(1.0f),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = "LAST WEEK",
+                style = MaterialTheme.typography.labelSmall,
+                letterSpacing = 1.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+            val lastWeekDisplay = resolveSameDayWeightDisplay(sameDayTrio.lastWeekSameDayWeightKg, weightUnit)
+            Text(
+                text = lastWeekDisplay,
+                modifier = if (lastWeekDisplay == NO_DATA_PLACEHOLDER) {
+                    Modifier.semantics(mergeDescendants = true) { contentDescription = NO_DATA_CONTENT_DESCRIPTION }
+                } else Modifier,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+            val lastWeekDeltaDisplay = resolveSameDayDeltaDisplay(
+                sameDayTrio.currentDailyWeightKg,
+                sameDayTrio.lastWeekSameDayWeightKg,
+                weightUnit
+            )
+            Text(
+                text = lastWeekDeltaDisplay,
+                modifier = if (lastWeekDeltaDisplay == NO_DATA_PLACEHOLDER) {
+                    Modifier.semantics(mergeDescendants = true) { contentDescription = NO_DATA_CONTENT_DESCRIPTION }
+                } else Modifier,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        // Center Column: CURRENT
+        Column(
+            modifier = Modifier.weight(1.25f),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = "CURRENT",
+                style = MaterialTheme.typography.labelSmall,
+                letterSpacing = 1.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+            val currentDisplay = resolveSameDayWeightDisplay(sameDayTrio.currentDailyWeightKg, weightUnit)
+            Text(
+                text = currentDisplay,
+                modifier = if (currentDisplay == NO_DATA_PLACEHOLDER) {
+                    Modifier.semantics(mergeDescendants = true) { contentDescription = NO_DATA_CONTENT_DESCRIPTION }
+                } else Modifier,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        // Right Column: 2 WKS AGO
+        Column(
+            modifier = Modifier.weight(1.0f),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = "2 WKS AGO",
+                style = MaterialTheme.typography.labelSmall,
+                letterSpacing = 1.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+            val twoWeeksAgoDisplay = resolveSameDayWeightDisplay(sameDayTrio.twoWeeksAgoSameDayWeightKg, weightUnit)
+            Text(
+                text = twoWeeksAgoDisplay,
+                modifier = if (twoWeeksAgoDisplay == NO_DATA_PLACEHOLDER) {
+                    Modifier.semantics(mergeDescendants = true) { contentDescription = NO_DATA_CONTENT_DESCRIPTION }
+                } else Modifier,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+            val twoWeeksAgoDeltaDisplay = resolveSameDayDeltaDisplay(
+                sameDayTrio.currentDailyWeightKg,
+                sameDayTrio.twoWeeksAgoSameDayWeightKg,
+                weightUnit
+            )
+            Text(
+                text = twoWeeksAgoDeltaDisplay,
+                modifier = if (twoWeeksAgoDeltaDisplay == NO_DATA_PLACEHOLDER) {
+                    Modifier.semantics(mergeDescendants = true) { contentDescription = NO_DATA_CONTENT_DESCRIPTION }
+                } else Modifier,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun WeightProgressionHeroCard(
@@ -1561,7 +1718,8 @@ fun WeightProgressionHeroCard(
     delta7dKg: Double? = null,
     today14dAvgKg: Double? = null,
     delta14dKg: Double? = null,
-    loggedDaysCount14d: Int = 0
+    loggedDaysCount14d: Int = 0,
+    sameDayTrio: SameDayWeightTrioState? = null
 ) {
     val isImperial = weightUnit.equals("lbs", ignoreCase = true)
     val resolvedToday7dAvgKg = today7dAvgKg ?: rollingWeightHero?.today7dAvgKg ?: currentWeightKg
@@ -1790,6 +1948,13 @@ fun WeightProgressionHeroCard(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                }
+
+                if (sameDayTrio != null) {
+                    SameDayWeightTrioRow(
+                        sameDayTrio = sameDayTrio,
+                        weightUnit = weightUnit
+                    )
                 }
 
                 // Centered row for Intelligence Pills (dropStreakDays preserved, vs yesterday removed)
