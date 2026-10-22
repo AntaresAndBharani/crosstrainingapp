@@ -306,9 +306,9 @@ class WeightProgressionCardTest {
         assertEquals("Not enough data yet", FatLossAnalytics.formatPaceChip(pace14))
 
         val forecast = FatLossAnalytics.computePaceForecast(entries, cycle, today)
-        assertTrue("Forecast must use cycle velocity fallback", forecast is PaceForecast.Projected)
+        assertTrue("Forecast must use Tier 2 (7D smoothed pace) fallback when 14D pace is null", forecast is PaceForecast.Projected)
         val proj = forecast as PaceForecast.Projected
-        assertEquals("Estimated: 5.7 weeks", proj.displayText)
+        assertEquals("Estimated: 4.0 weeks", proj.displayText)
     }
 
     // =========================================================================
@@ -858,6 +858,31 @@ class WeightProgressionCardTest {
         assertEquals("72.4 kg", resolveSameDayWeightDisplay(state.currentDailyWeightKg, "kg"))
         assertEquals("72.4 kg", resolveSameDayWeightDisplay(state.lastWeekSameDayWeightKg, "kg"))
         assertEquals("73.0 kg", resolveSameDayWeightDisplay(state.twoWeeksAgoSameDayWeightKg, "kg"))
+    }
+
+    // =========================================================================
+    // Feature 001-rolling-weight-pace: Top Reference Track & Forecast Reconciliation (US2 & US3)
+    // =========================================================================
+
+    @Test
+    fun rollingWeightPace_topReferenceTrack_reconcilesWithToday7dAvgAndForecast() {
+        Locale.setDefault(Locale.US)
+        val startWeightKg = 77.8
+        val goalWeightKg = 72.0
+        val rawCurrentWeightKg = 74.7 // Single-day raw Thursday weigh-in
+        val resolvedToday7dAvgKg = 75.7 // Displayed TODAY 7D average
+
+        // Top Reference Track must use resolvedToday7dAvgKg (75.7 kg), NOT rawCurrentWeightKg (74.7 kg)
+        val totalDistance = startWeightKg - goalWeightKg // 5.8 kg
+        val progressFraction = ((startWeightKg - resolvedToday7dAvgKg) / totalDistance).toFloat().coerceIn(0f, 1f)
+        val percentText = String.format(Locale.US, "%.1f%% to goal", progressFraction * 100f)
+        val remainingKg = resolvedToday7dAvgKg - goalWeightKg
+        val goalSubtitle = "(-${String.format(Locale.US, "%.1f", remainingKg)} kg left)"
+
+        // Verify 36.2% to goal and (-3.7 kg left) match TODAY 75.7 kg
+        assertEquals("36.2% to goal", percentText)
+        assertEquals("(-3.7 kg left)", goalSubtitle)
+        assertFalse("Raw weight would have given 53.4% instead of 36.2%", kotlin.math.abs(((startWeightKg - rawCurrentWeightKg) / totalDistance) * 100.0 - 36.2) < 1.0)
     }
 }
 

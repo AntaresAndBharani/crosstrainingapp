@@ -879,7 +879,7 @@ class FatLossAnalyticsTest {
     }
 
     @Test
-    fun `scenario b - sparse anchor selection selects closest entry on or before cutoff`() {
+    fun `scenario b - window average and sparse fallback selection`() {
         // Given weigh-ins on day t, t-8, and t-16 where t-16 >= cycle.startDate
         val cycleStart = LocalDate.of(2026, 9, 1)
         val t = LocalDate.of(2026, 10, 16)
@@ -893,19 +893,28 @@ class FatLossAnalyticsTest {
         val pace7d = FatLossAnalytics.compute7DayPace(entries, cycleStart, t)
         val pace14d = FatLossAnalytics.compute14DayPace(entries, cycleStart, t)
 
-        // Then the 7-day window selects the t-8 entry as the anchor (normalized over 8 days)
+        // Then the 7-day window [t-13, t-7] averages the t-8 entry (84.0 kg) vs [t-6, t] (83.0 kg)
         assertNotNull(pace7d)
         assertEquals(t.minusDays(8), pace7d!!.anchorDate)
-        assertEquals(8L, pace7d.elapsedDays)
-        // Rate: (83.0 - 84.0) / 8 * 7 = -0.875 kg/wk
-        assertEquals(-0.875, pace7d.rateKgPerWeek, 0.001)
+        assertEquals(7L, pace7d.elapsedDays)
+        assertEquals(-1.0, pace7d.rateKgPerWeek, 0.001)
 
-        // And the 14-day window selects the t-16 entry (normalized over 16 days)
+        // And the 14-day window [t-20, t-14] averages the t-16 entry (85.0 kg) vs [t-6, t] (83.0 kg) over 2 weeks
         assertNotNull(pace14d)
         assertEquals(t.minusDays(16), pace14d!!.anchorDate)
-        assertEquals(16L, pace14d.elapsedDays)
-        // Rate: (83.0 - 85.0) / 16 * 7 = -0.875 kg/wk
-        assertEquals(-0.875, pace14d.rateKgPerWeek, 0.001)
+        assertEquals(14L, pace14d.elapsedDays)
+        assertEquals(-1.0, pace14d.rateKgPerWeek, 0.001)
+
+        // Sparse fallback when [t-13, t-7] has no entries: falls back to t-16 normalized over 16 days
+        val sparseEntries = listOf(
+            WeightEntry(date = t.minusDays(16), weightKg = 85.0, updatedAtMillis = 1L),
+            WeightEntry(date = t, weightKg = 83.0, updatedAtMillis = 3L)
+        )
+        val sparsePace7d = FatLossAnalytics.compute7DayPace(sparseEntries, cycleStart, t)
+        assertNotNull(sparsePace7d)
+        assertEquals(t.minusDays(16), sparsePace7d!!.anchorDate)
+        assertEquals(16L, sparsePace7d.elapsedDays)
+        assertEquals(-0.875, sparsePace7d.rateKgPerWeek, 0.001)
     }
 
     @Test
@@ -1135,10 +1144,10 @@ class FatLossAnalyticsTest {
         assertTrue(forecast is PaceForecast.Projected)
         val projected = forecast as PaceForecast.Projected
 
-        // Cycle velocity: (85.0 - 84.0) / 10 * 7 = 0.7 kg/wk
-        // Remaining: 84.0 - 80.0 = 4.0 kg. Weeks: 4.0 / 0.7 = 5.7142857...
-        assertEquals(4.0 / 0.7, projected.weeks, 0.001)
-        assertEquals("Estimated: 5.7 weeks", projected.displayText)
+        // Last Week 7D window [Oct 5, Oct 11] vs [Sep 28, Oct 4] (85.0 kg) gives 7-day smoothed velocity = 1.0 kg/wk (Tier 2)
+        // Remaining: 84.0 - 80.0 = 4.0 kg. Weeks: 4.0 / 1.0 = 4.0 weeks.
+        assertEquals(4.0, projected.weeks, 0.001)
+        assertEquals("Estimated: 4.0 weeks", projected.displayText)
     }
 
     @Test
@@ -1326,19 +1335,18 @@ class FatLossAnalyticsTest {
         // Then:
         // - compute14DayPace returns null ("Not enough data yet")
         assertNull(pace14)
-        // - compute7DayPace returns rate -0.8 kg/wk (± 1e-6)
+        // - compute7DayPace compares Today 7D avg [Sep 30, Oct 6] (75.0 kg) vs Last Week 7D avg [Sep 23, Sep 29] ((77.8 + 75.8)/2 = 76.8 kg) -> -1.8 kg/wk
         assertNotNull(pace7)
-        assertEquals(-0.8, pace7!!.rateKgPerWeek, 1e-6)
-        assertEquals(0.8, pace7.deficitVelocityKgPerWeek, 1e-6)
-        // - The forecast selects anchor7 (2026-09-29, 75.8 kg) with Δdays = 7
-        // - V_active = 0.8 kg/wk (± 1e-6)
-        // - Forecast returns PaceForecast.Projected(weeks = 10.0, targetDate = 2026-12-15)
+        assertEquals(-1.8, pace7!!.rateKgPerWeek, 1e-6)
+        assertEquals(1.8, pace7.deficitVelocityKgPerWeek, 1e-6)
+        // - The forecast uses Tier 2 (7D smoothed pace V_active = 1.8 kg/wk)
+        // - Remaining = 75.0 - 67.0 = 8.0 kg -> weeks = 8.0 / 1.8 = 4.444444 weeks (31 days -> 2026-11-06)
         assertTrue(forecast is PaceForecast.Projected)
         val projected = forecast as PaceForecast.Projected
-        assertEquals(10.0, projected.weeks, 1e-6)
-        assertEquals(LocalDate.of(2026, 12, 15), projected.targetDate)
-        // - displayText is "Estimated: 10.0 weeks"
-        assertEquals("Estimated: 10.0 weeks", projected.displayText)
+        assertEquals(8.0 / 1.8, projected.weeks, 1e-6)
+        assertEquals(LocalDate.of(2026, 11, 6), projected.targetDate)
+        // - displayText is "Estimated: 4.4 weeks"
+        assertEquals("Estimated: 4.4 weeks", projected.displayText)
     }
 
     @Test
@@ -1429,7 +1437,7 @@ class FatLossAnalyticsTest {
             targetWeightKg = 80.0
         )
         val entries = listOf(
-            WeightEntry(date = startDate, weightKg = 90.1, updatedAtMillis = 1L),
+            WeightEntry(date = startDate, weightKg = 90.05, updatedAtMillis = 1L),
             WeightEntry(date = today.minusDays(7), weightKg = 90.05, updatedAtMillis = 2L),
             WeightEntry(date = today, weightKg = 90.00, updatedAtMillis = 3L)
         )
@@ -1499,17 +1507,17 @@ class FatLossAnalyticsTest {
         assertNotNull(avg7d)
         assertEquals(526.5 / 7.0, avg7d!!, 1e-4)
 
-        // - V_active ≈ 1.011 kg/wk, remainingKg = 8.214 kg, and rawWeeks ≈ 8.12 weeks (± 0.05)
-        // - rawWeeks (8.12) is strictly less than the unmitigated raw baseline ((76.5 - 67.0) / 1.011 ≈ 9.40 weeks)
+        // - V_active uses 7-day smoothed deficit velocity: 77.8 - (526.5 / 7.0) = 2.5857 kg/wk, remainingKg = 8.214 kg, and rawWeeks ≈ 3.18 weeks
+        // - rawWeeks is strictly less than the unmitigated raw baseline ((76.5 - 67.0) / 1.011 ≈ 9.40 weeks)
         assertTrue(forecast is PaceForecast.Projected)
         val projected = forecast as PaceForecast.Projected
-        val expectedVActive = ((77.8 - 76.5) / 9.0) * 7.0 // ≈ 1.011111...
+        val expectedVActive = 77.8 - (526.5 / 7.0)         // ≈ 2.585714...
         val expectedRemaining = (526.5 / 7.0) - 67.0       // ≈ 8.2142857...
-        val expectedRawWeeks = expectedRemaining / expectedVActive // ≈ 8.124...
+        val expectedRawWeeks = expectedRemaining / expectedVActive // ≈ 3.1768...
         assertEquals(expectedRawWeeks, projected.rawWeeks, 0.05)
-        assertEquals(8.12, projected.weeks, 0.05)
+        assertEquals(3.18, projected.weeks, 0.05)
 
-        val unmitigatedRawWeeks = (76.5 - 67.0) / expectedVActive
+        val unmitigatedRawWeeks = (76.5 - 67.0) / (((77.8 - 76.5) / 9.0) * 7.0)
         assertTrue("rawWeeks must be strictly less than unmitigated raw baseline", projected.rawWeeks < unmitigatedRawWeeks)
     }
 
@@ -2017,7 +2025,7 @@ class FatLossAnalyticsTest {
             WeightEntry(date = LocalDate.of(2026, 9, 23), weightKg = 80.7, updatedAtMillis = 1L),
             WeightEntry(date = LocalDate.of(2026, 9, 30), weightKg = 80.0, updatedAtMillis = 2L),
             WeightEntry(date = LocalDate.of(2026, 10, 6), weightKg = 79.3, updatedAtMillis = 3L),
-            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 79.2, updatedAtMillis = 4L)
+            WeightEntry(date = LocalDate.of(2026, 10, 7), weightKg = 79.1, updatedAtMillis = 4L)
         )
 
         val comp = FatLossAnalytics.computePaceComparisonVsLastWeek(entries, cycleStartDate, 7, LocalDate.of(2026, 10, 7))
@@ -2769,10 +2777,10 @@ class FatLossAnalyticsTest {
         assertNull(comp14Day16)
         assertEquals("Smoothed trend", FatLossAnalytics.format14DayPaceSubtitle(comp14Day16, pace14Day16, weightUnit, dateDay16))
 
-        // State 3: Day 21+ with exact same-weekday comparison
+        // State 3: Day 21+ with exact same-weekday comparison (full 7d windows at both t and t-7d)
         val dateDay21 = LocalDate.of(2026, 10, 13) // Tuesday (21 days from Sep 22 Tuesday)
-        val entriesDay21 = (0..21).map { day ->
-            WeightEntry(date = cycleStartDate.plusDays(day.toLong()), weightKg = 80.0 - day * 0.1, updatedAtMillis = day.toLong())
+        val entriesDay21 = (-6..21).map { day ->
+            WeightEntry(date = cycleStartDate.plusDays(day.toLong()), weightKg = 80.0 - day * 0.1, updatedAtMillis = (day + 10).toLong())
         }
         val pace14Day21 = FatLossAnalytics.compute14DayPace(entriesDay21, cycleStartDate, dateDay21)
         assertNotNull(pace14Day21)
@@ -2987,6 +2995,154 @@ class FatLossAnalyticsTest {
         assertEquals("—", FatLossAnalytics.formatSameDayDisplayDelta(null, "kg"))
         assertEquals("—", FatLossAnalytics.formatSameDayWeightDelta(null, 75.0, "kg"))
         assertEquals("—", FatLossAnalytics.formatSameDayWeightDelta(75.0, null, "kg"))
+    }
+
+    // =========================================================================
+    // Feature 001-rolling-weight-pace: Smoothed 7D/14D Pace, Pre-Cycle Continuity & Tiered Forecast
+    // =========================================================================
+
+    @Test
+    fun `rolling weight pace US1 - computeRollingWeightHero includes pre-cycle entries when in-cycle log exists`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 7)
+        val referenceDate = LocalDate.of(2026, 10, 22) // Thursday (15 days after Oct 7)
+
+        // Pre-cycle entries in [Oct 2, Oct 6] (falling into [t-20, t-7] = [Oct 2, Oct 15])
+        val preCycleEntries = (2..6).map { day ->
+            WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 76.6, updatedAtMillis = day.toLong())
+        }
+        // In-cycle entries in [Oct 7, Oct 15] at 76.0 kg and [Oct 16, Oct 22] at 75.7 kg
+        val week2Entries = (7..15).map { day ->
+            WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 76.0, updatedAtMillis = day.toLong())
+        }
+        val week3Entries = (16..22).map { day ->
+            WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 75.7, updatedAtMillis = day.toLong())
+        }
+        val allEntries = preCycleEntries + week2Entries + week3Entries
+
+        // When no in-cycle entries exist, all hero averages must be null
+        val emptyInCycleHero = FatLossAnalytics.computeRollingWeightHero(preCycleEntries, cycleStartDate, referenceDate)
+        assertNull(emptyInCycleHero.today7dAvgKg)
+        assertNull(emptyInCycleHero.lastWeek7dAvgKg)
+        assertNull(emptyInCycleHero.today14dAvgKg)
+        assertEquals(0, emptyInCycleHero.loggedDaysCount14d)
+
+        // When in-cycle entries exist, pre-cycle entries are included in lookback windows
+        val hero = FatLossAnalytics.computeRollingWeightHero(allEntries, cycleStartDate, referenceDate)
+        assertEquals(75.7, hero.today7dAvgKg!!, 1e-4)
+        assertEquals(76.0, hero.lastWeek7dAvgKg!!, 1e-4)
+        assertEquals(-0.3, hero.delta7dKg!!, 1e-4)
+        assertEquals(75.85, hero.today14dAvgKg!!, 1e-4)
+        assertNotNull(hero.delta14dKg)
+        assertEquals(14, hero.loggedDaysCount14d)
+    }
+
+    @Test
+    fun `rolling weight pace US1 - smoothed 7d and 14d pace resist single-day outlier 14 days ago`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 7)
+        val t = LocalDate.of(2026, 10, 22) // Thursday
+
+        // Window [t-20, t-14] = [Oct 2, Oct 8]:
+        // Suppose Oct 8 had a single-day low dehydration outlier (74.9 kg), while Oct 2..Oct 7 were 76.8 kg
+        // Mean of [Oct 2, Oct 8] = (6 * 76.8 + 74.9) / 7 = 535.7 / 7 = 76.52857 kg
+        val wTwoWeeksAgo = (2..7).map { day ->
+            WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 76.8, updatedAtMillis = day.toLong())
+        } + WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 74.9, updatedAtMillis = 8L)
+
+        // Window [t-13, t-7] = [Oct 9, Oct 15]: mean = 76.0 kg
+        val wLastWeek = (9..15).map { day ->
+            WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 76.0, updatedAtMillis = day.toLong())
+        }
+
+        // Window [t-6, t] = [Oct 16, Oct 22]: mean = 75.7 kg (with Thursday Oct 22 = 74.7 kg)
+        val wThisWeek = (16..21).map { day ->
+            WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 75.8666667, updatedAtMillis = day.toLong())
+        } + WeightEntry(date = t, weightKg = 74.7, updatedAtMillis = 22L)
+
+        val entries = wTwoWeeksAgo + wLastWeek + wThisWeek
+
+        val hero = FatLossAnalytics.computeRollingWeightHero(entries, cycleStartDate, t)
+        val pace7 = FatLossAnalytics.compute7DayPace(entries, cycleStartDate, t, startingWeightKg = 77.8)
+        val pace14 = FatLossAnalytics.compute14DayPace(entries, cycleStartDate, t, startingWeightKg = 77.8)
+
+        assertNotNull(pace7)
+        assertNotNull(pace14)
+
+        // 7-Day Pace strictly equals Today 7D Avg - Last Week 7D Avg (delta7dKg = -0.3 kg/wk)
+        assertEquals(hero.delta7dKg!!, pace7!!.rateKgPerWeek, 1e-4)
+        assertEquals(-0.3, pace7.rateKgPerWeek, 1e-3)
+        assertEquals("-0.3 kg/wk", pace7.formatDisplay("kg"))
+
+        // 14-Day Pace equals (Today 7D Avg - TwoWeeksAgo 7D Avg) / 2.0 ≈ (75.7 - 76.52857) / 2 = -0.414 kg/wk
+        assertEquals((75.7 - (535.7 / 7.0)) / 2.0, pace14!!.rateKgPerWeek, 1e-3)
+        assertEquals("-0.4 kg/wk", pace14.formatDisplay("kg"))
+    }
+
+    @Test
+    fun `rolling weight pace US1 - startingWeightKg fallback when no pre-cycle logs exist in lookback window`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 7)
+        val t = LocalDate.of(2026, 10, 21) // Exactly 14 days after Oct 7
+        // Athlete only started logging on Oct 10 (no entries in [Oct 1, Oct 7]), but cycle has startingWeightKg = 77.8 on Oct 7
+        val entries = (10..21).map { day ->
+            WeightEntry(date = LocalDate.of(2026, 10, day), weightKg = 76.0, updatedAtMillis = day.toLong())
+        }
+
+        val pace14 = FatLossAnalytics.compute14DayPace(
+            entries = entries,
+            cycleStartDate = cycleStartDate,
+            today = t,
+            startingWeightKg = 77.8
+        )
+        assertNotNull("compute14DayPace should fall back to startingWeightKg when cycleStartDate <= cutoffDate", pace14)
+        // Current 7D avg = 76.0, anchor = startingWeightKg (77.8) at Oct 7 (14 days elapsed) -> (76.0 - 77.8) / 14 * 7 = -0.9 kg/wk
+        assertEquals(-0.9, pace14!!.rateKgPerWeek, 1e-4)
+    }
+
+    @Test
+    fun `rolling weight pace US2 - computePaceForecast resolves 3-tier smoothed deficit velocity hierarchy`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 7)
+        val t = LocalDate.of(2026, 10, 22)
+        val cycle = Cycle(
+            id = 900L,
+            name = "Recomp",
+            startDate = cycleStartDate,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 77.8,
+            targetWeightKg = 72.0
+        )
+
+        // Case 1: Tier 1 active (14D smoothed pace = -0.4 kg/wk, current 7D avg = 75.7 kg, remaining = 3.7 kg)
+        val tier1Entries = (2..8).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 76.5, updatedAtMillis = d.toLong()) } +
+            (9..15).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.9, updatedAtMillis = d.toLong()) } +
+            (16..22).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.7, updatedAtMillis = d.toLong()) }
+
+        val forecastTier1 = FatLossAnalytics.computePaceForecast(tier1Entries, cycle, t)
+        assertTrue(forecastTier1 is PaceForecast.Projected)
+        val projTier1 = forecastTier1 as PaceForecast.Projected
+        // 3.7 kg / 0.4 kg/wk = 9.25 weeks -> "Estimated: 9.3 weeks"
+        assertEquals(9.25, projTier1.weeks, 1e-3)
+        assertEquals("Estimated: 9.3 weeks", projTier1.displayText)
+
+        // Case 2: Tier 1 stalled (14D smoothed pace = 0.0 kg/wk because 2 wks ago was 75.7 kg), Tier 2 active (last week was 76.0 kg -> 7D pace = -0.3 kg/wk)
+        val tier2Entries = (2..8).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.7, updatedAtMillis = d.toLong()) } +
+            (9..15).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 76.0, updatedAtMillis = d.toLong()) } +
+            (16..22).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.7, updatedAtMillis = d.toLong()) }
+
+        val forecastTier2 = FatLossAnalytics.computePaceForecast(tier2Entries, cycle, t)
+        assertTrue("Forecast must fall back to Tier 2 (7D smoothed pace) when Tier 1 is stalled", forecastTier2 is PaceForecast.Projected)
+        val projTier2 = forecastTier2 as PaceForecast.Projected
+        // 3.7 kg / 0.3 kg/wk = 12.333 weeks -> "Estimated: 12.3 weeks"
+        assertEquals(3.7 / 0.3, projTier2.weeks, 1e-3)
+        assertEquals("Estimated: 12.3 weeks", projTier2.displayText)
+
+        // Case 3: Both Tier 1 and Tier 2 stalled (both 2 wks ago and last week were 75.7 kg), but Tier 3 Overall Cycle Pace is positive (start = 77.8 kg -> current 7D avg = 75.7 kg over 15 cycle days)
+        val tier3Entries = (2..22).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.7, updatedAtMillis = d.toLong()) }
+
+        val forecastTier3 = FatLossAnalytics.computePaceForecast(tier3Entries, cycle, t)
+        assertTrue("Forecast must fall back to Tier 3 (Overall Cycle Pace) when Tiers 1 & 2 are stalled", forecastTier3 is PaceForecast.Projected)
+        val projTier3 = forecastTier3 as PaceForecast.Projected
+        // Cycle velocity: (77.8 - 75.7) / 15 * 7 = 0.98 kg/wk -> 3.7 / 0.98 = 3.7755 weeks -> "Estimated: 3.8 weeks"
+        assertEquals(3.7 / ((2.1 / 15.0) * 7.0), projTier3.weeks, 1e-3)
+        assertEquals("Estimated: 3.8 weeks", projTier3.displayText)
     }
 }
 

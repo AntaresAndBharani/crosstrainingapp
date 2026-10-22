@@ -1111,11 +1111,11 @@ fun WeightProgressionCard(
     val pace14 = remember(weightEntries, cycle, today) {
         FatLossAnalytics.compute14DayPace(weightEntries, cycle, today)
     }
-    val paceComparison7d = remember(activeEntries, cycle.startDate, today) {
-        FatLossAnalytics.computePaceComparisonVsLastWeek(activeEntries, cycle.startDate, 7, today)
+    val paceComparison7d = remember(weightEntries, cycle, today) {
+        FatLossAnalytics.computePaceComparisonVsLastWeek(weightEntries, cycle, 7, today)
     }
-    val paceComparison14d = remember(activeEntries, cycle.startDate, today) {
-        FatLossAnalytics.computePaceComparisonVsLastWeek(activeEntries, cycle.startDate, 14, today)
+    val paceComparison14d = remember(weightEntries, cycle, today) {
+        FatLossAnalytics.computePaceComparisonVsLastWeek(weightEntries, cycle, 14, today)
     }
     val forecast = remember(weightEntries, cycle, today) {
         FatLossAnalytics.computePaceForecast(weightEntries, cycle, today)
@@ -1123,8 +1123,8 @@ fun WeightProgressionCard(
     val paceTargets = remember(weightEntries, cycle, today, weightUnit) {
         FatLossAnalytics.compute7DayPaceTargets(weightEntries, cycle, today, weightUnit)
     }
-    val rollingWeightHero = remember(activeEntries, cycle.startDate, today) {
-        FatLossAnalytics.computeRollingWeightHero(activeEntries, cycle.startDate, today)
+    val rollingWeightHero = remember(weightEntries, cycle.startDate, today) {
+        FatLossAnalytics.computeRollingWeightHero(weightEntries, cycle.startDate, today)
     }
     val sameDayTrio = if (cycle.type == CycleType.FAT_LOSS_BODYBUILDING) {
         remember(weightEntries, cycle.startDate, today) {
@@ -1771,7 +1771,7 @@ fun WeightProgressionHeroCard(
                 if (startWeightKg != null && goalWeightKg != null) {
                     val totalDistance = startWeightKg - goalWeightKg
                     val progressFraction = if (totalDistance > 0.0) {
-                        ((startWeightKg - currentWeightKg) / totalDistance).toFloat().coerceIn(0f, 1f)
+                        ((startWeightKg - resolvedToday7dAvgKg) / totalDistance).toFloat().coerceIn(0f, 1f)
                     } else 1f
 
                     Column(
@@ -1817,11 +1817,11 @@ fun WeightProgressionHeroCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     if (goalWeightKg != null) {
-                        val isGoalReached = currentWeightKg <= goalWeightKg
+                        val isGoalReached = resolvedToday7dAvgKg <= goalWeightKg
                         val goalLine2 = if (isGoalReached) {
                             "Goal reached"
                         } else {
-                            val remainingKg = currentWeightKg - goalWeightKg
+                            val remainingKg = resolvedToday7dAvgKg - goalWeightKg
                             val remainingDisplay = if (isImperial) WeightAnalytics.kgToLbs(remainingKg) else remainingKg
                             "(-${String.format(Locale.US, "%.1f", remainingDisplay)} $weightUnit left)"
                         }
