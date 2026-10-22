@@ -520,7 +520,7 @@ class WeightProgressionCardTest {
     @Test
     fun issue596_paceTargetsContainerStateTextResolution() {
         val unavailText = resolvePaceTargetsContainerStateText(PaceTargetsState.Unavailable)
-        assertEquals("Pace Targets Unavailable: Needs starting weight or initial weigh-in", unavailText)
+        assertEquals("Pace & Linear Targets Unavailable: Set cycle goal weight and end date", unavailText)
 
         val stalledText = resolvePaceTargetsContainerStateText(PaceTargetsState.Stalled)
         assertEquals("Pace Stalled: Surplus/maintenance pace detected", stalledText)
@@ -1178,6 +1178,90 @@ class WeightProgressionCardTest {
         assertEquals(
             "Required pace: -0.1 lbs/wk (by 19 Nov 2026)",
             resolveRequiredPaceSubtitle(lbsForecast, lbsRequired)
+        )
+    }
+
+    // =========================================================================
+    // Feature 004-pace-and-linear-targets: 2-Decimal Target Cell Resolvers (US1, US2, US3)
+    // =========================================================================
+
+    @Test
+    fun paceAndLinearTargets_twoDecimalResolversAndBoundaryContainerText() {
+        assertEquals("PACE & LINEAR TARGETS", PACE_AND_LINEAR_TARGETS_HEADER)
+        assertEquals("7D ROLLING AVERAGE", TARGET_ROW_7D_AVG_HEADER)
+        assertEquals("DAILY WEIGH-IN", TARGET_ROW_DAILY_HEADER)
+
+        assertEquals("Goal reached! 🎉", resolvePaceTargetsContainerStateText(PaceTargetsState.GoalReached))
+        assertEquals("Cycle ended", resolvePaceTargetsContainerStateText(PaceTargetsState.CycleEnded))
+
+        // Linear Today 2-decimal formatting (trailing zero preserved: 75.50 kg, +0.10 kg off pace)
+        val linearOffPace = ColumnState.Value(
+            targetWeightDisplay = 75.50,
+            deltaDisplay = 0.10,
+            status = PaceTargetStatus.OFF_PACE,
+            unitLabel = "kg",
+            useTwoDecimals = true
+        )
+        assertEquals("75.50 kg", resolveLinearTodayValue(linearOffPace))
+        assertEquals("+0.10 kg off pace", resolveLinearTodaySubtitle(linearOffPace))
+
+        val linearAhead = ColumnState.Value(
+            targetWeightDisplay = 75.59,
+            deltaDisplay = -0.89,
+            status = PaceTargetStatus.AHEAD,
+            unitLabel = "kg",
+            useTwoDecimals = true
+        )
+        assertEquals("75.59 kg", resolveLinearTodayValue(linearAhead))
+        assertEquals("-0.89 kg ahead", resolveLinearTodaySubtitle(linearAhead))
+
+        val linearOnPace = ColumnState.Value(
+            targetWeightDisplay = 166.50,
+            deltaDisplay = 0.0,
+            status = PaceTargetStatus.ON_PACE,
+            unitLabel = "lbs",
+            useTwoDecimals = true
+        )
+        assertEquals("166.50 lbs", resolveLinearTodayValue(linearOnPace))
+        assertEquals("On pace", resolveLinearTodaySubtitle(linearOnPace))
+
+        // Expected Today 2-decimal formatting
+        val expected2Dec = ColumnState.Value(
+            targetWeightDisplay = 75.56,
+            deltaDisplay = 0.10,
+            status = PaceTargetStatus.OFF_PACE,
+            unitLabel = "kg",
+            baselineWeightDisplay = 76.20,
+            useTwoDecimals = true
+        )
+        assertEquals("75.56 kg", resolveExpectedTodayValue(expected2Dec))
+        assertEquals("+0.10 kg off pace", resolveExpectedTodaySubtitle(expected2Dec))
+
+        // Target Tomorrow 2-decimal daily step formatting (-0.06 kg/day)
+        val tomorrowDailyStep = ColumnState.Value(
+            targetWeightDisplay = 74.94,
+            deltaDisplay = -0.06,
+            status = null,
+            unitLabel = "kg",
+            isDailyStep = true,
+            useTwoDecimals = true
+        )
+        assertEquals("74.94 kg", resolveTargetTomorrowValue(tomorrowDailyStep))
+        assertEquals("-0.06 kg/day", resolveTargetTomorrowSubtitle(tomorrowDailyStep))
+
+        // NeedsTodayLog fallback for Daily Weigh-In row Target Tomorrow
+        assertEquals("—", resolveTargetTomorrowValue(ColumnState.NeedsTodayLog))
+        assertEquals("Needs today's log", resolveTargetTomorrowSubtitle(ColumnState.NeedsTodayLog))
+
+        // Semantic content description per cell
+        assertEquals(
+            "7D ROLLING AVERAGE Linear Today: 75.59 kg, +0.07 kg off pace",
+            resolveTargetCellContentDescription(
+                TARGET_ROW_7D_AVG_HEADER,
+                "Linear Today",
+                "75.59 kg",
+                "+0.07 kg off pace"
+            )
         )
     }
 }

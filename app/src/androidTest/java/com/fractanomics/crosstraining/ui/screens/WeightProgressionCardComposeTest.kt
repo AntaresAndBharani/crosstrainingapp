@@ -719,4 +719,52 @@ class WeightProgressionCardComposeTest {
         composeTestRule.onNodeWithText("Based on 14-day pace (-0.2 kg/wk)").assertIsDisplayed()
         composeTestRule.onNodeWithText("Required pace: -0.7 kg/wk (by 30 Nov 2026)").assertIsDisplayed()
     }
+
+    // =========================================================================
+    // Scenario 17: Pace & Linear Targets 3x2 Container (Feature 004)
+    // =========================================================================
+    @Test
+    fun scenario17_paceAndLinearTargets3x2ContainerRendersAt360dpFontScale13() {
+        val cycleStart = LocalDate.of(2026, 9, 28)
+        val referenceDate = LocalDate.of(2026, 10, 22)
+        val cycleEnd = LocalDate.of(2026, 11, 30)
+        val cycle = Cycle(
+            id = 4017L,
+            name = "Recomp",
+            startDate = cycleStart,
+            endDate = cycleEnd,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 77.8,
+            targetWeightKg = 72.0
+        )
+        val entries = listOf(
+            WeightEntry(date = cycleStart, weightKg = 77.80, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 76.22, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 18), weightKg = 76.62, updatedAtMillis = 3L),
+            WeightEntry(date = referenceDate, weightKg = 74.70, updatedAtMillis = 4L)
+        )
+        val paceTargets = FatLossAnalytics.compute7DayPaceTargets(entries, cycle, referenceDate, "kg")
+
+        composeTestRule.setContent {
+            CompositionLocalProvider(
+                LocalDensity provides Density(density = 1f, fontScale = 1.3f)
+            ) {
+                Box(modifier = Modifier.width(360.dp)) {
+                    TheoreticalPaceTargetsBox(paceTargets = paceTargets)
+                }
+            }
+        }
+
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("PACE & LINEAR TARGETS"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("7D ROLLING AVERAGE"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("DAILY WEIGH-IN"))
+
+        composeTestRule.onAllNodesWithText("Linear Today").assertCountEquals(2)
+        composeTestRule.onAllNodesWithText("Expected Today").assertCountEquals(2)
+        composeTestRule.onAllNodesWithText("Target Tomorrow").assertCountEquals(2)
+
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("75.57 kg"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("74.61 kg"))
+        composeTestRule.onAllNodesWithText("-0.09 kg/day").assertCountEquals(2)
+    }
 }
