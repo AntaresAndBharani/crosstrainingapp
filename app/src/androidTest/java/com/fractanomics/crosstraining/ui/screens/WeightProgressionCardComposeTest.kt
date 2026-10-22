@@ -19,7 +19,9 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.fractanomics.crosstraining.data.analytics.DayOverDayDelta
+import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
 import com.fractanomics.crosstraining.data.analytics.PaceComparisonResult
+import com.fractanomics.crosstraining.data.analytics.PaceForecast
 import com.fractanomics.crosstraining.data.analytics.PaceRateResult
 import com.fractanomics.crosstraining.data.analytics.PaceTrend
 import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
@@ -27,6 +29,7 @@ import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.WeightEntry
+import com.fractanomics.crosstraining.ui.formatLong
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -659,5 +662,61 @@ class WeightProgressionCardComposeTest {
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("14D AVG"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("76.5 kg"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("(12 logs)"))
+    }
+
+    // =========================================================================
+    // Scenario 16: Required Pace to Cycle End Date in ForecastBanner (Feature 003)
+    // =========================================================================
+    @Test
+    fun scenario16_forecastBannerDisplaysRequiredPaceWhenCycleEndDateIsFuture() {
+        val referenceDate = LocalDate.of(2026, 10, 22)
+        val cycleEndDate = LocalDate.of(2026, 11, 30) // 39 days remaining -> 3.7 kg / (39/7)w = -0.7 kg/wk
+        val projectedArrival = LocalDate.of(2027, 2, 28)
+        val forecast = PaceForecast.Projected(
+            weeks = 18.5,
+            targetDate = projectedArrival,
+            rawWeeks = 18.5,
+            paceWindowDays = 14,
+            paceRateKgPerWeek = -0.2
+        )
+
+        composeTestRule.setContent {
+            CompositionLocalProvider(
+                LocalDensity provides Density(density = 1f, fontScale = 1.3f)
+            ) {
+                Box(modifier = Modifier.width(360.dp)) {
+                    WeightProgressionHeroCard(
+                        title = "Weight Progression (Recomp)",
+                        startWeightKg = 77.8,
+                        startDateFormatted = "1 Oct",
+                        currentWeightKg = 75.7,
+                        currentDate = referenceDate,
+                        goalWeightKg = 72.0,
+                        weightUnit = "kg",
+                        dayOverDayDelta = null,
+                        dropStreakDays = 0,
+                        pace7 = null,
+                        pace14 = null,
+                        paceComparison7d = null,
+                        forecast = forecast,
+                        onLogWeight = {},
+                        referenceDate = referenceDate,
+                        today7dAvgKg = 75.66,
+                        requiredPace = FatLossAnalytics.computeRequiredPaceToEndDate(
+                            today7dAvgKg = 75.66,
+                            targetWeightKg = 72.0,
+                            cycleEndDate = cycleEndDate,
+                            today = referenceDate,
+                            startWeightKg = 77.8
+                        )
+                    )
+                }
+            }
+        }
+
+        composeTestRule.onNodeWithText("Estimated: 18.5 weeks").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Projected arrival: ${projectedArrival.formatLong()}").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Based on 14-day pace (-0.2 kg/wk)").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Required pace: -0.7 kg/wk (by 30 Nov 2026)").assertIsDisplayed()
     }
 }

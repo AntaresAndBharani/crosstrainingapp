@@ -114,6 +114,7 @@ import com.fractanomics.crosstraining.data.analytics.DayOfWeekCardio
 import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
 import com.fractanomics.crosstraining.data.analytics.PaceForecast
 import com.fractanomics.crosstraining.data.analytics.PaceRateResult
+import com.fractanomics.crosstraining.data.analytics.RequiredPaceResult
 import com.fractanomics.crosstraining.data.analytics.PaceTrend
 import com.fractanomics.crosstraining.data.analytics.Timeframe
 import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
@@ -1117,8 +1118,11 @@ fun WeightProgressionCard(
     val paceComparison14d = remember(weightEntries, cycle, today) {
         FatLossAnalytics.computePaceComparisonVsLastWeek(weightEntries, cycle, 14, today)
     }
-    val forecast = remember(weightEntries, cycle, today) {
-        FatLossAnalytics.computePaceForecast(weightEntries, cycle, today)
+    val forecast = remember(weightEntries, cycle, today, weightUnit) {
+        FatLossAnalytics.computePaceForecast(weightEntries, cycle, today, weightUnit = weightUnit)
+    }
+    val requiredPace = remember(weightEntries, cycle, today, weightUnit) {
+        FatLossAnalytics.computeRequiredPaceToEndDate(weightEntries, cycle, today, weightUnit)
     }
     val paceTargets = remember(weightEntries, cycle, today, weightUnit) {
         FatLossAnalytics.compute7DayPaceTargets(weightEntries, cycle, today, weightUnit)
@@ -1156,7 +1160,8 @@ fun WeightProgressionCard(
         progressiveAverage = progressiveAverage,
         paceComparison14d = paceComparison14d,
         rollingWeightHero = rollingWeightHero,
-        sameDayTrio = sameDayTrio
+        sameDayTrio = sameDayTrio,
+        requiredPace = requiredPace
     )
 }
 
@@ -1768,7 +1773,8 @@ fun WeightProgressionHeroCard(
     today14dAvgKg: Double? = null,
     delta14dKg: Double? = null,
     loggedDaysCount14d: Int = 0,
-    sameDayTrio: SameDayWeightTrioState? = null
+    sameDayTrio: SameDayWeightTrioState? = null,
+    requiredPace: RequiredPaceResult? = null
 ) {
     val isImperial = weightUnit.equals("lbs", ignoreCase = true)
     val today7dWindowAvgKg = today7dAvgKg ?: rollingWeightHero?.today7dAvgKg
@@ -2176,7 +2182,8 @@ fun WeightProgressionHeroCard(
                     forecast = forecast,
                     pace14 = pace14,
                     pace7 = pace7,
-                    weightUnit = weightUnit
+                    weightUnit = weightUnit,
+                    requiredPace = requiredPace
                 )
             }
 
@@ -2222,12 +2229,27 @@ internal fun resolveForecastPaceSubtitle(
     return "Based on $windowDays-day pace ($formattedRate)"
 }
 
+internal fun resolveRequiredPaceSubtitle(
+    forecast: PaceForecast?,
+    requiredPace: RequiredPaceResult?
+): String? {
+    if (
+        forecast !is PaceForecast.Projected &&
+        forecast !is PaceForecast.Stalled &&
+        forecast !is PaceForecast.NotEnoughData
+    ) {
+        return null
+    }
+    return requiredPace?.formatSubtitle()
+}
+
 @Composable
 internal fun ForecastBanner(
     forecast: PaceForecast,
     pace14: PaceRateResult? = null,
     pace7: PaceRateResult? = null,
     weightUnit: String = "kg",
+    requiredPace: RequiredPaceResult? = null,
     modifier: Modifier = Modifier
 ) {
     val (containerColor, contentColor, icon) = when (forecast) {
@@ -2287,6 +2309,14 @@ internal fun ForecastBanner(
                 if (subtitle != null) {
                     Text(
                         text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = contentColor.copy(alpha = 0.8f)
+                    )
+                }
+                val requiredPaceSubtitle = resolveRequiredPaceSubtitle(forecast, requiredPace)
+                if (requiredPaceSubtitle != null) {
+                    Text(
+                        text = requiredPaceSubtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = contentColor.copy(alpha = 0.8f)
                     )

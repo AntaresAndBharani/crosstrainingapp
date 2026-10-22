@@ -1087,4 +1087,97 @@ class WeightProgressionCardTest {
         )
         assertNull(resolveForecastPaceSubtitle(projectedUnknown, pace14 = null, pace7 = null, weightUnit = "kg"))
     }
+
+    @Test
+    fun requiredPaceSubtitle_displaysInProjectedStalledAndNotEnoughDataStates() {
+        val referenceDate = LocalDate.of(2026, 10, 22)
+        val cycleEndDate = LocalDate.of(2026, 11, 30) // 39 days -> 5.5714 weeks
+        // 75.66 kg rounds to 75.7 kg; goal 72.0 kg -> remaining 3.7 kg -> -0.7 kg/wk
+        val requiredKg = FatLossAnalytics.computeRequiredPaceToEndDate(
+            today7dAvgKg = 75.66,
+            targetWeightKg = 72.0,
+            cycleEndDate = cycleEndDate,
+            today = referenceDate,
+            weightUnit = "kg",
+            startWeightKg = 77.8
+        )
+        val expectedKg = "Required pace: -0.7 kg/wk (by 30 Nov 2026)"
+
+        val projected = PaceForecast.Projected(
+            weeks = 18.5,
+            targetDate = LocalDate.of(2027, 2, 28),
+            rawWeeks = 18.5,
+            paceWindowDays = 14,
+            paceRateKgPerWeek = -0.2
+        )
+        assertEquals(expectedKg, resolveRequiredPaceSubtitle(projected, requiredKg))
+        assertEquals(expectedKg, resolveRequiredPaceSubtitle(PaceForecast.Stalled, requiredKg))
+        assertEquals(expectedKg, resolveRequiredPaceSubtitle(PaceForecast.NotEnoughData, requiredKg))
+
+        // Imperial lbs: 166.8 - 158.7 = 8.1 lbs over 39/7 weeks = 1.4538 -> -1.5 lbs/wk
+        val requiredLbs = FatLossAnalytics.computeRequiredPaceToEndDate(
+            today7dAvgKg = 75.66,
+            targetWeightKg = 72.0,
+            cycleEndDate = cycleEndDate,
+            today = referenceDate,
+            weightUnit = "lbs",
+            startWeightKg = 77.8
+        )
+        assertEquals(
+            "Required pace: -1.5 lbs/wk (by 30 Nov 2026)",
+            resolveRequiredPaceSubtitle(projected, requiredLbs)
+        )
+    }
+
+    @Test
+    fun requiredPaceSubtitle_suppressedWhenGoalReachedCycleEndedOrNoRequiredPace() {
+        val referenceDate = LocalDate.of(2026, 10, 22)
+        val required = FatLossAnalytics.computeRequiredPaceToEndDate(
+            today7dAvgKg = 75.7,
+            targetWeightKg = 72.0,
+            cycleEndDate = LocalDate.of(2026, 11, 30),
+            today = referenceDate
+        )
+        assertNotNull(required)
+
+        // Suppressed in GoalReached and CycleEnded forecast states
+        assertNull(resolveRequiredPaceSubtitle(PaceForecast.GoalReached, required))
+        assertNull(resolveRequiredPaceSubtitle(PaceForecast.CycleEnded, required))
+        assertNull(resolveRequiredPaceSubtitle(null, required))
+
+        // Suppressed when no required pace resolves (open-ended cycle, end date reached, missing 7D average)
+        assertNull(resolveRequiredPaceSubtitle(PaceForecast.Stalled, null))
+    }
+
+    @Test
+    fun requiredPace_cycleOverloadMatchesCardInputsAndForecastAgreesInLbs() {
+        val today = LocalDate.of(2026, 10, 22)
+        val cycle = Cycle(
+            id = 911L,
+            name = "Recomp Cut",
+            startDate = LocalDate.of(2026, 10, 1),
+            endDate = LocalDate.of(2026, 11, 19),
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 78.0,
+            targetWeightKg = 72.0
+        )
+        // Today's 7D average 72.04 kg: reached in kg, 0.1 lbs left in lbs
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 78.0, updatedAtMillis = 1L),
+            WeightEntry(date = today, weightKg = 72.04, updatedAtMillis = 2L)
+        )
+
+        assertEquals(PaceForecast.GoalReached, FatLossAnalytics.computePaceForecast(entries, cycle, today, weightUnit = "kg"))
+        assertNull(FatLossAnalytics.computeRequiredPaceToEndDate(entries, cycle, today, "kg"))
+
+        val lbsForecast = FatLossAnalytics.computePaceForecast(entries, cycle, today, weightUnit = "lbs")
+        val lbsRequired = FatLossAnalytics.computeRequiredPaceToEndDate(entries, cycle, today, "lbs")
+        assertFalse(lbsForecast is PaceForecast.GoalReached)
+        assertNotNull(lbsRequired)
+        assertEquals(0.1, lbsRequired!!.remainingWeightInUnit, 1e-6)
+        assertEquals(
+            "Required pace: -0.1 lbs/wk (by 19 Nov 2026)",
+            resolveRequiredPaceSubtitle(lbsForecast, lbsRequired)
+        )
+    }
 }

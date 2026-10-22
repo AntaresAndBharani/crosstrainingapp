@@ -255,6 +255,42 @@ sealed class PaceForecast {
 }
 
 /**
+ * Result of computing the required weekly weight-loss pace to reach the cycle's target weight
+ * on or before the cycle's configured [endDate].
+ *
+ * @property requiredRateInUnit Signed weekly weight-loss pace in [weightUnit] per week (always <= -0.1).
+ * @property remainingWeightInUnit Positive 1-decimal rounded remaining weight to goal in [weightUnit].
+ * @property daysRemaining Strict positive calendar days between evaluation date and [endDate].
+ * @property weeksRemaining Exact calendar weeks remaining (`daysRemaining / 7.0`).
+ * @property endDate Cycle target end date.
+ * @property weightUnit Active display unit ("kg" or "lbs").
+ * @property exceedsSustainableRate True when the required weekly loss is above
+ *   [FatLossAnalytics.MAX_SUSTAINABLE_WEEKLY_LOSS_FRACTION] of the current body weight.
+ */
+data class RequiredPaceResult(
+    val requiredRateInUnit: Double,
+    val remainingWeightInUnit: Double,
+    val daysRemaining: Long,
+    val weeksRemaining: Double,
+    val endDate: LocalDate,
+    val weightUnit: String,
+    val exceedsSustainableRate: Boolean = false
+) {
+    fun formatRate(): String {
+        val unitLabel = if (weightUnit.equals("lbs", ignoreCase = true)) "lbs/wk" else "kg/wk"
+        return String.format(Locale.US, "%.1f %s", requiredRateInUnit, unitLabel)
+    }
+
+    fun formatEndDate(): String =
+        endDate.format(DateTimeFormatter.ofPattern("d MMM yyyy", Locale.US))
+
+    fun formatSubtitle(): String {
+        val base = "Required pace: ${formatRate()} (by ${formatEndDate()})"
+        return if (exceedsSustainableRate) "$base — above 1% bodyweight/wk" else base
+    }
+}
+
+/**
  * Sealed hierarchy representing the state of the 7-day pace targets container.
  */
 sealed interface PaceTargetsState {
@@ -359,6 +395,12 @@ typealias PaceComparisonResult = FatLossAnalytics.PaceComparisonResult
  *    once reported. Past unlogged fast days count as broken/not done. Zero denominator evaluates to "n/a".
  */
 object FatLossAnalytics {
+
+    /**
+     * Upper bound of a sustainable weekly loss as a fraction of current body weight (~1%/wk, the common
+     * guideline for preserving lean mass during a cut). Required paces above it are flagged, not capped.
+     */
+    const val MAX_SUSTAINABLE_WEEKLY_LOSS_FRACTION = 0.01
 
     // =========================================================================
     // Noise Deadband Constants & Presentation Models
@@ -1337,6 +1379,13 @@ object FatLossAnalytics {
     internal fun round1(value: Double): Double =
         BigDecimal.valueOf(value).setScale(1, RoundingMode.HALF_UP).toDouble()
 
+    /** Converts [weightKg] (or a kg/wk rate) into [weightUnit] ("kg" or "lbs"), unrounded. */
+    internal fun toUnit(weightKg: Double, weightUnit: String): Double =
+        if (weightUnit.equals("lbs", ignoreCase = true)) WeightAnalytics.kgToLbs(weightKg) else weightKg
+
+    /** [weightKg] converted into [weightUnit] and rounded to the displayed 1-decimal precision. */
+    internal fun round1InUnit(weightKg: Double, weightUnit: String): Double = round1(toUnit(weightKg, weightUnit))
+
     internal fun diff1(a: Double, b: Double): Double =
         BigDecimal.valueOf(a).setScale(1, RoundingMode.HALF_UP)
             .subtract(BigDecimal.valueOf(b).setScale(1, RoundingMode.HALF_UP))
@@ -1620,6 +1669,9 @@ object FatLossAnalytics {
      * Velocity Resolution Hierarchy (first non-null tier wins, regardless of sign):
      * - Tier 1 (Primary): 14-Day Smoothed Pace deficit velocity
      * - Tier 2 (Fallback): 7-Day Smoothed Pace deficit velocity
+     *
+     * Weights and velocities are compared at 1-decimal precision in [weightUnit], so GoalReached and the
+     * estimated weeks agree with the remaining distance the card displays in that unit.
      */
     fun computePaceForecast(
         entries: List<WeightEntry>,
@@ -1627,7 +1679,8 @@ object FatLossAnalytics {
         cycleEndDate: LocalDate? = null,
         targetWeightKg: Double?,
         startingWeightKg: Double? = null,
-        today: LocalDate = LocalDate.now()
+        today: LocalDate = LocalDate.now(),
+        weightUnit: String = "kg"
     ): PaceForecast? {
         val activeEntries = getActiveWeightEntries(entries, cycleStartDate, today)
         val isCycleEnded = cycleEndDate != null && today.isAfter(cycleEndDate)
@@ -1645,8 +1698,10 @@ object FatLossAnalytics {
             referenceDate = today
         ) ?: newest.weightKg
 
-        // 1. GoalReached (compared at the displayed 1-decimal precision)
-        if (targetWeightKg != null && targetWeightKg > 0.0 && round1(currentWeight) <= round1(targetWeightKg)) {
+        // 1. GoalReached (compared at the displayed 1-decimal precision in the display unit)
+        if (targetWeightKg != null && targetWeightKg > 0.0 &&
+            round1InUnit(currentWeight, weightUnit) <= round1InUnit(targetWeightKg, weightUnit)
+        ) {
             return PaceForecast.GoalReached
         }
 
@@ -1700,7 +1755,8 @@ object FatLossAnalytics {
             cycleEndDate = cycleEndDate,
             today = today,
             paceWindowDays = activeWindowDays,
-            paceRateKgPerWeek = activeRateKgPerWeek
+            paceRateKgPerWeek = activeRateKgPerWeek,
+            weightUnit = weightUnit
         )
     }
 
@@ -1711,14 +1767,16 @@ object FatLossAnalytics {
         entries: List<WeightEntry>,
         cycle: Cycle,
         today: LocalDate = LocalDate.now(),
-        targetWeightKg: Double? = cycle.targetWeightKg
+        targetWeightKg: Double? = cycle.targetWeightKg,
+        weightUnit: String = "kg"
     ): PaceForecast? = computePaceForecast(
         entries = entries,
         cycleStartDate = cycle.startDate,
         cycleEndDate = cycle.endDate,
         targetWeightKg = targetWeightKg,
         startingWeightKg = cycle.startingWeightKg,
-        today = today
+        today = today,
+        weightUnit = weightUnit
     )
 
     /**
@@ -1731,11 +1789,14 @@ object FatLossAnalytics {
         cycleEndDate: LocalDate? = null,
         today: LocalDate = LocalDate.now(),
         paceWindowDays: Int? = null,
-        paceRateKgPerWeek: Double? = null
+        paceRateKgPerWeek: Double? = null,
+        weightUnit: String = "kg"
     ): PaceForecast? {
         val isCycleEnded = cycleEndDate != null && today.isAfter(cycleEndDate)
 
-        if (targetWeightKg != null && targetWeightKg > 0.0 && round1(currentWeightKg) <= round1(targetWeightKg)) {
+        if (targetWeightKg != null && targetWeightKg > 0.0 &&
+            round1InUnit(currentWeightKg, weightUnit) <= round1InUnit(targetWeightKg, weightUnit)
+        ) {
             return PaceForecast.GoalReached
         }
 
@@ -1747,14 +1808,14 @@ object FatLossAnalytics {
             return null
         }
 
-        val roundedV = round1(velocityKgPerWeek + 1e-5)
+        val roundedV = round1(toUnit(velocityKgPerWeek, weightUnit) + 1e-5)
         if (roundedV <= 0.0) {
             return PaceForecast.Stalled
         }
 
         // Positive here: the rounded GoalReached check above already returned when this would be <= 0.
-        val remainingKg = diff1(round1(currentWeightKg), round1(targetWeightKg))
-        val rawWeeks = remainingKg / roundedV
+        val remaining = diff1(toUnit(currentWeightKg, weightUnit), toUnit(targetWeightKg, weightUnit))
+        val rawWeeks = remaining / roundedV
         val resolvedRate = paceRateKgPerWeek ?: -velocityKgPerWeek
 
         return if (rawWeeks > 52.0) {
@@ -1776,6 +1837,96 @@ object FatLossAnalytics {
                 paceRateKgPerWeek = resolvedRate
             )
         }
+    }
+
+    /**
+     * Computes the required weekly weight-loss pace to reach [targetWeightKg] by [cycleEndDate],
+     * using the 1-decimal rounded remaining weight in [weightUnit] and exact calendar weeks remaining.
+     *
+     * Returns null when:
+     * - [today7dAvgKg], [targetWeightKg], or [cycleEndDate] is null or [targetWeightKg] <= 0.0
+     * - [startWeightKg] is provided and `targetWeightKg >= startWeightKg` (non-deficit goal)
+     * - `daysRemaining <= 0` (`today >= cycleEndDate`)
+     * - 1-decimal rounded remaining weight in [weightUnit] is `<= 0.0` (goal already reached)
+     *
+     * The rate itself is never capped (a short horizon legitimately needs a steep pace); instead
+     * [RequiredPaceResult.exceedsSustainableRate] flags paces above [MAX_SUSTAINABLE_WEEKLY_LOSS_FRACTION]
+     * of the current weight so the UI can mark them as unrealistic.
+     */
+    fun computeRequiredPaceToEndDate(
+        today7dAvgKg: Double?,
+        targetWeightKg: Double?,
+        cycleEndDate: LocalDate?,
+        today: LocalDate = LocalDate.now(),
+        weightUnit: String = "kg",
+        startWeightKg: Double? = null
+    ): RequiredPaceResult? {
+        if (today7dAvgKg == null || targetWeightKg == null || targetWeightKg <= 0.0 || cycleEndDate == null) {
+            return null
+        }
+        if (startWeightKg != null && targetWeightKg >= startWeightKg) {
+            return null
+        }
+
+        val daysRemaining = ChronoUnit.DAYS.between(today, cycleEndDate)
+        if (daysRemaining <= 0L) {
+            return null
+        }
+
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val currentDisplay = round1InUnit(today7dAvgKg, weightUnit)
+        val remainingDisplay = diff1(currentDisplay, toUnit(targetWeightKg, weightUnit))
+        if (remainingDisplay <= 0.0) {
+            return null
+        }
+
+        val weeksRemaining = daysRemaining / 7.0
+        val rawRequiredMagnitude = round1(remainingDisplay / weeksRemaining)
+        val clampedMagnitude = maxOf(0.1, rawRequiredMagnitude)
+        val normalizedUnit = if (isImperial) "lbs" else "kg"
+
+        return RequiredPaceResult(
+            requiredRateInUnit = -clampedMagnitude,
+            remainingWeightInUnit = remainingDisplay,
+            daysRemaining = daysRemaining,
+            weeksRemaining = weeksRemaining,
+            endDate = cycleEndDate,
+            weightUnit = normalizedUnit,
+            exceedsSustainableRate = clampedMagnitude > currentDisplay * MAX_SUSTAINABLE_WEEKLY_LOSS_FRACTION
+        )
+    }
+
+    /**
+     * Cycle-aware overload that resolves [today7dAvgKg] from [entries] within [cycle] (falling back to the
+     * latest active in-cycle weigh-in when no weigh-in exists in the `[today - 6, today]` window) and
+     * delegates to [computeRequiredPaceToEndDate].
+     *
+     * Only active for [CycleType.FAT_LOSS_BODYBUILDING] cycles with at least 1 active in-cycle weigh-in.
+     */
+    fun computeRequiredPaceToEndDate(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        today: LocalDate = LocalDate.now(),
+        weightUnit: String = "kg"
+    ): RequiredPaceResult? {
+        if (cycle.type != CycleType.FAT_LOSS_BODYBUILDING) {
+            return null
+        }
+        val active = getActiveWeightEntries(entries, cycle.startDate, today)
+        if (active.isEmpty()) {
+            return null
+        }
+        val hero = computeRollingWeightHero(entries, cycle.startDate, today)
+        val currentAvgKg = hero.today7dAvgKg ?: active.last().weightKg
+        val resolvedStartKg = cycle.startingWeightKg ?: active.first().weightKg
+        return computeRequiredPaceToEndDate(
+            today7dAvgKg = currentAvgKg,
+            targetWeightKg = cycle.targetWeightKg,
+            cycleEndDate = cycle.endDate,
+            today = today,
+            weightUnit = weightUnit,
+            startWeightKg = resolvedStartKg
+        )
     }
 
     // =========================================================================
