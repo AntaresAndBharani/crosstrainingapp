@@ -114,6 +114,7 @@ import com.fractanomics.crosstraining.data.analytics.DayOfWeekCardio
 import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
 import com.fractanomics.crosstraining.data.analytics.PaceForecast
 import com.fractanomics.crosstraining.data.analytics.PaceRateResult
+import com.fractanomics.crosstraining.data.analytics.RequiredPaceResult
 import com.fractanomics.crosstraining.data.analytics.PaceTrend
 import com.fractanomics.crosstraining.data.analytics.Timeframe
 import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
@@ -1117,8 +1118,11 @@ fun WeightProgressionCard(
     val paceComparison14d = remember(weightEntries, cycle, today) {
         FatLossAnalytics.computePaceComparisonVsLastWeek(weightEntries, cycle, 14, today)
     }
-    val forecast = remember(weightEntries, cycle, today) {
-        FatLossAnalytics.computePaceForecast(weightEntries, cycle, today)
+    val forecast = remember(weightEntries, cycle, today, weightUnit) {
+        FatLossAnalytics.computePaceForecast(weightEntries, cycle, today, weightUnit = weightUnit)
+    }
+    val requiredPace = remember(weightEntries, cycle, today, weightUnit) {
+        FatLossAnalytics.computeRequiredPaceToEndDate(weightEntries, cycle, today, weightUnit)
     }
     val paceTargets = remember(weightEntries, cycle, today, weightUnit) {
         FatLossAnalytics.compute7DayPaceTargets(weightEntries, cycle, today, weightUnit)
@@ -1157,7 +1161,7 @@ fun WeightProgressionCard(
         paceComparison14d = paceComparison14d,
         rollingWeightHero = rollingWeightHero,
         sameDayTrio = sameDayTrio,
-        cycleEndDate = cycle.endDate
+        requiredPace = requiredPace
     )
 }
 
@@ -1770,7 +1774,7 @@ fun WeightProgressionHeroCard(
     delta14dKg: Double? = null,
     loggedDaysCount14d: Int = 0,
     sameDayTrio: SameDayWeightTrioState? = null,
-    cycleEndDate: LocalDate? = null
+    requiredPace: RequiredPaceResult? = null
 ) {
     val isImperial = weightUnit.equals("lbs", ignoreCase = true)
     val today7dWindowAvgKg = today7dAvgKg ?: rollingWeightHero?.today7dAvgKg
@@ -2179,11 +2183,7 @@ fun WeightProgressionHeroCard(
                     pace14 = pace14,
                     pace7 = pace7,
                     weightUnit = weightUnit,
-                    today7dAvgKg = resolvedToday7dAvgKg,
-                    goalWeightKg = goalWeightKg,
-                    startWeightKg = startWeightKg,
-                    cycleEndDate = cycleEndDate,
-                    referenceDate = referenceDate
+                    requiredPace = requiredPace
                 )
             }
 
@@ -2231,12 +2231,7 @@ internal fun resolveForecastPaceSubtitle(
 
 internal fun resolveRequiredPaceSubtitle(
     forecast: PaceForecast?,
-    today7dAvgKg: Double?,
-    goalWeightKg: Double?,
-    startWeightKg: Double? = null,
-    cycleEndDate: LocalDate?,
-    referenceDate: LocalDate = LocalDate.now(),
-    weightUnit: String = "kg"
+    requiredPace: RequiredPaceResult?
 ): String? {
     if (
         forecast !is PaceForecast.Projected &&
@@ -2245,14 +2240,7 @@ internal fun resolveRequiredPaceSubtitle(
     ) {
         return null
     }
-    return FatLossAnalytics.computeRequiredPaceToEndDate(
-        today7dAvgKg = today7dAvgKg,
-        targetWeightKg = goalWeightKg,
-        cycleEndDate = cycleEndDate,
-        today = referenceDate,
-        weightUnit = weightUnit,
-        startWeightKg = startWeightKg
-    )?.formatSubtitle()
+    return requiredPace?.formatSubtitle()
 }
 
 @Composable
@@ -2261,11 +2249,7 @@ internal fun ForecastBanner(
     pace14: PaceRateResult? = null,
     pace7: PaceRateResult? = null,
     weightUnit: String = "kg",
-    today7dAvgKg: Double? = null,
-    goalWeightKg: Double? = null,
-    startWeightKg: Double? = null,
-    cycleEndDate: LocalDate? = null,
-    referenceDate: LocalDate = LocalDate.now(),
+    requiredPace: RequiredPaceResult? = null,
     modifier: Modifier = Modifier
 ) {
     val (containerColor, contentColor, icon) = when (forecast) {
@@ -2329,15 +2313,7 @@ internal fun ForecastBanner(
                         color = contentColor.copy(alpha = 0.8f)
                     )
                 }
-                val requiredPaceSubtitle = resolveRequiredPaceSubtitle(
-                    forecast = forecast,
-                    today7dAvgKg = today7dAvgKg,
-                    goalWeightKg = goalWeightKg,
-                    startWeightKg = startWeightKg,
-                    cycleEndDate = cycleEndDate,
-                    referenceDate = referenceDate,
-                    weightUnit = weightUnit
-                )
+                val requiredPaceSubtitle = resolveRequiredPaceSubtitle(forecast, requiredPace)
                 if (requiredPaceSubtitle != null) {
                     Text(
                         text = requiredPaceSubtitle,

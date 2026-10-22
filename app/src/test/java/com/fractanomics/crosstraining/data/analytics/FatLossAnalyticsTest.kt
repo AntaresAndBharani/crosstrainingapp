@@ -3443,6 +3443,7 @@ class FatLossAnalyticsTest {
         assertEquals(3.7, result.remainingWeightInUnit, 1e-6)
         assertEquals(39L, result.daysRemaining)
         assertEquals(39.0 / 7.0, result.weeksRemaining, 1e-6)
+        assertFalse(result.exceedsSustainableRate) // 0.7 <= 1% of 75.7
         assertEquals("Required pace: -0.7 kg/wk (by 30 Nov 2026)", result.formatSubtitle())
     }
 
@@ -3463,7 +3464,8 @@ class FatLossAnalyticsTest {
         assertNotNull(result)
         assertEquals(8.1, result!!.remainingWeightInUnit, 1e-6)
         assertEquals(-2.0, result.requiredRateInUnit, 1e-6)
-        assertEquals("Required pace: -2.0 lbs/wk (by 19 Nov 2026)", result.formatSubtitle())
+        assertTrue(result.exceedsSustainableRate) // 2.0 > 1% of 166.8
+        assertEquals("Required pace: -2.0 lbs/wk (by 19 Nov 2026) — above 1% bodyweight/wk", result.formatSubtitle())
     }
 
     @Test
@@ -3498,7 +3500,36 @@ class FatLossAnalyticsTest {
         assertNotNull(result)
         assertEquals(1L, result!!.daysRemaining)
         assertEquals(-7.0, result.requiredRateInUnit, 1e-6)
-        assertEquals("Required pace: -7.0 kg/wk (by 23 Oct 2026)", result.formatSubtitle())
+        assertTrue(result.exceedsSustainableRate)
+        assertEquals("Required pace: -7.0 kg/wk (by 23 Oct 2026) — above 1% bodyweight/wk", result.formatSubtitle())
+    }
+
+    @Test
+    fun `requiredPace US1 - flags paces above 1 percent of current weight per week without capping them`() {
+        val today = LocalDate.of(2026, 10, 22)
+        // 80.0 kg -> sustainable limit 0.8 kg/wk. 3.2 kg over 4 weeks = 0.8 kg/wk -> at the limit, not flagged
+        val atLimit = FatLossAnalytics.computeRequiredPaceToEndDate(
+            today7dAvgKg = 80.0,
+            targetWeightKg = 76.8,
+            cycleEndDate = today.plusDays(28),
+            today = today
+        )
+        assertNotNull(atLimit)
+        assertEquals(-0.8, atLimit!!.requiredRateInUnit, 1e-6)
+        assertFalse(atLimit.exceedsSustainableRate)
+        assertEquals("Required pace: -0.8 kg/wk (by 19 Nov 2026)", atLimit.formatSubtitle())
+
+        // 3.6 kg over 4 weeks = 0.9 kg/wk -> above the limit, flagged but the rate is not capped
+        val aboveLimit = FatLossAnalytics.computeRequiredPaceToEndDate(
+            today7dAvgKg = 80.0,
+            targetWeightKg = 76.4,
+            cycleEndDate = today.plusDays(28),
+            today = today
+        )
+        assertNotNull(aboveLimit)
+        assertEquals(-0.9, aboveLimit!!.requiredRateInUnit, 1e-6)
+        assertTrue(aboveLimit.exceedsSustainableRate)
+        assertEquals("Required pace: -0.9 kg/wk (by 19 Nov 2026) — above 1% bodyweight/wk", aboveLimit.formatSubtitle())
     }
 
     @Test
@@ -3598,7 +3629,10 @@ class FatLossAnalyticsTest {
         val staleResult = FatLossAnalytics.computeRequiredPaceToEndDate(staleEntries, recompCycle, today, "kg")
         assertNotNull(staleResult)
         assertEquals(-1.0, staleResult!!.requiredRateInUnit, 1e-6)
-        assertEquals("Required pace: -1.0 kg/wk (by 19 Nov 2026)", staleResult.formatSubtitle())
+        assertEquals(
+            "Required pace: -1.0 kg/wk (by 19 Nov 2026) — above 1% bodyweight/wk",
+            staleResult.formatSubtitle()
+        )
 
         // Empty active entries -> null
         assertNull(FatLossAnalytics.computeRequiredPaceToEndDate(emptyList(), recompCycle, today, "kg"))
@@ -3606,5 +3640,42 @@ class FatLossAnalyticsTest {
         // Non-recomposition cycle -> null
         val strengthCycle = recompCycle.copy(type = CycleType.STRENGTH_WEIGHTLIFTING)
         assertNull(FatLossAnalytics.computeRequiredPaceToEndDate(staleEntries, strengthCycle, today, "kg"))
+    }
+
+    @Test
+    fun `paceForecast - GoalReached and estimated weeks are evaluated in the display unit`() {
+        val today = LocalDate.of(2026, 10, 22)
+        // 72.04 kg vs 72.0 kg: equal at 1 decimal in kg, but 158.8 lbs vs 158.7 lbs leaves 0.1 lbs
+        assertEquals(
+            PaceForecast.GoalReached,
+            FatLossAnalytics.computePaceForecast(
+                currentWeightKg = 72.04,
+                targetWeightKg = 72.0,
+                velocityKgPerWeek = 0.2,
+                today = today,
+                weightUnit = "kg"
+            )
+        )
+        val imperial = FatLossAnalytics.computePaceForecast(
+            currentWeightKg = 72.04,
+            targetWeightKg = 72.0,
+            velocityKgPerWeek = 0.2,
+            today = today,
+            weightUnit = "lbs"
+        )
+        // 0.1 lbs remaining / 0.4 lbs/wk (0.2 kg/wk = 0.441 lbs/wk) = 0.25 weeks
+        assertTrue(imperial is PaceForecast.Projected)
+        assertEquals(0.25, (imperial as PaceForecast.Projected).weeks, 1e-6)
+
+        // The hero's "lbs left" and the required pace agree with the lbs forecast: not reached yet
+        assertNotNull(
+            FatLossAnalytics.computeRequiredPaceToEndDate(
+                today7dAvgKg = 72.04,
+                targetWeightKg = 72.0,
+                cycleEndDate = today.plusDays(28),
+                today = today,
+                weightUnit = "lbs"
+            )
+        )
     }
 }
