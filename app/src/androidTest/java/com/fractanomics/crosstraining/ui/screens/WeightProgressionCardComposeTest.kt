@@ -209,6 +209,8 @@ class WeightProgressionCardComposeTest {
         // Then weight progression card renders normally with dynamic title
         composeTestRule.onNodeWithText("Weight Progression (Hypertrophy Cut)").assertIsDisplayed()
         composeTestRule.onNodeWithText("START", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("ROLLING AVERAGES").assertIsDisplayed()
+        composeTestRule.onNodeWithText("7D AVG").assertIsDisplayed()
         composeTestRule.onNodeWithText("TODAY").assertIsDisplayed()
         composeTestRule.onNodeWithText("GOAL", substring = true).assertIsDisplayed()
         composeTestRule.onNodeWithText("7-Day Pace").assertIsDisplayed()
@@ -641,13 +643,16 @@ class WeightProgressionCardComposeTest {
             }
         }
 
-        // Left pillar checks: "LAST WEEK (TUE)", "77.2 kg", "-1.1 kg"
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("LAST WEEK (TUE)"))
+        // Section header check: "ROLLING AVERAGES"
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("ROLLING AVERAGES"))
+
+        // Left pillar checks: "LAST WK 7D", "77.2 kg", "-1.1 kg"
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("LAST WK 7D"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("77.2 kg"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("-1.1 kg"))
 
-        // Center pillar checks: "TODAY", "76.1 kg"
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("TODAY"))
+        // Center pillar checks: "7D AVG", "76.1 kg"
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("7D AVG"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("76.1 kg"))
 
         // Right pillar checks: "14D AVG", "76.5 kg", "(12 logs)"

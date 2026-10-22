@@ -1168,9 +1168,16 @@ internal const val PACE_14_MATURE_SUBTITLE = "Smoothed trend"
 private val pillarDateFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("d MMM", Locale.US)
 
-internal fun resolveLeftPillarHeader(currentDate: LocalDate): String {
-    val dayName = currentDate.minusDays(7).dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, Locale.US).uppercase()
-    return "LAST WEEK ($dayName)"
+internal const val ROLLING_AVERAGES_SECTION_HEADER = "ROLLING AVERAGES"
+
+internal fun resolveDailyWeighInSectionHeader(referenceDate: LocalDate = LocalDate.now()): String {
+    val dayName = referenceDate.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, Locale.US).uppercase()
+    return "DAILY WEIGH-IN ($dayName)"
+}
+
+internal fun resolveLeftPillarHeader(currentDate: LocalDate = LocalDate.now()): String {
+
+    return "LAST WK 7D"
 }
 
 internal fun resolvePillarWeightDisplay(weightKg: Double?, weightUnit: String): String {
@@ -1197,8 +1204,8 @@ internal fun resolveLeftPillarSubtitle(lastWeekEntry: WeightEntry?): String {
 internal fun resolveLeftPillarSubtitle(delta7dKg: Double?, weightUnit: String): String =
     formatWeeklyDelta(delta7dKg, weightUnit)
 
-internal fun resolveCenterPillarHeader(currentDate: LocalDate, referenceDate: LocalDate = LocalDate.now()): String {
-    return if (currentDate == referenceDate) "TODAY" else "LATEST"
+internal fun resolveCenterPillarHeader(currentDate: LocalDate = LocalDate.now(), referenceDate: LocalDate = LocalDate.now()): String {
+    return "7D AVG"
 }
 
 internal fun resolveCenterPillarValue(weightKg: Double?, weightUnit: String): String =
@@ -1611,14 +1618,14 @@ fun SameDayWeightTrioRow(
             )
         }
 
-        // Center Column: CURRENT
+        // Center Column: TODAY
         Column(
             modifier = Modifier.weight(1.25f),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Text(
-                text = "CURRENT",
+                text = "TODAY",
                 style = MaterialTheme.typography.labelSmall,
                 letterSpacing = 1.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -1725,7 +1732,9 @@ fun WeightProgressionHeroCard(
     val resolvedToday7dAvgKg = today7dAvgKg ?: rollingWeightHero?.today7dAvgKg ?: currentWeightKg
     val resolvedLastWeek7dAvgKg = lastWeek7dAvgKg ?: rollingWeightHero?.lastWeek7dAvgKg ?: lastWeekEntry?.weightKg
     val resolvedToday14dAvgKg = today14dAvgKg ?: rollingWeightHero?.today14dAvgKg ?: progressiveAverage?.averageKg
-    val resolvedDelta7dKg = delta7dKg ?: rollingWeightHero?.delta7dKg ?: resolvedLastWeek7dAvgKg?.let { resolvedToday7dAvgKg - it }
+    val resolvedDelta7dKg = delta7dKg ?: rollingWeightHero?.delta7dKg ?: resolvedLastWeek7dAvgKg?.let {
+        FatLossAnalytics.diff1(FatLossAnalytics.round1(resolvedToday7dAvgKg), FatLossAnalytics.round1(it))
+    }
     val resolvedDelta14dKg = delta14dKg ?: rollingWeightHero?.delta14dKg
     val resolvedLoggedDaysCount14d = if (loggedDaysCount14d > 0) loggedDaysCount14d else (rollingWeightHero?.loggedDaysCount14d ?: progressiveAverage?.loggedDaysCount ?: 0)
 
@@ -1769,9 +1778,12 @@ fun WeightProgressionHeroCard(
 
                 // Progress bar between anchors (hidden when goal or start is null)
                 if (startWeightKg != null && goalWeightKg != null) {
-                    val totalDistance = startWeightKg - goalWeightKg
+                    val rStart = FatLossAnalytics.round1(startWeightKg)
+                    val rGoal = FatLossAnalytics.round1(goalWeightKg)
+                    val rToday = FatLossAnalytics.round1(resolvedToday7dAvgKg)
+                    val totalDistance = FatLossAnalytics.diff1(rStart, rGoal)
                     val progressFraction = if (totalDistance > 0.0) {
-                        ((startWeightKg - resolvedToday7dAvgKg) / totalDistance).toFloat().coerceIn(0f, 1f)
+                        (FatLossAnalytics.diff1(rStart, rToday) / totalDistance).toFloat().coerceIn(0f, 1f)
                     } else 1f
 
                     Column(
@@ -1817,11 +1829,13 @@ fun WeightProgressionHeroCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     if (goalWeightKg != null) {
-                        val isGoalReached = resolvedToday7dAvgKg <= goalWeightKg
+                        val rToday = FatLossAnalytics.round1(resolvedToday7dAvgKg)
+                        val rGoal = FatLossAnalytics.round1(goalWeightKg)
+                        val isGoalReached = rToday <= rGoal
                         val goalLine2 = if (isGoalReached) {
                             "Goal reached"
                         } else {
-                            val remainingKg = resolvedToday7dAvgKg - goalWeightKg
+                            val remainingKg = FatLossAnalytics.diff1(rToday, rGoal)
                             val remainingDisplay = if (isImperial) WeightAnalytics.kgToLbs(remainingKg) else remainingKg
                             "(-${String.format(Locale.US, "%.1f", remainingDisplay)} $weightUnit left)"
                         }
@@ -1842,6 +1856,14 @@ fun WeightProgressionHeroCard(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                Text(
+                    text = ROLLING_AVERAGES_SECTION_HEADER,
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.labelSmall,
+                    letterSpacing = 1.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1951,6 +1973,18 @@ fun WeightProgressionHeroCard(
                 }
 
                 if (sameDayTrio != null) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    Text(
+                        text = resolveDailyWeighInSectionHeader(referenceDate),
+                        modifier = Modifier.fillMaxWidth(),
+                        style = MaterialTheme.typography.labelSmall,
+                        letterSpacing = 1.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     SameDayWeightTrioRow(
                         sameDayTrio = sameDayTrio,
                         weightUnit = weightUnit
@@ -2093,7 +2127,12 @@ fun WeightProgressionHeroCard(
 
             // 4. Forecast Banner & CTA
             if (forecast != null) {
-                ForecastBanner(forecast = forecast)
+                ForecastBanner(
+                    forecast = forecast,
+                    pace14 = pace14,
+                    pace7 = pace7,
+                    weightUnit = weightUnit
+                )
             }
 
             Row(
@@ -2114,9 +2153,34 @@ fun WeightProgressionHeroCard(
     }
 }
 
-@Composable
-private fun ForecastBanner(
+internal fun resolveForecastPaceSubtitle(
     forecast: PaceForecast,
+    pace14: PaceRateResult? = null,
+    pace7: PaceRateResult? = null,
+    weightUnit: String = "kg"
+): String? {
+    if (forecast !is PaceForecast.Projected && forecast !is PaceForecast.Stalled) {
+        return null
+    }
+
+    val (windowDays, rateKgPerWeek) = when {
+        pace14 != null -> Pair(14, pace14.rateKgPerWeek)
+        pace7 != null -> Pair(7, pace7.rateKgPerWeek)
+        forecast is PaceForecast.Projected && forecast.paceRateKgPerWeek != null ->
+            Pair(forecast.paceWindowDays, forecast.paceRateKgPerWeek)
+        else -> return null
+    }
+
+    val formattedRate = FatLossAnalytics.formatPaceRate(rateKgPerWeek, weightUnit)
+    return "Based on $windowDays-day pace ($formattedRate)"
+}
+
+@Composable
+internal fun ForecastBanner(
+    forecast: PaceForecast,
+    pace14: PaceRateResult? = null,
+    pace7: PaceRateResult? = null,
+    weightUnit: String = "kg",
     modifier: Modifier = Modifier
 ) {
     val (containerColor, contentColor, icon) = when (forecast) {
@@ -2168,6 +2232,14 @@ private fun ForecastBanner(
                 if (forecast is PaceForecast.Projected && forecast.targetDate != null) {
                     Text(
                         text = "Projected arrival: ${forecast.targetDate.formatLong()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = contentColor.copy(alpha = 0.8f)
+                    )
+                }
+                val subtitle = resolveForecastPaceSubtitle(forecast, pace14, pace7, weightUnit)
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = contentColor.copy(alpha = 0.8f)
                     )
