@@ -1062,41 +1062,56 @@ object FatLossAnalytics {
     ): WeightProgressResult = evaluateProgress(cycle, currentWeightKg)
 
     /**
+     * Filters all non-deleted weight entries up to [referenceDate] (including pre-cycle history),
+     * sorted chronologically by date.
+     */
+    internal fun getAllHistoricalWeightEntries(
+        entries: List<WeightEntry>,
+        referenceDate: LocalDate = LocalDate.now()
+    ): List<WeightEntry> = entries
+        .filter { it.deletedAtMillis == null && !it.date.isAfter(referenceDate) }
+        .sortedBy { it.date }
+
+    /**
+     * Computes the arithmetic mean of weightKg across entries within the closed calendar interval [start, end],
+     * or null if no entries exist in that interval.
+     */
+    internal fun computeWindowAverageKg(
+        sortedEntries: List<WeightEntry>,
+        start: LocalDate,
+        end: LocalDate
+    ): Double? {
+        val inWindow = sortedEntries.filter { !it.date.isBefore(start) && !it.date.isAfter(end) }
+        return if (inWindow.isNotEmpty()) inWindow.map { it.weightKg }.average() else null
+    }
+
+    /**
      * Computes the 7-day Simple Moving Average (SMA) of body weight over the closed
-     * calendar interval [referenceDate - 6 days, referenceDate] within the active cycle.
+     * calendar interval [referenceDate - 6 days, referenceDate] once at least one in-cycle entry exists.
      *
      * Invariants & Guarantees:
-     * 1. Filtering: soft-deleted entries (deletedAtMillis != null), pre-cycle entries (date < cycleStartDate),
-     *    and future entries (date > referenceDate) are strictly excluded.
-     * 2. Uniqueness: WeightEntry.date is the natural @PrimaryKey; per-entry and per-day averages are mathematically identical.
-     * 3. Window aggregation: entries whose date is in [referenceDate - 6 days, referenceDate].
+     * 1. In-cycle gate: returns null if no non-deleted entries exist in [cycleStartDate, referenceDate].
+     * 2. Filtering: soft-deleted entries (deletedAtMillis != null) and future entries (date > referenceDate)
+     *    are strictly excluded; non-deleted pre-cycle entries falling within [referenceDate - 6 days, referenceDate]
+     *    are included for rolling continuity.
+     * 3. Uniqueness: WeightEntry.date is the natural @PrimaryKey; per-entry and per-day averages are mathematically identical.
+     * 4. Window aggregation: entries whose date is in [referenceDate - 6 days, referenceDate].
      *    If N >= 1, returns the arithmetic mean (sum / count).
-     * 4. Cold-start progression:
-     *    - Day 1 (N = 1): returns the starting weigh-in exactly without null gaps.
-     *    - Days 2–6 (N = 2..6): arithmetic mean over elapsed days in cycle.
-     *    - Days 7+ (N >= 7): true 7-day rolling average over [referenceDate - 6, referenceDate].
      * 5. Domain safety fallback: if no entries exist in [referenceDate - 6, referenceDate] (e.g. logging gap > 7 days),
-     *    falls back to activeEntries.last().weightKg. Returns null if active cycle entries are empty.
+     *    falls back to inCycleEntries.last().weightKg.
      */
     fun computeCurrent7DayAverageWeight(
         entries: List<WeightEntry>,
         cycleStartDate: LocalDate,
         referenceDate: LocalDate = LocalDate.now()
     ): Double? {
-        val activeEntries = entries
-            .filter { it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(referenceDate) }
-            .sortedBy { it.date }
+        val inCycleEntries = getActiveWeightEntries(entries, cycleStartDate, referenceDate)
+        if (inCycleEntries.isEmpty()) return null
 
-        if (activeEntries.isEmpty()) return null
-
+        val allActiveEntries = getAllHistoricalWeightEntries(entries, referenceDate)
         val windowStart = referenceDate.minusDays(6)
-        val windowEntries = activeEntries.filter { !it.date.isBefore(windowStart) }
-
-        return if (windowEntries.isNotEmpty()) {
-            windowEntries.map { it.weightKg }.average()
-        } else {
-            activeEntries.last().weightKg
-        }
+        return computeWindowAverageKg(allActiveEntries, windowStart, referenceDate)
+            ?: inCycleEntries.last().weightKg
     }
 
     fun computeCurrent7DayAverageWeight(
@@ -1213,65 +1228,107 @@ object FatLossAnalytics {
     )
 
     /**
-     * Computes the signed pace rate for a given rolling window (e.g. 7 or 14 days).
+     * Computes the signed pace rate for a given rolling window (e.g. 7 or 14 days) using
+     * 7-day rolling window averages (including pre-cycle lookback history when available).
      *
      * Invariants:
-     * - Minimum sampling guard: requires >= 2 active entries spanning >= 7 calendar days.
-     * - Anchor resolution: finds the most recent entry on or before t - windowDays (within cycle).
-     * - Normalization: normalized by actual elapsed days between anchor and current weigh-in.
-     * - Returns null if sampling guard fails, anchor cannot be resolved, or elapsed days <= 0.
+     * - In-cycle gate: requires >= 1 non-deleted entry in [cycleStartDate, today].
+     * - Primary window math: compares current 7D average over [t - 6d, t] against prior 7D average
+     *   over [t - windowDays - 6d, t - windowDays], normalized over [windowDays].
+     * - Sparse / cold-start fallback: if no entries exist in [t - windowDays - 6d, t - windowDays],
+     *   falls back to [startingWeightKg] at [cycleStartDate] when cycleStartDate <= t - windowDays,
+     *   else to the most recent in-cycle entry on or before t - windowDays. Pre-cycle entries outside
+     *   the prior window are never used as anchors, so stale history cannot drive the rate.
+     * - Minimum span: every anchor is dated on or before t - windowDays, so a non-null result always
+     *   spans >= [windowDays] days; a single in-cycle entry plus [startingWeightKg] is sufficient.
      */
     fun computePaceRate(
         entries: List<WeightEntry>,
         windowDays: Int,
         cycleStartDate: LocalDate,
-        today: LocalDate = LocalDate.now()
+        today: LocalDate = LocalDate.now(),
+        startingWeightKg: Double? = null
     ): PaceRateResult? {
-        val activeEntries = entries
-            .filter { it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(today) }
-            .sortedBy { it.date }
+        if (windowDays <= 0) return null
 
-        if (activeEntries.size < 2) return null
-        val oldest = activeEntries.first()
-        val newest = activeEntries.last()
+        val inCycleEntries = getActiveWeightEntries(entries, cycleStartDate, today)
+        if (inCycleEntries.isEmpty()) return null
+        val newest = inCycleEntries.last()
+        val t = newest.date
 
-        val spanDays = ChronoUnit.DAYS.between(oldest.date, newest.date)
-        if (spanDays < 7) return null
+        val allActiveEntries = getAllHistoricalWeightEntries(entries, t)
+        val hasValidStartBaseline = startingWeightKg != null && startingWeightKg > 0.0
 
-        val cutoffDate = newest.date.minusDays(windowDays.toLong())
-        val anchor = resolveAnchorEntry(activeEntries, cutoffDate, cycleStartDate) ?: return null
+        val currentAvgKg = computeWindowAverageKg(allActiveEntries, t.minusDays(6), t)
+            ?: newest.weightKg
 
-        val elapsedDays = ChronoUnit.DAYS.between(anchor.date, newest.date)
+        val cutoffDate = t.minusDays(windowDays.toLong())
+        val priorWindowStart = cutoffDate.minusDays(6)
+        val priorWindowEntries = allActiveEntries.filter {
+            !it.date.isBefore(priorWindowStart) && !it.date.isAfter(cutoffDate)
+        }
+
+        val anchorWeightKg: Double
+        val anchorDate: LocalDate
+        val elapsedDays: Long
+
+        if (priorWindowEntries.isNotEmpty()) {
+            anchorWeightKg = priorWindowEntries.map { it.weightKg }.average()
+            anchorDate = priorWindowEntries.last().date
+            elapsedDays = windowDays.toLong()
+        } else if (hasValidStartBaseline && !cycleStartDate.isAfter(cutoffDate)) {
+            anchorWeightKg = startingWeightKg!!
+            anchorDate = cycleStartDate
+            elapsedDays = ChronoUnit.DAYS.between(cycleStartDate, t)
+        } else {
+            val fallbackEntry = resolveAnchorEntry(inCycleEntries, cutoffDate, cycleStartDate) ?: return null
+            anchorWeightKg = fallbackEntry.weightKg
+            anchorDate = fallbackEntry.date
+            elapsedDays = ChronoUnit.DAYS.between(fallbackEntry.date, t)
+        }
+
         if (elapsedDays <= 0) return null
 
-        val rate = ((newest.weightKg - anchor.weightKg) / elapsedDays.toDouble()) * 7.0
+        val rate = ((currentAvgKg - anchorWeightKg) / elapsedDays.toDouble()) * 7.0
         val trend = getPaceTrend(rate)
 
         return PaceRateResult(
             rateKgPerWeek = rate,
-            anchorWeightKg = anchor.weightKg,
-            anchorDate = anchor.date,
-            currentWeightKg = newest.weightKg,
-            currentDate = newest.date,
+            anchorWeightKg = anchorWeightKg,
+            anchorDate = anchorDate,
+            currentWeightKg = currentAvgKg,
+            currentDate = t,
             elapsedDays = elapsedDays,
             trend = trend
         )
     }
 
     /**
-     * Computes 7-day rolling pace rate.
+     * Computes 7-day rolling pace rate using 7-day window averages.
      */
     fun compute7DayPace(
         entries: List<WeightEntry>,
         cycleStartDate: LocalDate,
-        today: LocalDate = LocalDate.now()
-    ): PaceRateResult? = computePaceRate(entries, windowDays = 7, cycleStartDate = cycleStartDate, today = today)
+        today: LocalDate = LocalDate.now(),
+        startingWeightKg: Double? = null
+    ): PaceRateResult? = computePaceRate(
+        entries = entries,
+        windowDays = 7,
+        cycleStartDate = cycleStartDate,
+        today = today,
+        startingWeightKg = startingWeightKg
+    )
 
     fun compute7DayPace(
         entries: List<WeightEntry>,
         cycle: Cycle,
         today: LocalDate = LocalDate.now()
-    ): PaceRateResult? = compute7DayPace(entries, cycle.startDate, today)
+    ): PaceRateResult? = compute7DayPace(
+        entries = entries,
+        cycleStartDate = cycle.startDate,
+        today = today,
+        startingWeightKg = cycle.startingWeightKg
+    )
 
     internal fun round1(value: Double): Double =
         BigDecimal.valueOf(value).setScale(1, RoundingMode.HALF_UP).toDouble()
@@ -1459,40 +1516,45 @@ object FatLossAnalytics {
      * - Today 14D: [referenceDate - 13d, referenceDate]
      * - Last Week 14D: [referenceDate - 20d, referenceDate - 7d]
      *
-     * A window is non-null if it has >= 1 in-cycle entry.
-     * Deltas are null if either current or lagged window is null.
+     * Requires at least 1 non-deleted in-cycle entry in [cycleStartDate, referenceDate].
+     * Once at least 1 in-cycle entry exists, historical pre-cycle entries are included in lookback windows.
      */
     fun computeRollingWeightHero(
         entries: List<WeightEntry>,
         cycleStartDate: LocalDate,
         referenceDate: LocalDate = LocalDate.now()
     ): RollingWeightHeroState {
-        val activeEntries = entries.filter {
-            it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(referenceDate)
+        val inCycleEntries = getActiveWeightEntries(entries, cycleStartDate, referenceDate)
+        if (inCycleEntries.isEmpty()) {
+            return RollingWeightHeroState(
+                today7dAvgKg = null,
+                lastWeek7dAvgKg = null,
+                delta7dKg = null,
+                today14dAvgKg = null,
+                delta14dKg = null,
+                loggedDaysCount14d = 0
+            )
         }
 
-        fun windowAverage(start: LocalDate, end: LocalDate): Double? {
-            val inWindow = activeEntries.filter { !it.date.isBefore(start) && !it.date.isAfter(end) }
-            return if (inWindow.isNotEmpty()) inWindow.map { it.weightKg }.average() else null
-        }
+        val allActiveEntries = getAllHistoricalWeightEntries(entries, referenceDate)
 
-        val today7dAvg = windowAverage(referenceDate.minusDays(6), referenceDate)
-        val lastWeek7dAvg = windowAverage(referenceDate.minusDays(13), referenceDate.minusDays(7))
+        val today7dAvg = computeWindowAverageKg(allActiveEntries, referenceDate.minusDays(6), referenceDate)
+        val lastWeek7dAvg = computeWindowAverageKg(allActiveEntries, referenceDate.minusDays(13), referenceDate.minusDays(7))
         val delta7d = if (today7dAvg != null && lastWeek7dAvg != null) {
             today7dAvg - lastWeek7dAvg
         } else {
             null
         }
 
-        val today14dAvg = windowAverage(referenceDate.minusDays(13), referenceDate)
-        val lastWeek14dAvg = windowAverage(referenceDate.minusDays(20), referenceDate.minusDays(7))
+        val today14dAvg = computeWindowAverageKg(allActiveEntries, referenceDate.minusDays(13), referenceDate)
+        val lastWeek14dAvg = computeWindowAverageKg(allActiveEntries, referenceDate.minusDays(20), referenceDate.minusDays(7))
         val delta14d = if (today14dAvg != null && lastWeek14dAvg != null) {
             today14dAvg - lastWeek14dAvg
         } else {
             null
         }
 
-        val loggedDaysCount14d = activeEntries.count {
+        val loggedDaysCount14d = allActiveEntries.count {
             !it.date.isBefore(referenceDate.minusDays(13)) && !it.date.isAfter(referenceDate)
         }
 
@@ -1517,30 +1579,43 @@ object FatLossAnalytics {
     )
 
     /**
-     * Computes 14-day rolling pace rate.
+     * Computes 14-day rolling pace rate using 7-day window averages.
      */
     fun compute14DayPace(
         entries: List<WeightEntry>,
         cycleStartDate: LocalDate,
-        today: LocalDate = LocalDate.now()
-    ): PaceRateResult? = computePaceRate(entries, windowDays = 14, cycleStartDate = cycleStartDate, today = today)
+        today: LocalDate = LocalDate.now(),
+        startingWeightKg: Double? = null
+    ): PaceRateResult? = computePaceRate(
+        entries = entries,
+        windowDays = 14,
+        cycleStartDate = cycleStartDate,
+        today = today,
+        startingWeightKg = startingWeightKg
+    )
 
     fun compute14DayPace(
         entries: List<WeightEntry>,
         cycle: Cycle,
         today: LocalDate = LocalDate.now()
-    ): PaceRateResult? = compute14DayPace(entries, cycle.startDate, today)
+    ): PaceRateResult? = compute14DayPace(
+        entries = entries,
+        cycleStartDate = cycle.startDate,
+        today = today,
+        startingWeightKg = cycle.startingWeightKg
+    )
 
     /**
      * Computes the goal pace forecast evaluating the strict precedence hierarchy:
      * 1. [PaceForecast.GoalReached]: W_current <= W_target
      * 2. [PaceForecast.CycleEnded]: today > cycleEndDate (and W_current > W_target or target is null)
-     * 3. [PaceForecast.NotEnoughData]: < 2 entries or span < 7 days
+     * 3. [PaceForecast.NotEnoughData]: no velocity tier below is resolvable
      * 4. [PaceForecast.Stalled]: Active deficit velocity <= 0.0 (rounded to 0.1)
      * 5. [PaceForecast.Projected]: Positive deficit velocity with projected arrival date (52w cap)
      *
-     * Unset Target Behavior:
-     * When targetWeightKg is null or non-positive, returns null (or CycleEnded if cycle has ended).
+     * Velocity Resolution Hierarchy (first non-null tier wins, regardless of sign):
+     * - Tier 1 (Primary): 14-Day Smoothed Pace deficit velocity
+     * - Tier 2 (Fallback): 7-Day Smoothed Pace deficit velocity
      */
     fun computePaceForecast(
         entries: List<WeightEntry>,
@@ -1550,10 +1625,7 @@ object FatLossAnalytics {
         startingWeightKg: Double? = null,
         today: LocalDate = LocalDate.now()
     ): PaceForecast? {
-        val activeEntries = entries
-            .filter { it.deletedAtMillis == null && !it.date.isBefore(cycleStartDate) && !it.date.isAfter(today) }
-            .sortedBy { it.date }
-
+        val activeEntries = getActiveWeightEntries(entries, cycleStartDate, today)
         val isCycleEnded = cycleEndDate != null && today.isAfter(cycleEndDate)
 
         if (activeEntries.isEmpty()) {
@@ -1562,7 +1634,7 @@ object FatLossAnalytics {
 
         val newest = activeEntries.last()
         val currentWeight = computeCurrent7DayAverageWeight(
-            entries = activeEntries,
+            entries = entries,
             cycleStartDate = cycleStartDate,
             referenceDate = newest.date
         ) ?: newest.weightKg
@@ -1588,57 +1660,30 @@ object FatLossAnalytics {
             return null
         }
 
-        // 3. NotEnoughData
-        if (activeEntries.size < 2) {
-            return PaceForecast.NotEnoughData
-        }
-        val oldest = activeEntries.first()
-        val spanDays = ChronoUnit.DAYS.between(oldest.date, newest.date)
-        if (spanDays < 7) {
-            return PaceForecast.NotEnoughData
-        }
+        // Tier 1: Primary 14-day smoothed pace deficit velocity
+        val v14 = compute14DayPace(
+            entries = entries,
+            cycleStartDate = cycleStartDate,
+            today = newest.date,
+            startingWeightKg = startingWeightKg
+        )?.deficitVelocityKgPerWeek
 
-        // Tier 1: Primary 14-day rolling anchor
-        val anchor14 = resolveAnchorEntry(
-            entries = activeEntries,
-            targetCutoffDate = newest.date.minusDays(14),
-            cycleStartDate = cycleStartDate
-        )
+        // Tier 2: Secondary 7-day smoothed pace deficit velocity
+        val v7 = compute7DayPace(
+            entries = entries,
+            cycleStartDate = cycleStartDate,
+            today = newest.date,
+            startingWeightKg = startingWeightKg
+        )?.deficitVelocityKgPerWeek
 
-        // Tier 2: Secondary 7-day rolling anchor (used during cycle days 7–13)
-        val anchor7 = if (anchor14 == null) {
-            resolveAnchorEntry(
-                entries = activeEntries,
-                targetCutoffDate = newest.date.minusDays(7),
-                cycleStartDate = cycleStartDate
-            )
-        } else null
-
-        // Tier 3: Tertiary cycle-wide anchor (defensive fallback)
-        val (anchor, elapsed) = when {
-            anchor14 != null -> {
-                val d = ChronoUnit.DAYS.between(anchor14.date, newest.date)
-                if (d > 0) anchor14 to d else null to 0L
-            }
-            anchor7 != null -> {
-                val d = ChronoUnit.DAYS.between(anchor7.date, newest.date)
-                if (d > 0) anchor7 to d else null to 0L
-            }
-            else -> {
-                val d = ChronoUnit.DAYS.between(oldest.date, newest.date)
-                if (d > 0) oldest to d else null to 0L
-            }
-        }
-
-        val vActive = if (anchor != null && elapsed > 0) {
-            ((anchor.weightKg - newest.weightKg) / elapsed.toDouble()) * 7.0
-        } else {
-            0.0
-        }
+        // 3. NotEnoughData: neither tier has a resolvable velocity.
+        // Tiers are selected by availability (not sign) so the forecast agrees with the highest-priority pace shown.
+        // No cycle-wide tier is needed: once 7 days have elapsed since the start baseline, compute7DayPace always
+        // resolves an anchor (startingWeightKg at cycle start, or the first in-cycle weigh-in).
+        val vActive = v14 ?: v7 ?: return PaceForecast.NotEnoughData
 
         // 4. Stalled
-        val roundedV = kotlin.math.round((vActive + 1e-5) * 10.0) / 10.0
-        if (roundedV <= 0.0) {
+        if (kotlin.math.round((vActive + 1e-5) * 10.0) / 10.0 <= 0.0) {
             return PaceForecast.Stalled
         }
 
@@ -1872,14 +1917,27 @@ object FatLossAnalytics {
         cycleStartDate: LocalDate,
         windowDays: Int,
         referenceDate: LocalDate = LocalDate.now(),
-        minPercentageDenominatorKgPerWeek: Double = 0.1
+        minPercentageDenominatorKgPerWeek: Double = 0.1,
+        startingWeightKg: Double? = null
     ): PaceComparisonResult? {
         val active = getActiveWeightEntries(entries, cycleStartDate, referenceDate)
         if (active.isEmpty()) return null
         val t = active.last().date
 
-        val currentPace = computePaceRate(active, windowDays, cycleStartDate, t) ?: return null
-        val priorPace = computePaceRate(active, windowDays, cycleStartDate, t.minusDays(7)) ?: return null
+        val currentPace = computePaceRate(
+            entries = entries,
+            windowDays = windowDays,
+            cycleStartDate = cycleStartDate,
+            today = t,
+            startingWeightKg = startingWeightKg
+        ) ?: return null
+        val priorPace = computePaceRate(
+            entries = entries,
+            windowDays = windowDays,
+            cycleStartDate = cycleStartDate,
+            today = t.minusDays(7),
+            startingWeightKg = startingWeightKg
+        ) ?: return null
 
         val currentRate = currentPace.rateKgPerWeek
         val priorRate = priorPace.rateKgPerWeek
@@ -1918,7 +1976,8 @@ object FatLossAnalytics {
         cycleStartDate = cycle.startDate,
         windowDays = windowDays,
         referenceDate = referenceDate,
-        minPercentageDenominatorKgPerWeek = minPercentageDenominatorKgPerWeek
+        minPercentageDenominatorKgPerWeek = minPercentageDenominatorKgPerWeek,
+        startingWeightKg = cycle.startingWeightKg
     )
 
     /**
