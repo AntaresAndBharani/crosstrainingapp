@@ -1268,13 +1268,22 @@ class FatLossAnalyticsTest {
             targetWeightKg = 80.0
         )
         val entries = listOf(
-            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 85.0, updatedAtMillis = 1L, deletedAtMillis = 999L), // soft deleted
+            // soft deleted, inside the 7-day prior window [Oct 2, Oct 8]; would anchor at 90.0 if not excluded
+            WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 90.0, updatedAtMillis = 1L, deletedAtMillis = 999L),
             WeightEntry(date = today, weightKg = 83.0, updatedAtMillis = 2L)
         )
 
-        // Only 1 non-deleted entry exists -> NotEnoughData
-        assertNull(FatLossAnalytics.compute7DayPace(entries, cycle, today))
-        assertEquals(PaceForecast.NotEnoughData, FatLossAnalytics.computePaceForecast(entries, cycle, today))
+        // Deleted entry is ignored: the prior window is empty, so the anchor falls back to startingWeightKg at cycle start
+        val pace7 = FatLossAnalytics.compute7DayPace(entries, cycle, today)
+        assertNotNull(pace7)
+        assertEquals(85.0, pace7!!.anchorWeightKg, 1e-9)
+        assertEquals(cycle.startDate, pace7.anchorDate)
+        assertEquals(-1.0, pace7.rateKgPerWeek, 1e-9)
+
+        // Without a starting weight, the single non-deleted entry yields no pace and NotEnoughData
+        val cycleNoStart = cycle.copy(startingWeightKg = null)
+        assertNull(FatLossAnalytics.compute7DayPace(entries, cycleNoStart, today))
+        assertEquals(PaceForecast.NotEnoughData, FatLossAnalytics.computePaceForecast(entries, cycleNoStart, today))
     }
 
     @Test
@@ -3122,27 +3131,112 @@ class FatLossAnalyticsTest {
         assertEquals(9.25, projTier1.weeks, 1e-3)
         assertEquals("Estimated: 9.3 weeks", projTier1.displayText)
 
-        // Case 2: Tier 1 stalled (14D smoothed pace = 0.0 kg/wk because 2 wks ago was 75.7 kg), Tier 2 active (last week was 76.0 kg -> 7D pace = -0.3 kg/wk)
-        val tier2Entries = (2..8).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.7, updatedAtMillis = d.toLong()) } +
+        // Case 2: Tier 1 available but flat (14D smoothed pace = 0.0 kg/wk because 2 wks ago was 75.7 kg) while the 7D pace shows -0.3 kg/wk.
+        // Tiers are selected by availability, not sign: the forecast must agree with the 14D card and report Stalled.
+        val tier1FlatEntries = (2..8).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.7, updatedAtMillis = d.toLong()) } +
             (9..15).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 76.0, updatedAtMillis = d.toLong()) } +
             (16..22).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.7, updatedAtMillis = d.toLong()) }
 
-        val forecastTier2 = FatLossAnalytics.computePaceForecast(tier2Entries, cycle, t)
-        assertTrue("Forecast must fall back to Tier 2 (7D smoothed pace) when Tier 1 is stalled", forecastTier2 is PaceForecast.Projected)
+        assertTrue(FatLossAnalytics.compute7DayPace(tier1FlatEntries, cycle, t)!!.rateKgPerWeek < 0.0)
+        assertEquals(PaceForecast.Stalled, FatLossAnalytics.computePaceForecast(tier1FlatEntries, cycle, t))
+
+        // Case 3: Tier 1 null (cycle started Oct 12, no history on or before t-14 = Oct 8), Tier 2 active (Oct 12–15 = 76.0 kg -> 7D pace = -0.3 kg/wk)
+        val lateCycle = cycle.copy(startDate = LocalDate.of(2026, 10, 12))
+        val tier2Entries = (12..15).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 76.0, updatedAtMillis = d.toLong()) } +
+            (16..22).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.7, updatedAtMillis = d.toLong()) }
+
+        assertNull(FatLossAnalytics.compute14DayPace(tier2Entries, lateCycle, t))
+        val forecastTier2 = FatLossAnalytics.computePaceForecast(tier2Entries, lateCycle, t)
+        assertTrue("Forecast must fall back to Tier 2 (7D smoothed pace) when Tier 1 is unavailable", forecastTier2 is PaceForecast.Projected)
         val projTier2 = forecastTier2 as PaceForecast.Projected
         // 3.7 kg / 0.3 kg/wk = 12.333 weeks -> "Estimated: 12.3 weeks"
         assertEquals(3.7 / 0.3, projTier2.weeks, 1e-3)
         assertEquals("Estimated: 12.3 weeks", projTier2.displayText)
+    }
 
-        // Case 3: Both Tier 1 and Tier 2 stalled (both 2 wks ago and last week were 75.7 kg), but Tier 3 Overall Cycle Pace is positive (start = 77.8 kg -> current 7D avg = 75.7 kg over 15 cycle days)
-        val tier3Entries = (2..22).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.7, updatedAtMillis = d.toLong()) }
+    @Test
+    fun `rolling weight pace review - gaining 14d pace yields Stalled despite overall cycle loss`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val t = LocalDate.of(2026, 10, 22)
+        val cycle = Cycle(
+            id = 901L,
+            name = "Cut",
+            startDate = cycleStartDate,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 80.0,
+            targetWeightKg = 72.0
+        )
+        // Big early drop to 75.0, then regaining: [t-20, t-14] = 75.0, [t-13, t-7] = 75.3, [t-6, t] = 75.6
+        val entries = (2..8).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.0, updatedAtMillis = d.toLong()) } +
+            (9..15).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.3, updatedAtMillis = d.toLong()) } +
+            (16..22).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.6, updatedAtMillis = d.toLong()) }
 
-        val forecastTier3 = FatLossAnalytics.computePaceForecast(tier3Entries, cycle, t)
-        assertTrue("Forecast must fall back to Tier 3 (Overall Cycle Pace) when Tiers 1 & 2 are stalled", forecastTier3 is PaceForecast.Projected)
-        val projTier3 = forecastTier3 as PaceForecast.Projected
-        // Cycle velocity: (77.8 - 75.7) / 15 * 7 = 0.98 kg/wk -> 3.7 / 0.98 = 3.7755 weeks -> "Estimated: 3.8 weeks"
-        assertEquals(3.7 / ((2.1 / 15.0) * 7.0), projTier3.weeks, 1e-3)
-        assertEquals("Estimated: 3.8 weeks", projTier3.displayText)
+        assertTrue(FatLossAnalytics.compute14DayPace(entries, cycle, t)!!.rateKgPerWeek > 0.0)
+        assertTrue(FatLossAnalytics.compute7DayPace(entries, cycle, t)!!.rateKgPerWeek > 0.0)
+        assertEquals(PaceForecast.Stalled, FatLossAnalytics.computePaceForecast(entries, cycle, t))
+    }
+
+    @Test
+    fun `rolling weight pace review - empty prior window anchors to startingWeightKg not stale pre-cycle entry`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val t = LocalDate.of(2026, 10, 17)
+        val staleEntry = WeightEntry(date = LocalDate.of(2026, 3, 15), weightKg = 85.0, updatedAtMillis = 1L)
+        val inCycle = (11..17).map { d -> WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 88.6, updatedAtMillis = d.toLong()) }
+
+        // 7D prior window [Oct 4, Oct 10] is empty; cycle start (Oct 1) <= cutoff (Oct 10) -> anchor = startingWeightKg
+        val pace7 = FatLossAnalytics.compute7DayPace(listOf(staleEntry) + inCycle, cycleStartDate, t, startingWeightKg = 90.0)
+
+        assertNotNull(pace7)
+        assertEquals(90.0, pace7!!.anchorWeightKg, 1e-9)
+        assertEquals(cycleStartDate, pace7.anchorDate)
+        assertEquals(16L, pace7.elapsedDays)
+        assertEquals((88.6 - 90.0) / 16.0 * 7.0, pace7.rateKgPerWeek, 1e-9)
+    }
+
+    @Test
+    fun `rolling weight pace review - year-old pre-cycle entry does not satisfy span on cycle day 1`() {
+        val t = LocalDate.of(2026, 10, 22)
+        val cycle = Cycle(
+            id = 902L,
+            name = "New Cut",
+            startDate = t,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 80.0,
+            targetWeightKg = 75.0
+        )
+        val entries = listOf(
+            WeightEntry(date = t.minusYears(1), weightKg = 85.0, updatedAtMillis = 1L),
+            WeightEntry(date = t, weightKg = 79.5, updatedAtMillis = 2L)
+        )
+
+        assertNull(FatLossAnalytics.compute7DayPace(entries, cycle, t))
+        assertNull(FatLossAnalytics.compute14DayPace(entries, cycle, t))
+        assertEquals(PaceForecast.NotEnoughData, FatLossAnalytics.computePaceForecast(entries, cycle, t))
+    }
+
+    @Test
+    fun `rolling weight pace review - single in-cycle entry plus startingWeightKg resolves pace and forecast`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val t = LocalDate.of(2026, 10, 15)
+        val cycle = Cycle(
+            id = 903L,
+            name = "Cut",
+            startDate = cycleStartDate,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 85.0,
+            targetWeightKg = 80.0
+        )
+        val entries = listOf(WeightEntry(date = t, weightKg = 83.0, updatedAtMillis = 1L))
+
+        // 14D: cutoff = Oct 1 = cycle start -> anchor startingWeightKg, (83 - 85) / 14 * 7 = -1.0 kg/wk
+        val pace14 = FatLossAnalytics.compute14DayPace(entries, cycle, t)
+        assertNotNull(pace14)
+        assertEquals(-1.0, pace14!!.rateKgPerWeek, 1e-9)
+
+        // Forecast: 3.0 kg remaining / 1.0 kg/wk = 3.0 weeks
+        val forecast = FatLossAnalytics.computePaceForecast(entries, cycle, t)
+        assertTrue(forecast is PaceForecast.Projected)
+        assertEquals(3.0, (forecast as PaceForecast.Projected).weeks, 1e-9)
     }
 }
 

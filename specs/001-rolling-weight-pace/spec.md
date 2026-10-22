@@ -37,8 +37,8 @@ As an athlete working toward a target body weight, I want the "Estimated: X.X we
 **Acceptance Scenarios**:
 
 1. **Given** an athlete has a target weight of `72.0 kg`, a current 7D average weight of `75.7 kg` (`3.7 kg` remaining), and an active 14-Day Smoothed Pace of `-0.4 kg/wk`, **When** the Goal Pace Forecast is evaluated, **Then** the banner displays `Estimated: 9.3 weeks` (`3.7 / 0.4 = 9.25`) with the corresponding projected arrival date.
-2. **Given** an athlete's 14-Day Smoothed Pace is unavailable or stalled (`>= 0.0 kg/wk`) while their 7-Day Smoothed Pace is in an active deficit (`-0.3 kg/wk`), **When** the Goal Pace Forecast is evaluated, **Then** the forecast falls back to the 7-Day Smoothed Pace and projects `12.3 weeks` (`3.7 / 0.3`).
-3. **Given** both the 14-Day and 7-Day Smoothed Paces are unavailable or stalled (`>= 0.0 kg/wk`), but the athlete's current 7D average (`75.7 kg`) is lower than their cycle Starting Weight (`77.8 kg`) over at least 7 elapsed days, **When** the Goal Pace Forecast is evaluated, **Then** the forecast falls back to the overall cycle pace (`(Start Weight - Current 7D Avg) / elapsedWeeks`) to project remaining weeks.
+2. **Given** an athlete's 14-Day Smoothed Pace is unavailable (e.g. the cycle started less than 14 days ago with no earlier history) while their 7-Day Smoothed Pace is in an active deficit (`-0.3 kg/wk`), **When** the Goal Pace Forecast is evaluated, **Then** the forecast falls back to the 7-Day Smoothed Pace and projects `12.3 weeks` (`3.7 / 0.3`).
+3. **Given** an athlete's 14-Day Smoothed Pace is available but stalled or gaining (`>= 0.0 kg/wk`), **When** the Goal Pace Forecast is evaluated, **Then** the forecast reports the stalled state, matching the displayed 14-Day pace card, even if the 7-Day pace or the overall cycle trend shows a loss.
 
 ---
 
@@ -60,7 +60,8 @@ As an athlete viewing the Weight Progression card, I want the top reference trac
 
 - **No Pre-Cycle Entries During Early Cycle Days**: If an athlete starts a new cycle with no prior weight logs before the cycle start date, lookback windows `[t-13, t-7]` or `[t-20, t-14]` that have no logged entries fall back to the cycle's `startingWeightKg` if `cycleStartDate` falls on or before the lookback anchor date; if the cycle started less than 7 days ago and no pre-cycle history exists, pace and forecast report insufficient data (`NotEnoughData`).
 - **Sparse Logging / Missing Days in a 7-Day Window**: If an athlete logs only 1–6 times within a 7-day window `[d-6, d]`, the 7-day window average is the arithmetic mean of the available non-deleted entries in that 7-day interval.
-- **All Pace Tiers Stalled or Gaining**: If the 14-Day Smoothed Pace, 7-Day Smoothed Pace, and Overall Cycle Pace are all non-negative (weight maintenance or gain, deficit velocity `<= 0.0` after rounding to 0.1), the forecast banner displays the stalled state (`Pace stalled — insufficient deficit to project`).
+- **Active Pace Tier Stalled or Gaining**: If the highest-priority available pace (14-Day, else 7-Day Smoothed Pace) is non-negative (weight maintenance or gain, deficit velocity `<= 0.0` after rounding to 0.1), the forecast banner displays the stalled state (`Pace stalled — insufficient deficit to project`); lower tiers are not consulted.
+- **Stale Pre-Cycle History**: Pre-cycle entries are used only when they fall inside a lookback window. An older pre-cycle entry (e.g. from a previous cycle months ago) is never used as a pace anchor and does not count toward the minimum history span.
 - **Goal Reached or Cycle Ended**: Precedence rules remain strictly ordered: `GoalReached` (when Current 7D Average `<=` Goal Weight) takes highest priority, followed by `CycleEnded` (when today is past the cycle end date), `NotEnoughData`, `Stalled`, and `Projected` (capped at 52.0 weeks / `> 1 year`).
 - **Unit Localization (`kg` vs `lbs`)**: All underlying window averages and velocities are computed in canonical kilograms and converted to pounds (`lbs`) for display when imperial units are selected, preserving identical weeks-to-goal and percentage outcomes across unit toggles.
 
@@ -74,10 +75,10 @@ As an athlete viewing the Weight Progression card, I want the top reference trac
 - **FR-004**: System MUST compute the 7-Day Pace rate ($P_{7\text{d}}(t)$) in `kg/wk` as the difference between Today's 7D Average and Last Week's 7D Average: $\overline{W}_{7\text{d}}(t) - \overline{W}_{7\text{d}}(t - 7\text{d})$, requiring at least 7 calendar days of span across available history/cycle start.
 - **FR-005**: System MUST compute the 14-Day Pace rate ($P_{14\text{d}}(t)$) in `kg/wk` as half the difference between Today's 7D Average and the 7D Average from two weeks ago: $(\overline{W}_{7\text{d}}(t) - \overline{W}_{7\text{d}}(t - 14\text{d})) / 2.0$, requiring at least 14 calendar days of span across available history/cycle start.
 - **FR-006**: System MUST compute the 7-Day and 14-Day Pace comparison subtitles by comparing the current smoothed pace at $t$ against the prior week's smoothed pace at $t - 7\text{d}$, applying the `0.05 kg/wk` noise deadband (`"Pace unchanged"`) and loss-to-loss acceleration/deceleration percentage formatting.
-- **FR-007**: System MUST compute the Goal Pace Forecast remaining weight as $\overline{W}_{7\text{d}}(t) - W_{\text{target}}$ and resolve active deficit velocity using a 3-tier priority hierarchy:
-  1. **Tier 1 (Primary)**: 14-Day Smoothed Pace deficit velocity ($-P_{14\text{d}}(t)$) if available and $> 0.0\text{ kg/wk}$ (rounded to 0.1).
-  2. **Tier 2 (Fallback 1)**: 7-Day Smoothed Pace deficit velocity ($-P_{7\text{d}}(t)$) if Tier 1 is unavailable or $\le 0.0\text{ kg/wk}$ and Tier 2 is $> 0.0\text{ kg/wk}$ (rounded to 0.1).
-  3. **Tier 3 (Fallback 2)**: Overall Cycle Pace deficit velocity from cycle start weight to $\overline{W}_{7\text{d}}(t)$ over elapsed cycle days (minimum 7 days) if Tiers 1 and 2 are unavailable or $\le 0.0\text{ kg/wk}$.
+- **FR-007**: System MUST compute the Goal Pace Forecast remaining weight as $\overline{W}_{7\text{d}}(t) - W_{\text{target}}$ and resolve active deficit velocity from the first *available* tier (regardless of sign); if that velocity is $\le 0.0\text{ kg/wk}$ (rounded to 0.1) the forecast is `Stalled`, and if no tier is available it is `NotEnoughData`:
+  1. **Tier 1 (Primary)**: 14-Day Smoothed Pace deficit velocity ($-P_{14\text{d}}(t)$).
+  2. **Tier 2 (Fallback)**: 7-Day Smoothed Pace deficit velocity ($-P_{7\text{d}}(t)$) if Tier 1 is unavailable.
+  A cycle-wide tier is not needed: once 7 days have elapsed since the start baseline, the 7-Day Smoothed Pace always resolves (anchoring to `startingWeightKg` or the first in-cycle weigh-in).
 - **FR-008**: System MUST calculate the Weight Progression card's top reference track completion percentage (`% to goal`) and remaining distance (`-X.X kg left` or `Goal reached`) using the displayed `TODAY` 7D average weight ($\overline{W}_{7\text{d}}(t)$) so that all summary figures on the card are mutually consistent.
 
 ### Key Entities

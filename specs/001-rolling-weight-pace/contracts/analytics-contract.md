@@ -53,10 +53,7 @@ fun compute14DayPace(
 **Contract & Invariants**:
 1. **Anchor Date $t$**: Resolves $t = \text{inCycleEntries.last().date}$ where `inCycleEntries` are non-deleted entries in `[cycleStartDate, today]`. If `inCycleEntries` is empty, returns `null`.
 2. **Historical Pool**: `allActiveEntries` = non-deleted entries with `!date.isAfter(t)` sorted by `date` ascending (includes pre-cycle entries).
-3. **Minimum Span Guard**:
-   - Let `earliestDate` be `minOf(allActiveEntries.first().date, cycleStartDate)` if `startingWeightKg != null && startingWeightKg > 0.0`, else `allActiveEntries.first().date`.
-   - If `allActiveEntries.size < 2 && (startingWeightKg == null || startingWeightKg <= 0.0)` $\rightarrow$ returns `null`.
-   - If `ChronoUnit.DAYS.between(earliestDate, t) < windowDays` $\rightarrow$ returns `null`.
+3. **Minimum Span (implicit)**: There is no separate span or entry-count guard. Every anchor below is dated on or before `t - windowDays`, so a non-null result always spans `>= windowDays`. One in-cycle entry plus a valid `startingWeightKg` is sufficient.
 4. **Current 7D Window Average $\overline{W}_{7\text{d}}(t)$**:
    - Mean of `allActiveEntries` in `[t - 6d, t]`.
 5. **Prior 7D Window Average $\overline{W}_{7\text{d}}(t - \text{windowDays})$**:
@@ -65,19 +62,18 @@ fun compute14DayPace(
    - **Primary Path (`priorWindowEntries.isNotEmpty()`)**:
      - `priorAvgKg = priorWindowEntries.map { it.weightKg }.average()`
      - `rateKgPerWeek = ((currentAvgKg - priorAvgKg) / windowDays.toDouble()) * 7.0`
-     - `anchorDate = priorWindowEntries.firstOrNull { it.date == cutoffDate }?.date ?: priorWindowEntries.last().date`
+     - `anchorDate = priorWindowEntries.last().date`
      - `elapsedDays = windowDays.toLong()`
-   - **Sparse / Cold-Start Fallback Path (`priorWindowEntries.isEmpty()`)**:
-     - Look for `fallbackEntry = allActiveEntries.filter { !it.date.isAfter(cutoffDate) }.maxByOrNull { it.date }`.
-     - If `fallbackEntry != null`:
-       - `elapsedDays = ChronoUnit.DAYS.between(fallbackEntry.date, t)`
-       - `rateKgPerWeek = ((currentAvgKg - fallbackEntry.weightKg) / elapsedDays.toDouble()) * 7.0`
-       - `anchorWeightKg = fallbackEntry.weightKg`, `anchorDate = fallbackEntry.date`
-     - Else if `startingWeightKg != null && startingWeightKg > 0.0 && !cycleStartDate.isAfter(cutoffDate)`:
+   - **Sparse / Cold-Start Fallback Path (`priorWindowEntries.isEmpty()`)** (FR-002):
+     - If `startingWeightKg != null && startingWeightKg > 0.0 && !cycleStartDate.isAfter(cutoffDate)`:
        - `elapsedDays = ChronoUnit.DAYS.between(cycleStartDate, t)`
        - `rateKgPerWeek = ((currentAvgKg - startingWeightKg) / elapsedDays.toDouble()) * 7.0`
        - `anchorWeightKg = startingWeightKg`, `anchorDate = cycleStartDate`
-     - Else returns `null`.
+     - Else if `fallbackEntry = resolveAnchorEntry(inCycleEntries, cutoffDate, cycleStartDate)` (most recent **in-cycle** entry on or before `cutoffDate`) is non-null:
+       - `elapsedDays = ChronoUnit.DAYS.between(fallbackEntry.date, t)`
+       - `rateKgPerWeek = ((currentAvgKg - fallbackEntry.weightKg) / elapsedDays.toDouble()) * 7.0`
+       - `anchorWeightKg = fallbackEntry.weightKg`, `anchorDate = fallbackEntry.date`
+     - Else returns `null`. Pre-cycle entries outside the prior window are never used as anchors.
 
 ---
 
@@ -116,14 +112,12 @@ fun computePaceForecast(
 2. Precedence 1 (`GoalReached`): `targetWeightKg != null && targetWeightKg > 0.0 && currentWeight <= targetWeightKg`.
 3. Precedence 2 (`CycleEnded`): `cycleEndDate != null && today.isAfter(cycleEndDate)`.
 4. Unset/Invalid Target Guard: Returns `null` if `targetWeightKg == null || targetWeightKg <= 0.0 || targetWeightKg >= effectiveStartWeight`.
-5. Precedence 3 (`NotEnoughData`): Requires at least 1 in-cycle entry, at least 2 total weight points (or 1 entry + `startingWeightKg`), and span from `earliestDate` to $t \ge 7$ days.
-6. **Tiered Deficit Velocity Resolution**:
-   - Helper `isPositiveDeficit(v: Double?): Boolean = v != null && (kotlin.math.round((v + 1e-5) * 10.0) / 10.0) > 0.0`
+5. **Tiered Deficit Velocity Resolution** (by availability, not sign):
    - **Tier 1**: `v14 = compute14DayPace(entries, cycleStartDate, t, startingWeightKg)?.deficitVelocityKgPerWeek`
    - **Tier 2**: `v7 = compute7DayPace(entries, cycleStartDate, t, startingWeightKg)?.deficitVelocityKgPerWeek`
-   - **Tier 3**: `vCycle = ((effectiveStartWeight - currentWeight) / elapsedCycleOrHistoryDays.toDouble()) * 7.0`
-   - `vActive = when { isPositiveDeficit(v14) -> v14!!; isPositiveDeficit(v7) -> v7!!; isPositiveDeficit(vCycle) -> vCycle!!; else -> 0.0 }`
-7. Precedence 4 (`Stalled`): If `!isPositiveDeficit(vActive)`, returns `PaceForecast.Stalled`.
+   - `vActive = v14 ?: v7`
+6. Precedence 3 (`NotEnoughData`): `vActive == null`.
+7. Precedence 4 (`Stalled`): If `round1(vActive + 1e-5) <= 0.0`, returns `PaceForecast.Stalled`, so the forecast agrees with the highest-priority pace card shown.
 8. Precedence 5 (`Projected`): `remainingKg = currentWeight - targetWeightKg`, `rawWeeks = remainingKg / vActive`, capped at `52.0` weeks.
 
 ---

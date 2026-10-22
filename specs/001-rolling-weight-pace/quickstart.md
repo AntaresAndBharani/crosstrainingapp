@@ -20,7 +20,7 @@ Execute the targeted unit test suites for `FatLossAnalytics` and `WeightProgress
 - `FatLossAnalyticsTest` passes 100% of test cases, including:
   - Smoothed 7-Day Pace ($\overline{W}_{7\text{d}}(t) - \overline{W}_{7\text{d}}(t-7)$) and 14-Day Pace ($(\overline{W}_{7\text{d}}(t) - \overline{W}_{7\text{d}}(t-14)) / 2.0$).
   - Pre-cycle lookback window inclusion for weeks 1–3 of a cycle.
-  - Tiered forecast velocity fallback (Tier 1: 14D Smoothed Pace $\rightarrow$ Tier 2: 7D Smoothed Pace $\rightarrow$ Tier 3: Overall Cycle Pace $\rightarrow$ Stalled).
+  - Tiered forecast velocity fallback (Tier 1: 14D Smoothed Pace $\rightarrow$ Tier 2: 7D Smoothed Pace when Tier 1 is unavailable; Stalled when the selected tier shows no deficit).
 - `WeightProgressionCardTest` passes 100% of test cases, verifying top reference track (`% to goal` and `-X.X kg left`) reconciliation with `TODAY` 7D average weight.
 
 ## 2. Run Full Pre-PR Verification Suite

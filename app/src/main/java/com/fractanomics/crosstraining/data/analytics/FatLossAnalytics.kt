@@ -1233,13 +1233,14 @@ object FatLossAnalytics {
      *
      * Invariants:
      * - In-cycle gate: requires >= 1 non-deleted entry in [cycleStartDate, today].
-     * - Minimum sampling guard: requires >= 2 active weight points (or 1 entry + startingWeightKg)
-     *   spanning >= [windowDays] calendar days from earliest historical/cycle start date to current anchor date t.
      * - Primary window math: compares current 7D average over [t - 6d, t] against prior 7D average
      *   over [t - windowDays - 6d, t - windowDays], normalized over [windowDays].
      * - Sparse / cold-start fallback: if no entries exist in [t - windowDays - 6d, t - windowDays],
-     *   falls back to the most recent entry on or before t - windowDays, or to [startingWeightKg]
-     *   at [cycleStartDate] when cycleStartDate <= t - windowDays.
+     *   falls back to [startingWeightKg] at [cycleStartDate] when cycleStartDate <= t - windowDays,
+     *   else to the most recent in-cycle entry on or before t - windowDays. Pre-cycle entries outside
+     *   the prior window are never used as anchors, so stale history cannot drive the rate.
+     * - Minimum span: every anchor is dated on or before t - windowDays, so a non-null result always
+     *   spans >= [windowDays] days; a single in-cycle entry plus [startingWeightKg] is sufficient.
      */
     fun computePaceRate(
         entries: List<WeightEntry>,
@@ -1256,16 +1257,7 @@ object FatLossAnalytics {
         val t = newest.date
 
         val allActiveEntries = getAllHistoricalWeightEntries(entries, t)
-        if (allActiveEntries.size < 2) return null
         val hasValidStartBaseline = startingWeightKg != null && startingWeightKg > 0.0
-
-        val earliestDate = if (hasValidStartBaseline && cycleStartDate.isBefore(allActiveEntries.first().date)) {
-            cycleStartDate
-        } else {
-            allActiveEntries.first().date
-        }
-        val spanDays = ChronoUnit.DAYS.between(earliestDate, t)
-        if (spanDays < windowDays) return null
 
         val currentAvgKg = computeWindowAverageKg(allActiveEntries, t.minusDays(6), t)
             ?: newest.weightKg
@@ -1282,24 +1274,17 @@ object FatLossAnalytics {
 
         if (priorWindowEntries.isNotEmpty()) {
             anchorWeightKg = priorWindowEntries.map { it.weightKg }.average()
-            anchorDate = priorWindowEntries.firstOrNull { it.date == cutoffDate }?.date
-                ?: priorWindowEntries.last().date
+            anchorDate = priorWindowEntries.last().date
             elapsedDays = windowDays.toLong()
+        } else if (hasValidStartBaseline && !cycleStartDate.isAfter(cutoffDate)) {
+            anchorWeightKg = startingWeightKg!!
+            anchorDate = cycleStartDate
+            elapsedDays = ChronoUnit.DAYS.between(cycleStartDate, t)
         } else {
-            val fallbackEntry = allActiveEntries
-                .filter { !it.date.isAfter(cutoffDate) }
-                .maxByOrNull { it.date }
-            if (fallbackEntry != null) {
-                anchorWeightKg = fallbackEntry.weightKg
-                anchorDate = fallbackEntry.date
-                elapsedDays = ChronoUnit.DAYS.between(fallbackEntry.date, t)
-            } else if (hasValidStartBaseline && !cycleStartDate.isAfter(cutoffDate)) {
-                anchorWeightKg = startingWeightKg!!
-                anchorDate = cycleStartDate
-                elapsedDays = ChronoUnit.DAYS.between(cycleStartDate, t)
-            } else {
-                return null
-            }
+            val fallbackEntry = resolveAnchorEntry(inCycleEntries, cutoffDate, cycleStartDate) ?: return null
+            anchorWeightKg = fallbackEntry.weightKg
+            anchorDate = fallbackEntry.date
+            elapsedDays = ChronoUnit.DAYS.between(fallbackEntry.date, t)
         }
 
         if (elapsedDays <= 0) return null
@@ -1624,14 +1609,13 @@ object FatLossAnalytics {
      * Computes the goal pace forecast evaluating the strict precedence hierarchy:
      * 1. [PaceForecast.GoalReached]: W_current <= W_target
      * 2. [PaceForecast.CycleEnded]: today > cycleEndDate (and W_current > W_target or target is null)
-     * 3. [PaceForecast.NotEnoughData]: < 2 entries or span < 7 days
+     * 3. [PaceForecast.NotEnoughData]: no velocity tier below is resolvable
      * 4. [PaceForecast.Stalled]: Active deficit velocity <= 0.0 (rounded to 0.1)
      * 5. [PaceForecast.Projected]: Positive deficit velocity with projected arrival date (52w cap)
      *
-     * Velocity Resolution Hierarchy:
+     * Velocity Resolution Hierarchy (first non-null tier wins, regardless of sign):
      * - Tier 1 (Primary): 14-Day Smoothed Pace deficit velocity
-     * - Tier 2 (Fallback 1): 7-Day Smoothed Pace deficit velocity
-     * - Tier 3 (Fallback 2): Overall Cycle Pace deficit velocity from start weight to current 7D avg
+     * - Tier 2 (Fallback): 7-Day Smoothed Pace deficit velocity
      */
     fun computePaceForecast(
         entries: List<WeightEntry>,
@@ -1676,25 +1660,6 @@ object FatLossAnalytics {
             return null
         }
 
-        // 3. NotEnoughData
-        val allActiveEntries = getAllHistoricalWeightEntries(entries, newest.date)
-        if (allActiveEntries.size < 2) {
-            return PaceForecast.NotEnoughData
-        }
-        val hasValidStartBaseline = startingWeightKg != null && startingWeightKg > 0.0
-        val earliestDate = if (hasValidStartBaseline && cycleStartDate.isBefore(allActiveEntries.first().date)) {
-            cycleStartDate
-        } else {
-            allActiveEntries.first().date
-        }
-        val spanDays = ChronoUnit.DAYS.between(earliestDate, newest.date)
-        if (spanDays < 7) {
-            return PaceForecast.NotEnoughData
-        }
-
-        fun isPositiveDeficit(v: Double?): Boolean =
-            v != null && (kotlin.math.round((v + 1e-5) * 10.0) / 10.0) > 0.0
-
         // Tier 1: Primary 14-day smoothed pace deficit velocity
         val v14 = compute14DayPace(
             entries = entries,
@@ -1711,24 +1676,14 @@ object FatLossAnalytics {
             startingWeightKg = startingWeightKg
         )?.deficitVelocityKgPerWeek
 
-        // Tier 3: Tertiary overall cycle pace deficit velocity from start weight to current 7D avg
-        val cycleElapsedDays = ChronoUnit.DAYS.between(cycleStartDate, newest.date)
-            .takeIf { it > 0 } ?: spanDays
-        val vCycle = if (cycleElapsedDays >= 7) {
-            ((effectiveStartWeight - currentWeight) / cycleElapsedDays.toDouble()) * 7.0
-        } else {
-            null
-        }
-
-        val vActive = when {
-            isPositiveDeficit(v14) -> v14!!
-            isPositiveDeficit(v7) -> v7!!
-            isPositiveDeficit(vCycle) -> vCycle!!
-            else -> 0.0
-        }
+        // 3. NotEnoughData: neither tier has a resolvable velocity.
+        // Tiers are selected by availability (not sign) so the forecast agrees with the highest-priority pace shown.
+        // No cycle-wide tier is needed: once 7 days have elapsed since the start baseline, compute7DayPace always
+        // resolves an anchor (startingWeightKg at cycle start, or the first in-cycle weigh-in).
+        val vActive = v14 ?: v7 ?: return PaceForecast.NotEnoughData
 
         // 4. Stalled
-        if (!isPositiveDeficit(vActive)) {
+        if (kotlin.math.round((vActive + 1e-5) * 10.0) / 10.0 <= 0.0) {
             return PaceForecast.Stalled
         }
 

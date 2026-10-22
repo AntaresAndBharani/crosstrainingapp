@@ -39,6 +39,8 @@ Include non-deleted pre-cycle `WeightEntry` records (`deletedAtMillis == null &&
 
 ## 3. Goal Forecast Velocity Tiering Hierarchy
 
+> **Revised after PR #606 review**: The sign-based fallback below was replaced by availability-based selection (`v14 ?: v7`, then `Stalled` if non-positive), and Tier 3 was removed. Falling through on sign let the forecast project an arrival date from the 7D or cycle pace while the displayed 14D pace card showed a gain, contradicting this feature's goal of aligning the forecast with the pace cards. Tier 3 became unreachable once tiers are chosen by availability, because the 7D pace always resolves after 7 days since the start baseline. The original decision is kept below for history.
+
 ### Decision
 Resolve the active deficit velocity $v_{\text{active}}$ in `computePaceForecast` using a 3-tier smoothed fallback hierarchy:
 1. **Tier 1 (Primary)**: 14-Day Smoothed Pace velocity ($v_{14\text{d}} = -P_{14\text{d}}(t)$) if non-null and $\text{round1}(v_{14\text{d}}) > 0.0$.

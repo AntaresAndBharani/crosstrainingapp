@@ -64,6 +64,6 @@ Represents week-over-week comparison of a smoothed pace rate at $t$ against the 
 State machine for goal arrival projection:
 1. `GoalReached` — `currentWeight <= targetWeightKg` (where `currentWeight` is $\overline{W}_{7\text{d}}(t)$).
 2. `CycleEnded` — `today > cycleEndDate` (when goal not yet reached).
-3. `NotEnoughData` — No active in-cycle entries, or total history span from earliest baseline (`min(earliestEntry.date, cycleStartDate)` when `startingWeightKg != null`) to $t$ is `< 7` days.
-4. `Stalled` — All 3 velocity tiers (Tier 1: 14D Smoothed Pace, Tier 2: 7D Smoothed Pace, Tier 3: Overall Cycle Smoothed Pace) are unavailable or $\le 0.0\text{ kg/wk}$ when rounded to 1 decimal place.
+3. `NotEnoughData` — No active in-cycle entries, or neither the 14D nor the 7D Smoothed Pace is resolvable.
+4. `Stalled` — The first available velocity tier (Tier 1: 14D Smoothed Pace, else Tier 2: 7D Smoothed Pace) is $\le 0.0\text{ kg/wk}$ when rounded to 1 decimal place.
 5. `Projected(weeks: Double, targetDate: LocalDate?, rawWeeks: Double)` — Positive active deficit velocity $v_{\text{active}} > 0.0$, where `rawWeeks = (currentWeight - targetWeightKg) / vActive`, capped at `52.0` weeks (`"Estimated: > 1 year"`).
