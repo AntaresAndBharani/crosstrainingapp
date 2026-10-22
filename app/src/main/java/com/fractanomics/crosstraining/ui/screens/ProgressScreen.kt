@@ -24,6 +24,7 @@ import com.fractanomics.crosstraining.data.analytics.PaceComparisonResult
 import com.fractanomics.crosstraining.data.analytics.ProgressiveAverageResult
 import com.fractanomics.crosstraining.data.analytics.RollingWeightHeroState
 import com.fractanomics.crosstraining.data.analytics.PaceTargetsState
+import com.fractanomics.crosstraining.data.analytics.TargetRowState
 import com.fractanomics.crosstraining.data.analytics.SameDayWeightTrioState
 import com.fractanomics.crosstraining.data.analytics.ColumnState
 import com.fractanomics.crosstraining.data.analytics.PaceTargetStatus
@@ -1318,29 +1319,66 @@ internal fun resolvePace14Subtitle(
     return FatLossAnalytics.format14DayPaceSubtitle(comparison, pace14, weightUnit, referenceDate)
 }
 
+internal const val PACE_AND_LINEAR_TARGETS_HEADER = "PACE & LINEAR TARGETS"
+internal const val TARGET_ROW_7D_AVG_HEADER = "7D ROLLING AVERAGE"
+internal const val TARGET_ROW_DAILY_HEADER = "DAILY WEIGH-IN"
+
+private fun formatTargetWeight(value: Double, useTwoDecimals: Boolean): String =
+    if (useTwoDecimals) String.format(Locale.US, "%.2f", value) else value.trimmed()
+
 internal fun resolvePaceTargetsContainerStateText(state: PaceTargetsState): String? = when (state) {
     is PaceTargetsState.Unavailable -> "Pace Targets Unavailable: Needs starting weight or initial weigh-in"
     is PaceTargetsState.Stalled -> "Pace Stalled: Surplus/maintenance pace detected"
+    is PaceTargetsState.GoalReached -> "Goal reached! 🎉"
+    is PaceTargetsState.CycleEnded -> "Cycle ended"
     is PaceTargetsState.Available -> null
 }
 
+internal fun resolveLinearTodayValue(column: ColumnState): String = when (column) {
+    is ColumnState.Value -> "${formatTargetWeight(column.targetWeightDisplay, true)} ${column.unitLabel}"
+    is ColumnState.AlreadyBelowTarget -> "${formatTargetWeight(column.targetWeightDisplay, true)} ${column.unitLabel}"
+    is ColumnState.NeedsLog,
+    is ColumnState.NeedsTodayLog,
+    is ColumnState.InsufficientHistory -> NO_DATA_PLACEHOLDER
+}
+
+internal fun resolveLinearTodaySubtitle(column: ColumnState): String? = when (column) {
+    is ColumnState.Value -> {
+        if (column.deltaDisplay == null || column.status == null) null
+        else {
+            val formattedDelta = formatTargetWeight(kotlin.math.abs(column.deltaDisplay), true)
+            when (column.status) {
+                PaceTargetStatus.ON_PACE -> "On pace"
+                PaceTargetStatus.AHEAD -> "-$formattedDelta ${column.unitLabel} ahead"
+                PaceTargetStatus.OFF_PACE -> "+$formattedDelta ${column.unitLabel} off pace"
+            }
+        }
+    }
+    else -> null
+}
+
 internal fun resolveExpectedTodayValue(column: ColumnState): String = when (column) {
-    is ColumnState.Value -> "${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+    is ColumnState.Value -> "${formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals)} ${column.unitLabel}"
     is ColumnState.AlreadyBelowTarget -> "${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
-    is ColumnState.NeedsLog -> NO_DATA_PLACEHOLDER
+    is ColumnState.NeedsLog,
+    is ColumnState.NeedsTodayLog,
     is ColumnState.InsufficientHistory -> NO_DATA_PLACEHOLDER
 }
 
 internal fun resolveExpectedTodaySubtitle(column: ColumnState): String? = when (column) {
     is ColumnState.InsufficientHistory -> "Needs 7 days history"
     is ColumnState.NeedsLog -> "Needs log from ${column.requiredDate.formatShort()}"
+    is ColumnState.NeedsTodayLog -> "Needs today's log"
     is ColumnState.AlreadyBelowTarget -> null
     is ColumnState.Value -> {
         if (column.deltaDisplay == null || column.status == null) null
-        else when (column.status) {
-            PaceTargetStatus.ON_PACE -> "On pace"
-            PaceTargetStatus.AHEAD -> "-${kotlin.math.abs(column.deltaDisplay).trimmed()} ${column.unitLabel} ahead"
-            PaceTargetStatus.OFF_PACE -> "+${kotlin.math.abs(column.deltaDisplay).trimmed()} ${column.unitLabel} off pace"
+        else {
+            val formattedDelta = formatTargetWeight(kotlin.math.abs(column.deltaDisplay), column.useTwoDecimals)
+            when (column.status) {
+                PaceTargetStatus.ON_PACE -> "On pace"
+                PaceTargetStatus.AHEAD -> "-$formattedDelta ${column.unitLabel} ahead"
+                PaceTargetStatus.OFF_PACE -> "+$formattedDelta ${column.unitLabel} off pace"
+            }
         }
     }
 }
@@ -1351,6 +1389,7 @@ private fun resolveSpokenUnit(unitLabel: String): String =
 internal fun resolveExpectedTodayContentDescription(column: ColumnState): String = when (column) {
     is ColumnState.InsufficientHistory -> "Expected Today: Needs 7 days history"
     is ColumnState.NeedsLog -> "Expected Today: Needs log from ${column.requiredDate.formatShort()}"
+    is ColumnState.NeedsTodayLog -> "Expected Today: Needs today's log"
     is ColumnState.AlreadyBelowTarget -> {
         val base = "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
         if (column.baselineWeightDisplay != null) {
@@ -1362,11 +1401,13 @@ internal fun resolveExpectedTodayContentDescription(column: ColumnState): String
     }
     is ColumnState.Value -> {
         val sub = resolveExpectedTodaySubtitle(column)
-        val base = if (sub != null) "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
-        else "Expected Today: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+        val valStr = formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals)
+        val base = if (sub != null) "Expected Today: $valStr ${column.unitLabel}, $sub"
+        else "Expected Today: $valStr ${column.unitLabel}"
         if (column.baselineWeightDisplay != null) {
             val spokenUnit = resolveSpokenUnit(column.unitLabel)
-            "$base, Last week, same day: ${column.baselineWeightDisplay.trimmed()} $spokenUnit"
+            val baseStr = formatTargetWeight(column.baselineWeightDisplay, column.useTwoDecimals)
+            "$base, Last week, same day: $baseStr $spokenUnit"
         } else {
             base
         }
@@ -1374,26 +1415,30 @@ internal fun resolveExpectedTodayContentDescription(column: ColumnState): String
 }
 
 internal fun resolveTargetTomorrowValue(column: ColumnState): String = when (column) {
-    is ColumnState.Value -> "${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+    is ColumnState.Value -> "${formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals || column.isDailyStep)} ${column.unitLabel}"
     is ColumnState.AlreadyBelowTarget -> "${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
-    is ColumnState.NeedsLog -> NO_DATA_PLACEHOLDER
+    is ColumnState.NeedsLog,
+    is ColumnState.NeedsTodayLog,
     is ColumnState.InsufficientHistory -> NO_DATA_PLACEHOLDER
 }
 
 internal fun resolveTargetTomorrowSubtitle(column: ColumnState): String? = when (column) {
     is ColumnState.InsufficientHistory -> "Needs 7 days history"
     is ColumnState.NeedsLog -> "Needs log from ${column.requiredDate.formatShort()}"
+    is ColumnState.NeedsTodayLog -> "Needs today's log"
     is ColumnState.AlreadyBelowTarget ->
         "Already below target (-${kotlin.math.abs(column.marginDisplay).trimmed()} ${column.unitLabel})"
     is ColumnState.Value -> {
         if (column.deltaDisplay == null) null
-        else "-${kotlin.math.abs(column.deltaDisplay).trimmed()} ${column.unitLabel} overnight"
+        else if (column.isDailyStep) "-${formatTargetWeight(kotlin.math.abs(column.deltaDisplay), true)} ${column.unitLabel}/day"
+        else "-${formatTargetWeight(kotlin.math.abs(column.deltaDisplay), column.useTwoDecimals)} ${column.unitLabel} overnight"
     }
 }
 
 internal fun resolveTargetTomorrowContentDescription(column: ColumnState): String = when (column) {
     is ColumnState.InsufficientHistory -> "Target Tomorrow: Needs 7 days history"
     is ColumnState.NeedsLog -> "Target Tomorrow: Needs log from ${column.requiredDate.formatShort()}"
+    is ColumnState.NeedsTodayLog -> "Target Tomorrow: Needs today's log"
     is ColumnState.AlreadyBelowTarget -> {
         val sub = resolveTargetTomorrowSubtitle(column)
         val base = "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
@@ -1406,21 +1451,37 @@ internal fun resolveTargetTomorrowContentDescription(column: ColumnState): Strin
     }
     is ColumnState.Value -> {
         val sub = resolveTargetTomorrowSubtitle(column)
-        val base = if (sub != null) "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
-        else "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
+        val valStr = formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals || column.isDailyStep)
+        val base = if (sub != null) "Target Tomorrow: $valStr ${column.unitLabel}, $sub"
+        else "Target Tomorrow: $valStr ${column.unitLabel}"
         if (column.baselineWeightDisplay != null) {
             val spokenUnit = resolveSpokenUnit(column.unitLabel)
-            "$base, Last week, same day as tomorrow: ${column.baselineWeightDisplay.trimmed()} $spokenUnit"
+            val baseStr = formatTargetWeight(column.baselineWeightDisplay, column.useTwoDecimals)
+            "$base, Last week, same day as tomorrow: $baseStr $spokenUnit"
         } else {
             base
         }
     }
 }
 
+internal fun resolveTargetCellContentDescription(
+    rowLabel: String,
+    columnLabel: String,
+    valueText: String,
+    subtitleText: String?
+): String = if (subtitleText != null) {
+    "$rowLabel $columnLabel: $valueText, $subtitleText"
+} else {
+    "$rowLabel $columnLabel: $valueText"
+}
+
 internal fun resolveColumnBaselineText(column: ColumnState): String? = when (column) {
-    is ColumnState.Value -> column.baselineWeightDisplay?.let { "Last week: ${it.trimmed()} ${column.unitLabel}" }
+    is ColumnState.Value -> column.baselineWeightDisplay?.let {
+        "Last week: ${formatTargetWeight(it, column.useTwoDecimals)} ${column.unitLabel}"
+    }
     is ColumnState.AlreadyBelowTarget -> column.baselineWeightDisplay?.let { "Last week: ${it.trimmed()} ${column.unitLabel}" }
-    is ColumnState.NeedsLog -> null
+    is ColumnState.NeedsLog,
+    is ColumnState.NeedsTodayLog,
     is ColumnState.InsufficientHistory -> null
 }
 
@@ -1435,22 +1496,10 @@ fun TheoreticalPaceTargetsBox(
         color = MaterialTheme.colorScheme.surfaceContainerHighest
     ) {
         when (paceTargets) {
-            is PaceTargetsState.Unavailable -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = resolvePaceTargetsContainerStateText(paceTargets) ?: "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-            is PaceTargetsState.Stalled -> {
+            is PaceTargetsState.Unavailable,
+            is PaceTargetsState.Stalled,
+            is PaceTargetsState.GoalReached,
+            is PaceTargetsState.CycleEnded -> {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1467,120 +1516,192 @@ fun TheoreticalPaceTargetsBox(
             }
             is PaceTargetsState.Available -> {
                 val fontScale = LocalDensity.current.fontScale
-                val targetTextStyle = if (fontScale >= 1.25f) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
+                val targetTextStyle = if (fontScale >= 1.25f) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleSmall
+                val subtitleTextStyle = if (fontScale >= 1.25f) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall
 
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = "7-DAY PACE TARGETS",
+                        text = PACE_AND_LINEAR_TARGETS_HEADER,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 1.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(IntrinsicSize.Min),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Left Column: Expected Today
-                        val todayDesc = resolveExpectedTodayContentDescription(paceTargets.today)
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .semantics(mergeDescendants = true) {
-                                    contentDescription = todayDesc
-                                },
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = "Expected Today",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = resolveExpectedTodayValue(paceTargets.today),
-                                style = targetTextStyle,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            val todaySub = resolveExpectedTodaySubtitle(paceTargets.today)
-                            val todaySubColor = when ((paceTargets.today as? ColumnState.Value)?.status) {
-                                PaceTargetStatus.AHEAD -> MaterialTheme.colorScheme.primary
-                                PaceTargetStatus.OFF_PACE -> MaterialTheme.colorScheme.tertiary
-                                PaceTargetStatus.ON_PACE -> MaterialTheme.colorScheme.onSurfaceVariant
-                                null -> MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                            if (todaySub != null) {
-                                Text(
-                                    text = todaySub,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = todaySubColor,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
+                    TargetRowSection(
+                        rowTitle = TARGET_ROW_7D_AVG_HEADER,
+                        rowState = paceTargets.sevenDayAvgRow,
+                        targetTextStyle = targetTextStyle,
+                        subtitleTextStyle = subtitleTextStyle
+                    )
 
-                        // 1dp vertical divider
-                        Box(
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .width(1.dp)
-                                .background(MaterialTheme.colorScheme.outlineVariant)
-                        )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
 
-                        // Right Column: Target Tomorrow
-                        val tomorrowDesc = resolveTargetTomorrowContentDescription(paceTargets.tomorrow)
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .semantics(mergeDescendants = true) {
-                                    contentDescription = tomorrowDesc
-                                },
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = "Target Tomorrow",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = resolveTargetTomorrowValue(paceTargets.tomorrow),
-                                style = targetTextStyle,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            val tomorrowSub = resolveTargetTomorrowSubtitle(paceTargets.tomorrow)
-                            val tomorrowSubColor = if (paceTargets.tomorrow is ColumnState.AlreadyBelowTarget) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                            if (tomorrowSub != null) {
-                                Text(
-                                    text = tomorrowSub,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = tomorrowSubColor,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
+                    TargetRowSection(
+                        rowTitle = TARGET_ROW_DAILY_HEADER,
+                        rowState = paceTargets.dailyWeightRow,
+                        targetTextStyle = targetTextStyle,
+                        subtitleTextStyle = subtitleTextStyle
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun TargetRowSection(
+    rowTitle: String,
+    rowState: TargetRowState,
+    targetTextStyle: TextStyle,
+    subtitleTextStyle: TextStyle
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = rowTitle,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            // 1. Column: Linear Today
+            val linearValue = resolveLinearTodayValue(rowState.linearToday)
+            val linearSub = resolveLinearTodaySubtitle(rowState.linearToday)
+            val linearDesc = resolveTargetCellContentDescription(rowTitle, "Linear Today", linearValue, linearSub)
+            val linearSubColor = when ((rowState.linearToday as? ColumnState.Value)?.status) {
+                PaceTargetStatus.AHEAD -> MaterialTheme.colorScheme.primary
+                PaceTargetStatus.OFF_PACE -> MaterialTheme.colorScheme.tertiary
+                PaceTargetStatus.ON_PACE, null -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            TargetCellColumn(
+                label = "Linear Today",
+                valueText = linearValue,
+                subtitleText = linearSub,
+                subtitleColor = linearSubColor,
+                contentDesc = linearDesc,
+                targetTextStyle = targetTextStyle,
+                subtitleTextStyle = subtitleTextStyle
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(1.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant)
+            )
+
+            // 2. Column: Expected Today
+            val expectedValue = resolveExpectedTodayValue(rowState.expectedToday)
+            val expectedSub = resolveExpectedTodaySubtitle(rowState.expectedToday)
+            val expectedDesc = resolveTargetCellContentDescription(rowTitle, "Expected Today", expectedValue, expectedSub)
+            val expectedSubColor = when ((rowState.expectedToday as? ColumnState.Value)?.status) {
+                PaceTargetStatus.AHEAD -> MaterialTheme.colorScheme.primary
+                PaceTargetStatus.OFF_PACE -> MaterialTheme.colorScheme.tertiary
+                PaceTargetStatus.ON_PACE, null -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            TargetCellColumn(
+                label = "Expected Today",
+                valueText = expectedValue,
+                subtitleText = expectedSub,
+                subtitleColor = expectedSubColor,
+                contentDesc = expectedDesc,
+                targetTextStyle = targetTextStyle,
+                subtitleTextStyle = subtitleTextStyle
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(1.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant)
+            )
+
+            // 3. Column: Target Tomorrow
+            val tomorrowValue = resolveTargetTomorrowValue(rowState.targetTomorrow)
+            val tomorrowSub = resolveTargetTomorrowSubtitle(rowState.targetTomorrow)
+            val tomorrowDesc = resolveTargetCellContentDescription(rowTitle, "Target Tomorrow", tomorrowValue, tomorrowSub)
+            val tomorrowSubColor = if (rowState.targetTomorrow is ColumnState.AlreadyBelowTarget) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            TargetCellColumn(
+                label = "Target Tomorrow",
+                valueText = tomorrowValue,
+                subtitleText = tomorrowSub,
+                subtitleColor = tomorrowSubColor,
+                contentDesc = tomorrowDesc,
+                targetTextStyle = targetTextStyle,
+                subtitleTextStyle = subtitleTextStyle
+            )
+        }
+    }
+}
+
+@Composable
+private fun RowScope.TargetCellColumn(
+    label: String,
+    valueText: String,
+    subtitleText: String?,
+    subtitleColor: Color,
+    contentDesc: String,
+    targetTextStyle: TextStyle,
+    subtitleTextStyle: TextStyle
+) {
+    Column(
+        modifier = Modifier
+            .weight(1f)
+            .semantics(mergeDescendants = true) {
+                contentDescription = contentDesc
+            },
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = valueText,
+            style = targetTextStyle,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (subtitleText != null) {
+            Text(
+                text = subtitleText,
+                style = subtitleTextStyle,
+                color = subtitleColor,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

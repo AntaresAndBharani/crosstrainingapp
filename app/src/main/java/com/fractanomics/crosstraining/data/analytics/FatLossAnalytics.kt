@@ -291,19 +291,50 @@ data class RequiredPaceResult(
 }
 
 /**
- * Sealed hierarchy representing the state of the 7-day pace targets container.
+ * Sealed hierarchy representing the state of the pace & linear targets container.
  */
 sealed interface PaceTargetsState {
     data object Unavailable : PaceTargetsState
     data object Stalled : PaceTargetsState
+    data object GoalReached : PaceTargetsState
+    data object CycleEnded : PaceTargetsState
     data class Available(
-        val today: ColumnState,
-        val tomorrow: ColumnState
-    ) : PaceTargetsState
+        val today: ColumnState = ColumnState.InsufficientHistory,
+        val tomorrow: ColumnState = ColumnState.InsufficientHistory,
+        val sevenDayAvgRow: TargetRowState = TargetRowState(
+            linearToday = ColumnState.InsufficientHistory,
+            expectedToday = today,
+            targetTomorrow = tomorrow
+        ),
+        val dailyWeightRow: TargetRowState = TargetRowState(
+            linearToday = ColumnState.InsufficientHistory,
+            expectedToday = today,
+            targetTomorrow = tomorrow
+        )
+    ) : PaceTargetsState {
+        constructor(
+            sevenDayAvgRow: TargetRowState,
+            dailyWeightRow: TargetRowState
+        ) : this(
+            today = dailyWeightRow.expectedToday,
+            tomorrow = dailyWeightRow.targetTomorrow,
+            sevenDayAvgRow = sevenDayAvgRow,
+            dailyWeightRow = dailyWeightRow
+        )
+    }
 }
 
 /**
- * Sealed hierarchy representing the state of an individual pace target column.
+ * 3-column target row state for either the 7D Rolling Average row or the Daily Weigh-In row.
+ */
+data class TargetRowState(
+    val linearToday: ColumnState,
+    val expectedToday: ColumnState,
+    val targetTomorrow: ColumnState
+)
+
+/**
+ * Sealed hierarchy representing the state of an individual pace or linear target column.
  */
 sealed interface ColumnState {
     data class Value(
@@ -311,7 +342,9 @@ sealed interface ColumnState {
         val deltaDisplay: Double?,
         val status: PaceTargetStatus? = null,
         val unitLabel: String,
-        val baselineWeightDisplay: Double? = null
+        val baselineWeightDisplay: Double? = null,
+        val isDailyStep: Boolean = false,
+        val useTwoDecimals: Boolean = false
     ) : ColumnState
 
     data class AlreadyBelowTarget(
@@ -324,6 +357,8 @@ sealed interface ColumnState {
     data class NeedsLog(
         val requiredDate: LocalDate
     ) : ColumnState
+
+    data object NeedsTodayLog : ColumnState
 
     data object InsufficientHistory : ColumnState
 }
@@ -1379,6 +1414,9 @@ object FatLossAnalytics {
     internal fun round1(value: Double): Double =
         BigDecimal.valueOf(value).setScale(1, RoundingMode.HALF_UP).toDouble()
 
+    internal fun round2(value: Double): Double =
+        BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP).toDouble()
+
     /** Converts [weightKg] (or a kg/wk rate) into [weightUnit] ("kg" or "lbs"), unrounded. */
     internal fun toUnit(weightKg: Double, weightUnit: String): Double =
         if (weightUnit.equals("lbs", ignoreCase = true)) WeightAnalytics.kgToLbs(weightKg) else weightKg
@@ -1386,38 +1424,259 @@ object FatLossAnalytics {
     /** [weightKg] converted into [weightUnit] and rounded to the displayed 1-decimal precision. */
     internal fun round1InUnit(weightKg: Double, weightUnit: String): Double = round1(toUnit(weightKg, weightUnit))
 
+    /** [weightKg] converted into [weightUnit] and rounded to the displayed 2-decimal precision. */
+    internal fun round2InUnit(weightKg: Double, weightUnit: String): Double = round2(toUnit(weightKg, weightUnit))
+
     internal fun diff1(a: Double, b: Double): Double =
         BigDecimal.valueOf(a).setScale(1, RoundingMode.HALF_UP)
             .subtract(BigDecimal.valueOf(b).setScale(1, RoundingMode.HALF_UP))
             .toDouble()
 
+    internal fun diff2(a: Double, b: Double): Double =
+        BigDecimal.valueOf(a).setScale(2, RoundingMode.HALF_UP)
+            .subtract(BigDecimal.valueOf(b).setScale(2, RoundingMode.HALF_UP))
+            .toDouble()
+
     /**
-     * Computes the 7-day theoretical pace targets for Expected Today and Target Tomorrow.
+     * Computes the Required-Pace & Linear Cycle Weight Targets for both the 7D Rolling Average row
+     * and the Daily Weigh-In row (with a 5-argument fallback for legacy monotonic tests when neither
+     * [targetWeightKg] nor [cycleEndDate] is provided).
      *
-     * Invariants & Rules:
-     * - Container Level Precedence: [PaceTargetsState.Stalled] > [PaceTargetsState.Unavailable] > [PaceTargetsState.Available].
-     *   - Stalled when 7-day pace P_7d(t) >= 0.0 (surplus or maintenance pace).
-     *   - Unavailable when P_7d(t) == null (< 7 elapsed days of weigh-in history).
-     *   - Available when P_7d(t) < 0.0.
-     * - Column Level Precedence: InsufficientHistory > NeedsLog > AlreadyBelowTarget > Value.
-     * - Expected Today:
-     *   - Benchmark: W_theo, today = W_(t-7d) + P_7d(t-1d).
-     *   - Anchoring: exact-day calendar matching for W_(t-7d); resolveAnchorEntry tolerance for P_7d(t-1d).
-     *   - Delta: round1(W_actual, display) - round1(W_target, display).
-     *   - Status: delta == 0.0 -> ON_PACE, delta < 0.0 -> AHEAD, delta > 0.0 -> OFF_PACE.
-     *   - If today is unlogged, delta and status are null.
-     * - Target Tomorrow:
-     *   - Benchmark: W_theo, tomorrow = W_(t-6d) + P_7d(t).
-     *   - Fallback when t-6d is unlogged: W_actual, today + (P_7d(t) / 7.0).
-     *   - If t-6d is unlogged and today is unlogged, transitions to NeedsLog(t - 6d).
-     *   - Sign convention: delta = round1(target) - round1(actual).
-     *   - If actual > target: Value with negative overnight drop.
-     *   - If actual == target: Value with delta = null (overnight label hidden).
-     *   - If actual < target: AlreadyBelowTarget with positive margin.
-     *   - If today is unlogged, delta is null.
-     * - Units: All underlying physics calculated in kg; localized to lbs if requested.
+     * When [targetWeightKg] and [cycleEndDate] are evaluated (via [Cycle] or explicit parameters):
+     * - Container Precedence: [PaceTargetsState.Unavailable] -> [PaceTargetsState.GoalReached] ->
+     *   [PaceTargetsState.CycleEnded] -> [PaceTargetsState.Available].
+     * - Required Pace is driven by the exact unrounded daily/weekly rate from current 7D Rolling Average
+     *   to [targetWeightKg] by [cycleEndDate], so gain weeks never stall the container.
+     * - All target weights, deltas, and daily steps inside the container use 2-decimal precision (`round2`, `diff2`).
      */
     fun compute7DayPaceTargets(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        referenceDate: LocalDate = LocalDate.now(),
+        weightUnit: String = "kg",
+        startingWeightKg: Double? = null,
+        targetWeightKg: Double? = null,
+        cycleEndDate: LocalDate? = null,
+        requireCycleTargetAndEnd: Boolean = false
+    ): PaceTargetsState {
+        if (targetWeightKg == null && cycleEndDate == null && !requireCycleTargetAndEnd) {
+            return computeLegacyMonotonic7DayPaceTargets(
+                entries = entries,
+                cycleStartDate = cycleStartDate,
+                referenceDate = referenceDate,
+                weightUnit = weightUnit,
+                startingWeightKg = startingWeightKg
+            )
+        }
+
+        val activeEntries = getActiveWeightEntries(entries, cycleStartDate, referenceDate)
+        if (activeEntries.isEmpty() || referenceDate.isBefore(cycleStartDate)) {
+            return PaceTargetsState.Unavailable
+        }
+
+        val startKg = startingWeightKg ?: activeEntries.firstOrNull()?.weightKg ?: return PaceTargetsState.Unavailable
+        if (targetWeightKg == null || targetWeightKg <= 0.0 || cycleEndDate == null) {
+            return PaceTargetsState.Unavailable
+        }
+        if (targetWeightKg >= startKg) {
+            return PaceTargetsState.Unavailable
+        }
+
+        val totalCycleDays = ChronoUnit.DAYS.between(cycleStartDate, cycleEndDate)
+        if (totalCycleDays <= 0L) {
+            return PaceTargetsState.Unavailable
+        }
+
+        val hero = computeRollingWeightHero(entries, cycleStartDate, referenceDate)
+        val today7dAvgKg = hero.today7dAvgKg ?: activeEntries.last().weightKg
+        val lastWeek7dAvgKg = hero.lastWeek7dAvgKg
+
+        // 2. GoalReached (1-decimal display reconciliation matching Top Track & ForecastBanner)
+        if (round1InUnit(today7dAvgKg, weightUnit) <= round1InUnit(targetWeightKg, weightUnit)) {
+            return PaceTargetsState.GoalReached
+        }
+
+        // 3. CycleEnded
+        val daysRemaining = ChronoUnit.DAYS.between(referenceDate, cycleEndDate)
+        if (daysRemaining <= 0L) {
+            return PaceTargetsState.CycleEnded
+        }
+
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val unitLabel = if (isImperial) "lbs" else "kg"
+
+        val startInUnit = toUnit(startKg, weightUnit)
+        val targetInUnit = toUnit(targetWeightKg, weightUnit)
+        val current7dInUnit = toUnit(today7dAvgKg, weightUnit)
+        val current7dDisplay = round2(current7dInUnit)
+
+        // Exact unrounded required pace from current 7D average to targetWeight by cycleEndDate
+        val remainingInUnit = current7dInUnit - targetInUnit
+        val dailyRequiredRateInUnit = -remainingInUnit / daysRemaining.toDouble()
+        val weeklyRequiredRateInUnit = dailyRequiredRateInUnit * 7.0
+        val dailyStepDisplay = -kotlin.math.abs(round2(dailyRequiredRateInUnit))
+
+        // Linear Today interpolation across [cycleStartDate, cycleEndDate]
+        val elapsedDays = ChronoUnit.DAYS.between(cycleStartDate, referenceDate).coerceIn(0L, totalCycleDays)
+        val wLinearInUnit = startInUnit + (targetInUnit - startInUnit) * (elapsedDays.toDouble() / totalCycleDays.toDouble())
+        val wLinearDisplay = round2(wLinearInUnit)
+
+        // =====================================================================
+        // Row 1: 7D Rolling Average Row (Linear Today | Expected Today | Target Tomorrow)
+        // =====================================================================
+        val delta7dLinear = diff2(current7dDisplay, wLinearDisplay)
+        val status7dLinear = when {
+            delta7dLinear == 0.0 -> PaceTargetStatus.ON_PACE
+            delta7dLinear < 0.0 -> PaceTargetStatus.AHEAD
+            else -> PaceTargetStatus.OFF_PACE
+        }
+        val sevenDayLinearToday = ColumnState.Value(
+            targetWeightDisplay = wLinearDisplay,
+            deltaDisplay = delta7dLinear,
+            status = status7dLinear,
+            unitLabel = unitLabel,
+            useTwoDecimals = true
+        )
+
+        val sevenDayExpectedToday: ColumnState = when {
+            referenceDate.minusDays(7).isBefore(cycleStartDate) && lastWeek7dAvgKg == null ->
+                ColumnState.InsufficientHistory
+            lastWeek7dAvgKg == null ->
+                ColumnState.NeedsLog(requiredDate = referenceDate.minusDays(7))
+            else -> {
+                val lastWeek7dInUnit = toUnit(lastWeek7dAvgKg, weightUnit)
+                val expected7dTodayDisplay = round2(lastWeek7dInUnit + weeklyRequiredRateInUnit)
+                val baseline7dDisplay = round2(lastWeek7dInUnit)
+                val delta7dExpected = diff2(current7dDisplay, expected7dTodayDisplay)
+                val status7dExpected = when {
+                    delta7dExpected == 0.0 -> PaceTargetStatus.ON_PACE
+                    delta7dExpected < 0.0 -> PaceTargetStatus.AHEAD
+                    else -> PaceTargetStatus.OFF_PACE
+                }
+                ColumnState.Value(
+                    targetWeightDisplay = expected7dTodayDisplay,
+                    deltaDisplay = delta7dExpected,
+                    status = status7dExpected,
+                    unitLabel = unitLabel,
+                    baselineWeightDisplay = baseline7dDisplay,
+                    useTwoDecimals = true
+                )
+            }
+        }
+
+        val target7dTomorrowDisplay = round2(current7dInUnit + dailyRequiredRateInUnit)
+        val sevenDayTargetTomorrow = ColumnState.Value(
+            targetWeightDisplay = target7dTomorrowDisplay,
+            deltaDisplay = dailyStepDisplay,
+            status = null,
+            unitLabel = unitLabel,
+            baselineWeightDisplay = current7dDisplay,
+            isDailyStep = true,
+            useTwoDecimals = true
+        )
+
+        val sevenDayAvgRow = TargetRowState(
+            linearToday = sevenDayLinearToday,
+            expectedToday = sevenDayExpectedToday,
+            targetTomorrow = sevenDayTargetTomorrow
+        )
+
+        // =====================================================================
+        // Row 2: Daily Weigh-In Row (Linear Today | Expected Today | Target Tomorrow)
+        // =====================================================================
+        val entryToday = activeEntries.firstOrNull { it.date == referenceDate }
+        val entryTMinus7 = activeEntries.firstOrNull { it.date == referenceDate.minusDays(7) }
+
+        val dailyLinearToday: ColumnState = if (entryToday == null) {
+            ColumnState.Value(
+                targetWeightDisplay = wLinearDisplay,
+                deltaDisplay = null,
+                status = null,
+                unitLabel = unitLabel,
+                useTwoDecimals = true
+            )
+        } else {
+            val todayDailyDisplay = round2(toUnit(entryToday.weightKg, weightUnit))
+            val deltaDailyLinear = diff2(todayDailyDisplay, wLinearDisplay)
+            val statusDailyLinear = when {
+                deltaDailyLinear == 0.0 -> PaceTargetStatus.ON_PACE
+                deltaDailyLinear < 0.0 -> PaceTargetStatus.AHEAD
+                else -> PaceTargetStatus.OFF_PACE
+            }
+            ColumnState.Value(
+                targetWeightDisplay = wLinearDisplay,
+                deltaDisplay = deltaDailyLinear,
+                status = statusDailyLinear,
+                unitLabel = unitLabel,
+                useTwoDecimals = true
+            )
+        }
+
+        val dailyExpectedToday: ColumnState = when {
+            referenceDate.minusDays(7).isBefore(cycleStartDate) -> ColumnState.InsufficientHistory
+            entryTMinus7 == null -> ColumnState.NeedsLog(requiredDate = referenceDate.minusDays(7))
+            else -> {
+                val lastWeekDailyInUnit = toUnit(entryTMinus7.weightKg, weightUnit)
+                val expectedDailyTodayDisplay = round2(lastWeekDailyInUnit + weeklyRequiredRateInUnit)
+                val baselineDailyDisplay = round2(lastWeekDailyInUnit)
+                if (entryToday == null) {
+                    ColumnState.Value(
+                        targetWeightDisplay = expectedDailyTodayDisplay,
+                        deltaDisplay = null,
+                        status = null,
+                        unitLabel = unitLabel,
+                        baselineWeightDisplay = baselineDailyDisplay,
+                        useTwoDecimals = true
+                    )
+                } else {
+                    val todayDailyDisplay = round2(toUnit(entryToday.weightKg, weightUnit))
+                    val deltaDailyExpected = diff2(todayDailyDisplay, expectedDailyTodayDisplay)
+                    val statusDailyExpected = when {
+                        deltaDailyExpected == 0.0 -> PaceTargetStatus.ON_PACE
+                        deltaDailyExpected < 0.0 -> PaceTargetStatus.AHEAD
+                        else -> PaceTargetStatus.OFF_PACE
+                    }
+                    ColumnState.Value(
+                        targetWeightDisplay = expectedDailyTodayDisplay,
+                        deltaDisplay = deltaDailyExpected,
+                        status = statusDailyExpected,
+                        unitLabel = unitLabel,
+                        baselineWeightDisplay = baselineDailyDisplay,
+                        useTwoDecimals = true
+                    )
+                }
+            }
+        }
+
+        val dailyTargetTomorrow: ColumnState = if (entryToday == null) {
+            ColumnState.NeedsTodayLog
+        } else {
+            val todayDailyInUnit = toUnit(entryToday.weightKg, weightUnit)
+            val targetDailyTomorrowDisplay = round2(todayDailyInUnit + dailyRequiredRateInUnit)
+            ColumnState.Value(
+                targetWeightDisplay = targetDailyTomorrowDisplay,
+                deltaDisplay = dailyStepDisplay,
+                status = null,
+                unitLabel = unitLabel,
+                baselineWeightDisplay = round2(todayDailyInUnit),
+                isDailyStep = true,
+                useTwoDecimals = true
+            )
+        }
+
+        val dailyWeightRow = TargetRowState(
+            linearToday = dailyLinearToday,
+            expectedToday = dailyExpectedToday,
+            targetTomorrow = dailyTargetTomorrow
+        )
+
+        return PaceTargetsState.Available(
+            sevenDayAvgRow = sevenDayAvgRow,
+            dailyWeightRow = dailyWeightRow
+        )
+    }
+
+    private fun computeLegacyMonotonic7DayPaceTargets(
         entries: List<WeightEntry>,
         cycleStartDate: LocalDate,
         referenceDate: LocalDate = LocalDate.now(),
@@ -1557,7 +1816,10 @@ object FatLossAnalytics {
         cycleStartDate = cycle.startDate,
         referenceDate = referenceDate,
         weightUnit = weightUnit,
-        startingWeightKg = cycle.startingWeightKg
+        startingWeightKg = cycle.startingWeightKg,
+        targetWeightKg = cycle.targetWeightKg ?: cycle.targetBodyWeightKg,
+        cycleEndDate = cycle.endDate,
+        requireCycleTargetAndEnd = true
     )
 
     /**
