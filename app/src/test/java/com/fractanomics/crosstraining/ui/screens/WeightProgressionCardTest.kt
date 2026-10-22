@@ -1087,4 +1087,134 @@ class WeightProgressionCardTest {
         )
         assertNull(resolveForecastPaceSubtitle(projectedUnknown, pace14 = null, pace7 = null, weightUnit = "kg"))
     }
+
+    @Test
+    fun requiredPaceSubtitle_displaysInProjectedStalledAndNotEnoughDataStates() {
+        val referenceDate = LocalDate.of(2026, 10, 22)
+        val cycleEndDate = LocalDate.of(2026, 11, 30) // 39 days -> 5.5714 weeks
+        // 75.66 kg rounds to 75.7 kg; goal 72.0 kg -> remaining 3.7 kg -> -0.7 kg/wk
+        val expectedKg = "Required pace: -0.7 kg/wk (by 30 Nov 2026)"
+
+        val projected = PaceForecast.Projected(
+            weeks = 18.5,
+            targetDate = LocalDate.of(2027, 2, 28),
+            rawWeeks = 18.5,
+            paceWindowDays = 14,
+            paceRateKgPerWeek = -0.2
+        )
+        assertEquals(
+            expectedKg,
+            resolveRequiredPaceSubtitle(
+                forecast = projected,
+                today7dAvgKg = 75.66,
+                goalWeightKg = 72.0,
+                startWeightKg = 77.8,
+                cycleEndDate = cycleEndDate,
+                referenceDate = referenceDate,
+                weightUnit = "kg"
+            )
+        )
+        assertEquals(
+            expectedKg,
+            resolveRequiredPaceSubtitle(
+                forecast = PaceForecast.Stalled,
+                today7dAvgKg = 75.66,
+                goalWeightKg = 72.0,
+                startWeightKg = 77.8,
+                cycleEndDate = cycleEndDate,
+                referenceDate = referenceDate,
+                weightUnit = "kg"
+            )
+        )
+        assertEquals(
+            expectedKg,
+            resolveRequiredPaceSubtitle(
+                forecast = PaceForecast.NotEnoughData,
+                today7dAvgKg = 75.66,
+                goalWeightKg = 72.0,
+                startWeightKg = 77.8,
+                cycleEndDate = cycleEndDate,
+                referenceDate = referenceDate,
+                weightUnit = "kg"
+            )
+        )
+
+        // Imperial lbs: 166.8 - 158.7 = 8.1 lbs over 39/7 weeks = 1.4538 -> -1.5 lbs/wk
+        assertEquals(
+            "Required pace: -1.5 lbs/wk (by 30 Nov 2026)",
+            resolveRequiredPaceSubtitle(
+                forecast = projected,
+                today7dAvgKg = 75.66,
+                goalWeightKg = 72.0,
+                startWeightKg = 77.8,
+                cycleEndDate = cycleEndDate,
+                referenceDate = referenceDate,
+                weightUnit = "lbs"
+            )
+        )
+    }
+
+    @Test
+    fun requiredPaceSubtitle_suppressedWhenGoalReachedCycleEndedOpenEndedOrDeadlinePassed() {
+        val referenceDate = LocalDate.of(2026, 10, 22)
+        val futureEnd = LocalDate.of(2026, 11, 30)
+
+        // Suppressed in GoalReached and CycleEnded forecast states
+        assertNull(
+            resolveRequiredPaceSubtitle(
+                forecast = PaceForecast.GoalReached,
+                today7dAvgKg = 72.0,
+                goalWeightKg = 72.0,
+                startWeightKg = 77.8,
+                cycleEndDate = futureEnd,
+                referenceDate = referenceDate
+            )
+        )
+        assertNull(
+            resolveRequiredPaceSubtitle(
+                forecast = PaceForecast.CycleEnded,
+                today7dAvgKg = 75.7,
+                goalWeightKg = 72.0,
+                startWeightKg = 77.8,
+                cycleEndDate = referenceDate.minusDays(1),
+                referenceDate = referenceDate
+            )
+        )
+
+        // Suppressed for open-ended cycle (cycleEndDate == null)
+        assertNull(
+            resolveRequiredPaceSubtitle(
+                forecast = PaceForecast.Stalled,
+                today7dAvgKg = 75.7,
+                goalWeightKg = 72.0,
+                startWeightKg = 77.8,
+                cycleEndDate = null,
+                referenceDate = referenceDate
+            )
+        )
+
+        // Suppressed on the end date itself (daysRemaining == 0)
+        assertNull(
+            resolveRequiredPaceSubtitle(
+                forecast = PaceForecast.Stalled,
+                today7dAvgKg = 75.7,
+                goalWeightKg = 72.0,
+                startWeightKg = 77.8,
+                cycleEndDate = referenceDate,
+                referenceDate = referenceDate
+            )
+        )
+
+        // Suppressed when today7dAvgKg is null
+        assertNull(
+            resolveRequiredPaceSubtitle(
+                forecast = PaceForecast.NotEnoughData,
+                today7dAvgKg = null,
+                goalWeightKg = 72.0,
+                startWeightKg = 77.8,
+                cycleEndDate = futureEnd,
+                referenceDate = referenceDate
+            )
+        )
+    }
 }

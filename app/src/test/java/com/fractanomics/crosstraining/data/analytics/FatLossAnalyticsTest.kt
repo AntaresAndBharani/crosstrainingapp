@@ -3419,4 +3419,192 @@ class FatLossAnalyticsTest {
         assertEquals(-0.5, projected.paceRateKgPerWeek!!, 1e-9)
         assertEquals(10.0, projected.weeks, 1e-6)
     }
+
+    // =========================================================================
+    // Feature 003-cycle-end-required-pace Tests (US1 & US2)
+    // =========================================================================
+
+    @Test
+    fun `requiredPace US1 - standard kg calculation reconciles with 1-decimal remaining weight and exact calendar weeks`() {
+        val today = LocalDate.of(2026, 10, 22)
+        val endDate = LocalDate.of(2026, 11, 30) // 39 days remaining -> 39 / 7.0 = 5.5714286 weeks
+        // 75.66 kg rounds to 75.7 kg; goal 72.0 kg -> remaining = 3.7 kg
+        // 3.7 / (39.0 / 7.0) = 0.6641025... -> rounds to 0.7 -> -0.7 kg/wk
+        val result = FatLossAnalytics.computeRequiredPaceToEndDate(
+            today7dAvgKg = 75.66,
+            targetWeightKg = 72.0,
+            cycleEndDate = endDate,
+            today = today,
+            weightUnit = "kg",
+            startWeightKg = 77.8
+        )
+        assertNotNull(result)
+        assertEquals(-0.7, result!!.requiredRateInUnit, 1e-6)
+        assertEquals(3.7, result.remainingWeightInUnit, 1e-6)
+        assertEquals(39L, result.daysRemaining)
+        assertEquals(39.0 / 7.0, result.weeksRemaining, 1e-6)
+        assertEquals("Required pace: -0.7 kg/wk (by 30 Nov 2026)", result.formatSubtitle())
+    }
+
+    @Test
+    fun `requiredPace US1 - imperial lbs calculation reconciles with 1-decimal lbs remaining weight`() {
+        val today = LocalDate.of(2026, 10, 22)
+        val endDate = LocalDate.of(2026, 11, 19) // 28 days remaining = 4.0 weeks
+        // 75.66 kg -> 166.8 lbs; 72.0 kg -> 158.7 lbs; remaining = 8.1 lbs
+        // 8.1 / 4.0 = 2.025 -> rounds to 2.0 -> -2.0 lbs/wk
+        val result = FatLossAnalytics.computeRequiredPaceToEndDate(
+            today7dAvgKg = 75.66,
+            targetWeightKg = 72.0,
+            cycleEndDate = endDate,
+            today = today,
+            weightUnit = "lbs",
+            startWeightKg = 77.8
+        )
+        assertNotNull(result)
+        assertEquals(8.1, result!!.remainingWeightInUnit, 1e-6)
+        assertEquals(-2.0, result.requiredRateInUnit, 1e-6)
+        assertEquals("Required pace: -2.0 lbs/wk (by 19 Nov 2026)", result.formatSubtitle())
+    }
+
+    @Test
+    fun `requiredPace US1 - clamps small positive required rate to -0_1 so positive remaining distance never rounds to zero`() {
+        val today = LocalDate.of(2026, 10, 22)
+        val endDate = today.plusDays(140) // 20 weeks remaining
+        // 72.2 kg - 72.0 kg = 0.2 kg over 20 weeks = 0.01 kg/wk -> clamps to -0.1 kg/wk
+        val result = FatLossAnalytics.computeRequiredPaceToEndDate(
+            today7dAvgKg = 72.2,
+            targetWeightKg = 72.0,
+            cycleEndDate = endDate,
+            today = today,
+            weightUnit = "kg"
+        )
+        assertNotNull(result)
+        assertEquals(-0.1, result!!.requiredRateInUnit, 1e-6)
+        assertEquals("-0.1 kg/wk", result.formatRate())
+    }
+
+    @Test
+    fun `requiredPace US1 - short horizon 1 day remaining scales to steep weekly pace`() {
+        val today = LocalDate.of(2026, 10, 22)
+        val endDate = today.plusDays(1) // 1 day = 1/7 week
+        // 73.0 kg - 72.0 kg = 1.0 kg over 1/7 week = 7.0 kg/wk -> -7.0 kg/wk
+        val result = FatLossAnalytics.computeRequiredPaceToEndDate(
+            today7dAvgKg = 73.0,
+            targetWeightKg = 72.0,
+            cycleEndDate = endDate,
+            today = today,
+            weightUnit = "kg"
+        )
+        assertNotNull(result)
+        assertEquals(1L, result!!.daysRemaining)
+        assertEquals(-7.0, result.requiredRateInUnit, 1e-6)
+        assertEquals("Required pace: -7.0 kg/wk (by 23 Oct 2026)", result.formatSubtitle())
+    }
+
+    @Test
+    fun `requiredPace US2 - returns null for open-ended cycle, missing goal, non-deficit goal, goal reached, or expired end date`() {
+        val today = LocalDate.of(2026, 10, 22)
+        val futureEnd = LocalDate.of(2026, 11, 30)
+
+        // Open-ended cycle (null endDate)
+        assertNull(
+            FatLossAnalytics.computeRequiredPaceToEndDate(
+                today7dAvgKg = 75.7,
+                targetWeightKg = 72.0,
+                cycleEndDate = null,
+                today = today
+            )
+        )
+
+        // Missing or non-positive goal
+        assertNull(
+            FatLossAnalytics.computeRequiredPaceToEndDate(
+                today7dAvgKg = 75.7,
+                targetWeightKg = null,
+                cycleEndDate = futureEnd,
+                today = today
+            )
+        )
+        assertNull(
+            FatLossAnalytics.computeRequiredPaceToEndDate(
+                today7dAvgKg = 75.7,
+                targetWeightKg = 0.0,
+                cycleEndDate = futureEnd,
+                today = today
+            )
+        )
+
+        // Non-deficit goal (targetWeightKg >= startWeightKg)
+        assertNull(
+            FatLossAnalytics.computeRequiredPaceToEndDate(
+                today7dAvgKg = 75.7,
+                targetWeightKg = 78.0,
+                cycleEndDate = futureEnd,
+                today = today,
+                startWeightKg = 77.8
+            )
+        )
+
+        // Goal reached at 1-decimal display precision (72.04 rounds to 72.0 <= 72.0)
+        assertNull(
+            FatLossAnalytics.computeRequiredPaceToEndDate(
+                today7dAvgKg = 72.04,
+                targetWeightKg = 72.0,
+                cycleEndDate = futureEnd,
+                today = today
+            )
+        )
+
+        // Same-day end date (daysRemaining == 0) and past end date (daysRemaining < 0)
+        assertNull(
+            FatLossAnalytics.computeRequiredPaceToEndDate(
+                today7dAvgKg = 75.7,
+                targetWeightKg = 72.0,
+                cycleEndDate = today,
+                today = today
+            )
+        )
+        assertNull(
+            FatLossAnalytics.computeRequiredPaceToEndDate(
+                today7dAvgKg = 75.7,
+                targetWeightKg = 72.0,
+                cycleEndDate = today.minusDays(1),
+                today = today
+            )
+        )
+    }
+
+    @Test
+    fun `requiredPace US1 & US2 - cycle overload resolves 7D average and stale weigh-in fallback and rejects non-recomp cycles`() {
+        val cycleStart = LocalDate.of(2026, 10, 1)
+        val today = LocalDate.of(2026, 10, 22)
+        val endDate = LocalDate.of(2026, 11, 19) // 28 days = 4.0 weeks
+
+        val recompCycle = Cycle(
+            id = 910L,
+            name = "Recomp Cut",
+            startDate = cycleStart,
+            endDate = endDate,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 78.0,
+            targetWeightKg = 72.0
+        )
+
+        // Single stale weigh-in 10 days ago (outside [today-6, today] window) -> falls back to latest active entry (76.0 kg)
+        // Remaining = 76.0 - 72.0 = 4.0 kg over 4.0 weeks -> -1.0 kg/wk
+        val staleEntries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 5), weightKg = 76.0, updatedAtMillis = 1L)
+        )
+        val staleResult = FatLossAnalytics.computeRequiredPaceToEndDate(staleEntries, recompCycle, today, "kg")
+        assertNotNull(staleResult)
+        assertEquals(-1.0, staleResult!!.requiredRateInUnit, 1e-6)
+        assertEquals("Required pace: -1.0 kg/wk (by 19 Nov 2026)", staleResult.formatSubtitle())
+
+        // Empty active entries -> null
+        assertNull(FatLossAnalytics.computeRequiredPaceToEndDate(emptyList(), recompCycle, today, "kg"))
+
+        // Non-recomposition cycle -> null
+        val strengthCycle = recompCycle.copy(type = CycleType.STRENGTH_WEIGHTLIFTING)
+        assertNull(FatLossAnalytics.computeRequiredPaceToEndDate(staleEntries, strengthCycle, today, "kg"))
+    }
 }
