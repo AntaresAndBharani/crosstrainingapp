@@ -520,7 +520,7 @@ class WeightProgressionCardTest {
     @Test
     fun issue596_paceTargetsContainerStateTextResolution() {
         val unavailText = resolvePaceTargetsContainerStateText(PaceTargetsState.Unavailable)
-        assertEquals("Pace Targets Unavailable: Needs starting weight or initial weigh-in", unavailText)
+        assertEquals("Pace & Linear Targets Unavailable: Set cycle goal weight and end date", unavailText)
 
         val stalledText = resolvePaceTargetsContainerStateText(PaceTargetsState.Stalled)
         assertEquals("Pace Stalled: Surplus/maintenance pace detected", stalledText)

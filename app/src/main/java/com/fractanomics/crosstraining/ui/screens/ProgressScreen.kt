@@ -1327,7 +1327,7 @@ private fun formatTargetWeight(value: Double, useTwoDecimals: Boolean): String =
     if (useTwoDecimals) String.format(Locale.US, "%.2f", value) else value.trimmed()
 
 internal fun resolvePaceTargetsContainerStateText(state: PaceTargetsState): String? = when (state) {
-    is PaceTargetsState.Unavailable -> "Pace Targets Unavailable: Needs starting weight or initial weigh-in"
+    is PaceTargetsState.Unavailable -> "Pace & Linear Targets Unavailable: Set cycle goal weight and end date"
     is PaceTargetsState.Stalled -> "Pace Stalled: Surplus/maintenance pace detected"
     is PaceTargetsState.GoalReached -> "Goal reached! 🎉"
     is PaceTargetsState.CycleEnded -> "Cycle ended"
@@ -1342,20 +1342,8 @@ internal fun resolveLinearTodayValue(column: ColumnState): String = when (column
     is ColumnState.InsufficientHistory -> NO_DATA_PLACEHOLDER
 }
 
-internal fun resolveLinearTodaySubtitle(column: ColumnState): String? = when (column) {
-    is ColumnState.Value -> {
-        if (column.deltaDisplay == null || column.status == null) null
-        else {
-            val formattedDelta = formatTargetWeight(kotlin.math.abs(column.deltaDisplay), true)
-            when (column.status) {
-                PaceTargetStatus.ON_PACE -> "On pace"
-                PaceTargetStatus.AHEAD -> "-$formattedDelta ${column.unitLabel} ahead"
-                PaceTargetStatus.OFF_PACE -> "+$formattedDelta ${column.unitLabel} off pace"
-            }
-        }
-    }
-    else -> null
-}
+internal fun resolveLinearTodaySubtitle(column: ColumnState): String? =
+    (column as? ColumnState.Value)?.let { resolveExpectedTodaySubtitle(it.copy(useTwoDecimals = true)) }
 
 internal fun resolveExpectedTodayValue(column: ColumnState): String = when (column) {
     is ColumnState.Value -> "${formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals)} ${column.unitLabel}"
@@ -1415,7 +1403,7 @@ internal fun resolveExpectedTodayContentDescription(column: ColumnState): String
 }
 
 internal fun resolveTargetTomorrowValue(column: ColumnState): String = when (column) {
-    is ColumnState.Value -> "${formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals || column.isDailyStep)} ${column.unitLabel}"
+    is ColumnState.Value -> "${formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals)} ${column.unitLabel}"
     is ColumnState.AlreadyBelowTarget -> "${column.targetWeightDisplay.trimmed()} ${column.unitLabel}"
     is ColumnState.NeedsLog,
     is ColumnState.NeedsTodayLog,
@@ -1451,7 +1439,7 @@ internal fun resolveTargetTomorrowContentDescription(column: ColumnState): Strin
     }
     is ColumnState.Value -> {
         val sub = resolveTargetTomorrowSubtitle(column)
-        val valStr = formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals || column.isDailyStep)
+        val valStr = formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals)
         val base = if (sub != null) "Target Tomorrow: $valStr ${column.unitLabel}, $sub"
         else "Target Tomorrow: $valStr ${column.unitLabel}"
         if (column.baselineWeightDisplay != null) {
@@ -1589,16 +1577,11 @@ private fun TargetRowSection(
             val linearValue = resolveLinearTodayValue(rowState.linearToday)
             val linearSub = resolveLinearTodaySubtitle(rowState.linearToday)
             val linearDesc = resolveTargetCellContentDescription(rowTitle, "Linear Today", linearValue, linearSub)
-            val linearSubColor = when ((rowState.linearToday as? ColumnState.Value)?.status) {
-                PaceTargetStatus.AHEAD -> MaterialTheme.colorScheme.primary
-                PaceTargetStatus.OFF_PACE -> MaterialTheme.colorScheme.tertiary
-                PaceTargetStatus.ON_PACE, null -> MaterialTheme.colorScheme.onSurfaceVariant
-            }
             TargetCellColumn(
                 label = "Linear Today",
                 valueText = linearValue,
                 subtitleText = linearSub,
-                subtitleColor = linearSubColor,
+                subtitleColor = paceStatusSubtitleColor(rowState.linearToday),
                 contentDesc = linearDesc,
                 targetTextStyle = targetTextStyle,
                 subtitleTextStyle = subtitleTextStyle
@@ -1615,16 +1598,11 @@ private fun TargetRowSection(
             val expectedValue = resolveExpectedTodayValue(rowState.expectedToday)
             val expectedSub = resolveExpectedTodaySubtitle(rowState.expectedToday)
             val expectedDesc = resolveTargetCellContentDescription(rowTitle, "Expected Today", expectedValue, expectedSub)
-            val expectedSubColor = when ((rowState.expectedToday as? ColumnState.Value)?.status) {
-                PaceTargetStatus.AHEAD -> MaterialTheme.colorScheme.primary
-                PaceTargetStatus.OFF_PACE -> MaterialTheme.colorScheme.tertiary
-                PaceTargetStatus.ON_PACE, null -> MaterialTheme.colorScheme.onSurfaceVariant
-            }
             TargetCellColumn(
                 label = "Expected Today",
                 valueText = expectedValue,
                 subtitleText = expectedSub,
-                subtitleColor = expectedSubColor,
+                subtitleColor = paceStatusSubtitleColor(rowState.expectedToday),
                 contentDesc = expectedDesc,
                 targetTextStyle = targetTextStyle,
                 subtitleTextStyle = subtitleTextStyle
@@ -1657,6 +1635,13 @@ private fun TargetRowSection(
             )
         }
     }
+}
+
+@Composable
+private fun paceStatusSubtitleColor(column: ColumnState): Color = when ((column as? ColumnState.Value)?.status) {
+    PaceTargetStatus.AHEAD -> MaterialTheme.colorScheme.primary
+    PaceTargetStatus.OFF_PACE -> MaterialTheme.colorScheme.tertiary
+    PaceTargetStatus.ON_PACE, null -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 @Composable

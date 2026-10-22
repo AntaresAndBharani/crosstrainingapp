@@ -1437,6 +1437,13 @@ object FatLossAnalytics {
             .subtract(BigDecimal.valueOf(b).setScale(2, RoundingMode.HALF_UP))
             .toDouble()
 
+    /** Maps a displayed actual-minus-target delta onto its pace status (0 = on pace, negative = ahead). */
+    private fun paceStatusFor(delta: Double): PaceTargetStatus = when {
+        delta == 0.0 -> PaceTargetStatus.ON_PACE
+        delta < 0.0 -> PaceTargetStatus.AHEAD
+        else -> PaceTargetStatus.OFF_PACE
+    }
+
     /**
      * Computes the Required-Pace & Linear Cycle Weight Targets for both the 7D Rolling Average row
      * and the Daily Weigh-In row (with a 5-argument fallback for legacy monotonic tests when neither
@@ -1525,15 +1532,10 @@ object FatLossAnalytics {
         // Row 1: 7D Rolling Average Row (Linear Today | Expected Today | Target Tomorrow)
         // =====================================================================
         val delta7dLinear = diff2(current7dDisplay, wLinearDisplay)
-        val status7dLinear = when {
-            delta7dLinear == 0.0 -> PaceTargetStatus.ON_PACE
-            delta7dLinear < 0.0 -> PaceTargetStatus.AHEAD
-            else -> PaceTargetStatus.OFF_PACE
-        }
         val sevenDayLinearToday = ColumnState.Value(
             targetWeightDisplay = wLinearDisplay,
             deltaDisplay = delta7dLinear,
-            status = status7dLinear,
+            status = paceStatusFor(delta7dLinear),
             unitLabel = unitLabel,
             useTwoDecimals = true
         )
@@ -1548,15 +1550,10 @@ object FatLossAnalytics {
                 val expected7dTodayDisplay = round2(lastWeek7dInUnit + weeklyRequiredRateInUnit)
                 val baseline7dDisplay = round2(lastWeek7dInUnit)
                 val delta7dExpected = diff2(current7dDisplay, expected7dTodayDisplay)
-                val status7dExpected = when {
-                    delta7dExpected == 0.0 -> PaceTargetStatus.ON_PACE
-                    delta7dExpected < 0.0 -> PaceTargetStatus.AHEAD
-                    else -> PaceTargetStatus.OFF_PACE
-                }
                 ColumnState.Value(
                     targetWeightDisplay = expected7dTodayDisplay,
                     deltaDisplay = delta7dExpected,
-                    status = status7dExpected,
+                    status = paceStatusFor(delta7dExpected),
                     unitLabel = unitLabel,
                     baselineWeightDisplay = baseline7dDisplay,
                     useTwoDecimals = true
@@ -1598,15 +1595,10 @@ object FatLossAnalytics {
         } else {
             val todayDailyDisplay = round2(toUnit(entryToday.weightKg, weightUnit))
             val deltaDailyLinear = diff2(todayDailyDisplay, wLinearDisplay)
-            val statusDailyLinear = when {
-                deltaDailyLinear == 0.0 -> PaceTargetStatus.ON_PACE
-                deltaDailyLinear < 0.0 -> PaceTargetStatus.AHEAD
-                else -> PaceTargetStatus.OFF_PACE
-            }
             ColumnState.Value(
                 targetWeightDisplay = wLinearDisplay,
                 deltaDisplay = deltaDailyLinear,
-                status = statusDailyLinear,
+                status = paceStatusFor(deltaDailyLinear),
                 unitLabel = unitLabel,
                 useTwoDecimals = true
             )
@@ -1631,15 +1623,10 @@ object FatLossAnalytics {
                 } else {
                     val todayDailyDisplay = round2(toUnit(entryToday.weightKg, weightUnit))
                     val deltaDailyExpected = diff2(todayDailyDisplay, expectedDailyTodayDisplay)
-                    val statusDailyExpected = when {
-                        deltaDailyExpected == 0.0 -> PaceTargetStatus.ON_PACE
-                        deltaDailyExpected < 0.0 -> PaceTargetStatus.AHEAD
-                        else -> PaceTargetStatus.OFF_PACE
-                    }
                     ColumnState.Value(
                         targetWeightDisplay = expectedDailyTodayDisplay,
                         deltaDisplay = deltaDailyExpected,
-                        status = statusDailyExpected,
+                        status = paceStatusFor(deltaDailyExpected),
                         unitLabel = unitLabel,
                         baselineWeightDisplay = baselineDailyDisplay,
                         useTwoDecimals = true
@@ -1729,15 +1716,10 @@ object FatLossAnalytics {
                 } else {
                     val deltaKg = diff1(round1(entryToday.weightKg), round1(wTheoTodayKg))
                     val deltaDisp = if (isImperial) round1(WeightAnalytics.kgToLbs(deltaKg)) else deltaKg
-                    val status = when {
-                        deltaDisp == 0.0 -> PaceTargetStatus.ON_PACE
-                        deltaDisp < 0.0 -> PaceTargetStatus.AHEAD
-                        else -> PaceTargetStatus.OFF_PACE
-                    }
                     ColumnState.Value(
                         targetWeightDisplay = targetDisplay,
                         deltaDisplay = deltaDisp,
-                        status = status,
+                        status = paceStatusFor(deltaDisp),
                         unitLabel = unitLabel,
                         baselineWeightDisplay = baselineTodayDisplay
                     )
