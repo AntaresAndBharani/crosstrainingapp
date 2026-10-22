@@ -3337,4 +3337,86 @@ class FatLossAnalyticsTest {
         assertEquals(7, projected.paceWindowDays)
         assertEquals(-0.3, projected.paceRateKgPerWeek!!, 0.05)
     }
+
+    @Test
+    fun `weightCardClarity review - GoalReached uses displayed precision before Stalled and CycleEnded`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val t = LocalDate.of(2026, 10, 22)
+        // Flat 72.04 kg -> 7D average displays as 72.0 kg, equal to the 72.0 kg goal; pace is stalled (0.0 kg/wk)
+        val entries = (2..22).map { d ->
+            WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 72.04, updatedAtMillis = d.toLong())
+        }
+
+        val active = FatLossAnalytics.computePaceForecast(
+            entries = entries,
+            cycleStartDate = cycleStartDate,
+            targetWeightKg = 72.0,
+            startingWeightKg = 77.8,
+            today = t
+        )
+        assertEquals(PaceForecast.GoalReached, active)
+
+        val ended = FatLossAnalytics.computePaceForecast(
+            entries = entries,
+            cycleStartDate = cycleStartDate,
+            cycleEndDate = LocalDate.of(2026, 10, 20),
+            targetWeightKg = 72.0,
+            startingWeightKg = 77.8,
+            today = t
+        )
+        assertEquals(PaceForecast.GoalReached, ended)
+    }
+
+    @Test
+    fun `weightCardClarity review - forecast remaining weight uses today's displayed 7D average when the last weigh-in is stale`() {
+        val cycleStartDate = LocalDate.of(2026, 10, 1)
+        val t = LocalDate.of(2026, 10, 22)
+        val cycle = Cycle(
+            id = 906L,
+            name = "Stale Weigh-In Cut",
+            startDate = cycleStartDate,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 77.8,
+            targetWeightKg = 72.0
+        )
+        // Last weigh-in is Oct 19 (3 days before today): the 7D window ending today [16..22] averages 76.0 kg,
+        // while the window ending Oct 19 [13..19] averages 76.214 kg (displayed 76.2 kg)
+        val entries = (2..8).map { d ->
+            WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 77.0, updatedAtMillis = d.toLong())
+        } + (9..15).map { d ->
+            WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 76.5, updatedAtMillis = d.toLong())
+        } + (16..19).map { d ->
+            WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 76.0, updatedAtMillis = d.toLong())
+        }
+
+        val hero = FatLossAnalytics.computeRollingWeightHero(entries, cycle, t)
+        assertEquals(76.0, hero.today7dAvgKg!!, 1e-9)
+        val displayedPace14 = FatLossAnalytics.compute14DayPace(entries, cycle, t)
+        assertNotNull(displayedPace14)
+        assertEquals("-0.4 kg/wk", displayedPace14!!.formatDisplay())
+
+        val forecast = FatLossAnalytics.computePaceForecast(entries, cycle, t)
+        assertTrue(forecast is PaceForecast.Projected)
+        val projected = forecast as PaceForecast.Projected
+        assertEquals(14, projected.paceWindowDays)
+        assertEquals(displayedPace14.rateKgPerWeek, projected.paceRateKgPerWeek!!, 1e-9)
+        // Displayed 7D AVG (76.0 kg) - goal (72.0 kg) = 4.0 kg at displayed pace 0.4 kg/wk -> 10.0 weeks
+        // (the stale Oct 19 window would give 76.2 - 72.0 = 4.2 kg -> 10.5 weeks)
+        assertEquals(10.0, projected.weeks, 1e-6)
+    }
+
+    @Test
+    fun `weightCardClarity review - direct velocity forecast without window metadata leaves window unknown`() {
+        val forecast = FatLossAnalytics.computePaceForecast(
+            currentWeightKg = 80.0,
+            targetWeightKg = 75.0,
+            velocityKgPerWeek = 0.5,
+            today = LocalDate.of(2026, 10, 22)
+        )
+        assertTrue(forecast is PaceForecast.Projected)
+        val projected = forecast as PaceForecast.Projected
+        assertNull(projected.paceWindowDays)
+        assertEquals(-0.5, projected.paceRateKgPerWeek!!, 1e-9)
+        assertEquals(10.0, projected.weeks, 1e-6)
+    }
 }

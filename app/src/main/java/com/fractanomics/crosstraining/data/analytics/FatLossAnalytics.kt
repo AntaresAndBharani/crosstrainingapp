@@ -232,12 +232,14 @@ sealed class PaceForecast {
      * @property weeks Estimated weeks to reach goal, capped at 52.0.
      * @property targetDate Projected calendar date of goal arrival, or null if capped (> 52w).
      * @property rawWeeks Uncapped calculated weeks.
+     * @property paceWindowDays Window (14 or 7) of the pace tier that drove the projection, or null when unknown.
+     * @property paceRateKgPerWeek Signed weekly rate of that pace tier in kg/wk, or null when unknown.
      */
     data class Projected(
         val weeks: Double,
         val targetDate: LocalDate? = null,
         val rawWeeks: Double = weeks,
-        val paceWindowDays: Int = 14,
+        val paceWindowDays: Int? = null,
         val paceRateKgPerWeek: Double? = null
     ) : PaceForecast() {
         val isCapped: Boolean
@@ -1634,15 +1636,17 @@ object FatLossAnalytics {
             return if (isCycleEnded) PaceForecast.CycleEnded else PaceForecast.NotEnoughData
         }
 
+        // Current weight is the 7D average over [today-6, today], the same window the card's 7D AVG pillar shows,
+        // so the remaining distance reconciles even when today has no weigh-in.
         val newest = activeEntries.last()
         val currentWeight = computeCurrent7DayAverageWeight(
             entries = entries,
             cycleStartDate = cycleStartDate,
-            referenceDate = newest.date
+            referenceDate = today
         ) ?: newest.weightKg
 
-        // 1. GoalReached
-        if (targetWeightKg != null && targetWeightKg > 0.0 && currentWeight <= targetWeightKg) {
+        // 1. GoalReached (compared at the displayed 1-decimal precision)
+        if (targetWeightKg != null && targetWeightKg > 0.0 && round1(currentWeight) <= round1(targetWeightKg)) {
             return PaceForecast.GoalReached
         }
 
@@ -1688,38 +1692,16 @@ object FatLossAnalytics {
             else -> return PaceForecast.NotEnoughData
         }
 
-        // 4. Stalled
-        val vActiveRounded = round1(vActive + 1e-5)
-        if (vActiveRounded <= 0.0) {
-            return PaceForecast.Stalled
-        }
-
-        // 5. Projected
-        val remainingKg = diff1(round1(currentWeight), round1(targetWeightKg))
-        if (remainingKg <= 0.0) {
-            return PaceForecast.GoalReached
-        }
-        val rawWeeks = remainingKg / vActiveRounded
-
-        return if (rawWeeks > 52.0) {
-            PaceForecast.Projected(
-                weeks = 52.0,
-                targetDate = null,
-                rawWeeks = rawWeeks,
-                paceWindowDays = activeWindowDays,
-                paceRateKgPerWeek = activeRateKgPerWeek
-            )
-        } else {
-            val daysRemaining = kotlin.math.round(rawWeeks * 7.0).toLong()
-            val targetDate = today.plusDays(daysRemaining)
-            PaceForecast.Projected(
-                weeks = rawWeeks,
-                targetDate = targetDate,
-                rawWeeks = rawWeeks,
-                paceWindowDays = activeWindowDays,
-                paceRateKgPerWeek = activeRateKgPerWeek
-            )
-        }
+        // 4. Stalled / 5. Projected: shared 1-decimal reconciliation math
+        return computePaceForecast(
+            currentWeightKg = currentWeight,
+            targetWeightKg = targetWeightKg,
+            velocityKgPerWeek = vActive,
+            cycleEndDate = cycleEndDate,
+            today = today,
+            paceWindowDays = activeWindowDays,
+            paceRateKgPerWeek = activeRateKgPerWeek
+        )
     }
 
     /**
@@ -1748,7 +1730,7 @@ object FatLossAnalytics {
         velocityKgPerWeek: Double,
         cycleEndDate: LocalDate? = null,
         today: LocalDate = LocalDate.now(),
-        paceWindowDays: Int = 14,
+        paceWindowDays: Int? = null,
         paceRateKgPerWeek: Double? = null
     ): PaceForecast? {
         val isCycleEnded = cycleEndDate != null && today.isAfter(cycleEndDate)
@@ -1770,10 +1752,8 @@ object FatLossAnalytics {
             return PaceForecast.Stalled
         }
 
+        // Positive here: the rounded GoalReached check above already returned when this would be <= 0.
         val remainingKg = diff1(round1(currentWeightKg), round1(targetWeightKg))
-        if (remainingKg <= 0.0) {
-            return PaceForecast.GoalReached
-        }
         val rawWeeks = remainingKg / roundedV
         val resolvedRate = paceRateKgPerWeek ?: -velocityKgPerWeek
 
