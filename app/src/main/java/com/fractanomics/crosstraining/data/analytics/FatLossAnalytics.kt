@@ -232,11 +232,15 @@ sealed class PaceForecast {
      * @property weeks Estimated weeks to reach goal, capped at 52.0.
      * @property targetDate Projected calendar date of goal arrival, or null if capped (> 52w).
      * @property rawWeeks Uncapped calculated weeks.
+     * @property paceWindowDays Window (14 or 7) of the pace tier that drove the projection, or null when unknown.
+     * @property paceRateKgPerWeek Signed weekly rate of that pace tier in kg/wk, or null when unknown.
      */
     data class Projected(
         val weeks: Double,
         val targetDate: LocalDate? = null,
-        val rawWeeks: Double = weeks
+        val rawWeeks: Double = weeks,
+        val paceWindowDays: Int? = null,
+        val paceRateKgPerWeek: Double? = null
     ) : PaceForecast() {
         val isCapped: Boolean
             get() = targetDate == null || rawWeeks > 52.0
@@ -1541,7 +1545,7 @@ object FatLossAnalytics {
         val today7dAvg = computeWindowAverageKg(allActiveEntries, referenceDate.minusDays(6), referenceDate)
         val lastWeek7dAvg = computeWindowAverageKg(allActiveEntries, referenceDate.minusDays(13), referenceDate.minusDays(7))
         val delta7d = if (today7dAvg != null && lastWeek7dAvg != null) {
-            today7dAvg - lastWeek7dAvg
+            diff1(round1(today7dAvg), round1(lastWeek7dAvg))
         } else {
             null
         }
@@ -1549,7 +1553,7 @@ object FatLossAnalytics {
         val today14dAvg = computeWindowAverageKg(allActiveEntries, referenceDate.minusDays(13), referenceDate)
         val lastWeek14dAvg = computeWindowAverageKg(allActiveEntries, referenceDate.minusDays(20), referenceDate.minusDays(7))
         val delta14d = if (today14dAvg != null && lastWeek14dAvg != null) {
-            today14dAvg - lastWeek14dAvg
+            diff1(round1(today14dAvg), round1(lastWeek14dAvg))
         } else {
             null
         }
@@ -1632,15 +1636,17 @@ object FatLossAnalytics {
             return if (isCycleEnded) PaceForecast.CycleEnded else PaceForecast.NotEnoughData
         }
 
+        // Current weight is the 7D average over [today-6, today], the same window the card's 7D AVG pillar shows,
+        // so the remaining distance reconciles even when today has no weigh-in.
         val newest = activeEntries.last()
         val currentWeight = computeCurrent7DayAverageWeight(
             entries = entries,
             cycleStartDate = cycleStartDate,
-            referenceDate = newest.date
+            referenceDate = today
         ) ?: newest.weightKg
 
-        // 1. GoalReached
-        if (targetWeightKg != null && targetWeightKg > 0.0 && currentWeight <= targetWeightKg) {
+        // 1. GoalReached (compared at the displayed 1-decimal precision)
+        if (targetWeightKg != null && targetWeightKg > 0.0 && round1(currentWeight) <= round1(targetWeightKg)) {
             return PaceForecast.GoalReached
         }
 
@@ -1661,51 +1667,41 @@ object FatLossAnalytics {
         }
 
         // Tier 1: Primary 14-day smoothed pace deficit velocity
-        val v14 = compute14DayPace(
+        val pace14 = compute14DayPace(
             entries = entries,
             cycleStartDate = cycleStartDate,
             today = newest.date,
             startingWeightKg = startingWeightKg
-        )?.deficitVelocityKgPerWeek
+        )
+        val v14 = pace14?.deficitVelocityKgPerWeek
 
         // Tier 2: Secondary 7-day smoothed pace deficit velocity
-        val v7 = compute7DayPace(
+        val pace7 = compute7DayPace(
             entries = entries,
             cycleStartDate = cycleStartDate,
             today = newest.date,
             startingWeightKg = startingWeightKg
-        )?.deficitVelocityKgPerWeek
+        )
+        val v7 = pace7?.deficitVelocityKgPerWeek
 
         // 3. NotEnoughData: neither tier has a resolvable velocity.
         // Tiers are selected by availability (not sign) so the forecast agrees with the highest-priority pace shown.
-        // No cycle-wide tier is needed: once 7 days have elapsed since the start baseline, compute7DayPace always
-        // resolves an anchor (startingWeightKg at cycle start, or the first in-cycle weigh-in).
-        val vActive = v14 ?: v7 ?: return PaceForecast.NotEnoughData
-
-        // 4. Stalled
-        if (kotlin.math.round((vActive + 1e-5) * 10.0) / 10.0 <= 0.0) {
-            return PaceForecast.Stalled
+        val (vActive, activeWindowDays, activeRateKgPerWeek) = when {
+            v14 != null -> Triple(v14, 14, pace14.rateKgPerWeek)
+            v7 != null -> Triple(v7, 7, pace7.rateKgPerWeek)
+            else -> return PaceForecast.NotEnoughData
         }
 
-        // 5. Projected
-        val remainingKg = currentWeight - targetWeightKg
-        val rawWeeks = remainingKg / vActive
-
-        return if (rawWeeks > 52.0) {
-            PaceForecast.Projected(
-                weeks = 52.0,
-                targetDate = null,
-                rawWeeks = rawWeeks
-            )
-        } else {
-            val daysRemaining = kotlin.math.round(rawWeeks * 7.0).toLong()
-            val targetDate = today.plusDays(daysRemaining)
-            PaceForecast.Projected(
-                weeks = rawWeeks,
-                targetDate = targetDate,
-                rawWeeks = rawWeeks
-            )
-        }
+        // 4. Stalled / 5. Projected: shared 1-decimal reconciliation math
+        return computePaceForecast(
+            currentWeightKg = currentWeight,
+            targetWeightKg = targetWeightKg,
+            velocityKgPerWeek = vActive,
+            cycleEndDate = cycleEndDate,
+            today = today,
+            paceWindowDays = activeWindowDays,
+            paceRateKgPerWeek = activeRateKgPerWeek
+        )
     }
 
     /**
@@ -1733,11 +1729,13 @@ object FatLossAnalytics {
         targetWeightKg: Double?,
         velocityKgPerWeek: Double,
         cycleEndDate: LocalDate? = null,
-        today: LocalDate = LocalDate.now()
+        today: LocalDate = LocalDate.now(),
+        paceWindowDays: Int? = null,
+        paceRateKgPerWeek: Double? = null
     ): PaceForecast? {
         val isCycleEnded = cycleEndDate != null && today.isAfter(cycleEndDate)
 
-        if (targetWeightKg != null && targetWeightKg > 0.0 && currentWeightKg <= targetWeightKg) {
+        if (targetWeightKg != null && targetWeightKg > 0.0 && round1(currentWeightKg) <= round1(targetWeightKg)) {
             return PaceForecast.GoalReached
         }
 
@@ -1749,19 +1747,23 @@ object FatLossAnalytics {
             return null
         }
 
-        val roundedV = kotlin.math.round(velocityKgPerWeek * 10.0) / 10.0
+        val roundedV = round1(velocityKgPerWeek + 1e-5)
         if (roundedV <= 0.0) {
             return PaceForecast.Stalled
         }
 
-        val remainingKg = currentWeightKg - targetWeightKg
-        val rawWeeks = remainingKg / velocityKgPerWeek
+        // Positive here: the rounded GoalReached check above already returned when this would be <= 0.
+        val remainingKg = diff1(round1(currentWeightKg), round1(targetWeightKg))
+        val rawWeeks = remainingKg / roundedV
+        val resolvedRate = paceRateKgPerWeek ?: -velocityKgPerWeek
 
         return if (rawWeeks > 52.0) {
             PaceForecast.Projected(
                 weeks = 52.0,
                 targetDate = null,
-                rawWeeks = rawWeeks
+                rawWeeks = rawWeeks,
+                paceWindowDays = paceWindowDays,
+                paceRateKgPerWeek = resolvedRate
             )
         } else {
             val daysRemaining = kotlin.math.round(rawWeeks * 7.0).toLong()
@@ -1769,7 +1771,9 @@ object FatLossAnalytics {
             PaceForecast.Projected(
                 weeks = rawWeeks,
                 targetDate = targetDate,
-                rawWeeks = rawWeeks
+                rawWeeks = rawWeeks,
+                paceWindowDays = paceWindowDays,
+                paceRateKgPerWeek = resolvedRate
             )
         }
     }

@@ -31,6 +31,11 @@ import java.util.Locale
  */
 class WeightProgressionCardTest {
 
+    @org.junit.Before
+    fun setUp() {
+        Locale.setDefault(Locale.US)
+    }
+
     private val startDate = LocalDate.of(2026, 9, 1)
 
     private fun createWeightEntry(date: LocalDate, weightKg: Double) = WeightEntry(
@@ -701,10 +706,11 @@ class WeightProgressionCardTest {
     @Test
     fun issue600_leftPillarResolvers_formatsHeaderValueAndSubtitle() {
         val tuesday = LocalDate.of(2026, 10, 13) // Tuesday
-        assertEquals("LAST WEEK (TUE)", resolveLeftPillarHeader(tuesday))
+        assertEquals("LAST WK 7D", resolveLeftPillarHeader(tuesday))
 
         val sunday = LocalDate.of(2026, 10, 18) // Sunday
-        assertEquals("LAST WEEK (SUN)", resolveLeftPillarHeader(sunday))
+        assertEquals("LAST WK 7D", resolveLeftPillarHeader(sunday))
+        assertEquals("LAST WK 7D", resolveLeftPillarHeader())
 
         // Present last week entry
         val lastWeekEntry = createWeightEntry(LocalDate.of(2026, 10, 6), 77.2)
@@ -721,10 +727,11 @@ class WeightProgressionCardTest {
     fun issue600_centerPillarResolvers_formatsTodayVsLatestAndUnit() {
         val today = LocalDate.of(2026, 10, 13)
         // Today weigh-in
-        assertEquals("TODAY", resolveCenterPillarHeader(today, today))
+        assertEquals("7D AVG", resolveCenterPillarHeader(today, today))
         // Stale weigh-in (Scenario 13)
         val yesterday = today.minusDays(1)
-        assertEquals("LATEST", resolveCenterPillarHeader(yesterday, today))
+        assertEquals("7D AVG", resolveCenterPillarHeader(yesterday, today))
+        assertEquals("7D AVG", resolveCenterPillarHeader())
 
         assertEquals("76.1 kg", resolveCenterPillarValue(76.1, "kg"))
         assertEquals("167.8 lbs", resolveCenterPillarValue(76.1, "lbs"))
@@ -884,5 +891,200 @@ class WeightProgressionCardTest {
         assertEquals("(-3.7 kg left)", goalSubtitle)
         assertFalse("Raw weight would have given 53.4% instead of 36.2%", kotlin.math.abs(((startWeightKg - rawCurrentWeightKg) / totalDistance) * 100.0 - 36.2) < 1.0)
     }
-}
 
+    // =========================================================================
+    // Feature 002-weight-card-clarity-and-forecast-pace Tests (US1, US2, US3)
+    // =========================================================================
+
+    @Test
+    fun weightCardClarity_sectionHeaders_resolveCorrectly() {
+        assertEquals("ROLLING AVERAGES", ROLLING_AVERAGES_SECTION_HEADER)
+
+        val tuesday = LocalDate.of(2026, 10, 13)
+        assertEquals("DAILY WEIGH-IN (TUE)", resolveDailyWeighInSectionHeader(tuesday))
+
+        val sunday = LocalDate.of(2026, 10, 18)
+        assertEquals("DAILY WEIGH-IN (SUN)", resolveDailyWeighInSectionHeader(sunday))
+
+        val thursday = LocalDate.of(2026, 10, 22)
+        assertEquals("DAILY WEIGH-IN (THU)", resolveDailyWeighInSectionHeader(thursday))
+    }
+
+    @Test
+    fun weightCardClarity_resolveForecastPaceSubtitle_coversAllVariants() {
+        val pace14 = PaceRateResult(
+            rateKgPerWeek = -0.2,
+            anchorWeightKg = 76.1,
+            anchorDate = LocalDate.of(2026, 10, 8),
+            currentWeightKg = 75.7,
+            currentDate = LocalDate.of(2026, 10, 22),
+            elapsedDays = 14,
+            trend = PaceTrend.LOSS
+        )
+        val pace7 = PaceRateResult(
+            rateKgPerWeek = -0.3,
+            anchorWeightKg = 76.0,
+            anchorDate = LocalDate.of(2026, 10, 15),
+            currentWeightKg = 75.7,
+            currentDate = LocalDate.of(2026, 10, 22),
+            elapsedDays = 7,
+            trend = PaceTrend.LOSS
+        )
+
+        val projected14 = PaceForecast.Projected(
+            weeks = 18.5,
+            targetDate = LocalDate.of(2027, 2, 28),
+            rawWeeks = 18.5,
+            paceWindowDays = 14,
+            paceRateKgPerWeek = -0.2
+        )
+
+        // Tier 1 Projected in kg
+        assertEquals(
+            "Based on 14-day pace (-0.2 kg/wk)",
+            resolveForecastPaceSubtitle(projected14, pace14 = pace14, pace7 = pace7, weightUnit = "kg")
+        )
+
+        // Tier 1 Projected in lbs
+        assertEquals(
+            "Based on 14-day pace (-0.4 lbs/wk)",
+            resolveForecastPaceSubtitle(projected14, pace14 = pace14, pace7 = pace7, weightUnit = "lbs")
+        )
+
+        // Fallback to forecast fields when pace14 and pace7 are null
+        assertEquals(
+            "Based on 14-day pace (-0.2 kg/wk)",
+            resolveForecastPaceSubtitle(projected14, pace14 = null, pace7 = null, weightUnit = "kg")
+        )
+
+        // Tier 2 Fallback Projected (pace14 == null, pace7 != null)
+        val projected7 = PaceForecast.Projected(
+            weeks = 12.3,
+            targetDate = LocalDate.of(2027, 1, 16),
+            rawWeeks = 12.33,
+            paceWindowDays = 7,
+            paceRateKgPerWeek = -0.3
+        )
+        assertEquals(
+            "Based on 7-day pace (-0.3 kg/wk)",
+            resolveForecastPaceSubtitle(projected7, pace14 = null, pace7 = pace7, weightUnit = "kg")
+        )
+
+        // Stalled with 14-day pace (0.0 kg/wk)
+        val pace14Stalled = pace14.copy(rateKgPerWeek = 0.0, trend = PaceTrend.NEUTRAL)
+        assertEquals(
+            "Based on 14-day pace (0.0 kg/wk)",
+            resolveForecastPaceSubtitle(PaceForecast.Stalled, pace14 = pace14Stalled, pace7 = pace7, weightUnit = "kg")
+        )
+
+        // Stalled with 14-day pace gaining (+0.2 kg/wk)
+        val pace14Gaining = pace14.copy(rateKgPerWeek = 0.2, trend = PaceTrend.GAIN)
+        assertEquals(
+            "Based on 14-day pace (+0.2 kg/wk)",
+            resolveForecastPaceSubtitle(PaceForecast.Stalled, pace14 = pace14Gaining, pace7 = null, weightUnit = "kg")
+        )
+
+        // Stalled with 7-day fallback pace
+        assertEquals(
+            "Based on 7-day pace (-0.3 kg/wk)",
+            resolveForecastPaceSubtitle(PaceForecast.Stalled, pace14 = null, pace7 = pace7, weightUnit = "kg")
+        )
+
+        // Non-projected/non-stalled states return null
+        assertNull(resolveForecastPaceSubtitle(PaceForecast.GoalReached, pace14 = pace14, pace7 = pace7))
+        assertNull(resolveForecastPaceSubtitle(PaceForecast.CycleEnded, pace14 = pace14, pace7 = pace7))
+        assertNull(resolveForecastPaceSubtitle(PaceForecast.NotEnoughData, pace14 = pace14, pace7 = pace7))
+    }
+
+    @Test
+    fun weightCardClarity_topReferenceTrack_oneDecimalReconciliation() {
+        Locale.setDefault(Locale.US)
+        val startWeightKg = 77.8
+        val goalWeightKg = 72.0
+        val unroundedToday7dAvgKg = 75.66 // Displayed as 75.7 kg
+
+        val rStart = FatLossAnalytics.round1(startWeightKg) // 77.8
+        val rGoal = FatLossAnalytics.round1(goalWeightKg)   // 72.0
+        val rToday = FatLossAnalytics.round1(unroundedToday7dAvgKg) // 75.7
+        val totalDistance = FatLossAnalytics.diff1(rStart, rGoal) // 5.8
+        val progressFraction = (FatLossAnalytics.diff1(rStart, rToday) / totalDistance).toFloat().coerceIn(0f, 1f)
+        val percentText = String.format(Locale.US, "%.1f%% to goal", progressFraction * 100f)
+
+        val remainingKg = FatLossAnalytics.diff1(rToday, rGoal)
+        val goalSubtitle = "(-${String.format(Locale.US, "%.1f", remainingKg)} kg left)"
+
+        assertEquals("36.2% to goal", percentText)
+        assertEquals("(-3.7 kg left)", goalSubtitle)
+    }
+
+    @Test
+    fun weightCardClarity_pillarHeaders_labelRawEntryFallbacks() {
+        val tuesday = LocalDate.of(2026, 10, 13)
+        assertEquals("LAST WK 7D", resolveLeftPillarHeader(tuesday, isRollingAverage = true))
+        assertEquals("LAST WEEK (TUE)", resolveLeftPillarHeader(tuesday, isRollingAverage = false))
+
+        val yesterday = tuesday.minusDays(1)
+        assertEquals("7D AVG", resolveCenterPillarHeader(tuesday, tuesday, isRollingAverage = true))
+        assertEquals("TODAY", resolveCenterPillarHeader(tuesday, tuesday, isRollingAverage = false))
+        assertEquals("LATEST", resolveCenterPillarHeader(yesterday, tuesday, isRollingAverage = false))
+    }
+
+    @Test
+    fun weightCardClarity_topReferenceTrack_reconcilesInDisplayUnit() {
+        val startWeightKg = 77.8   // 171.5 lbs
+        val goalWeightKg = 72.0    // 158.7 lbs
+        val today7dAvgKg = 75.66   // 75.7 kg / 166.8 lbs
+
+        // kg: (77.8 - 75.7) / (77.8 - 72.0) = 36.2%, 75.7 - 72.0 = 3.7 kg left
+        assertEquals(3.7, resolveGoalRemainingDisplay(today7dAvgKg, goalWeightKg, "kg"), 1e-9)
+        assertEquals(2.1f / 5.8f, resolveGoalProgressFraction(startWeightKg, today7dAvgKg, goalWeightKg, "kg"), 1e-6f)
+
+        // lbs: 166.8 - 158.7 = 8.1 lbs left (converting the rounded 3.7 kg would show 8.2 lbs)
+        assertEquals("166.8 lbs", resolvePillarWeightDisplay(today7dAvgKg, "lbs"))
+        assertEquals(8.1, resolveGoalRemainingDisplay(today7dAvgKg, goalWeightKg, "lbs"), 1e-9)
+        // (171.5 - 166.8) / (171.5 - 158.7) = 4.7 / 12.8
+        assertEquals(4.7f / 12.8f, resolveGoalProgressFraction(startWeightKg, today7dAvgKg, goalWeightKg, "lbs"), 1e-6f)
+
+        // Displayed 7D AVG equal to displayed goal -> goal reached (remaining <= 0)
+        assertTrue(resolveGoalRemainingDisplay(72.04, goalWeightKg, "kg") <= 0.0)
+    }
+
+    @Test
+    fun weightCardClarity_rollingDelta_reconcilesWithDisplayedLbsValues() {
+        // 72.04 kg -> 158.8 lbs, 71.96 kg -> 158.6 lbs; both round to 72.0 kg, so a kg delta would show 0.0 lbs
+        assertEquals("+0.2 lbs", FatLossAnalytics.formatSameDayWeightDelta(72.04, 71.96, "lbs"))
+        assertEquals("0.0 kg", FatLossAnalytics.formatSameDayWeightDelta(72.04, 71.96, "kg"))
+    }
+
+    @Test
+    fun weightCardClarity_forecastPaceSubtitle_prefersForecastTierOverDisplayedChips() {
+        val pace14 = PaceRateResult(
+            rateKgPerWeek = -0.2,
+            anchorWeightKg = 76.1,
+            anchorDate = LocalDate.of(2026, 10, 8),
+            currentWeightKg = 75.7,
+            currentDate = LocalDate.of(2026, 10, 22),
+            elapsedDays = 14,
+            trend = PaceTrend.LOSS
+        )
+        val projected7 = PaceForecast.Projected(
+            weeks = 12.3,
+            targetDate = LocalDate.of(2027, 1, 16),
+            rawWeeks = 12.33,
+            paceWindowDays = 7,
+            paceRateKgPerWeek = -0.3
+        )
+        assertEquals(
+            "Based on 7-day pace (-0.3 kg/wk)",
+            resolveForecastPaceSubtitle(projected7, pace14 = pace14, pace7 = null, weightUnit = "kg")
+        )
+
+        // Projection without tier metadata falls back to the displayed chips
+        val projectedUnknown = PaceForecast.Projected(weeks = 10.0, targetDate = LocalDate.of(2026, 12, 31))
+        assertEquals(
+            "Based on 14-day pace (-0.2 kg/wk)",
+            resolveForecastPaceSubtitle(projectedUnknown, pace14 = pace14, pace7 = null, weightUnit = "kg")
+        )
+        assertNull(resolveForecastPaceSubtitle(projectedUnknown, pace14 = null, pace7 = null, weightUnit = "kg"))
+    }
+}

@@ -1168,7 +1168,19 @@ internal const val PACE_14_MATURE_SUBTITLE = "Smoothed trend"
 private val pillarDateFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("d MMM", Locale.US)
 
-internal fun resolveLeftPillarHeader(currentDate: LocalDate): String {
+internal const val ROLLING_AVERAGES_SECTION_HEADER = "ROLLING AVERAGES"
+
+internal fun resolveDailyWeighInSectionHeader(referenceDate: LocalDate = LocalDate.now()): String {
+    val dayName = referenceDate.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, Locale.US).uppercase()
+    return "DAILY WEIGH-IN ($dayName)"
+}
+
+/**
+ * Left pillar header. Shows "LAST WK 7D" for the prior 7-day window average, or "LAST WEEK (<DAY>)"
+ * when the value falls back to a single raw weigh-in from 7 days before [currentDate].
+ */
+internal fun resolveLeftPillarHeader(currentDate: LocalDate = LocalDate.now(), isRollingAverage: Boolean = true): String {
+    if (isRollingAverage) return "LAST WK 7D"
     val dayName = currentDate.minusDays(7).dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, Locale.US).uppercase()
     return "LAST WEEK ($dayName)"
 }
@@ -1197,8 +1209,18 @@ internal fun resolveLeftPillarSubtitle(lastWeekEntry: WeightEntry?): String {
 internal fun resolveLeftPillarSubtitle(delta7dKg: Double?, weightUnit: String): String =
     formatWeeklyDelta(delta7dKg, weightUnit)
 
-internal fun resolveCenterPillarHeader(currentDate: LocalDate, referenceDate: LocalDate = LocalDate.now()): String {
-    return if (currentDate == referenceDate) "TODAY" else "LATEST"
+/**
+ * Center pillar header. Shows "7D AVG" for the current 7-day window average, or "TODAY" / "LATEST"
+ * when the value falls back to the raw latest weigh-in on [currentDate].
+ */
+internal fun resolveCenterPillarHeader(
+    currentDate: LocalDate = LocalDate.now(),
+    referenceDate: LocalDate = LocalDate.now(),
+    isRollingAverage: Boolean = true
+): String = when {
+    isRollingAverage -> "7D AVG"
+    currentDate == referenceDate -> "TODAY"
+    else -> "LATEST"
 }
 
 internal fun resolveCenterPillarValue(weightKg: Double?, weightUnit: String): String =
@@ -1223,6 +1245,33 @@ internal fun resolveRightPillarSubtitle(loggedDaysCount: Int): String {
 
 internal fun resolveRightPillarSubtitle(progressiveAverage: ProgressiveAverageResult?): String =
     resolveRightPillarSubtitle(progressiveAverage?.loggedDaysCount ?: 0)
+
+private fun toDisplayWeight(weightKg: Double, weightUnit: String): Double =
+    if (weightUnit.equals("lbs", ignoreCase = true)) WeightAnalytics.kgToLbs(weightKg) else weightKg
+
+/**
+ * Remaining distance to goal in the display unit, from the displayed 1-decimal 7D average and goal values.
+ * Zero or negative means the goal is reached at displayed precision.
+ */
+internal fun resolveGoalRemainingDisplay(today7dAvgKg: Double, goalWeightKg: Double, weightUnit: String): Double =
+    FatLossAnalytics.diff1(toDisplayWeight(today7dAvgKg, weightUnit), toDisplayWeight(goalWeightKg, weightUnit))
+
+/**
+ * Top track progress fraction from the displayed 1-decimal start, 7D average, and goal values,
+ * so `(START - 7D AVG) / (START - GOAL)` reconciles in the selected unit.
+ */
+internal fun resolveGoalProgressFraction(
+    startWeightKg: Double,
+    today7dAvgKg: Double,
+    goalWeightKg: Double,
+    weightUnit: String
+): Float {
+    val startDisplay = toDisplayWeight(startWeightKg, weightUnit)
+    val totalDistance = FatLossAnalytics.diff1(startDisplay, toDisplayWeight(goalWeightKg, weightUnit))
+    if (totalDistance <= 0.0) return 1f
+    val covered = FatLossAnalytics.diff1(startDisplay, toDisplayWeight(today7dAvgKg, weightUnit))
+    return (covered / totalDistance).toFloat().coerceIn(0f, 1f)
+}
 
 internal fun formatWeeklyDelta(deltaKg: Double?, weightUnit: String): String {
     if (deltaKg == null) return NO_DATA_PLACEHOLDER
@@ -1611,14 +1660,14 @@ fun SameDayWeightTrioRow(
             )
         }
 
-        // Center Column: CURRENT
+        // Center Column: TODAY
         Column(
             modifier = Modifier.weight(1.25f),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Text(
-                text = "CURRENT",
+                text = "TODAY",
                 style = MaterialTheme.typography.labelSmall,
                 letterSpacing = 1.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -1722,10 +1771,14 @@ fun WeightProgressionHeroCard(
     sameDayTrio: SameDayWeightTrioState? = null
 ) {
     val isImperial = weightUnit.equals("lbs", ignoreCase = true)
-    val resolvedToday7dAvgKg = today7dAvgKg ?: rollingWeightHero?.today7dAvgKg ?: currentWeightKg
-    val resolvedLastWeek7dAvgKg = lastWeek7dAvgKg ?: rollingWeightHero?.lastWeek7dAvgKg ?: lastWeekEntry?.weightKg
+    val today7dWindowAvgKg = today7dAvgKg ?: rollingWeightHero?.today7dAvgKg
+    val lastWeek7dWindowAvgKg = lastWeek7dAvgKg ?: rollingWeightHero?.lastWeek7dAvgKg
+    val resolvedToday7dAvgKg = today7dWindowAvgKg ?: currentWeightKg
+    val resolvedLastWeek7dAvgKg = lastWeek7dWindowAvgKg ?: lastWeekEntry?.weightKg
     val resolvedToday14dAvgKg = today14dAvgKg ?: rollingWeightHero?.today14dAvgKg ?: progressiveAverage?.averageKg
-    val resolvedDelta7dKg = delta7dKg ?: rollingWeightHero?.delta7dKg ?: resolvedLastWeek7dAvgKg?.let { resolvedToday7dAvgKg - it }
+    val resolvedDelta7dKg = delta7dKg ?: rollingWeightHero?.delta7dKg ?: resolvedLastWeek7dAvgKg?.let {
+        FatLossAnalytics.diff1(FatLossAnalytics.round1(resolvedToday7dAvgKg), FatLossAnalytics.round1(it))
+    }
     val resolvedDelta14dKg = delta14dKg ?: rollingWeightHero?.delta14dKg
     val resolvedLoggedDaysCount14d = if (loggedDaysCount14d > 0) loggedDaysCount14d else (rollingWeightHero?.loggedDaysCount14d ?: progressiveAverage?.loggedDaysCount ?: 0)
 
@@ -1769,10 +1822,12 @@ fun WeightProgressionHeroCard(
 
                 // Progress bar between anchors (hidden when goal or start is null)
                 if (startWeightKg != null && goalWeightKg != null) {
-                    val totalDistance = startWeightKg - goalWeightKg
-                    val progressFraction = if (totalDistance > 0.0) {
-                        ((startWeightKg - resolvedToday7dAvgKg) / totalDistance).toFloat().coerceIn(0f, 1f)
-                    } else 1f
+                    val progressFraction = resolveGoalProgressFraction(
+                        startWeightKg = startWeightKg,
+                        today7dAvgKg = resolvedToday7dAvgKg,
+                        goalWeightKg = goalWeightKg,
+                        weightUnit = weightUnit
+                    )
 
                     Column(
                         modifier = Modifier
@@ -1817,12 +1872,11 @@ fun WeightProgressionHeroCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     if (goalWeightKg != null) {
-                        val isGoalReached = resolvedToday7dAvgKg <= goalWeightKg
+                        val remainingDisplay = resolveGoalRemainingDisplay(resolvedToday7dAvgKg, goalWeightKg, weightUnit)
+                        val isGoalReached = remainingDisplay <= 0.0
                         val goalLine2 = if (isGoalReached) {
                             "Goal reached"
                         } else {
-                            val remainingKg = resolvedToday7dAvgKg - goalWeightKg
-                            val remainingDisplay = if (isImperial) WeightAnalytics.kgToLbs(remainingKg) else remainingKg
                             "(-${String.format(Locale.US, "%.1f", remainingDisplay)} $weightUnit left)"
                         }
                         Text(
@@ -1842,19 +1896,27 @@ fun WeightProgressionHeroCard(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                Text(
+                    text = ROLLING_AVERAGES_SECTION_HEADER,
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.labelSmall,
+                    letterSpacing = 1.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Left Pillar: LAST WEEK (DAY)
+                    // Left Pillar: LAST WK 7D (or LAST WEEK (DAY) raw-entry fallback)
                     Column(
                         modifier = Modifier.weight(1.0f),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         Text(
-                            text = resolveLeftPillarHeader(currentDate),
+                            text = resolveLeftPillarHeader(currentDate, isRollingAverage = lastWeek7dWindowAvgKg != null),
                             style = MaterialTheme.typography.labelSmall,
                             letterSpacing = 1.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -1872,7 +1934,12 @@ fun WeightProgressionHeroCard(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = formatWeeklyDelta(resolvedDelta7dKg, weightUnit),
+                            // Derived from the two displayed values in the selected unit so it reconciles in kg and lbs
+                            text = if (resolvedLastWeek7dAvgKg != null) {
+                                FatLossAnalytics.formatSameDayWeightDelta(resolvedToday7dAvgKg, resolvedLastWeek7dAvgKg, weightUnit)
+                            } else {
+                                formatWeeklyDelta(resolvedDelta7dKg, weightUnit)
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -1881,14 +1948,14 @@ fun WeightProgressionHeroCard(
                         )
                     }
 
-                    // Center Hero Pillar: TODAY / LATEST
+                    // Center Hero Pillar: 7D AVG (or TODAY / LATEST raw-entry fallback)
                     Column(
                         modifier = Modifier.weight(1.25f),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         Text(
-                            text = resolveCenterPillarHeader(currentDate, referenceDate),
+                            text = resolveCenterPillarHeader(currentDate, referenceDate, isRollingAverage = today7dWindowAvgKg != null),
                             style = MaterialTheme.typography.labelSmall,
                             letterSpacing = 1.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -1951,6 +2018,18 @@ fun WeightProgressionHeroCard(
                 }
 
                 if (sameDayTrio != null) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    Text(
+                        text = resolveDailyWeighInSectionHeader(referenceDate),
+                        modifier = Modifier.fillMaxWidth(),
+                        style = MaterialTheme.typography.labelSmall,
+                        letterSpacing = 1.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     SameDayWeightTrioRow(
                         sameDayTrio = sameDayTrio,
                         weightUnit = weightUnit
@@ -2093,7 +2172,12 @@ fun WeightProgressionHeroCard(
 
             // 4. Forecast Banner & CTA
             if (forecast != null) {
-                ForecastBanner(forecast = forecast)
+                ForecastBanner(
+                    forecast = forecast,
+                    pace14 = pace14,
+                    pace7 = pace7,
+                    weightUnit = weightUnit
+                )
             }
 
             Row(
@@ -2114,9 +2198,36 @@ fun WeightProgressionHeroCard(
     }
 }
 
-@Composable
-private fun ForecastBanner(
+internal fun resolveForecastPaceSubtitle(
     forecast: PaceForecast,
+    pace14: PaceRateResult? = null,
+    pace7: PaceRateResult? = null,
+    weightUnit: String = "kg"
+): String? {
+    if (forecast !is PaceForecast.Projected && forecast !is PaceForecast.Stalled) {
+        return null
+    }
+
+    // A projection names the tier it was computed from; Stalled carries no metadata, so it falls back to
+    // the displayed pace chips (same tier order and evaluation date as computePaceForecast).
+    val (windowDays, rateKgPerWeek) = when {
+        forecast is PaceForecast.Projected && forecast.paceWindowDays != null && forecast.paceRateKgPerWeek != null ->
+            Pair(forecast.paceWindowDays, forecast.paceRateKgPerWeek)
+        pace14 != null -> Pair(14, pace14.rateKgPerWeek)
+        pace7 != null -> Pair(7, pace7.rateKgPerWeek)
+        else -> return null
+    }
+
+    val formattedRate = FatLossAnalytics.formatPaceRate(rateKgPerWeek, weightUnit)
+    return "Based on $windowDays-day pace ($formattedRate)"
+}
+
+@Composable
+internal fun ForecastBanner(
+    forecast: PaceForecast,
+    pace14: PaceRateResult? = null,
+    pace7: PaceRateResult? = null,
+    weightUnit: String = "kg",
     modifier: Modifier = Modifier
 ) {
     val (containerColor, contentColor, icon) = when (forecast) {
@@ -2168,6 +2279,14 @@ private fun ForecastBanner(
                 if (forecast is PaceForecast.Projected && forecast.targetDate != null) {
                     Text(
                         text = "Projected arrival: ${forecast.targetDate.formatLong()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = contentColor.copy(alpha = 0.8f)
+                    )
+                }
+                val subtitle = resolveForecastPaceSubtitle(forecast, pace14, pace7, weightUnit)
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = contentColor.copy(alpha = 0.8f)
                     )
