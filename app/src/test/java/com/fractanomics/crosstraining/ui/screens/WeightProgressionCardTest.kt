@@ -1264,4 +1264,98 @@ class WeightProgressionCardTest {
             )
         )
     }
+
+    // =========================================================================
+    // Feature 005-multi-horizon-pace-estimations: 2-Decimal Pace Card & Horizon Estimation Row Resolvers
+    // =========================================================================
+
+    @Test
+    fun feature005_twoDecimalPaceCardAndSubtitleResolvers() {
+        val today = LocalDate.of(2026, 10, 22)
+        val paceLoss = PaceRateResult(
+            rateKgPerWeek = -0.28,
+            anchorWeightKg = 75.94,
+            anchorDate = today.minusDays(7),
+            currentWeightKg = 75.66,
+            currentDate = today,
+            elapsedDays = 7L,
+            trend = PaceTrend.LOSS
+        )
+        val paceGain = paceLoss.copy(rateKgPerWeek = 0.15, trend = PaceTrend.GAIN)
+        val paceNeutral = paceLoss.copy(rateKgPerWeek = 0.0, trend = PaceTrend.NEUTRAL)
+
+        // 2-decimal pace chip value resolution
+        assertEquals("▼ -0.28 kg/wk", resolvePaceChipValue(paceLoss, "kg", useTwoDecimals = true))
+        assertEquals("▼ -0.62 lbs/wk", resolvePaceChipValue(paceLoss, "lbs", useTwoDecimals = true))
+        assertEquals("▲ +0.15 kg/wk", resolvePaceChipValue(paceGain, "kg", useTwoDecimals = true))
+        assertEquals("— 0.00 kg/wk", resolvePaceChipValue(paceNeutral, "kg", useTwoDecimals = true))
+        assertEquals("—", resolvePaceChipValue(null, "kg", useTwoDecimals = true))
+
+        // 21D and 28D null and mature subtitles
+        assertEquals("Needs weigh-in 21+ days ago", PACE_21_NULL_SUBTITLE)
+        assertEquals("Needs weigh-in 28+ days ago", PACE_28_NULL_SUBTITLE)
+        assertEquals("Needs weigh-in 21+ days ago", resolvePace21Subtitle(null, null, "kg", today, useTwoDecimals = true))
+        assertEquals("Needs weigh-in 28+ days ago", resolvePace28Subtitle(null, null, "kg", today, useTwoDecimals = true))
+
+        val pace21 = paceLoss.copy(rateKgPerWeek = -0.34, elapsedDays = 21L)
+        val pace28 = paceLoss.copy(rateKgPerWeek = -0.54, elapsedDays = 28L)
+        assertEquals("Smoothed trend", resolvePace21Subtitle(pace21, null, "kg", today, useTwoDecimals = true))
+        assertEquals("Smoothed trend", resolvePace28Subtitle(pace28, null, "kg", today, useTwoDecimals = true))
+    }
+
+    @Test
+    fun feature005_horizonEstimationRowResolversAndSemantics() {
+        assertEquals("GOAL ARRIVAL ESTIMATIONS", GOAL_ARRIVAL_ESTIMATIONS_HEADER)
+
+        val arrival = LocalDate.of(2027, 1, 23)
+        val projectedRow = com.fractanomics.crosstraining.data.analytics.HorizonEstimationRow(
+            windowDays = 7,
+            state = com.fractanomics.crosstraining.data.analytics.HorizonRowState.Projected(
+                windowDays = 7,
+                paceDisplay2 = "-0.28 kg/wk",
+                velocity2InUnit = 0.28,
+                weeks = 13.2,
+                rawWeeks = 13.214,
+                targetDate = arrival,
+                barFraction = 0.72f,
+                weeksDeltaVsTarget = 3.8,
+                isOnTrack = false,
+                deltaBadgeText = "+3.8w late"
+            )
+        )
+        assertEquals("7D (-0.28 kg/wk)", resolveHorizonRowLeftLabel(projectedRow))
+        assertEquals("13.2 wks · 23 Jan 2027", resolveHorizonRowRightValue(projectedRow))
+        assertEquals("+3.8w late", resolveHorizonRowBadgeText(projectedRow))
+        assertEquals(
+            "7-day horizon (7D (-0.28 kg/wk)): 13.2 wks · 23 Jan 2027, +3.8w late",
+            resolveHorizonRowContentDescription(projectedRow)
+        )
+
+        val stalledRow = com.fractanomics.crosstraining.data.analytics.HorizonEstimationRow(
+            windowDays = 14,
+            state = com.fractanomics.crosstraining.data.analytics.HorizonRowState.Stalled(
+                windowDays = 14,
+                paceDisplay2 = "+0.05 kg/wk"
+            )
+        )
+        assertEquals("14D (+0.05 kg/wk)", resolveHorizonRowLeftLabel(stalledRow))
+        assertEquals("Pace stalled", resolveHorizonRowRightValue(stalledRow))
+        assertEquals("Stalled", resolveHorizonRowBadgeText(stalledRow))
+        assertEquals(
+            "14-day horizon (14D (+0.05 kg/wk)): Pace stalled, Stalled",
+            resolveHorizonRowContentDescription(stalledRow)
+        )
+
+        val missingRow = com.fractanomics.crosstraining.data.analytics.HorizonEstimationRow(
+            windowDays = 28,
+            state = com.fractanomics.crosstraining.data.analytics.HorizonRowState.NotEnoughData(28)
+        )
+        assertEquals("28D (—)", resolveHorizonRowLeftLabel(missingRow))
+        assertEquals("Needs 28+ days", resolveHorizonRowRightValue(missingRow))
+        assertNull(resolveHorizonRowBadgeText(missingRow))
+        assertEquals(
+            "28-day horizon (28D (—)): Needs 28+ days",
+            resolveHorizonRowContentDescription(missingRow)
+        )
+    }
 }

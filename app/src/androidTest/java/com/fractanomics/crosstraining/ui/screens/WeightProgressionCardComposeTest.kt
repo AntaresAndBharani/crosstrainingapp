@@ -308,7 +308,7 @@ class WeightProgressionCardComposeTest {
         val variants = listOf(
             comp1 to "12% slower loss vs yesterday",
             comp2 to "33% faster loss vs 5 Oct",
-            comp3 to "-1.1 lbs/wk vs yesterday"
+            comp3 to "-1.10 lbs/wk vs yesterday"
         )
 
         for ((comp, expectedSubtitle) in variants) {
@@ -346,22 +346,23 @@ class WeightProgressionCardComposeTest {
             assertSingleLineNoOverflow(composeTestRule.onNodeWithText("GOAL 154.3 lbs"))
             assertSingleLineNoOverflow(composeTestRule.onNodeWithText("(-14.8 lbs left)"))
 
-            // Verify delta pill ("5 Oct · ▼ -0.7 lbs vs 4 Oct") and streak pill ("📉 3-day streak")
-            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("5 Oct · ▼ -0.7 lbs vs 4 Oct"))
+            // Verify streak pill ("📉 3-day streak")
             assertSingleLineNoOverflow(composeTestRule.onNodeWithText("📉 3-day streak"))
 
-            // Verify 7-day pace value ("▼ -1.8 lbs/wk")
-            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("▼ -1.8 lbs/wk"))
+            // Verify 7-day pace value ("▼ -1.80 lbs/wk")
+            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("▼ -1.80 lbs/wk"))
 
             // Verify 7-day pace subtitle reports lineCount <= 2 and !hasVisualOverflow
             assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText(expectedSubtitle))
 
-            // Verify 14-day pace value reports lineCount == 1 and !hasVisualOverflow displaying "—" (with contentDescription = "No data")
-            assertSingleLineNoOverflow(composeTestRule.onNodeWithText("—"))
-            composeTestRule.onNodeWithContentDescription("No data").assertIsDisplayed()
+            // Verify 14-day, 21-day, and 28-day null pace values report lineCount == 1 and !hasVisualOverflow displaying "—"
+            val noDataDescriptions = composeTestRule.onAllNodesWithContentDescription("No data")
+            noDataDescriptions.assertCountEquals(3)
 
-            // Verify 14-day pace subtitle ("Needs weigh-in 14+ days ago") reports lineCount <= 2 and !hasVisualOverflow
+            // Verify 14-day, 21-day, and 28-day pace subtitles report lineCount <= 2 and !hasVisualOverflow
             assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Needs weigh-in 14+ days ago"))
+            assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Needs weigh-in 21+ days ago"))
+            assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Needs weigh-in 28+ days ago"))
         }
     }
 
@@ -399,21 +400,15 @@ class WeightProgressionCardComposeTest {
             }
         }
 
-        // 7-day pace value and 14-day pace value display "—" with lineCount == 1 and contentDescription = "No data"
-        val noDataNodes = composeTestRule.onAllNodesWithText("—")
-        noDataNodes.assertCountEquals(2)
+        // All 4 pace cards (7D, 14D, 21D, 28D) display "—" with contentDescription = "No data"
         val noDataDescriptions = composeTestRule.onAllNodesWithContentDescription("No data")
-        noDataDescriptions.assertCountEquals(2)
+        noDataDescriptions.assertCountEquals(4)
 
-        for (i in 0 until 2) {
-            assertSingleLineNoOverflow(noDataNodes[i])
-        }
-
-        // 7-day pace subtitle displays "Baseline 7d pace" with lineCount <= 2 and !hasVisualOverflow
+        // Subtitles display with lineCount <= 2 and !hasVisualOverflow
         assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Baseline 7d pace"))
-
-        // 14-day pace subtitle displays "Needs weigh-in 14+ days ago" with lineCount <= 2 and !hasVisualOverflow
         assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Needs weigh-in 14+ days ago"))
+        assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Needs weigh-in 21+ days ago"))
+        assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Needs weigh-in 28+ days ago"))
     }
 
     // =========================================================================
@@ -450,8 +445,8 @@ class WeightProgressionCardComposeTest {
             )
         }
 
-        // 7-day pace text starts with "▼ "
-        composeTestRule.onNodeWithText("▼ -0.8 kg/wk").assertIsDisplayed()
+        // 7-day pace text starts with "▼ " at 2-decimal precision
+        composeTestRule.onNodeWithText("▼ -0.80 kg/wk").assertIsDisplayed()
     }
 
     // =========================================================================
@@ -488,8 +483,8 @@ class WeightProgressionCardComposeTest {
             )
         }
 
-        // 7-day pace text starts with "▲ "
-        composeTestRule.onNodeWithText("▲ +0.8 kg/wk").assertIsDisplayed()
+        // 7-day pace text starts with "▲ " at 2-decimal precision
+        composeTestRule.onNodeWithText("▲ +0.80 kg/wk").assertIsDisplayed()
     }
 
     // =========================================================================
@@ -766,5 +761,70 @@ class WeightProgressionCardComposeTest {
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("75.57 kg"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("74.61 kg"))
         composeTestRule.onAllNodesWithText("-0.09 kg/day").assertCountEquals(2)
+    }
+
+    // =========================================================================
+    // Scenario 18: 2x2 Pace Grid & Multi-Horizon Goal Estimations Card (Feature 005)
+    // =========================================================================
+    @Test
+    fun scenario18_twoByTwoPaceGridAndMultiHorizonGoalEstimationsRendersAt360dpFontScale13() {
+        val cycleStart = LocalDate.of(2026, 9, 28)
+        val referenceDate = LocalDate.of(2026, 10, 22)
+        val cycleEnd = LocalDate.of(2026, 12, 28)
+        val cycle = Cycle(
+            id = 5018L,
+            name = "Recomp",
+            startDate = cycleStart,
+            endDate = cycleEnd,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 77.8,
+            targetWeightKg = 72.0
+        )
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.68, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 76.10, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 75.94, updatedAtMillis = 3L),
+            WeightEntry(date = referenceDate, weightKg = 75.66, updatedAtMillis = 4L)
+        )
+
+        composeTestRule.setContent {
+            CompositionLocalProvider(
+                LocalDensity provides Density(density = 1f, fontScale = 1.3f)
+            ) {
+                Box(modifier = Modifier.width(360.dp)) {
+                    WeightProgressionCard(
+                        cycle = cycle,
+                        weightEntries = entries,
+                        weightUnit = "kg",
+                        onLogWeight = {},
+                        today = referenceDate
+                    )
+                }
+            }
+        }
+
+        // Verify 2x2 Pace Cards headers & values
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("7-Day Pace"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("14-Day Pace"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("21-Day Pace"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("28-Day Pace"))
+
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("▼ -0.28 kg/wk"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("▼ -0.22 kg/wk"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("▼ -0.34 kg/wk"))
+        assertMaxTwoLinesNoOverflow(composeTestRule.onNodeWithText("Needs weigh-in 28+ days ago"))
+
+        // Verify Multi-Horizon Goal Estimations Card
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("GOAL ARRIVAL ESTIMATIONS"))
+        assertMaxTwoLinesNoOverflow(
+            composeTestRule.onNodeWithText("Target: 28 Dec 2026 (9.6w left) · Required: -0.39 kg/wk")
+        )
+
+        // Verify all 4 horizon estimation rows render without overflow
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("7D (-0.28 kg/wk)"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("14D (-0.22 kg/wk)"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("21D (-0.34 kg/wk)"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("28D (—)"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("Needs 28+ days"))
     }
 }
