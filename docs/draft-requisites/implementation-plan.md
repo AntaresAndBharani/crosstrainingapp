@@ -1,257 +1,284 @@
-# 📋 Implementation Plan & Requirement Specification: 21D & 28D Pace Cards and Visual Multi-Horizon Goal Estimations (7D, 14D, 21D, 28D)
+# 📋 Implementation Plan & Requirement Specification: Claude GitHub App Integration (`claude.yml` & Automated `pr-review.yml` Auto-Fix & Squash-Merge Pipeline)
 
 ## 📝 Context & Problem Statement
 
-Based on Product Owner design review (`/grill-me`) of the `WeightProgressionHeroCard` on the `Progress & Goals` screen:
+Based on Product Owner design review (`/grill-me`) and the reference implementation in [`AntaresAndBharani/darwin-trader`](https://github.com/AntaresAndBharani/darwin-trader):
 
-1. **Missing Medium- and Long-Term Rolling Pace Horizons (`21-Day Pace` & `28-Day Pace`)**:
-   - Currently, the pace section only displays `7-Day Pace` and `14-Day Pace`.
-   - Athletes tracking multi-month fat loss cycles need **21-Day Pace** and **28-Day Pace** alongside 7D and 14D in a **2×2 grid** to observe 3-week and 4-week smoothed velocity trends (which filter out bi-weekly water retention and refeed fluctuations).
-2. **1-Decimal Rounding Collapses Multi-Horizon Pace Differences**:
-   - Over 14D, 21D, and 28D windows, weekly pace rates frequently differ by less than `0.1 kg/wk` (e.g., `-0.24 kg/wk`, `-0.19 kg/wk`, `-0.16 kg/wk`), which all round to `-0.2 kg/wk` at 1 decimal place and produce identical week projections (`18.0 weeks`).
-   - **Pace Cards, Required Pace, and Estimations** must use **2-decimal precision** (e.g., `-0.28 kg/wk`, `-0.24 kg/wk`, `-0.19 kg/wk`) so that 7D, 14D, 21D, and 28D paces and their arrival projections reflect their true distinct trajectories.
-3. **Text-Only Single-Horizon `ForecastBanner`**:
-   - Currently, the bottom `ForecastBanner` is a plain text callout showing only a single pace tier (`Estimated: 18.0 weeks`, `Projected arrival: Fri, 26 Feb 2027`, `Based on 14-day pace (-0.2 kg/wk)`, `Required pace: -0.4 kg/wk (by 28 Dec 2026)`).
-   - It must be redrawn into a **visual Multi-Horizon Goal Estimations Card** featuring:
-     - A **Target Benchmark Header** displaying the cycle's Target End Date, remaining weeks, and 2-decimal Required Pace.
-     - **4 Comparative Visual Horizon Rows (`7D`, `14D`, `21D`, `28D`)**, where each row displays:
-       - **Line 1**: Horizon label & 2-decimal pace on the left (`"7D (-0.30 kg/wk)"`), and estimated weeks + projected arrival date on the right (`"12.3 wks · 17 Jan 2027"`, or `"Pace stalled"` / `"Needs 21+ days"`).
-       - **Line 2**: A **color-coded proportional Pace-to-Required Sufficiency Bar** paired with an **ahead/late weeks delta badge** (`"On time (-1.2w)"` or `"+2.9w late"`).
+1. **Missing Interactive `@claude` GitHub App Workflow (`.github/workflows/claude.yml`)**:
+   - Currently, `AntaresAndBharani/crosstrainingapp` only defines [`build.yml`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/.github/workflows/build.yml) (`PR CI & Test Verification`) and [`release.yml`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/.github/workflows/release.yml) (`Release on Merge to Main`).
+   - Maintainers cannot mention `@claude` in GitHub Issues, Issue Comments, Pull Request Reviews, or PR Review Comments to trigger interactive Claude Opus 5.5 (`--model claude-opus-5-5 --effort high`) sessions directly on GitHub.com.
+2. **Missing Automated PR Review, In-Place Auto-Fix & Squash-Merge Pipeline (`.github/workflows/pr-review.yml` & `.github/workflows/prompts/pr-review.md`)**:
+   - Pull Requests opened in `crosstrainingapp` do not currently undergo automated Claude Opus 5.5 High architectural review, in-place auto-fixing (`[skip pr-review]`), self-healing label governance, exact-SHA CI gating against `PR CI & Test Verification`, automatic squash-merging, and parent-story closure.
+
+---
+
+## 🤝 Aligned Design Decisions (`/grill-me` Consensus)
+
+1. **Dual-Workflow Scope (`claude.yml` + `pr-review.yml` + `prompts/pr-review.md`)**:
+   - Integrate **both** the interactive `@claude` mention workflow (`.github/workflows/claude.yml`) and the unified automated PR review, in-place auto-fix, exact-SHA CI verification, and squash-merge workflow (`.github/workflows/pr-review.yml` + `.github/workflows/prompts/pr-review.md`) modeled on `AntaresAndBharani/darwin-trader`.
+2. **Lightweight Runner Environment (No Redundant JDK/Gradle Setup in Claude Workflows)**:
+   - Keep both `claude.yml` and `pr-review.yml` lightweight without pre-installed JDK 17 or Gradle setup steps.
+   - In `pr-review.yml`, Claude Opus 5.5 High inspects `pr_meta.json`, `pr_diff.txt`, and the repository source files (`Read,Write,Edit,MultiEdit,Grep,Glob,Bash`), applies any code, unit-test, PowerShell script, or documentation fixes directly in the working tree (and can run `pwsh -NoProfile -File ./scripts/tests/Invoke-ScriptTests.ps1` if scripts/workflows are modified), and writes `pr_review_output.json`.
+   - Full Android JVM unit test and cross-platform script verification is executed by the existing [`build.yml`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/.github/workflows/build.yml) (`PR CI & Test Verification`) workflow, which `pr-review.yml` strictly polls for `--commit "$CURRENT_SHA"` before merging.
+3. **Self-Healing Label Parity + CrossTraining Orchestrator Compatibility**:
+   - Retain exact `darwin-trader` label parity (`review:approved`, `review:changes-requested`, `status:needs-po-input`, `status:ready`, `status:done`, `tech-debt`) with idempotent `gh label create <name> -R "$REPO" --force` (`ensure_label`) before any label operation so missing labels never crash the workflow.
+   - Additionally, for CrossTraining orchestrator compatibility ([`GEMINI.md`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/GEMINI.md#L33-L41)):
+     - Ensure and apply `needs-refactor` alongside `review:changes-requested` whenever a PR receives a `CHANGES_REQUESTED` verdict or when CI fails/times out on `CURRENT_SHA`, and remove `needs-refactor` when `review:approved` is applied.
+     - Ensure and apply `dev-implemented` alongside `status:done` (while removing `ready-for-dev` and `status:ready`) when closing a completed parent story.
+4. **Preserve `build.yml` Workflow Name (`PR CI & Test Verification`)**:
+   - Keep `.github/workflows/build.yml` named `PR CI & Test Verification` to preserve `GEMINI.md` documentation and branch protection compatibility.
+   - Configure `pr-review.yml` to poll `gh run list -R "$REPO" --commit "$CURRENT_SHA" -w "PR CI & Test Verification" -L 1` for up to 60 attempts at 10-second intervals (10 minutes max) and require an explicit `CI_PASSED="true"` (`completed:success`) gate before executing `gh pr merge "$PR_NUMBER" -R "$REPO" --squash --delete-branch`.
+5. **Cross-Platform Static Regression Test Coverage (`scripts/tests/ClaudeWorkflows.Static.Tests.ps1`)**:
+   - Add a deterministic PowerShell static test suite in `scripts/tests/ClaudeWorkflows.Static.Tests.ps1` (auto-discovered by [`scripts/tests/Invoke-ScriptTests.ps1`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/scripts/tests/Invoke-ScriptTests.ps1) and [`build.yml`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/.github/workflows/build.yml)) verifying the structural, concurrency, fast-path, self-healing label, and exact-SHA CI polling contracts of `claude.yml`, `pr-review.yml`, and `.github/workflows/prompts/pr-review.md`.
+
+---
+
+## 🏗️ Target Architecture & Workflow State Machine
+
+```mermaid
+flowchart TD
+    subgraph Interactive ["1. Interactive @claude Workflow (.github/workflows/claude.yml)"]
+        Mention["@claude mention in issue_comment, pull_request_review_comment,\npull_request_review, or issues (opened/assigned)"] --> Checkout1["actions/checkout@v4 (fetch-depth: 1)"]
+        Checkout1 --> ClaudeInteractive["anthropics/claude-code-action@v1\n(--model claude-opus-5-5 --effort high)"]
+    end
+
+    subgraph AutomatedPR ["2. Automated PR Review & Auto-Merge (.github/workflows/pr-review.yml)"]
+        Trigger["PR Event (opened, synchronize, ready_for_review, reopened)\nor workflow_dispatch(pr_number)"] --> Meta["Step: Check PR state, loop cap & skip markers (steps.meta)"]
+        Meta -->|"STATE != OPEN or Draft"| ExitNoOp["Exit 0 (skip=true)"]
+        Meta -->|"LAST_MSG contains [skip pr-review]\nAND latest verdict == APPROVED"| MergeOnly["Fast-Path (merge_only=true, 0 LLM tokens):\nEnsure review:approved & remove needs-refactor"]
+        Meta -->|"LAST_MSG contains [skip pr-review]\nAND not APPROVED"| ExitNoOp
+        Meta -->|"ROUNDS >= ROUND_CAP (3)"| Escalate["Ensure & add status:needs-po-input\nPost escalation comment & Exit 0"]
+        Meta -->|"Needs Review (skip=false, merge_only=false)"| FetchCtx["Checkout PR Branch (fetch-depth: 0)\n+ Fetch pr_meta.json & pr_diff.txt"]
+        FetchCtx --> ClaudeReview["Run Claude Opus 5.5 High Review & In-Place Auto-Fix\n(.github/workflows/prompts/pr-review.md)"]
+        ClaudeReview --> CommitStep["Commit & Push Auto-Fixes ([skip pr-review])\nUpdate CURRENT_SHA"]
+        CommitStep --> PostVerdict["Post Verdict Comment\nIdempotently Create & Apply Labels\nCreate Follow-up Backlog Issues"]
+        PostVerdict -->|"verdict == CHANGES_REQUESTED"| ExitChanges["Apply review:changes-requested + needs-refactor\nExit 0"]
+        PostVerdict -->|"verdict == APPROVED"| PollCI["Wait for 'PR CI & Test Verification' Run\nwhere headSha == CURRENT_SHA (Max 60 x 10s = 10 min)"]
+        MergeOnly --> PollCI
+        PollCI -->|"CI_PASSED == true"| SquashMerge["gh pr merge --squash --delete-branch"]
+        PollCI -->|"CI Failed or Timed Out"| CIFail["Swap label to review:changes-requested + needs-refactor\nPost CI Failure Comment & Exit 1"]
+        SquashMerge --> CloseStory["Check Linked Subtask & Parent Story\nApply status:done + dev-implemented & Close if 0 Open Siblings"]
+    end
+```
+
+---
+
+## 📂 Component Impact Table
+
+| File / Resource | Action | Responsibility |
+| :--- | :--- | :--- |
+| `.github/workflows/claude.yml` | **Create** | Interactive `@claude` GitHub App workflow triggered on `issue_comment`, `pull_request_review_comment`, `pull_request_review`, and `issues`, invoking `anthropics/claude-code-action@v1` with `--model claude-opus-5-5 --effort high`. |
+| `.github/workflows/pr-review.yml` | **Create** | Unified automated PR review, in-place auto-fix (`[skip pr-review]`), zero-token `merge_only` recovery fast-path, idempotent self-healing label governance (`review:*`, `status:*`, `needs-refactor`, `dev-implemented`, `tech-debt`), exact-SHA polling of `PR CI & Test Verification`, squash-merge, and parent-story closure workflow. |
+| `.github/workflows/prompts/pr-review.md` | **Create** | CrossTraining-tailored review & auto-fix instructions for Claude Opus 5.5 High covering MVVM/UDF architecture, Room migration/schema parity, Cloud Sync tombstone safety, analytics rounding invariants, Compose UI/TalkBack accessibility, PowerShell script hygiene, and `pr_review_output.json` schema output. |
+| `scripts/tests/ClaudeWorkflows.Static.Tests.ps1` | **Create** | Cross-platform PowerShell static regression test suite verifying `claude.yml`, `pr-review.yml`, and `.github/workflows/prompts/pr-review.md` contracts via `Invoke-ScriptTests.ps1`. |
+| `CHANGELOG.md` | **Modify** | Document the Claude GitHub App integration (`claude.yml`, `pr-review.yml`, `prompts/pr-review.md`, and `ClaudeWorkflows.Static.Tests.ps1`) under `## [Unreleased]`. |
 
 ---
 
 ## 🎯 Final Decision Plan & User Story Specification
 
-### Title: feat(ui,analytics): 21D/28D Pace Grid & Visual Multi-Horizon Goal Estimations Card (7D, 14D, 21D, 28D)
+### Title
+`feat(ci): integrate Claude GitHub App workflows (claude.yml & automated pr-review.yml auto-fix and squash-merge)`
+
+### Sizing & Pattern Classification
+- **Pattern:** **Pattern A (Standalone Task, $\le 5$ files)**
+- **Files Touched:** 5 files (`.github/workflows/claude.yml`, `.github/workflows/pr-review.yml`, `.github/workflows/prompts/pr-review.md`, `scripts/tests/ClaudeWorkflows.Static.Tests.ps1`, `CHANGELOG.md`)
 
 ### User Story
-**As an** athlete tracking a Fat Loss / Bodybuilding cycle on the Progress & Goals screen
-**I want** a 2×2 grid of 2-decimal **7-Day, 14-Day, 21-Day, and 28-Day Pace cards** and a redesigned **Visual Goal Estimations card** comparing all 4 pace horizons (`7D`, `14D`, `21D`, `28D`) with proportional pace-sufficiency bars, estimated weeks, projected arrival dates, and ahead/late badges against my cycle target date and required pace
-**So that** I can visually compare my short-, medium-, and monthly-smoothed weight loss trajectories and immediately see which pace horizons are on track to hit my goal on time.
+**As a** project maintainer of CrossTraining (`AntaresAndBharani/crosstrainingapp`)
+**I want** the Claude GitHub App integrated via `.github/workflows/claude.yml` (interactive `@claude` mentions) and `.github/workflows/pr-review.yml` + `.github/workflows/prompts/pr-review.md` (automated Claude Opus 5.5 High PR review, in-place auto-fix, self-healing label management, exact-commit CI gating against `PR CI & Test Verification`, squash-merge, and parent-story closure)
+**So that** I can collaborate with Claude Opus 5.5 directly on Issues/PRs and have every non-draft Pull Request automatically reviewed, fixed in place, verified against CI on the exact target commit SHA, and squash-merged without self-cancellation or missing-label failures.
 
 ---
 
-## 📐 Mathematical Model & Domain Invariants (`FatLossAnalytics.kt`)
+## 📐 Detailed Technical Specifications
 
-### 1. 21-Day & 28-Day Rolling Pace Computation
-- Uses the existing `computePaceRate(entries, windowDays, cycleStartDate, today, startingWeightKg)` engine for `windowDays = 21` and `windowDays = 28`:
-  - `compute21DayPace(entries, cycleStartDate, today, startingWeightKg)` and `compute21DayPace(entries, cycle, today)`
-  - `compute28DayPace(entries, cycleStartDate, today, startingWeightKg)` and `compute28DayPace(entries, cycle, today)`
-- **Same-Weekday Pace Comparison vs Last Week**:
-  - Uses `computePaceComparisonVsLastWeek(entries, cycle, windowDays = 21, referenceDate = today)` and `windowDays = 28`.
-- **Subtitle Formatting (`formatPaceSubtitle`, `format21DayPaceSubtitle`, `format28DayPaceSubtitle`)**:
-  - When `comparison == null`:
-    - If `windowDays == 7`: `"Baseline 7d pace"`
-    - If `windowDays > 7` (`14`, `21`, `28`):
-      - When `pace == null`: `"Needs weigh-in ${windowDays}+ days ago"` (e.g., `"Needs weigh-in 14+ days ago"`, `"Needs weigh-in 21+ days ago"`, `"Needs weigh-in 28+ days ago"`)
-      - When `pace != null`: `"Smoothed trend"`
-  - When `comparison != null`:
-    - If `abs(comparison.deltaRateKgPerWeek) < PACE_NOISE_THRESHOLD_KG_PER_WEEK`: `"Pace unchanged"`
-    - If loss-to-loss (`percentChange != null`): `"$pct% ${faster|slower} loss $vsPart"`
-    - Otherwise (rate delta): formatted to **2 decimal places** on the 2×2 Pace Cards (e.g., `"-0.12 kg/wk vs last Fri"`, `"+0.15 kg/wk vs last Fri"`).
+### 1. Interactive `@claude` Workflow (`.github/workflows/claude.yml`)
 
-### 2. 2-Decimal Pace Rate & Required Pace Formatting
-- **`PaceRateResult.formatDisplay2(unit: String = "kg"): String`**:
-  - Converts `rateKgPerWeek` to `unit` (`kg` or `lbs`) and rounds to 2 decimals (`round2(rateInUnit)`):
-    - When `rateInUnit < -0.05`: `String.format(Locale.US, "%.2f %s", round2(rateInUnit), unitLabel)` (e.g., `"-0.28 kg/wk"`)
-    - When `rateInUnit > 0.05`: `String.format(Locale.US, "+%.2f %s", round2(rateInUnit), unitLabel)` (e.g., `"+0.14 kg/wk"`)
-    - Deadband `[-0.05, +0.05]`: `String.format(Locale.US, "0.00 %s", unitLabel)` (e.g., `"0.00 kg/wk"`)
-- **Required Pace 2-Decimal Precision (`RequiredPaceResult`)**:
-  - In addition to existing properties, exposes exact/2-decimal rate in active unit:
-    - `exactRequiredRateInUnit: Double = -remainingWeightInUnit / weeksRemaining`
-    - `requiredRate2InUnit: Double = -maxOf(0.01, round2(remainingWeightInUnit / weeksRemaining))`
-    - `formatRate2(): String` -> `String.format(Locale.US, "%.2f %s", requiredRate2InUnit, unitLabel)` (e.g., `"-0.39 kg/wk"`).
-    - `formatBenchmarkHeader(): String`:
-      - E.g., `"Target: 28 Dec 2026 (9.4w left) · Required: -0.39 kg/wk"` (plus `" · ⚠️ >1% BW/wk"` if `exceedsSustainableRate`).
+Create `.github/workflows/claude.yml` matching `AntaresAndBharani/darwin-trader`:
 
-### 3. Multi-Horizon Forecast Engine (`computeMultiHorizonForecast`)
-Evaluates the 4 standard horizons `HORIZON_WINDOWS = listOf(7, 14, 21, 28)`:
+```yaml
+name: Claude Code
 
-#### Container Precedence (`MultiHorizonForecastState`):
-1. **`GoalReached`**:
-   - When `targetWeightKg != null && targetWeightKg > 0.0 && round1InUnit(current7dAvgKg, weightUnit) <= round1InUnit(targetWeightKg, weightUnit)`.
-2. **`CycleEnded`**:
-   - When `cycleEndDate != null && today.isAfter(cycleEndDate)` (and goal not yet reached).
-3. **`Unavailable`** (`null`):
-   - When `targetWeightKg == null || targetWeightKg <= 0.0 || targetWeightKg >= effectiveStartWeightKg`.
-4. **`NotEnoughData`**:
-   - When `activeEntries.isEmpty()`.
-5. **`Active(remainingWeightInUnit, targetWeightInUnit, requiredPace, rows: List<HorizonEstimationRow>)`**:
-   - Always contains **4 `HorizonEstimationRow` items** in order: `7D`, `14D`, `21D`, `28D`.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  pull_request_review:
+    types: [submitted]
 
-#### Per-Horizon Row Calculation (`HorizonEstimationRow` for `windowDays` in `[7, 14, 21, 28]`):
-Given `remainingInUnit = diff1(toUnit(current7dAvgKg, weightUnit), toUnit(targetWeightKg, weightUnit))` (`> 0.0`):
-1. **`HorizonRowState.NotEnoughData(windowDays: Int)`**:
-   - Emitted when `pace == null` (insufficient history for `windowDays`).
-   - Line 1 Left: `"${windowDays}D (—)"`
-   - Line 1 Right: `"Needs ${windowDays}+ days"`
-   - Line 2 Bar: `0f` fill (`outlineVariant` track)
-   - Line 2 Badge: `null`
-2. **`HorizonRowState.Stalled(windowDays: Int, formattedPace2: String)`**:
-   - Emitted when `pace != null` and either `pace.trend != PaceTrend.LOSS` or `round2(toUnit(pace.deficitVelocityKgPerWeek, weightUnit)) <= 0.00`.
-   - Line 1 Left: `"${windowDays}D ($formattedPace2)"` (e.g., `"7D (+0.10 kg/wk)"` or `"7D (0.00 kg/wk)"`)
-   - Line 1 Right: `"Pace stalled"`
-   - Line 2 Bar: `0f` fill
-   - Line 2 Badge: `"Stalled"`
-3. **`HorizonRowState.Projected(...)`**:
-   - Emitted when `pace != null`, `pace.trend == PaceTrend.LOSS`, and `v2 = round2(toUnit(pace.deficitVelocityKgPerWeek, weightUnit)) > 0.00`:
-   - **Estimated Weeks**:
-     $$\text{rawWeeks} = \frac{\text{remainingInUnit}}{v_2}$$
-     - Capped at `52.0` weeks (`isCapped = rawWeeks > 52.0`).
-     - When `!isCapped`:
-       - `weeksDisplay = String.format(Locale.US, "%.1f wks", rawWeeks)`
-       - `daysToGoal = kotlin.math.round(rawWeeks * 7.0).toLong()`
-       - `targetDate = today.plusDays(daysToGoal)`
-       - Line 1 Right: `"${weeksDisplay} · ${targetDate.format(shortDateWithYearFormatter)}"` (e.g., `"12.3 wks · 17 Jan 2027"`)
-     - When `isCapped` (`> 52.0 weeks`):
-       - Line 1 Right: `"> 1 year"`
-   - **Proportional Pace-to-Required Sufficiency Bar (`barFraction: Float`)**:
-     - When `requiredPace != null`:
-       - Let `reqV2 = kotlin.math.abs(requiredPace.requiredRate2InUnit)`.
-       - `barFraction = (v2 / reqV2).toFloat().coerceIn(0.05f, 1.0f)`
-     - When `requiredPace == null` (open-ended cycle with no `endDate`):
-       - Let `maxV2` = maximum `v2` among the active projected rows (or `0.01 * round1InUnit(current7dAvgKg, weightUnit)` fallback).
-       - `barFraction = (v2 / maxV2).toFloat().coerceIn(0.05f, 1.0f)`
-   - **Target Date Comparison & Weeks Delta Badge (`deltaBadgeText: String?`, `isOnTrack: Boolean`)**:
-     - When `requiredPace != null`:
-       - `weeksDelta = round1(rawWeeks - requiredPace.weeksRemaining)`
-       - `isOnTrack = !isCapped && weeksDelta <= 0.0` (or `v2 >= reqV2`)
-       - Badge text:
-         - If `isCapped`: `"> 1 yr late"` (`isOnTrack = false`)
-         - Else if `weeksDelta < -0.05`: `"On time (${String.format(Locale.US, "%.1f", weeksDelta)}w)"` (e.g., `"On time (-1.2w)"`, `isOnTrack = true`)
-         - Else if `weeksDelta <= 0.05`: `"On time"` (`isOnTrack = true`)
-         - Else (`weeksDelta > 0.05`): `"+${String.format(Locale.US, "%.1f", weeksDelta)}w late"` (e.g., `"+2.9w late"`, `isOnTrack = false`)
-     - When `requiredPace == null`:
-       - `deltaBadgeText = null`, `isOnTrack = true`.
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code (Opus 5.5 High)
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--model claude-opus-5-5 --effort high'
+          additional_permissions: |
+            actions: read
+```
+
+### 2. Automated PR Review, Auto-Fix & Squash-Merge Workflow (`.github/workflows/pr-review.yml`)
+
+Create `.github/workflows/pr-review.yml` with the following exact lifecycle guarantees:
+
+1. **Triggers & Concurrency**:
+   - `on.pull_request.types: [opened, synchronize, ready_for_review, reopened]`
+   - `on.workflow_dispatch.inputs.pr_number` (`required: true`, `type: string`)
+   - `concurrency`:
+     ```yaml
+     concurrency:
+       group: pr-review-${{ github.event.pull_request.number || inputs.pr_number }}
+       cancel-in-progress: false
+     ```
+   - `permissions`: `contents: write`, `issues: write`, `pull-requests: write`, `id-token: write`, `actions: read`.
+   - `env`: `ROUND_CAP: 3`, `VERDICT_MARKER: "<!-- pr-review-verdict -->"`, `CI_WORKFLOW_NAME: "PR CI & Test Verification"`.
+
+2. **Step 1 — Pre-Flight Metadata, Loop Cap & `[skip pr-review]` Fast-Path (`id: meta`)**:
+   - Query `gh pr view "$PR_NUMBER" -R "$REPO" --json state,isDraft,headRefName,headRefOid,comments`.
+   - Emit `head_ref` and `head_sha` to `$GITHUB_OUTPUT`.
+   - If `STATE != "OPEN"` or `IS_DRAFT == "true"`, emit `skip=true`, `merge_only=false` and `exit 0`.
+   - Inspect commit message of `HEAD_SHA`:
+     - If `LAST_MSG` contains `"[skip pr-review]"`:
+       - Extract the last comment body containing `<!-- pr-review-verdict -->`.
+       - If `LAST_VERDICT_BODY` contains `"APPROVED"`, emit `skip=false` and `merge_only=true` (zero-token fast-path recovery) and `exit 0`.
+       - Otherwise emit `skip=true` and `merge_only=false` and `exit 0`.
+   - Count prior `<!-- pr-review-verdict -->` comments (`ROUNDS`). If `ROUNDS >= ROUND_CAP`:
+     - Idempotently ensure `status:needs-po-input` (`#B60205`) and `orchestration-failed` (`#B60205`), apply `status:needs-po-input` to the PR, post the escalation comment with `<!-- pr-review-verdict -->`, emit `skip=true`, `merge_only=false`, and `exit 0`.
+   - Otherwise emit `skip=false` and `merge_only=false`.
+
+3. **Step 2 & Step 3 — Checkout PR Branch & Fetch PR Context**:
+   - Guarded by `if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.merge_only != 'true'`.
+   - Checkout `${{ steps.meta.outputs.head_ref }}` with `token: ${{ secrets.ORCHESTRATION_PAT || secrets.GITHUB_TOKEN }}` and `fetch-depth: 0`.
+   - Write `pr_meta.json` (`gh pr view "$PR_NUMBER" -R "$REPO" --json number,title,body,url,headRefName,baseRefName,comments > pr_meta.json`) and `pr_diff.txt` (`gh pr diff "$PR_NUMBER" -R "$REPO" > pr_diff.txt`).
+
+4. **Step 4 — Run PR Review & Auto-Fix (`id: claude`)**:
+   - Guarded by `if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.merge_only != 'true'`.
+   - Uses `anthropics/claude-code-action@v1` with:
+     - `claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`
+     - `github_token: ${{ secrets.ORCHESTRATION_PAT || secrets.GITHUB_TOKEN }}`
+     - `prompt`:
+       ```text
+       Read and follow all instructions in .github/workflows/prompts/pr-review.md.
+       Review the PR, automatically fix any code/test/script/doc issues you find in the working tree, and write your final output to pr_review_output.json.
+       ```
+     - `claude_args: '--model claude-opus-5-5 --effort high --allowedTools "Read,Write,Edit,MultiEdit,Grep,Glob,Bash"'`
+     - `additional_permissions: actions: read`
+
+5. **Step 5 — Commit Auto-Fixes, Apply Verdict & Synchronize Self-Healing Labels (`id: verdict_step`)**:
+   - Guarded by `if: steps.meta.outputs.skip != 'true' && (steps.meta.outputs.merge_only == 'true' || (steps.claude.outcome == 'success' && hashFiles('pr_review_output.json') != ''))`.
+   - When `MERGE_ONLY == "true"`:
+     - Ensure `review:approved` (`#0E8A16`), remove `review:changes-requested` and `needs-refactor`, add `review:approved`, emit `verdict=APPROVED` and `current_sha=$INITIAL_SHA`, and `exit 0`.
+   - When `MERGE_ONLY != "true"`:
+     - Copy `pr_review_output.json` to `/tmp/pr_review_output.json` and remove temporary `pr_meta.json`, `pr_diff.txt`, `pr_review_output.json` before checking `git status --porcelain`.
+     - If working tree is dirty or `HEAD != INITIAL_SHA`, commit as `claude[bot]` with message `"fix(pr-review): apply Claude Opus 5.5 auto-fixes [skip pr-review]"` and push to `origin "HEAD:${HEAD_REF}"`.
+     - Record `CURRENT_SHA=$(git rev-parse HEAD)`.
+     - Execute inline Python script that:
+       - Defines `LABEL_META` for `review:approved`, `review:changes-requested`, `needs-refactor`, `status:needs-po-input`, `status:ready`, `status:done`, `dev-implemented`, and `tech-debt`, plus `ensure_label(repo, name)` (`gh label create ... --force`, `check=False`).
+       - Posts the `<!-- pr-review-verdict -->` comment on the PR.
+       - Creates any `followup_backlog_issues` (idempotently ensuring each label first).
+       - Updates PR labels:
+         - Removes `review:approved`, `review:changes-requested`, and `needs-refactor`.
+         - If `verdict == 'APPROVED'`: ensures and adds `review:approved`.
+         - If `verdict == 'CHANGES_REQUESTED'`: ensures and adds both `review:changes-requested` and `needs-refactor`.
+       - Appends `verdict` and `current_sha` to `$GITHUB_OUTPUT`.
+
+6. **Step 6 — Wait for CI on Target Commit & Squash-Merge (`id: merge_step`)**:
+   - Guarded by `if: steps.meta.outputs.skip != 'true' && steps.verdict_step.outputs.verdict == 'APPROVED'`.
+   - Polls `gh run list -R "$REPO" --commit "$CURRENT_SHA" -w "$CI_WORKFLOW_NAME" -L 1 --json status,conclusion -q '.[0] | "\(.status):\(.conclusion)"'` up to 60 times (10s interval = 10 minutes max).
+   - If `CI_PASSED != "true"`:
+     - Ensures `review:changes-requested` and `needs-refactor` labels, removes `review:approved`, adds `review:changes-requested` and `needs-refactor`, posts a diagnostic comment referencing `$CURRENT_SHA` and `$BUILD_STATUS`, and exits with code `1`.
+   - If `CI_PASSED == "true"` and `PR_STATE == "OPEN"`:
+     - Runs `gh pr merge "$PR_NUMBER" -R "$REPO" --squash --delete-branch`.
+
+7. **Step 7 — Close Parent Story When All Subtasks Are Complete (`id: close_story_step`)**:
+   - Guarded by `if: steps.meta.outputs.skip != 'true' && steps.verdict_step.outputs.verdict == 'APPROVED' && steps.merge_step.outcome == 'success'`.
+   - Extracts linked issue `#<SUBTASK>` from PR body (`close[sd]?|fixe?[sd]?|resolve[sd]?`).
+   - Resolves parent story via `gh api "repos/$REPO/issues/$SUBTASK/parent" -q .number`.
+   - Checks open sibling sub-issues via `gh api "repos/$REPO/issues/$STORY/sub_issues" -q '[.[] | select(.state=="open")] | length'`.
+   - When `OPEN_SIBLINGS == 0`, ensures `status:done` and `dev-implemented` labels, posts completion comment on `$STORY`, removes `status:ready` / `ready-for-dev`, adds `status:done` and `dev-implemented`, and closes `$STORY`.
+
+### 3. PR Review Prompt Specification (`.github/workflows/prompts/pr-review.md`)
+
+Create `.github/workflows/prompts/pr-review.md` tailored to CrossTraining:
+- Defines role as **PR Review & Auto-Fix Engineer (Claude Opus 5.5, High Effort)** for **CrossTraining** (`com.fractanomics.crosstraining`).
+- Documents context files (`pr_meta.json`, `pr_diff.txt`).
+- Specifies review responsibilities:
+  1. **Architecture & State Management**: MVVM with Unidirectional Data Flow (`Composable -> ViewModel -> Repository -> Room/Firebase`), immutable `StateFlow<UiState>` collected via `collectAsStateWithLifecycle()`.
+  2. **Data Integrity, Room & Cloud Sync**: Room entity/DAO safety, migration registration in both `AppDatabase.build()` and `AppDatabase.demo()`, canonical Room schema JSON exports, and Firestore tombstone LWW conflict-resolution invariants (`UserCloudSyncManager.kt`).
+  3. **Analytics & Compose UI Quality**: Display-unit rounding consistency (`kg` / `lbs`), boundary guards (zero-division, empty history, cold-start windows), Material 3 responsive layout anti-truncation on compact 360dp viewports, and TalkBack accessibility semantics.
+  4. **Repository Hygiene & Scripts**: Ensure no machine-specific paths (e.g., `org.gradle.java.home`) are committed to `gradle.properties`, verify `CHANGELOG.md` (`## [Unreleased]`) is updated when required, and if PowerShell scripts or workflows under `scripts/` or `.github/workflows/` are modified, run `pwsh -NoProfile -File ./scripts/tests/Invoke-ScriptTests.ps1`.
+- Specifies in-place auto-fix rules (edit files directly in the working tree without running `git commit` or `git push`; the workflow commits and pushes `[skip pr-review]` and awaits `PR CI & Test Verification` on the exact commit SHA).
+- Specifies the required `pr_review_output.json` schema (`verdict`, `fixes_applied`, `summary`, `pr_comment_markdown`, `blocking_issues`, `followup_backlog_issues`).
+
+### 4. Static Workflow Regression Tests (`scripts/tests/ClaudeWorkflows.Static.Tests.ps1`)
+
+Create `scripts/tests/ClaudeWorkflows.Static.Tests.ps1` (dot-sourced automatically by `scripts/tests/Invoke-ScriptTests.ps1`) asserting:
+1. `.github/workflows/claude.yml` exists, triggers on `issue_comment`, `pull_request_review_comment`, `issues`, and `pull_request_review` with `@claude` filter guards, uses `anthropics/claude-code-action@v1`, `secrets.CLAUDE_CODE_OAUTH_TOKEN`, and `--model claude-opus-5-5 --effort high`.
+2. `.github/workflows/pr-review.yml` exists, sets `cancel-in-progress: false` on `pr-review-${{ github.event.pull_request.number || inputs.pr_number }}`, implements `[skip pr-review]` and `merge_only=true` fast-path guards across setup/review steps, uses `anthropics/claude-code-action@v1` with `--model claude-opus-5-5 --effort high`, defines idempotent `ensure_label` (`gh label create ... --force`) for `review:approved`, `review:changes-requested`, `needs-refactor`, `status:needs-po-input`, `status:done`, `dev-implemented`, and `tech-debt`, polls `PR CI & Test Verification` strictly with `--commit "$CURRENT_SHA"` (`seq 1 60`, `CI_PASSED="true"`), squash-merges via `gh pr merge "$PR_NUMBER" -R "$REPO" --squash --delete-branch`, and includes `close_story_step`.
+3. `.github/workflows/prompts/pr-review.md` exists and specifies `pr_meta.json`, `pr_diff.txt`, `pr_review_output.json`, `"verdict": "APPROVED"`, `"CHANGES_REQUESTED"`, and `"followup_backlog_issues"`.
 
 ---
 
-## 🎨 UI Layout & Visual Design (`ProgressScreen.kt`)
+## 🧪 Gherkin BDD Acceptance Criteria
 
-### 1. 2×2 Pace Cards Grid
-In `WeightProgressionHeroCard`, the pace cards section is upgraded from a 1×2 row to a **2×2 grid**:
-
-```
-┌──────────────────────────────────┐  ┌──────────────────────────────────┐
-│ 7-Day Pace                       │  │ 14-Day Pace                      │
-│ ▼ -0.28 kg/wk                    │  │ ▼ -0.24 kg/wk                    │
-│ -0.28 kg/wk vs last Fri          │  │ 40% slower loss vs last Fri      │
-└──────────────────────────────────┘  └──────────────────────────────────┘
-┌──────────────────────────────────┐  ┌──────────────────────────────────┐
-│ 21-Day Pace                      │  │ 28-Day Pace                      │
-│ ▼ -0.19 kg/wk                    │  │ ▼ -0.16 kg/wk                    │
-│ Smoothed trend                   │  │ Needs weigh-in 28+ days ago      │
-└──────────────────────────────────┘  └──────────────────────────────────┘
-```
-
-### 2. Visual Multi-Horizon Goal Estimations Card (`ForecastBanner`)
-Below the 2×2 Pace Cards grid, `ForecastBanner` is redrawn into a visual comparative card:
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ 🎯 GOAL ARRIVAL ESTIMATIONS                                            │
-│ Target: 28 Dec 2026 (9.4w left) · Required: -0.39 kg/wk                │
-│ ────────────────────────────────────────────────────────────────────── │
-│ 7D (-0.28 kg/wk)                                 13.2 wks · 23 Jan 2027│
-│ [████████████████████░░░░░░░░]                            +3.8w late   │
-│                                                                        │
-│ 14D (-0.24 kg/wk)                                15.4 wks · 07 Feb 2027│
-│ [████████████████░░░░░░░░░░░░]                            +6.0w late   │
-│                                                                        │
-│ 21D (-0.42 kg/wk)                                 8.8 wks · 23 Dec 2026│
-│ [████████████████████████████]                        On time (-0.6w)  │
-│                                                                        │
-│ 28D (—)                                                 Needs 28+ days │
-│ [░░░░░░░░░░░░░░░░░░░░░░░░░░░░]                                         │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-### Typography, Color & Accessibility Specifications
-- **Card Container**:
-  - `RoundedCornerShape(12.dp)`
-  - When `GoalReached`: `primaryContainer` with `"🎉 Goal reached!"`
-  - When `CycleEnded`: `surfaceVariant` with `"🏁 Cycle ended"`
-  - When `Active`: `surfaceContainerHighest` (or `secondaryContainer.copy(alpha = 0.45f)`) with clean internal spacing (`12.dp` padding, `10.dp` vertical spacing).
-- **Header Section**:
-  - Title: `"🎯 GOAL ARRIVAL ESTIMATIONS"` (`labelSmall`, `FontWeight.SemiBold`, `letterSpacing = 1.sp`, `onSurfaceVariant`).
-  - Benchmark Subtitle: `"Target: 28 Dec 2026 (9.4w left) · Required: -0.39 kg/wk"` (`bodySmall`, `FontWeight.Medium`, `onSurface`).
-- **Horizon Rows (`7D`, `14D`, `21D`, `28D`)**:
-  - **Line 1**:
-    - Left: `"7D (-0.28 kg/wk)"` (`labelMedium`, `FontWeight.SemiBold`, `onSurface`).
-    - Right: `"13.2 wks · 23 Jan 2027"` (`labelMedium`, `FontWeight.Bold`, `onSurface` when projected; `onSurfaceVariant` when `"Pace stalled"` or `"Needs 28+ days"`).
-  - **Line 2**:
-    - Left (`Modifier.weight(1f)`): `LinearProgressIndicator` (`height = 6.dp`, `RoundedCornerShape(3.dp)`):
-      - Color when `isOnTrack == true`: `MaterialTheme.colorScheme.primary`
-      - Color when `isOnTrack == false` (late): `MaterialTheme.colorScheme.tertiary`
-      - Track color: `MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)`
-    - Right (when badge present): Status text (`"On time (-0.6w)"` in `primary`, `"+3.8w late"` in `tertiary`, `"Stalled"` in `error`), `labelSmall`, `FontWeight.SemiBold`.
-- **Screen Reader Semantics**:
-  - Each horizon row merges semantics (`Modifier.semantics(mergeDescendants = true)`) so TalkBack announces the full horizon summary in one swipe (e.g., `"14D pace -0.24 kg/wk: Estimated 15.4 weeks, projected arrival 7 Feb 2027, +6.0 weeks late"`).
-
----
-
-## 🧪 BDD Acceptance Criteria
-
-### Scenario 1: 2×2 Pace Grid with 7D, 14D, 21D, and 28D Paces at 2-Decimal Precision
 ```gherkin
-Given a Fat Loss cycle with 30 days of weigh-ins
-And 7D pace is -0.284 kg/wk, 14D pace is -0.238 kg/wk, 21D pace is -0.192 kg/wk, and 28D pace is -0.161 kg/wk
-When WeightProgressionHeroCard is rendered in "kg"
-Then the 2×2 Pace Grid displays:
-  - "7-Day Pace": "▼ -0.28 kg/wk"
-  - "14-Day Pace": "▼ -0.24 kg/wk"
-  - "21-Day Pace": "▼ -0.19 kg/wk"
-  - "28-Day Pace": "▼ -0.16 kg/wk"
-And each card displays its respective comparison subtitle against 7 days prior (or "Smoothed trend" if prior window is unavailable).
+Feature: Claude GitHub App Integration (Interactive @claude Mentions & Automated PR Review/Auto-Fix/Squash-Merge)
+
+  Scenario: Interactive @claude mention triggers Claude Opus 5.5 High workflow
+    Given `.github/workflows/claude.yml` is present in the repository
+    When a user creates an issue, issue comment, PR review, or PR review comment containing `@claude`
+    Then the `claude` job runs on `ubuntu-latest` with `contents: write`, `pull-requests: write`, `issues: write`, `id-token: write`, and `actions: read` permissions
+    And invokes `anthropics/claude-code-action@v1` with `CLAUDE_CODE_OAUTH_TOKEN` and `--model claude-opus-5-5 --effort high`
+
+  Scenario: Automated PR review approves and merges a PR (with or without in-place auto-fixes) without self-cancellation
+    Given an open non-draft Pull Request triggers `.github/workflows/pr-review.yml`
+    When Claude Opus 5.5 High reviews `pr_meta.json` and `pr_diff.txt`, optionally edits files in-place, and writes `"verdict": "APPROVED"` to `pr_review_output.json`
+    Then any working-tree auto-fixes are committed and pushed with `[skip pr-review]` and the new `CURRENT_SHA` is recorded
+    And any resulting `synchronize` event does not cancel the active run (`cancel-in-progress: false`)
+    And the workflow idempotently ensures and applies `review:approved` (removing `review:changes-requested` and `needs-refactor`) and creates any `followup_backlog_issues`
+    And the workflow polls `PR CI & Test Verification` strictly matching `--commit "$CURRENT_SHA"` until `completed:success`
+    And the workflow squash-merges the PR, deletes the feature branch, and closes the parent story with `status:done` and `dev-implemented` if all sibling subtasks are closed
+
+  Scenario: Zero-token merge_only recovery fast-path for approved [skip pr-review] commits
+    Given an open Pull Request whose `HEAD` commit message contains `[skip pr-review]`
+    And the most recent `<!-- pr-review-verdict -->` comment on the PR contains `APPROVED`
+    When `.github/workflows/pr-review.yml` is triggered via `synchronize` or `workflow_dispatch`
+    Then `steps.meta` outputs `merge_only=true` and skips branch checkout, diff fetch, and Claude Code execution (consuming 0 LLM tokens)
+    And the workflow ensures `review:approved` is applied, waits for `PR CI & Test Verification` on `HEAD_SHA` to succeed, and squash-merges the PR
+
+  Scenario: CI failure or timeout on target commit transitions PR to review:changes-requested and needs-refactor
+    Given an open Pull Request has received `"verdict": "APPROVED"` at `CURRENT_SHA`
+    When the `PR CI & Test Verification` workflow run for `--commit "$CURRENT_SHA"` fails, is cancelled, or times out after 60 polling attempts
+    Then the workflow aborts the merge
+    And removes `review:approved`, idempotently ensures and applies both `review:changes-requested` and `needs-refactor`, posts a diagnostic comment referencing `CURRENT_SHA`, and exits with code 1
 ```
-
-### Scenario 2: Multi-Horizon Goal Estimations Card with On-Time and Late Horizons
-```gherkin
-Given a Fat Loss cycle with targetWeightKg = 72.0 kg and endDate = 2026-12-28
-And today is 2026-10-23 (66 days / 9.43 weeks remaining) and today's 7D average is 75.7 kg (3.7 kg remaining)
-And Required Pace is -0.39 kg/wk
-And 7D pace is -0.28 kg/wk, 14D pace is -0.24 kg/wk, 21D pace is -0.42 kg/wk, and 28D pace is null (only 22 days elapsed)
-When computeMultiHorizonForecast is evaluated
-Then the header displays "Target: 28 Dec 2026 (9.4w left) · Required: -0.39 kg/wk"
-And the 4 horizon rows display:
-  - 7D Row: "7D (-0.28 kg/wk)", "13.2 wks · 23 Jan 2027", bar fill = 0.28 / 0.39 (~72%), badge "+3.8w late" (tertiary)
-  - 14D Row: "14D (-0.24 kg/wk)", "15.4 wks · 8 Feb 2027", bar fill = 0.24 / 0.39 (~62%), badge "+6.0w late" (tertiary)
-  - 21D Row: "21D (-0.42 kg/wk)", "8.8 wks · 23 Dec 2026", bar fill = 100%, badge "On time (-0.6w)" (primary)
-  - 28D Row: "28D (—)", "Needs 28+ days", bar fill = 0%, no badge.
-```
-
-### Scenario 3: Stalled Single Horizon Does Not Block Other Horizons
-```gherkin
-Given 7D pace is +0.15 kg/wk (gaining after a refeed week)
-While 14D pace is -0.25 kg/wk, 21D pace is -0.30 kg/wk, and 28D pace is -0.32 kg/wk
-When computeMultiHorizonForecast is evaluated
-Then the 7D row displays "7D (+0.15 kg/wk)", "Pace stalled", 0% bar fill, and "Stalled" badge
-While the 14D, 21D, and 28D rows still render their full estimated weeks, arrival dates, sufficiency bars, and badges.
-```
-
-### Scenario 4: Goal Reached and Cycle Ended Terminal States
-```gherkin
-Given today's 7D average is <= targetWeightKg (at 1-decimal display precision)
-When the estimations section is rendered
-Then it displays the celebratory "Goal reached! 🎉" state instead of the 4-row bars
-And when today > cycleEndDate while still above targetWeightKg, it displays "Cycle ended".
-```
-
----
-
-## 📂 Implementation Slice & File Touchpoints
-
-| File | Responsibility |
-| :--- | :--- |
-| [`FatLossAnalytics.kt`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/data/analytics/FatLossAnalytics.kt) | Add `compute21DayPace`, `compute28DayPace`, `format21DayPaceSubtitle`, `format28DayPaceSubtitle`, 2-decimal `PaceRateResult.formatDisplay2`, 2-decimal `RequiredPaceResult.formatRate2` / `requiredRate2InUnit`, and `computeMultiHorizonForecast` returning `MultiHorizonForecastState` (`GoalReached`, `CycleEnded`, `NotEnoughData`, `Active` with 4 `HorizonEstimationRow` items for `7D`, `14D`, `21D`, `28D`). |
-| [`ProgressScreen.kt`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/ui/screens/ProgressScreen.kt) | Update `WeightProgressionCard` and `WeightProgressionHeroCard` to compute and pass `pace21`, `pace28`, `paceComparison21d`, `paceComparison28d`, and `multiHorizonForecast`; render the **2×2 Pace Cards Grid** (`7-Day Pace`, `14-Day Pace`, `21-Day Pace`, `28-Day Pace`) with 2-decimal rates; redraw `ForecastBanner` into the visual **Multi-Horizon Goal Estimations Card** with the target benchmark header and 4 comparative bar rows. |
-| [`FatLossAnalyticsTest.kt`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/test/java/com/fractanomics/crosstraining/data/analytics/FatLossAnalyticsTest.kt) | Add unit tests for `compute21DayPace`, `compute28DayPace`, `format21DayPaceSubtitle`, `format28DayPaceSubtitle`, 2-decimal pace/required-pace formatting, and `computeMultiHorizonForecast` across Scenarios 1–4 and `kg`/`lbs` units. |
-| [`WeightProgressionCardTest.kt`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/test/java/com/fractanomics/crosstraining/ui/screens/WeightProgressionCardTest.kt) | Add unit tests for 21D/28D pace card resolvers, 2-decimal pace chip formatting, and multi-horizon forecast row formatting. |
-| [`WeightProgressionCardComposeTest.kt`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/androidTest/java/com/fractanomics/crosstraining/ui/screens/WeightProgressionCardComposeTest.kt) | Add Compose UI tests verifying the 2×2 Pace Cards (`7-Day Pace`, `14-Day Pace`, `21-Day Pace`, `28-Day Pace`) and the 4-row visual `GOAL ARRIVAL ESTIMATIONS` card. |
 
 ---
 
 ## ✅ Verification & Acceptance Gates
-1. `.\gradlew.bat testDebugUnitTest --no-daemon` — 100% passing unit tests.
-2. `.\scripts\tests\Invoke-ScriptTests.ps1` — 100% passing script regression suite.
-3. `.\gradlew.bat lintDebug --no-daemon` — Clean Android lint check.
+
+1. `pwsh -NoProfile -File ./scripts/tests/Invoke-ScriptTests.ps1` — 100% passing script regression suite (including `ClaudeWorkflows.Static.Tests.ps1`).
+2. `.\gradlew.bat testDebugUnitTest --no-daemon` — 100% passing Android JVM unit tests.

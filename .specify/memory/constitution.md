@@ -17,20 +17,30 @@ All Jetpack Compose cards, grids, and progress visualizations MUST render withou
 ### V. Offline-First & Environment Isolation
 Local Room SQLite persistence is the primary source of truth, with asynchronous cloud synchronization where configured. Repository `gradle.properties` MUST NEVER contain machine-specific paths (such as `org.gradle.java.home`). Database schema modifications require explicit migrations; features that can be derived from existing entities MUST avoid unnecessary schema changes.
 
+### VI. Agentic Collaboration, Automated PR Review & Self-Healing Governance
+GitHub collaboration and Pull Request governance MUST integrate deterministic AI review and self-healing workflow automation without redundant build overhead or self-cancellation races.
+- Interactive `@claude` mentions on Issues, Issue Comments, Pull Request Reviews, and PR Review Comments (`.github/workflows/claude.yml`) and automated Pull Request reviews (`.github/workflows/pr-review.yml`) MUST execute Claude Opus 5.5 (`--model claude-opus-5-5 --effort high`) on lightweight `ubuntu-latest` runners without duplicating cold JDK/Gradle setup inside the Claude workflows.
+- `.github/workflows/pr-review.yml` MUST own the unified review-to-merge lifecycle: diff/source review, in-place `[skip pr-review]` auto-fix commit/push, idempotent `gh label create --force` self-healing label provisioning (`review:approved`, `review:changes-requested`, `needs-refactor`, `status:needs-po-input`, `status:ready`, `status:done`, `dev-implemented`, `tech-debt`), follow-up backlog issue creation, strict `--commit "$CURRENT_SHA"` polling against `PR CI & Test Verification` (`build.yml`) with an explicit `CI_PASSED="true"` gate, squash-merge, and post-merge parent-story closure.
+- Concurrency on `pr-review-<PR>` MUST set `cancel-in-progress: false` so pushing an `[skip pr-review]` auto-fix commit queues behind the active run rather than cancelling it, and `steps.meta` MUST provide a zero-token `merge_only` fast-path when an open PR's `HEAD` commit is `[skip pr-review]` accompanied by an `APPROVED` verdict comment.
+
 ## Technical Stack & Architectural Constraints
 
 - **Platform & Language**: Android (`compileSdk 35`, `minSdk 26`), Kotlin (JVM 17), Gradle Kotlin DSL (`.\gradlew.bat`).
 - **UI Toolkit**: Jetpack Compose with Material 3 design tokens (`MaterialTheme.colorScheme` and `MaterialTheme.typography`).
 - **Persistence**: Room SQLite (`Cycle`, `CycleGoal`, `WeightEntry`, `DailyLog`, `SessionWithBlocks`).
+- **CI/CD & Agentic Workflows**: GitHub Actions (`build.yml`, `release.yml`, `claude.yml`, `pr-review.yml`) with PowerShell (`pwsh`) static and behavioral regression tests (`scripts/tests/Invoke-ScriptTests.ps1`).
 
 ## Development Workflow & Quality Gates
 
 1. **Specification & Planning**: Features are specified in `specs/<NNN>-<short-name>/spec.md`, validated via quality checklists, planned in `plan.md`, and decomposed into actionable tasks in `tasks.md`.
 2. **Pre-PR Verification Suite**: Developers MUST execute `.\gradlew.bat testDebugUnitTest --no-daemon`, `.\scripts\tests\Invoke-ScriptTests.ps1`, and `.\gradlew.bat lintDebug --no-daemon` locally before pushing.
-3. **Artifact Sync & Changelog**: Debug APK builds MUST sync to `local_test\latest.apk`, and user-facing changes MUST be documented under `## [Unreleased]` in `CHANGELOG.md`.
+3. **Artifact Sync & Changelog**: Debug APK builds MUST sync to `local_test\latest.apk`, and user-facing or CI/CD governance changes MUST be documented under `## [Unreleased]` in `CHANGELOG.md`.
+4. **Interactive `@claude` Collaboration & Automated PR Review / Auto-Merge Gate**:
+   - Pull Requests targeting `main` are verified by both `PR CI & Test Verification` (`.github/workflows/build.yml`) and `PR Review` (`.github/workflows/pr-review.yml`).
+   - All GitHub Actions workflow contracts MUST be covered by deterministic PowerShell static tests in `scripts/tests/*.Tests.ps1` executed on both `ubuntu-latest` and `windows-latest`.
 
 ## Governance
 
 This Constitution supersedes ad-hoc conventions across specifications, implementation plans, and code reviews. Amendments require updating `.specify/memory/constitution.md` with an incremented semantic version (`MAJOR.MINOR.PATCH`), an updated `Last Amended` ISO date, and verification that active templates and plans comply with all Core Principles.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-23
+**Version**: 1.1.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-23
