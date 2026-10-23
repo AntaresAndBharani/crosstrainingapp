@@ -65,6 +65,15 @@ Assert-True -Condition ($PrReviewText -match 'cancel-in-progress:\s*false') `
 Assert-True -Condition ($PrReviewText -match '\[skip pr-review\]' -and $PrReviewText -match 'merge_only=true' -and $PrReviewText -match 'merge_only=false') `
             -TestName "static: pr-review.yml implements [skip pr-review] merge_only fast-path in steps.meta"
 
+Assert-True -Condition ($PrReviewText -match '\*"PR Review Verdict: \*\*APPROVED\*\*"\*' -and -not ($PrReviewText -match '== \*"APPROVED"\*')) `
+            -TestName "static: pr-review.yml merge_only fast-path matches the APPROVED verdict heading, not any 'APPROVED' substring"
+
+Assert-True -Condition ($PrReviewText -match 'pull_request:\s*\r?\n\s*branches:\s*\[\s*main\s*\]') `
+            -TestName "static: pr-review.yml only reviews PRs targeting main (matching PR CI & Test Verification)"
+
+Assert-True -Condition ($PrReviewText -match 'ALREADY_ESCALATED') `
+            -TestName "static: pr-review.yml does not re-post escalation comments once status:needs-po-input is applied"
+
 Assert-True -Condition ($PrReviewText -match "steps\.meta\.outputs\.skip != 'true' && steps\.meta\.outputs\.merge_only != 'true'") `
             -TestName "static: pr-review.yml guards checkout, context fetch, and Claude review with merge_only != 'true'"
 
@@ -85,6 +94,12 @@ Assert-True -Condition ($PrReviewText -match 'CI_WORKFLOW_NAME:\s*"PR CI & Test 
 
 Assert-True -Condition ($PrReviewText -match '--commit "\$CURRENT_SHA" -w "\$CI_WORKFLOW_NAME"' -and $PrReviewText -match 'seq 1 60' -and $PrReviewText -match 'CI_PASSED="true"') `
             -TestName "static: pr-review.yml polls CI strictly by --commit CURRENT_SHA with explicit CI_PASSED gate"
+
+Assert-True -Condition ($PrReviewText -match '\[\[ "\$BUILD_STATUS" == completed:\* \]\]') `
+            -TestName "static: pr-review.yml aborts CI polling on any non-success terminal conclusion"
+
+Assert-True -Condition ($PrReviewText -match '\.number != \$SUBTASK') `
+            -TestName "static: pr-review.yml excludes the just-merged subtask when counting open siblings"
 
 Assert-True -Condition ($PrReviewText -match 'gh pr merge "\$PR_NUMBER" -R "\$REPO" --squash --delete-branch') `
             -TestName "static: pr-review.yml squash-merges and deletes branch upon passing CI"
