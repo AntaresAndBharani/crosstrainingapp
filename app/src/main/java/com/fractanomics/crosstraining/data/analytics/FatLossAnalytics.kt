@@ -183,6 +183,25 @@ data class PaceRateResult(
             else -> String.format(Locale.US, "0.0 %s", unitLabel)
         }
     }
+
+    /**
+     * Formats the weekly rate to 2 decimal places for UI chip and multi-horizon display.
+     * E.g., "-0.28 kg/wk", "+0.15 kg/wk", "0.00 kg/wk", or "-0.62 lbs/wk".
+     */
+    fun formatDisplay2(unit: String = "kg"): String {
+        val rateInUnit = if (unit.equals("lbs", ignoreCase = true)) {
+            WeightAnalytics.kgToLbs(rateKgPerWeek)
+        } else {
+            rateKgPerWeek
+        }
+        val rounded2 = FatLossAnalytics.round2(rateInUnit)
+        val unitLabel = if (unit.equals("lbs", ignoreCase = true)) "lbs/wk" else "kg/wk"
+        return when {
+            rateInUnit < -0.05 -> String.format(Locale.US, "%.2f %s", rounded2, unitLabel)
+            rateInUnit > 0.05 -> String.format(Locale.US, "+%.2f %s", rounded2, unitLabel)
+            else -> String.format(Locale.US, "0.00 %s", unitLabel)
+        }
+    }
 }
 
 /**
@@ -276,9 +295,17 @@ data class RequiredPaceResult(
     val weightUnit: String,
     val exceedsSustainableRate: Boolean = false
 ) {
+    val requiredRate2InUnit: Double
+        get() = -maxOf(0.01, FatLossAnalytics.round2(remainingWeightInUnit / weeksRemaining))
+
     fun formatRate(): String {
         val unitLabel = if (weightUnit.equals("lbs", ignoreCase = true)) "lbs/wk" else "kg/wk"
         return String.format(Locale.US, "%.1f %s", requiredRateInUnit, unitLabel)
+    }
+
+    fun formatRate2(): String {
+        val unitLabel = if (weightUnit.equals("lbs", ignoreCase = true)) "lbs/wk" else "kg/wk"
+        return String.format(Locale.US, "%.2f %s", requiredRate2InUnit, unitLabel)
     }
 
     fun formatEndDate(): String =
@@ -287,6 +314,128 @@ data class RequiredPaceResult(
     fun formatSubtitle(): String {
         val base = "Required pace: ${formatRate()} (by ${formatEndDate()})"
         return if (exceedsSustainableRate) "$base — above 1% bodyweight/wk" else base
+    }
+
+    fun formatBenchmarkHeader(): String {
+        val weeksStr = String.format(Locale.US, "%.1f", weeksRemaining)
+        val base = "Target: ${formatEndDate()} (${weeksStr}w left) · Required: ${formatRate2()}"
+        return if (exceedsSustainableRate) "$base · ⚠️ >1% BW/wk" else base
+    }
+}
+
+/**
+ * Sealed hierarchy representing the visual Multi-Horizon Goal Estimations card state (7D, 14D, 21D, 28D).
+ */
+sealed class MultiHorizonForecastState {
+    abstract val displayText: String
+
+    data object GoalReached : MultiHorizonForecastState() {
+        override val displayText: String = "Goal reached! 🎉"
+    }
+
+    data object CycleEnded : MultiHorizonForecastState() {
+        override val displayText: String = "Cycle ended"
+    }
+
+    data object NotEnoughData : MultiHorizonForecastState() {
+        override val displayText: String = "Logging check-ins for 7 days enables pace projections"
+    }
+
+    data class Active(
+        val remainingWeightInUnit: Double,
+        val targetWeightInUnit: Double,
+        val weightUnit: String,
+        val requiredPace: RequiredPaceResult?,
+        val rows: List<HorizonEstimationRow>
+    ) : MultiHorizonForecastState() {
+        override val displayText: String = "GOAL ARRIVAL ESTIMATIONS"
+
+        val benchmarkHeader: String
+            get() = formatHeaderSubtitle()
+
+        fun formatHeaderSubtitle(): String {
+            if (requiredPace != null) {
+                return requiredPace.formatBenchmarkHeader()
+            }
+            val unitLabel = if (weightUnit.equals("lbs", ignoreCase = true)) "lbs" else "kg"
+            return String.format(
+                Locale.US,
+                "Goal: %.1f %s (-%.1f %s left)",
+                targetWeightInUnit,
+                unitLabel,
+                remainingWeightInUnit,
+                unitLabel
+            )
+        }
+    }
+}
+
+/**
+ * Individual horizon estimation row for 7D, 14D, 21D, or 28D pace.
+ */
+data class HorizonEstimationRow(
+    val windowDays: Int,
+    val state: HorizonRowState
+) {
+    fun formatLeftLabel(): String = when (state) {
+        is HorizonRowState.Projected -> "${windowDays}D (${state.paceDisplay2})"
+        is HorizonRowState.Stalled -> "${windowDays}D (${state.paceDisplay2})"
+        is HorizonRowState.NotEnoughData -> "${windowDays}D (—)"
+    }
+
+    fun formatRightValue(): String = when (state) {
+        is HorizonRowState.Projected -> if (state.isCapped || state.targetDate == null) {
+            "> 1 year"
+        } else {
+            val dateStr = state.targetDate.format(DateTimeFormatter.ofPattern("d MMM yyyy", Locale.US))
+            String.format(Locale.US, "%.1f wks · %s", state.weeks, dateStr)
+        }
+        is HorizonRowState.Stalled -> "Pace stalled"
+        is HorizonRowState.NotEnoughData -> "Needs ${windowDays}+ days"
+    }
+}
+
+/**
+ * Per-horizon estimation row state inside [MultiHorizonForecastState.Active].
+ */
+sealed interface HorizonRowState {
+    val windowDays: Int
+
+    data class NotEnoughData(
+        override val windowDays: Int
+    ) : HorizonRowState
+
+    data class Stalled(
+        override val windowDays: Int,
+        val paceDisplay2: String
+    ) : HorizonRowState
+
+    data class Projected(
+        override val windowDays: Int,
+        val paceDisplay2: String,
+        val velocity2InUnit: Double,
+        val weeks: Double,
+        val rawWeeks: Double = weeks,
+        val targetDate: LocalDate? = null,
+        val barFraction: Float,
+        val weeksDeltaVsTarget: Double? = null,
+        val isOnTrack: Boolean = true,
+        val deltaBadgeText: String? = null
+    ) : HorizonRowState {
+        val isCapped: Boolean
+            get() = targetDate == null || rawWeeks > 52.0
+
+        val arrivalDate: LocalDate?
+            get() = targetDate
+
+        val isOverOneYear: Boolean
+            get() = isCapped
+
+        val sufficiencyFraction: Float
+            get() = barFraction
+
+        val badgeText: String?
+            get() = deltaBadgeText
     }
 }
 
@@ -1903,6 +2052,257 @@ object FatLossAnalytics {
     )
 
     /**
+     * Computes 21-day rolling pace rate using 7-day window averages.
+     */
+    fun compute21DayPace(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        today: LocalDate = LocalDate.now(),
+        startingWeightKg: Double? = null
+    ): PaceRateResult? = computePaceRate(
+        entries = entries,
+        windowDays = 21,
+        cycleStartDate = cycleStartDate,
+        today = today,
+        startingWeightKg = startingWeightKg
+    )
+
+    fun compute21DayPace(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        today: LocalDate = LocalDate.now()
+    ): PaceRateResult? = compute21DayPace(
+        entries = entries,
+        cycleStartDate = cycle.startDate,
+        today = today,
+        startingWeightKg = cycle.startingWeightKg
+    )
+
+    /**
+     * Computes 28-day rolling pace rate using 7-day window averages.
+     */
+    fun compute28DayPace(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        today: LocalDate = LocalDate.now(),
+        startingWeightKg: Double? = null
+    ): PaceRateResult? = computePaceRate(
+        entries = entries,
+        windowDays = 28,
+        cycleStartDate = cycleStartDate,
+        today = today,
+        startingWeightKg = startingWeightKg
+    )
+
+    fun compute28DayPace(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        today: LocalDate = LocalDate.now()
+    ): PaceRateResult? = compute28DayPace(
+        entries = entries,
+        cycleStartDate = cycle.startDate,
+        today = today,
+        startingWeightKg = cycle.startingWeightKg
+    )
+
+    val HORIZON_WINDOWS: List<Int> = listOf(7, 14, 21, 28)
+
+    /**
+     * Computes the visual Multi-Horizon Goal Estimations state across 7D, 14D, 21D, and 28D pace windows
+     * using 2-decimal pace velocity (`v2`), estimated weeks, projected arrival dates, proportional
+     * pace-to-required sufficiency bars, and ahead/late week badges.
+     */
+    fun computeMultiHorizonForecast(
+        entries: List<WeightEntry>,
+        cycleStartDate: LocalDate,
+        cycleEndDate: LocalDate? = null,
+        targetWeightKg: Double?,
+        startingWeightKg: Double? = null,
+        today: LocalDate = LocalDate.now(),
+        weightUnit: String = "kg"
+    ): MultiHorizonForecastState? {
+        val activeEntries = getActiveWeightEntries(entries, cycleStartDate, today)
+        val isCycleEnded = cycleEndDate != null && today.isAfter(cycleEndDate)
+
+        if (activeEntries.isEmpty()) {
+            return if (isCycleEnded) MultiHorizonForecastState.CycleEnded else MultiHorizonForecastState.NotEnoughData
+        }
+
+        val newest = activeEntries.last()
+        val currentWeightKg = computeCurrent7DayAverageWeight(
+            entries = entries,
+            cycleStartDate = cycleStartDate,
+            referenceDate = today
+        ) ?: newest.weightKg
+
+        if (targetWeightKg != null && targetWeightKg > 0.0 &&
+            round1InUnit(currentWeightKg, weightUnit) <= round1InUnit(targetWeightKg, weightUnit)
+        ) {
+            return MultiHorizonForecastState.GoalReached
+        }
+
+        if (isCycleEnded) {
+            return MultiHorizonForecastState.CycleEnded
+        }
+
+        if (targetWeightKg == null || targetWeightKg <= 0.0) {
+            return null
+        }
+
+        val effectiveStartWeight = startingWeightKg ?: activeEntries.first().weightKg
+        if (targetWeightKg >= effectiveStartWeight) {
+            return null
+        }
+
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val normalizedUnit = if (isImperial) "lbs" else "kg"
+        val current1InUnit = round1InUnit(currentWeightKg, normalizedUnit)
+        val target1InUnit = round1InUnit(targetWeightKg, normalizedUnit)
+        val remainingInUnit = diff1(current1InUnit, target1InUnit)
+        if (remainingInUnit <= 0.0) {
+            return MultiHorizonForecastState.GoalReached
+        }
+
+        val requiredPace = computeRequiredPaceToEndDate(
+            today7dAvgKg = currentWeightKg,
+            targetWeightKg = targetWeightKg,
+            cycleEndDate = cycleEndDate,
+            today = today,
+            weightUnit = normalizedUnit,
+            startWeightKg = effectiveStartWeight
+        )
+
+        val pacesByWindow: Map<Int, PaceRateResult?> = HORIZON_WINDOWS.associateWith { w ->
+            computePaceRate(
+                entries = entries,
+                windowDays = w,
+                cycleStartDate = cycleStartDate,
+                today = newest.date,
+                startingWeightKg = startingWeightKg
+            )
+        }
+
+        if (pacesByWindow.values.all { it == null }) {
+            return MultiHorizonForecastState.NotEnoughData
+        }
+
+        // Benchmark velocity for sufficiency bar: required pace magnitude when endDate is set,
+        // otherwise max positive velocity across the 4 horizons (fallback to 1% bodyweight/wk).
+        val maxActiveV2 = pacesByWindow.values
+            .mapNotNull { p ->
+                if (p != null && p.trend == PaceTrend.LOSS) {
+                    round2(toUnit(p.deficitVelocityKgPerWeek, normalizedUnit)).takeIf { it > 0.0 }
+                } else null
+            }
+            .maxOrNull()
+        val benchmarkV2 = when {
+            requiredPace != null -> kotlin.math.abs(requiredPace.requiredRate2InUnit).coerceAtLeast(0.01)
+            maxActiveV2 != null && maxActiveV2 > 0.0 -> maxActiveV2
+            else -> (current1InUnit * MAX_SUSTAINABLE_WEEKLY_LOSS_FRACTION).coerceAtLeast(0.1)
+        }
+
+        val rows = HORIZON_WINDOWS.map { windowDays ->
+            val pace = pacesByWindow[windowDays]
+            if (pace == null) {
+                HorizonEstimationRow(
+                    windowDays = windowDays,
+                    state = HorizonRowState.NotEnoughData(windowDays = windowDays)
+                )
+            } else {
+                val paceDisplay2 = pace.formatDisplay2(normalizedUnit)
+                val v2 = round2(toUnit(pace.deficitVelocityKgPerWeek, normalizedUnit))
+                if (pace.trend != PaceTrend.LOSS || v2 <= 0.0) {
+                    HorizonEstimationRow(
+                        windowDays = windowDays,
+                        state = HorizonRowState.Stalled(
+                            windowDays = windowDays,
+                            paceDisplay2 = paceDisplay2
+                        )
+                    )
+                } else {
+                    val rawWeeks = remainingInUnit / v2
+                    val roundedWeeks = round1(rawWeeks)
+                    val isCapped = roundedWeeks > 52.0
+                    val cappedWeeks = if (isCapped) 52.0 else roundedWeeks
+                    val targetDate = if (isCapped) {
+                        null
+                    } else {
+                        val daysToGoal = kotlin.math.round(roundedWeeks * 7.0).toLong()
+                        today.plusDays(daysToGoal)
+                    }
+                    val barFraction = (v2 / benchmarkV2).toFloat().coerceIn(0.05f, 1.0f)
+
+                    val weeksDelta: Double?
+                    val isOnTrack: Boolean
+                    val deltaBadgeText: String?
+
+                    if (requiredPace != null) {
+                        val rawDelta = diff1(roundedWeeks, round1(requiredPace.weeksRemaining))
+                        weeksDelta = rawDelta
+                        if (isCapped) {
+                            isOnTrack = false
+                            deltaBadgeText = "> 1 yr late"
+                        } else if (rawDelta < -0.05) {
+                            isOnTrack = true
+                            deltaBadgeText = String.format(Locale.US, "On time (%.1fw)", rawDelta)
+                        } else if (rawDelta <= 0.05) {
+                            isOnTrack = true
+                            deltaBadgeText = "On time"
+                        } else {
+                            isOnTrack = false
+                            deltaBadgeText = String.format(Locale.US, "+%.1fw late", rawDelta)
+                        }
+                    } else {
+                        weeksDelta = null
+                        isOnTrack = !isCapped
+                        deltaBadgeText = null
+                    }
+
+                    HorizonEstimationRow(
+                        windowDays = windowDays,
+                        state = HorizonRowState.Projected(
+                            windowDays = windowDays,
+                            paceDisplay2 = paceDisplay2,
+                            velocity2InUnit = v2,
+                            weeks = cappedWeeks,
+                            rawWeeks = rawWeeks,
+                            targetDate = targetDate,
+                            barFraction = barFraction,
+                            weeksDeltaVsTarget = weeksDelta,
+                            isOnTrack = isOnTrack,
+                            deltaBadgeText = deltaBadgeText
+                        )
+                    )
+                }
+            }
+        }
+
+        return MultiHorizonForecastState.Active(
+            remainingWeightInUnit = remainingInUnit,
+            targetWeightInUnit = target1InUnit,
+            weightUnit = normalizedUnit,
+            requiredPace = requiredPace,
+            rows = rows
+        )
+    }
+
+    fun computeMultiHorizonForecast(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        today: LocalDate = LocalDate.now(),
+        targetWeightKg: Double? = cycle.targetWeightKg ?: cycle.targetBodyWeightKg,
+        weightUnit: String = "kg"
+    ): MultiHorizonForecastState? = computeMultiHorizonForecast(
+        entries = entries,
+        cycleStartDate = cycle.startDate,
+        cycleEndDate = cycle.endDate,
+        targetWeightKg = targetWeightKg,
+        startingWeightKg = cycle.startingWeightKg,
+        today = today,
+        weightUnit = weightUnit
+    )
+
+    /**
      * Computes the goal pace forecast evaluating the strict precedence hierarchy:
      * 1. [PaceForecast.GoalReached]: W_current <= W_target
      * 2. [PaceForecast.CycleEnded]: today > cycleEndDate (and W_current > W_target or target is null)
@@ -2427,13 +2827,14 @@ object FatLossAnalytics {
         weightUnit: String,
         windowDays: Int,
         pace: PaceRateResult? = null,
-        referenceDate: LocalDate = LocalDate.now()
+        referenceDate: LocalDate = LocalDate.now(),
+        useTwoDecimals: Boolean = false
     ): String {
         if (comparison == null) {
             return if (windowDays == 7) {
                 "Baseline 7d pace"
             } else {
-                if (pace == null) "Needs weigh-in 14+ days ago" else "Smoothed trend"
+                if (pace == null) "Needs weigh-in ${windowDays}+ days ago" else "Smoothed trend"
             }
         }
 
@@ -2463,7 +2864,9 @@ object FatLossAnalytics {
         val deltaInUnit = if (isImperial) WeightAnalytics.kgToLbs(comparison.deltaRateKgPerWeek) else comparison.deltaRateKgPerWeek
 
         val sign = if (deltaInUnit > 0.0) "+" else ""
-        return String.format(Locale.US, "%s%.1f %s %s", sign, deltaInUnit, unitLabel, vsPart)
+        val formatPattern = if (useTwoDecimals) "%s%.2f %s %s" else "%s%.1f %s %s"
+        val roundedDelta = if (useTwoDecimals) round2(deltaInUnit) else deltaInUnit
+        return String.format(Locale.US, formatPattern, sign, roundedDelta, unitLabel, vsPart)
     }
 
     /**
@@ -2472,13 +2875,15 @@ object FatLossAnalytics {
     fun format7DayPaceSubtitle(
         comparison: PaceComparisonResult?,
         weightUnit: String,
-        referenceDate: LocalDate = LocalDate.now()
+        referenceDate: LocalDate = LocalDate.now(),
+        useTwoDecimals: Boolean = false
     ): String = formatPaceSubtitle(
         comparison = comparison,
         weightUnit = weightUnit,
         windowDays = 7,
         pace = null,
-        referenceDate = referenceDate
+        referenceDate = referenceDate,
+        useTwoDecimals = useTwoDecimals
     )
 
     /**
@@ -2488,13 +2893,51 @@ object FatLossAnalytics {
         comparison: PaceComparisonResult?,
         pace14: PaceRateResult?,
         weightUnit: String,
-        referenceDate: LocalDate = LocalDate.now()
+        referenceDate: LocalDate = LocalDate.now(),
+        useTwoDecimals: Boolean = false
     ): String = formatPaceSubtitle(
         comparison = comparison,
         weightUnit = weightUnit,
         windowDays = 14,
         pace = pace14,
-        referenceDate = referenceDate
+        referenceDate = referenceDate,
+        useTwoDecimals = useTwoDecimals
+    )
+
+    /**
+     * Formats 21-day pace subtitle describing same-weekday comparison or maturity fallback states.
+     */
+    fun format21DayPaceSubtitle(
+        comparison: PaceComparisonResult?,
+        pace21: PaceRateResult?,
+        weightUnit: String,
+        referenceDate: LocalDate = LocalDate.now(),
+        useTwoDecimals: Boolean = false
+    ): String = formatPaceSubtitle(
+        comparison = comparison,
+        weightUnit = weightUnit,
+        windowDays = 21,
+        pace = pace21,
+        referenceDate = referenceDate,
+        useTwoDecimals = useTwoDecimals
+    )
+
+    /**
+     * Formats 28-day pace subtitle describing same-weekday comparison or maturity fallback states.
+     */
+    fun format28DayPaceSubtitle(
+        comparison: PaceComparisonResult?,
+        pace28: PaceRateResult?,
+        weightUnit: String,
+        referenceDate: LocalDate = LocalDate.now(),
+        useTwoDecimals: Boolean = false
+    ): String = formatPaceSubtitle(
+        comparison = comparison,
+        weightUnit = weightUnit,
+        windowDays = 28,
+        pace = pace28,
+        referenceDate = referenceDate,
+        useTwoDecimals = useTwoDecimals
     )
 
     /**

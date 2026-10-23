@@ -1,50 +1,36 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# CrossTraining App Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. MVVM & Unidirectional Data Flow (UDF)
+All presentation and state management MUST follow Model-View-ViewModel (MVVM) with strict Unidirectional Data Flow (`Composable → ViewModel → Repository → Room/Firebase`). ViewModels MUST expose immutable `StateFlow<UiState>` streams collected via `collectAsStateWithLifecycle()` in Jetpack Compose screens. UI components MUST remain stateless and side-effect-free with respect to domain calculations.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. Pure Deterministic Analytics & Display-Unit Consistency
+All domain calculations (weight trends, rolling averages, pace velocities, required-pace targets, and multi-horizon forecasts) MUST be implemented as pure, deterministic Kotlin functions with explicit date injection (`referenceDate` / `today`). Displayed metrics, deltas, and projections MUST satisfy Display-Unit Arithmetic Consistency (`BigDecimal` `HALF_UP` rounding in the active display unit `kg` or `lbs`) so that displayed numbers reconcile without hidden floating-point drift.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. Test-First & 100% CI Parity (NON-NEGOTIABLE)
+Every domain calculation, state transition, and UI string/state resolver MUST be covered by deterministic unit tests (`testDebugUnitTest`) and Compose UI tests where applicable. No pull request may be opened or merged unless `.\gradlew.bat testDebugUnitTest --no-daemon`, `.\scripts\tests\Invoke-ScriptTests.ps1`, and `.\gradlew.bat lintDebug --no-daemon` pass at 100%.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Responsive Mobile UX & Accessibility
+All Jetpack Compose cards, grids, and progress visualizations MUST render without text clipping, overlap, or layout overflow on `360dp`-wide viewports up to `fontScale = 1.3f`. Composite metric rows and cells MUST provide merged TalkBack accessibility semantics (`Modifier.semantics(mergeDescendants = true)`) announcing context, value, and status clearly.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### V. Offline-First & Environment Isolation
+Local Room SQLite persistence is the primary source of truth, with asynchronous cloud synchronization where configured. Repository `gradle.properties` MUST NEVER contain machine-specific paths (such as `org.gradle.java.home`). Database schema modifications require explicit migrations; features that can be derived from existing entities MUST avoid unnecessary schema changes.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+## Technical Stack & Architectural Constraints
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+- **Platform & Language**: Android (`compileSdk 35`, `minSdk 26`), Kotlin (JVM 17), Gradle Kotlin DSL (`.\gradlew.bat`).
+- **UI Toolkit**: Jetpack Compose with Material 3 design tokens (`MaterialTheme.colorScheme` and `MaterialTheme.typography`).
+- **Persistence**: Room SQLite (`Cycle`, `CycleGoal`, `WeightEntry`, `DailyLog`, `SessionWithBlocks`).
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+## Development Workflow & Quality Gates
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+1. **Specification & Planning**: Features are specified in `specs/<NNN>-<short-name>/spec.md`, validated via quality checklists, planned in `plan.md`, and decomposed into actionable tasks in `tasks.md`.
+2. **Pre-PR Verification Suite**: Developers MUST execute `.\gradlew.bat testDebugUnitTest --no-daemon`, `.\scripts\tests\Invoke-ScriptTests.ps1`, and `.\gradlew.bat lintDebug --no-daemon` locally before pushing.
+3. **Artifact Sync & Changelog**: Debug APK builds MUST sync to `local_test\latest.apk`, and user-facing changes MUST be documented under `## [Unreleased]` in `CHANGELOG.md`.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This Constitution supersedes ad-hoc conventions across specifications, implementation plans, and code reviews. Amendments require updating `.specify/memory/constitution.md` with an incremented semantic version (`MAJOR.MINOR.PATCH`), an updated `Last Amended` ISO date, and verification that active templates and plans comply with all Core Principles.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-23

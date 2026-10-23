@@ -20,6 +20,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
 import com.fractanomics.crosstraining.data.analytics.DayOverDayDelta
+import com.fractanomics.crosstraining.data.analytics.HorizonEstimationRow
+import com.fractanomics.crosstraining.data.analytics.HorizonRowState
+import com.fractanomics.crosstraining.data.analytics.MultiHorizonForecastState
 import com.fractanomics.crosstraining.data.analytics.PaceComparisonResult
 import com.fractanomics.crosstraining.data.analytics.ProgressiveAverageResult
 import com.fractanomics.crosstraining.data.analytics.RollingWeightHeroState
@@ -1113,14 +1116,29 @@ fun WeightProgressionCard(
     val pace14 = remember(weightEntries, cycle, today) {
         FatLossAnalytics.compute14DayPace(weightEntries, cycle, today)
     }
+    val pace21 = remember(weightEntries, cycle, today) {
+        FatLossAnalytics.compute21DayPace(weightEntries, cycle, today)
+    }
+    val pace28 = remember(weightEntries, cycle, today) {
+        FatLossAnalytics.compute28DayPace(weightEntries, cycle, today)
+    }
     val paceComparison7d = remember(weightEntries, cycle, today) {
         FatLossAnalytics.computePaceComparisonVsLastWeek(weightEntries, cycle, 7, today)
     }
     val paceComparison14d = remember(weightEntries, cycle, today) {
         FatLossAnalytics.computePaceComparisonVsLastWeek(weightEntries, cycle, 14, today)
     }
+    val paceComparison21d = remember(weightEntries, cycle, today) {
+        FatLossAnalytics.computePaceComparisonVsLastWeek(weightEntries, cycle, 21, today)
+    }
+    val paceComparison28d = remember(weightEntries, cycle, today) {
+        FatLossAnalytics.computePaceComparisonVsLastWeek(weightEntries, cycle, 28, today)
+    }
     val forecast = remember(weightEntries, cycle, today, weightUnit) {
         FatLossAnalytics.computePaceForecast(weightEntries, cycle, today, weightUnit = weightUnit)
+    }
+    val multiHorizonForecast = remember(weightEntries, cycle, today, weightUnit) {
+        FatLossAnalytics.computeMultiHorizonForecast(weightEntries, cycle, today, weightUnit = weightUnit)
     }
     val requiredPace = remember(weightEntries, cycle, today, weightUnit) {
         FatLossAnalytics.computeRequiredPaceToEndDate(weightEntries, cycle, today, weightUnit)
@@ -1162,14 +1180,22 @@ fun WeightProgressionCard(
         paceComparison14d = paceComparison14d,
         rollingWeightHero = rollingWeightHero,
         sameDayTrio = sameDayTrio,
-        requiredPace = requiredPace
+        requiredPace = requiredPace,
+        pace21 = pace21,
+        pace28 = pace28,
+        paceComparison21d = paceComparison21d,
+        paceComparison28d = paceComparison28d,
+        multiHorizonForecast = multiHorizonForecast
     )
 }
 
 internal const val NO_DATA_PLACEHOLDER = "—"
 internal const val NO_DATA_CONTENT_DESCRIPTION = "No data"
 internal const val PACE_14_NULL_SUBTITLE = "Needs weigh-in 14+ days ago"
+internal const val PACE_21_NULL_SUBTITLE = "Needs weigh-in 21+ days ago"
+internal const val PACE_28_NULL_SUBTITLE = "Needs weigh-in 28+ days ago"
 internal const val PACE_14_MATURE_SUBTITLE = "Smoothed trend"
+internal const val GOAL_ARRIVAL_ESTIMATIONS_HEADER = "GOAL ARRIVAL ESTIMATIONS"
 
 private val pillarDateFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("d MMM", Locale.US)
@@ -1297,10 +1323,15 @@ internal fun paceTrendIcon(trend: PaceTrend?): String? = when (trend) {
     null -> null
 }
 
-internal fun resolvePaceChipValue(pace: PaceRateResult?, weightUnit: String): String {
+internal fun resolvePaceChipValue(
+    pace: PaceRateResult?,
+    weightUnit: String,
+    useTwoDecimals: Boolean = false
+): String {
     return if (pace != null) {
         val icon = paceTrendIcon(pace.trend) ?: ""
-        "$icon${pace.formatDisplay(weightUnit)}"
+        val formatted = if (useTwoDecimals) pace.formatDisplay2(weightUnit) else pace.formatDisplay(weightUnit)
+        "$icon$formatted"
     } else {
         NO_DATA_PLACEHOLDER
     }
@@ -1314,9 +1345,53 @@ internal fun resolvePace14Subtitle(
     pace14: PaceRateResult?,
     comparison: PaceComparisonResult? = null,
     weightUnit: String = "kg",
-    referenceDate: LocalDate = LocalDate.now()
+    referenceDate: LocalDate = LocalDate.now(),
+    useTwoDecimals: Boolean = false
 ): String {
-    return FatLossAnalytics.format14DayPaceSubtitle(comparison, pace14, weightUnit, referenceDate)
+    return FatLossAnalytics.format14DayPaceSubtitle(comparison, pace14, weightUnit, referenceDate, useTwoDecimals)
+}
+
+internal fun resolvePace21Subtitle(
+    pace21: PaceRateResult?,
+    comparison: PaceComparisonResult? = null,
+    weightUnit: String = "kg",
+    referenceDate: LocalDate = LocalDate.now(),
+    useTwoDecimals: Boolean = false
+): String {
+    return FatLossAnalytics.format21DayPaceSubtitle(comparison, pace21, weightUnit, referenceDate, useTwoDecimals)
+}
+
+internal fun resolvePace28Subtitle(
+    pace28: PaceRateResult?,
+    comparison: PaceComparisonResult? = null,
+    weightUnit: String = "kg",
+    referenceDate: LocalDate = LocalDate.now(),
+    useTwoDecimals: Boolean = false
+): String {
+    return FatLossAnalytics.format28DayPaceSubtitle(comparison, pace28, weightUnit, referenceDate, useTwoDecimals)
+}
+
+internal fun resolveHorizonRowLeftLabel(row: HorizonEstimationRow): String =
+    row.formatLeftLabel()
+
+internal fun resolveHorizonRowRightValue(row: HorizonEstimationRow): String =
+    row.formatRightValue()
+
+internal fun resolveHorizonRowBadgeText(row: HorizonEstimationRow): String? = when (val st = row.state) {
+    is HorizonRowState.Projected -> st.badgeText
+    is HorizonRowState.Stalled -> "Stalled"
+    is HorizonRowState.NotEnoughData -> null
+}
+
+internal fun resolveHorizonRowContentDescription(row: HorizonEstimationRow): String {
+    val left = row.formatLeftLabel()
+    val right = row.formatRightValue()
+    val badge = resolveHorizonRowBadgeText(row)
+    return if (badge != null) {
+        "${row.windowDays}-day horizon ($left): $right, $badge"
+    } else {
+        "${row.windowDays}-day horizon ($left): $right"
+    }
 }
 
 internal const val PACE_AND_LINEAR_TARGETS_HEADER = "PACE & LINEAR TARGETS"
@@ -1880,7 +1955,12 @@ fun WeightProgressionHeroCard(
     delta14dKg: Double? = null,
     loggedDaysCount14d: Int = 0,
     sameDayTrio: SameDayWeightTrioState? = null,
-    requiredPace: RequiredPaceResult? = null
+    requiredPace: RequiredPaceResult? = null,
+    pace21: PaceRateResult? = null,
+    pace28: PaceRateResult? = null,
+    paceComparison21d: PaceComparisonResult? = null,
+    paceComparison28d: PaceComparisonResult? = null,
+    multiHorizonForecast: MultiHorizonForecastState? = null
 ) {
     val isImperial = weightUnit.equals("lbs", ignoreCase = true)
     val today7dWindowAvgKg = today7dAvgKg ?: rollingWeightHero?.today7dAvgKg
@@ -2177,119 +2257,103 @@ fun WeightProgressionHeroCard(
                 TheoreticalPaceTargetsBox(paceTargets = paceTargets)
             }
 
-            // 3. Bottom Pace Metrics Split (7-Day & 14-Day Cards)
+            // 3. Bottom Pace Metrics Split (2x2 Grid: 7D, 14D, 21D, 28D)
             val fontScale = LocalDensity.current.fontScale
             val paceTextStyle = if (fontScale >= 1.25f) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Max),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // 7-Day Pace Card
-                Surface(
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Max),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = "7-Day Pace",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        val style7 = paceTrendStyle(pace7?.trend)
-                        val pace7Text = resolvePaceChipValue(pace7, weightUnit)
-                        val pace7Color = if (pace7 != null) style7.color else MaterialTheme.colorScheme.onSurfaceVariant
-                        val pace7Modifier = if (pace7 == null) {
-                            Modifier.semantics { contentDescription = NO_DATA_CONTENT_DESCRIPTION }
-                        } else {
-                            Modifier
-                        }
-                        Text(
-                            text = pace7Text,
-                            modifier = pace7Modifier,
-                            style = paceTextStyle,
-                            fontWeight = FontWeight.Bold,
-                            color = pace7Color,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        val sub7 = FatLossAnalytics.format7DayPaceSubtitle(paceComparison7d, weightUnit, referenceDate)
-                        Text(
-                            text = sub7,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            minLines = 2,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    PaceMetricCard(
+                        title = "7-Day Pace",
+                        pace = pace7,
+                        subtitle = FatLossAnalytics.format7DayPaceSubtitle(
+                            comparison = paceComparison7d,
+                            weightUnit = weightUnit,
+                            referenceDate = referenceDate,
+                            useTwoDecimals = true
+                        ),
+                        weightUnit = weightUnit,
+                        paceTextStyle = paceTextStyle,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                    )
+                    PaceMetricCard(
+                        title = "14-Day Pace",
+                        pace = pace14,
+                        subtitle = resolvePace14Subtitle(
+                            pace14 = pace14,
+                            comparison = paceComparison14d,
+                            weightUnit = weightUnit,
+                            referenceDate = referenceDate,
+                            useTwoDecimals = true
+                        ),
+                        weightUnit = weightUnit,
+                        paceTextStyle = paceTextStyle,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                    )
                 }
 
-                // 14-Day Pace Card
-                Surface(
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Max),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = "14-Day Pace",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        val style14 = paceTrendStyle(pace14?.trend)
-                        val pace14Text = resolvePaceChipValue(pace14, weightUnit)
-                        val pace14Color = if (pace14 != null) style14.color else MaterialTheme.colorScheme.onSurfaceVariant
-                        val pace14Modifier = if (pace14 == null) {
-                            Modifier.semantics { contentDescription = NO_DATA_CONTENT_DESCRIPTION }
-                        } else {
-                            Modifier
-                        }
-                        Text(
-                            text = pace14Text,
-                            modifier = pace14Modifier,
-                            style = paceTextStyle,
-                            fontWeight = FontWeight.Bold,
-                            color = pace14Color,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        val sub14 = resolvePace14Subtitle(pace14, paceComparison14d, weightUnit, referenceDate)
-                        Text(
-                            text = sub14,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            minLines = 2,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    PaceMetricCard(
+                        title = "21-Day Pace",
+                        pace = pace21,
+                        subtitle = resolvePace21Subtitle(
+                            pace21 = pace21,
+                            comparison = paceComparison21d,
+                            weightUnit = weightUnit,
+                            referenceDate = referenceDate,
+                            useTwoDecimals = true
+                        ),
+                        weightUnit = weightUnit,
+                        paceTextStyle = paceTextStyle,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                    )
+                    PaceMetricCard(
+                        title = "28-Day Pace",
+                        pace = pace28,
+                        subtitle = resolvePace28Subtitle(
+                            pace28 = pace28,
+                            comparison = paceComparison28d,
+                            weightUnit = weightUnit,
+                            referenceDate = referenceDate,
+                            useTwoDecimals = true
+                        ),
+                        weightUnit = weightUnit,
+                        paceTextStyle = paceTextStyle,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                    )
                 }
             }
 
             // 4. Forecast Banner & CTA
-            if (forecast != null) {
+            if (multiHorizonForecast != null || forecast != null) {
                 ForecastBanner(
                     forecast = forecast,
                     pace14 = pace14,
                     pace7 = pace7,
                     weightUnit = weightUnit,
-                    requiredPace = requiredPace
+                    requiredPace = requiredPace,
+                    multiHorizonForecast = multiHorizonForecast
                 )
             }
 
@@ -2307,6 +2371,63 @@ fun WeightProgressionHeroCard(
                     Text("Log weigh-in")
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PaceMetricCard(
+    title: String,
+    pace: PaceRateResult?,
+    subtitle: String,
+    weightUnit: String,
+    paceTextStyle: TextStyle,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+            val style = paceTrendStyle(pace?.trend)
+            val paceText = resolvePaceChipValue(pace, weightUnit, useTwoDecimals = true)
+            val paceColor = if (pace != null) style.color else MaterialTheme.colorScheme.onSurfaceVariant
+            val paceModifier = if (pace == null) {
+                Modifier.semantics { contentDescription = NO_DATA_CONTENT_DESCRIPTION }
+            } else {
+                Modifier
+            }
+            Text(
+                text = paceText,
+                modifier = paceModifier,
+                style = paceTextStyle,
+                fontWeight = FontWeight.Bold,
+                color = paceColor,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                minLines = 2,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -2351,14 +2472,25 @@ internal fun resolveRequiredPaceSubtitle(
 
 @Composable
 internal fun ForecastBanner(
-    forecast: PaceForecast,
+    forecast: PaceForecast? = null,
     pace14: PaceRateResult? = null,
     pace7: PaceRateResult? = null,
     weightUnit: String = "kg",
     requiredPace: RequiredPaceResult? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    multiHorizonForecast: MultiHorizonForecastState? = null
 ) {
-    val (containerColor, contentColor, icon) = when (forecast) {
+    if (multiHorizonForecast != null) {
+        MultiHorizonGoalEstimationsBanner(
+            state = multiHorizonForecast,
+            requiredPace = requiredPace,
+            modifier = modifier
+        )
+        return
+    }
+
+    val legacyForecast = forecast ?: return
+    val (containerColor, contentColor, icon) = when (legacyForecast) {
         is PaceForecast.GoalReached -> Triple(
             MaterialTheme.colorScheme.primaryContainer,
             MaterialTheme.colorScheme.onPrimaryContainer,
@@ -2399,19 +2531,19 @@ internal fun ForecastBanner(
             Text(text = icon, fontSize = 20.sp)
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = forecast.displayText,
+                    text = legacyForecast.displayText,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = contentColor
                 )
-                if (forecast is PaceForecast.Projected && forecast.targetDate != null) {
+                if (legacyForecast is PaceForecast.Projected && legacyForecast.targetDate != null) {
                     Text(
-                        text = "Projected arrival: ${forecast.targetDate.formatLong()}",
+                        text = "Projected arrival: ${legacyForecast.targetDate.formatLong()}",
                         style = MaterialTheme.typography.bodySmall,
                         color = contentColor.copy(alpha = 0.8f)
                     )
                 }
-                val subtitle = resolveForecastPaceSubtitle(forecast, pace14, pace7, weightUnit)
+                val subtitle = resolveForecastPaceSubtitle(legacyForecast, pace14, pace7, weightUnit)
                 if (subtitle != null) {
                     Text(
                         text = subtitle,
@@ -2419,7 +2551,7 @@ internal fun ForecastBanner(
                         color = contentColor.copy(alpha = 0.8f)
                     )
                 }
-                val requiredPaceSubtitle = resolveRequiredPaceSubtitle(forecast, requiredPace)
+                val requiredPaceSubtitle = resolveRequiredPaceSubtitle(legacyForecast, requiredPace)
                 if (requiredPaceSubtitle != null) {
                     Text(
                         text = requiredPaceSubtitle,
@@ -2427,6 +2559,208 @@ internal fun ForecastBanner(
                         color = contentColor.copy(alpha = 0.8f)
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MultiHorizonGoalEstimationsBanner(
+    state: MultiHorizonForecastState,
+    requiredPace: RequiredPaceResult? = null,
+    modifier: Modifier = Modifier
+) {
+    when (state) {
+        is MultiHorizonForecastState.GoalReached,
+        is MultiHorizonForecastState.CycleEnded,
+        is MultiHorizonForecastState.NotEnoughData -> {
+            val (containerColor, contentColor, icon) = when (state) {
+                is MultiHorizonForecastState.GoalReached -> Triple(
+                    MaterialTheme.colorScheme.primaryContainer,
+                    MaterialTheme.colorScheme.onPrimaryContainer,
+                    "🎉"
+                )
+                is MultiHorizonForecastState.CycleEnded -> Triple(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+                    "🏁"
+                )
+                is MultiHorizonForecastState.NotEnoughData -> Triple(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+                    "ℹ️"
+                )
+                is MultiHorizonForecastState.Active -> return
+            }
+            Surface(
+                modifier = modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = containerColor
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(text = icon, fontSize = 20.sp)
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = state.displayText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = contentColor
+                        )
+                        if (state is MultiHorizonForecastState.NotEnoughData && requiredPace != null) {
+                            Text(
+                                text = requiredPace.formatSubtitle(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = contentColor.copy(alpha = 0.8f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        is MultiHorizonForecastState.Active -> {
+            Surface(
+                modifier = modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = GOAL_ARRIVAL_ESTIMATIONS_HEADER,
+                        style = MaterialTheme.typography.labelSmall,
+                        letterSpacing = 1.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = state.benchmarkHeader,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        state.rows.forEach { row ->
+                            HorizonEstimationRowItem(row = row)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HorizonEstimationRowItem(
+    row: HorizonEstimationRow
+) {
+    val contentDesc = resolveHorizonRowContentDescription(row)
+    val leftLabel = resolveHorizonRowLeftLabel(row)
+    val rightValue = resolveHorizonRowRightValue(row)
+    val badgeText = resolveHorizonRowBadgeText(row)
+
+    val rightColor = when (row.state) {
+        is HorizonRowState.Projected -> MaterialTheme.colorScheme.onSurface
+        is HorizonRowState.Stalled -> MaterialTheme.colorScheme.error
+        is HorizonRowState.NotEnoughData -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val rightWeight = if (row.state is HorizonRowState.Projected) FontWeight.SemiBold else FontWeight.Normal
+
+    val barFraction = when (val st = row.state) {
+        is HorizonRowState.Projected -> st.sufficiencyFraction.coerceIn(0f, 1f)
+        is HorizonRowState.Stalled, is HorizonRowState.NotEnoughData -> 0f
+    }
+    val barColor = when (val st = row.state) {
+        is HorizonRowState.Projected -> if (st.isOnTrack) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.tertiary
+        }
+        is HorizonRowState.Stalled -> MaterialTheme.colorScheme.error
+        is HorizonRowState.NotEnoughData -> MaterialTheme.colorScheme.outlineVariant
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) { contentDescription = contentDesc },
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        // Line 1: Left horizon + 2-dec pace label | Right estimated weeks + arrival date (or status)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = leftLabel,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = rightValue,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = rightWeight,
+                color = rightColor,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        // Line 2: Proportional sufficiency bar | Right ahead/late badge
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                if (barFraction > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(barFraction)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(barColor)
+                    )
+                }
+            }
+            if (badgeText != null) {
+                Text(
+                    text = badgeText,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = barColor,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }

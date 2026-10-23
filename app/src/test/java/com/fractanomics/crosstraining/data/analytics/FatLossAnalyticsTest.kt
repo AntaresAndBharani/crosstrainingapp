@@ -3909,4 +3909,297 @@ class FatLossAnalyticsTest {
             FatLossAnalytics.compute7DayPaceTargets(gainEntries, incompleteCycle, today, "kg")
         )
     }
+
+    // =========================================================================
+    // Feature 005-multi-horizon-pace-estimations: 21D & 28D Paces, 2-Decimal Precision & Multi-Horizon Estimations
+    // =========================================================================
+
+    @Test
+    fun `feature 005 US1 - compute21DayPace and compute28DayPace smoothed rolling window calculation and 2-decimal formatting`() {
+        val cycleStart = LocalDate.of(2026, 9, 24)
+        val today = LocalDate.of(2026, 10, 22) // 28 days elapsed
+        val cycle = Cycle(
+            id = 5001L,
+            name = "Recomp",
+            startDate = cycleStart,
+            endDate = LocalDate.of(2026, 12, 28),
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 77.8,
+            targetWeightKg = 72.0
+        )
+
+        // Populate entries in each 7-day window:
+        // [t-28, t] -> t-28 = Sep 24 (77.80 kg)
+        // [t-21, t-15] -> Oct 1 (76.68 kg)
+        // [t-14, t-8] -> Oct 8 (76.10 kg)
+        // [t-7, t-1] -> Oct 15 (75.94 kg)
+        // [t-6, t] -> Oct 22 (75.66 kg)
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 9, 24), weightKg = 77.80, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.68, updatedAtMillis = 2L),
+            WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 76.10, updatedAtMillis = 3L),
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 75.94, updatedAtMillis = 4L),
+            WeightEntry(date = today, weightKg = 75.66, updatedAtMillis = 5L)
+        )
+
+        val pace7 = FatLossAnalytics.compute7DayPace(entries, cycle, today)
+        val pace14 = FatLossAnalytics.compute14DayPace(entries, cycle, today)
+        val pace21 = FatLossAnalytics.compute21DayPace(entries, cycle, today)
+        val pace28 = FatLossAnalytics.compute28DayPace(entries, cycle, today)
+
+        assertNotNull(pace7)
+        assertNotNull(pace14)
+        assertNotNull(pace21)
+        assertNotNull(pace28)
+
+        // 7D: (75.66 - 75.94) / 1 = -0.28 kg/wk
+        // 14D: (75.66 - 76.10) / 2 = -0.22 kg/wk
+        // 21D: (75.66 - 76.68) / 3 = -0.34 kg/wk
+        // 28D: (75.66 - 77.80) / 4 = -0.535 -> -0.54 kg/wk
+        // Notice 7D (-0.28) and 14D (-0.22) both round to -0.3 / -0.2 at 1-decimal, or -0.24 & -0.21 both round to -0.2 at 1-decimal,
+        // while formatDisplay2 distinguishes them cleanly!
+        assertEquals("-0.28 kg/wk", pace7!!.formatDisplay2("kg"))
+        assertEquals("-0.22 kg/wk", pace14!!.formatDisplay2("kg"))
+        assertEquals("-0.34 kg/wk", pace21!!.formatDisplay2("kg"))
+        assertEquals("-0.54 kg/wk", pace28!!.formatDisplay2("kg"))
+        assertEquals(21L, pace21.elapsedDays)
+        assertEquals(28L, pace28.elapsedDays)
+
+        // Verify 2-decimal differentiation for -0.24 vs -0.21 kg/wk (which both collapse to -0.2 kg/wk at 1-decimal)
+        val pA = pace7.copy(rateKgPerWeek = -0.24)
+        val pB = pace14.copy(rateKgPerWeek = -0.21)
+        assertEquals("-0.2 kg/wk", pA.formatDisplay("kg"))
+        assertEquals("-0.2 kg/wk", pB.formatDisplay("kg"))
+        assertEquals("-0.24 kg/wk", pA.formatDisplay2("kg"))
+        assertEquals("-0.21 kg/wk", pB.formatDisplay2("kg"))
+
+        // Neutral and gain 2-decimal formatting
+        val pNeutral = pace7.copy(rateKgPerWeek = 0.0, trend = PaceTrend.NEUTRAL)
+        val pGain = pace7.copy(rateKgPerWeek = 0.15, trend = PaceTrend.GAIN)
+        assertEquals("0.00 kg/wk", pNeutral.formatDisplay2("kg"))
+        assertEquals("+0.15 kg/wk", pGain.formatDisplay2("kg"))
+    }
+
+    @Test
+    fun `feature 005 US1 - 21D and 28D cold-start nullability and subtitles`() {
+        val cycleStart = LocalDate.of(2026, 10, 8)
+        val today = LocalDate.of(2026, 10, 22) // Only 14 days elapsed since cycle start and no pre-cycle logs
+        val cycle = Cycle(
+            id = 5002L,
+            name = "Recomp",
+            startDate = cycleStart,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 77.8,
+            targetWeightKg = 72.0
+        )
+        val entries = listOf(
+            WeightEntry(date = cycleStart, weightKg = 77.8, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 76.2, updatedAtMillis = 2L),
+            WeightEntry(date = today, weightKg = 75.7, updatedAtMillis = 3L)
+        )
+
+        assertNotNull(FatLossAnalytics.compute7DayPace(entries, cycle, today))
+        assertNotNull(FatLossAnalytics.compute14DayPace(entries, cycle, today))
+        assertNull(FatLossAnalytics.compute21DayPace(entries, cycle, today))
+        assertNull(FatLossAnalytics.compute28DayPace(entries, cycle, today))
+
+        assertEquals(
+            "Needs weigh-in 21+ days ago",
+            FatLossAnalytics.format21DayPaceSubtitle(null, null, "kg", today, useTwoDecimals = true)
+        )
+        assertEquals(
+            "Needs weigh-in 28+ days ago",
+            FatLossAnalytics.format28DayPaceSubtitle(null, null, "kg", today, useTwoDecimals = true)
+        )
+
+        // When pace is non-null and comparison is null, returns "Smoothed trend"
+        val pace21 = PaceRateResult(
+            rateKgPerWeek = -0.34,
+            anchorWeightKg = 76.68,
+            anchorDate = today.minusDays(21),
+            currentWeightKg = 75.66,
+            currentDate = today,
+            elapsedDays = 21L,
+            trend = PaceTrend.LOSS
+        )
+        assertEquals(
+            "Smoothed trend",
+            FatLossAnalytics.format21DayPaceSubtitle(null, pace21, "kg", today, useTwoDecimals = true)
+        )
+
+        // When comparison is non-null and percentChange is null, useTwoDecimals = true formats 2-decimal delta
+        val comp = PaceComparisonResult(
+            currentRateKgPerWeek = -0.34,
+            priorRateKgPerWeek = -0.26,
+            deltaRateKgPerWeek = -0.08,
+            percentChange = null,
+            isAcceleratingDeficit = true,
+            priorDate = today.minusDays(7),
+            isConsecutive = false,
+            isExactDayMatch = true
+        )
+        assertEquals(
+            "-0.08 kg/wk vs last Thu",
+            FatLossAnalytics.format21DayPaceSubtitle(comp, pace21, "kg", today, useTwoDecimals = true)
+        )
+    }
+
+    @Test
+    fun `feature 005 US2 - computeMultiHorizonForecast reconciles all 4 horizons with 2-decimal precision and required pace`() {
+        val cycleStart = LocalDate.of(2026, 9, 28)
+        val today = LocalDate.of(2026, 10, 22) // 24 days elapsed (7D, 14D, 21D available; 28D Needs 28+ days)
+        val cycleEnd = LocalDate.of(2026, 12, 28) // 67 days = 9.5714 weeks remaining -> 9.6w left
+        val cycle = Cycle(
+            id = 5003L,
+            name = "Recomp",
+            startDate = cycleStart,
+            endDate = cycleEnd,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 77.8,
+            targetWeightKg = 72.0
+        )
+
+        // Remaining weight: today 7D avg = 75.66 kg -> rounds to 75.7 kg -> 75.7 - 72.0 = 3.7 kg left
+        // Required pace: -3.7 / (67/7) = -0.38656 -> -0.39 kg/wk
+        val entries = listOf(
+            WeightEntry(date = LocalDate.of(2026, 10, 1), weightKg = 76.68, updatedAtMillis = 1L), // t-21 window
+            WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 76.10, updatedAtMillis = 2L), // t-14 window
+            WeightEntry(date = LocalDate.of(2026, 10, 15), weightKg = 75.94, updatedAtMillis = 3L), // t-7 window
+            WeightEntry(date = today, weightKg = 75.66, updatedAtMillis = 4L) // today window
+        )
+
+        val state = FatLossAnalytics.computeMultiHorizonForecast(entries, cycle, today, weightUnit = "kg")
+        assertTrue(state is MultiHorizonForecastState.Active)
+        val active = state as MultiHorizonForecastState.Active
+
+        assertEquals(
+            "Target: 28 Dec 2026 (9.6w left) · Required: -0.39 kg/wk",
+            active.benchmarkHeader
+        )
+        assertEquals(4, active.rows.size)
+        assertEquals(listOf(7, 14, 21, 28), active.rows.map { it.windowDays })
+
+        // Row 0: 7D (-0.28 kg/wk) -> 3.7 / 0.28 = 13.214 -> 13.2 wks (late by 13.2 - 9.6 = +3.6w late)
+        val row7 = active.rows[0]
+        assertEquals("7D (-0.28 kg/wk)", row7.formatLeftLabel())
+        assertTrue(row7.state is HorizonRowState.Projected)
+        val proj7 = row7.state as HorizonRowState.Projected
+        assertEquals(13.2, proj7.weeks, 1e-6)
+        assertEquals(today.plusDays(kotlin.math.round(13.2 * 7.0).toLong()), proj7.arrivalDate)
+        assertEquals("+3.6w late", proj7.badgeText)
+        assertFalse(proj7.isOnTrack)
+        assertEquals((0.28 / 0.39).toFloat(), proj7.sufficiencyFraction, 1e-3f)
+
+        // Row 1: 14D (-0.22 kg/wk) -> 3.7 / 0.22 = 16.818 -> 16.8 wks (+7.2w late)
+        val row14 = active.rows[1]
+        assertEquals("14D (-0.22 kg/wk)", row14.formatLeftLabel())
+        val proj14 = row14.state as HorizonRowState.Projected
+        assertEquals(16.8, proj14.weeks, 1e-6)
+        assertEquals("+7.2w late", proj14.badgeText)
+
+        // Row 2: 21D (-0.34 kg/wk) -> 3.7 / 0.34 = 10.882 -> 10.9 wks (+1.3w late)
+        val row21 = active.rows[2]
+        assertEquals("21D (-0.34 kg/wk)", row21.formatLeftLabel())
+        val proj21 = row21.state as HorizonRowState.Projected
+        assertEquals(10.9, proj21.weeks, 1e-6)
+        assertEquals("+1.3w late", proj21.badgeText)
+
+        // Row 3: 28D (—) -> Needs 28+ days
+        val row28 = active.rows[3]
+        assertEquals("28D (—)", row28.formatLeftLabel())
+        assertEquals("Needs 28+ days", row28.formatRightValue())
+        assertTrue(row28.state is HorizonRowState.NotEnoughData)
+    }
+
+    @Test
+    fun `feature 005 US2 - computeMultiHorizonForecast handles open-ended cycle, ahead pace, stalled, over 1 year, and boundary states`() {
+        val cycleStart = LocalDate.of(2026, 9, 20)
+        val today = LocalDate.of(2026, 10, 22)
+
+        // 1. Open-ended cycle (endDate == null) with mixed row states:
+        // 7D: fast loss (-0.50 kg/wk) -> 3.7 / 0.50 = 7.4 wks
+        // 14D: stalled (+0.10 kg/wk) -> Pace stalled
+        // 21D: very slow loss (-0.06 kg/wk) -> 3.7 / 0.06 = 61.7 wks -> "> 1 year"
+        // 28D: moderate loss (-0.25 kg/wk) -> 3.7 / 0.25 = 14.8 wks
+        val openCycle = Cycle(
+            id = 5004L,
+            name = "Open Cut",
+            startDate = cycleStart,
+            endDate = null,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 78.0,
+            targetWeightKg = 72.0
+        )
+        val mixedEntries = listOf(
+            WeightEntry(date = today.minusDays(28), weightKg = 76.66, updatedAtMillis = 1L), // 28D: (75.66 - 76.66)/4 = -0.25
+            WeightEntry(date = today.minusDays(21), weightKg = 75.84, updatedAtMillis = 2L), // 21D: (75.66 - 75.84)/3 = -0.06
+            WeightEntry(date = today.minusDays(14), weightKg = 75.46, updatedAtMillis = 3L), // 14D: (75.66 - 75.46)/2 = +0.10
+            WeightEntry(date = today.minusDays(7), weightKg = 76.16, updatedAtMillis = 4L),  // 7D:  (75.66 - 76.16)/1 = -0.50
+            WeightEntry(date = today, weightKg = 75.66, updatedAtMillis = 5L)
+        )
+
+        val openState = FatLossAnalytics.computeMultiHorizonForecast(mixedEntries, openCycle, today, weightUnit = "kg")
+        assertTrue(openState is MultiHorizonForecastState.Active)
+        val openActive = openState as MultiHorizonForecastState.Active
+        assertEquals("Goal: 72.0 kg (-3.7 kg left)", openActive.benchmarkHeader)
+
+        // 7D is fastest deficit (-0.50 kg/wk), so sufficiencyFraction = 1.0f, badgeText = null
+        val r7 = openActive.rows[0]
+        val p7 = r7.state as HorizonRowState.Projected
+        assertEquals(7.4, p7.weeks, 1e-6)
+        assertEquals(1.0f, p7.sufficiencyFraction, 1e-4f)
+        assertNull(p7.badgeText)
+
+        // 14D is Stalled (+0.10 kg/wk)
+        val r14 = openActive.rows[1]
+        assertEquals("14D (+0.10 kg/wk)", r14.formatLeftLabel())
+        assertEquals("Pace stalled", r14.formatRightValue())
+        assertEquals(HorizonRowState.Stalled(windowDays = 14, paceDisplay2 = "+0.10 kg/wk"), r14.state)
+
+        // 21D is > 1 year (61.7 wks)
+        val r21 = openActive.rows[2]
+        assertEquals("21D (-0.06 kg/wk)", r21.formatLeftLabel())
+        assertEquals("> 1 year", r21.formatRightValue())
+        val p21 = r21.state as HorizonRowState.Projected
+        assertTrue(p21.isOverOneYear)
+
+        // 28D is 0.25 / 0.50 = 0.5f sufficiencyFraction
+        val r28 = openActive.rows[3]
+        val p28 = r28.state as HorizonRowState.Projected
+        assertEquals(14.8, p28.weeks, 1e-6)
+        assertEquals(0.5f, p28.sufficiencyFraction, 1e-4f)
+
+        // 2. Ahead of target date ("On time (-2.2w)")
+        val datedCycle = openCycle.copy(endDate = today.plusDays(67)) // 9.6w left
+        val datedState = FatLossAnalytics.computeMultiHorizonForecast(mixedEntries, datedCycle, today, weightUnit = "kg") as MultiHorizonForecastState.Active
+        val dated7 = datedState.rows[0].state as HorizonRowState.Projected
+        assertTrue(dated7.isOnTrack)
+        assertEquals(1.0f, dated7.sufficiencyFraction, 1e-4f)
+        assertEquals("On time (-2.2w)", dated7.badgeText)
+
+        // 21D (> 1 year) with target date shows "> 1 yr late"
+        val dated21 = datedState.rows[2].state as HorizonRowState.Projected
+        assertFalse(dated21.isOnTrack)
+        assertEquals("> 1 yr late", dated21.badgeText)
+
+        // 3. Boundary states: GoalReached, CycleEnded, NotEnoughData
+        val goalEntries = listOf(WeightEntry(date = today, weightKg = 71.9, updatedAtMillis = 1L))
+        assertEquals(
+            MultiHorizonForecastState.GoalReached,
+            FatLossAnalytics.computeMultiHorizonForecast(goalEntries, datedCycle, today, weightUnit = "kg")
+        )
+
+        val endedCycle = openCycle.copy(endDate = today.minusDays(1))
+        assertEquals(
+            MultiHorizonForecastState.CycleEnded,
+            FatLossAnalytics.computeMultiHorizonForecast(mixedEntries, endedCycle, today, weightUnit = "kg")
+        )
+
+        val coldStartEntries = listOf(WeightEntry(date = today, weightKg = 75.7, updatedAtMillis = 1L))
+        val coldCycle = openCycle.copy(startDate = today.minusDays(2))
+        assertEquals(
+            MultiHorizonForecastState.NotEnoughData,
+            FatLossAnalytics.computeMultiHorizonForecast(coldStartEntries, coldCycle, today, weightUnit = "kg")
+        )
+    }
 }
