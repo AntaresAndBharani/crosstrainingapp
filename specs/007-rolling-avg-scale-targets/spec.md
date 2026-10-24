@@ -68,7 +68,7 @@ As an athlete early in a cycle (e.g., with 10 days of logs, so 7D history is ava
 
 **Acceptance Scenarios**:
 
-1. **Given** a cycle where `t - N` is before `cycleStartDate` and no weigh-ins exist in the prior `ND` window `[t - 2N + 1, t - N]`, **When** `Expected Today` is evaluated for row `N`, **Then** it emits `ColumnState.InsufficientHistory(windowDays = N)` which displays value `"—"` and subtitle `"Needs N days history"` (e.g., `"Needs 14 days history"`).
+1. **Given** a cycle where `t - N` is before `cycleStartDate` and no weigh-ins exist in the prior `ND` window `[t - 2N + 1, t - N]`, **When** `Expected Today` is evaluated for row `N`, **Then** it emits `ColumnState.InsufficientHistory` (formatted with `TargetRowState.windowDays = N`) which displays value `"—"` and subtitle `"Needs N days history"` (e.g., `"Needs 14 days history"`).
 2. **Given** a cycle where `t - N` is on or after `cycleStartDate` and no weigh-ins exist in the prior `ND` window `[t - 2N + 1, t - N]`, **When** `Expected Today` is evaluated for row `N`, **Then** it emits `ColumnState.NeedsLog(requiredDate = t - N)` which displays value `"—"` and subtitle `"Needs log from <d MMM>"`.
 
 ---
@@ -79,6 +79,7 @@ As an athlete early in a cycle (e.g., with 10 days of logs, so 7D history is ava
 - **Goal Already Reached (`round1InUnit(today7dAvgKg) <= round1InUnit(targetWeightKg)`)**: The container transitions to `PaceTargetsState.GoalReached` (`"Goal reached! 🎉"`), matching the `ForecastBanner` state.
 - **On or After Cycle End Date (`today >= cycle.endDate` while above goal)**: When `daysRemaining <= 0`, the container transitions to `PaceTargetsState.CycleEnded` (`"Cycle ended"`).
 - **Single Log in Window (`k_today == 0` in `[t - (N - 1), t - 1]`)**: When no entries exist in `[t - (N - 1), t - 1]`, `k_today = 0` and `sum = 0.0`, so `(0 + 1) × targetAvgToday - 0.0 = targetAvgToday`, avoiding any division by zero.
+- **Non-Physical Solved Scale Weight (Known Limitation)**: Because `Expected Today` solves for a single day's weigh-in that absorbs the full gap between the window's prior entries and the anchored target average, sparse/plateaued windows (especially `21D`/`28D` with many prior entries above the required trajectory) can yield implausibly low or even negative solved scale weights. The current release displays the exact solved value; presentation of unreachable targets is tracked as a follow-up.
 - **Imperial Unit (`lbs`) Conversion**: All entry weights, window averages, required rates, target averages, and solved scale weights are evaluated in the active display unit (`kg` or `lbs`) before 2-decimal rounding (`round2`) and `diff2` subtraction.
 
 ## Requirements *(mandatory)*
@@ -93,7 +94,7 @@ As an athlete early in a cycle (e.g., with 10 days of logs, so 7D history is ava
   - For each horizon row `N` (`7D`, `14D`, `21D`, `28D`), `linearToday` MUST compare `round2(toUnit(todayNdAvgKg))` against `W_linear_display` via `diff2(round2(toUnit(todayNdAvgKg)), W_linear_display)` and assign `PaceTargetStatus` (`AHEAD` when `< 0.00`, `OFF_PACE` when `> 0.00`, `ON_PACE` when `== 0.00`).
 - **FR-003**: For each horizon row `N` (`7D`, `14D`, `21D`, `28D`), the system MUST compute `expectedToday` as the **daily scale weight needed today (`t`)** to achieve today's required-pace `ND` rolling average:
   - Resolve the prior `ND` average `priorNdAvgKg` over `[t - 2N + 1, t - N]`.
-  - If `priorNdAvgKg == null`, emit `ColumnState.InsufficientHistory(windowDays = N)` when `t - N < cycleStartDate`, or `ColumnState.NeedsLog(requiredDate = t - N)` when `t - N >= cycleStartDate`.
+  - If `priorNdAvgKg == null`, emit `ColumnState.InsufficientHistory` (formatted with `TargetRowState.windowDays = N`) when `t - N < cycleStartDate`, or `ColumnState.NeedsLog(requiredDate = t - N)` when `t - N >= cycleStartDate`.
   - Otherwise, compute `targetAvgTodayInUnit = toUnit(priorNdAvgKg) + windowRequiredRateInUnit`, gather all non-deleted weigh-ins in the prior `(N - 1)` days of today's window `[t - (N - 1), t - 1]` (count `k_today`, sum in display unit `sumPriorTodayInUnit`), and compute:
     `expectedScaleTodayDisplay = round2((k_today + 1) * targetAvgTodayInUnit - sumPriorTodayInUnit)`
   - When today (`t`) has a logged weigh-in (`entryToday != null`), compute `delta = diff2(round2(toUnit(entryToday.weightKg)), expectedScaleTodayDisplay)` and `status = paceStatusFor(delta)`; when today (`t`) is unlogged, set `deltaDisplay = null` and `status = null`.
@@ -103,13 +104,13 @@ As an athlete early in a cycle (e.g., with 10 days of logs, so 7D history is ava
     `targetScaleTomorrowDisplay = round2((k_tomorrow + 1) * targetAvgTomorrowInUnit - sumPriorTomorrowInUnit)`
   - Format the subtitle with the daily required average step `dailyStepDisplay = -abs(round2(dailyRequiredRateInUnit))` as `"-X.XX <unit>/day"`.
 - **FR-005**: The UI (`TheoreticalPaceTargetsBox`) MUST remove the `DAILY WEIGH-IN` row and render four horizon rows in ascending order: `"7D ROLLING AVERAGE"`, `"14D ROLLING AVERAGE"`, `"21D ROLLING AVERAGE"`, and `"28D ROLLING AVERAGE"`, separated by subtle horizontal dividers.
-- **FR-006**: `ColumnState.InsufficientHistory` MUST support a `windowDays: Int = 7` parameter so that `resolveExpectedTodaySubtitle` and `resolveTargetTomorrowSubtitle` render `"Needs ${windowDays} days history"` (e.g., `"Needs 7 days history"`, `"Needs 14 days history"`, `"Needs 21 days history"`, `"Needs 28 days history"`).
+- **FR-006**: `TargetRowState` MUST carry a `windowDays: Int = 7` property (keeping `ColumnState.InsufficientHistory` a `data object`, see `research.md` Decision 3), and `resolveExpectedTodaySubtitle` / `resolveTargetTomorrowSubtitle` MUST accept `windowDays: Int = 7` so that `ColumnState.InsufficientHistory` renders `"Needs ${windowDays} days history"` (e.g., `"Needs 7 days history"`, `"Needs 14 days history"`, `"Needs 21 days history"`, `"Needs 28 days history"`).
 
 ### Key Entities
 
 - **PaceTargetsState.Available**: Holds the rolling average target rows across `7D`, `14D`, `21D`, and `28D` (`sevenDayAvgRow`, `fourteenDayAvgRow`, `twentyOneDayAvgRow`, `twentyEightDayAvgRow`, and an ordered `rows: List<TargetRowState>` list).
 - **TargetRowState**: Holds `windowDays: Int`, `linearToday: ColumnState`, `expectedToday: ColumnState`, and `targetTomorrow: ColumnState`.
-- **ColumnState.InsufficientHistory**: Holds `windowDays: Int = 7` for horizon-specific history messaging.
+- **ColumnState.InsufficientHistory**: Remains a `data object`; horizon-specific history messaging is driven by `TargetRowState.windowDays`.
 
 ## Success Criteria *(mandatory)*
 

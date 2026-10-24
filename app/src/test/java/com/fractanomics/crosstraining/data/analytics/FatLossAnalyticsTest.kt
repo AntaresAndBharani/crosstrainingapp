@@ -3773,6 +3773,56 @@ class FatLossAnalyticsTest {
             assertEquals("lbs", (row.linearToday as ColumnState.Value).unitLabel)
             assertEquals("lbs", (row.targetTomorrow as ColumnState.Value).unitLabel)
         }
+
+        // Imperial scale weight solving uses unrounded display-unit sums (7D row):
+        // today7dAvg = 166.8017 lbs, target = 158.7328 lbs, dailyRequiredRate = -0.206895 lbs/day
+        // Expected Today: round2(2 * (168.0363 - 1.448267) - 168.9182) = round2(164.257952) = 164.26 lbs
+        //   delta vs today's actual weigh-in (164.69) = +0.43 lbs (OFF_PACE)
+        // Target Tomorrow: round2(3 * (166.8017 - 0.206889) - (168.9182 + 164.6853)) = round2(166.181062) = 166.18 lbs
+        val expected7dLbs = availLbs.sevenDayAvgRow.expectedToday as ColumnState.Value
+        assertEquals(164.26, expected7dLbs.targetWeightDisplay, 1e-6)
+        assertEquals(0.43, expected7dLbs.deltaDisplay!!, 1e-6)
+        assertEquals(PaceTargetStatus.OFF_PACE, expected7dLbs.status)
+        assertEquals(168.04, expected7dLbs.baselineWeightDisplay!!, 1e-6)
+        assertEquals(166.18, (availLbs.sevenDayAvgRow.targetTomorrow as ColumnState.Value).targetWeightDisplay, 1e-6)
+    }
+
+    @Test
+    fun `paceAndLinearTargets US3 - empty prior window inside cycle yields horizon-specific NeedsLog anchor dates`() {
+        val cycleStart = LocalDate.of(2026, 9, 1)
+        val today = LocalDate.of(2026, 10, 22)
+        val cycleEnd = LocalDate.of(2026, 11, 30) // daysRemaining = 39
+        // Only Sep 1, Oct 20, and Oct 22 are logged:
+        // 7D prior window [Oct 9, Oct 15], 14D [Sep 25, Oct 8], 21D [Sep 11, Oct 1] are empty -> NeedsLog(t - N)
+        // 28D prior window [Aug 28, Sep 24] contains Sep 1 (77.80):
+        //   current28dAvg = (76.00 + 75.50) / 2 = 75.75, dailyRequiredRate = -3.75 / 39 = -0.0961538
+        //   Expected Today: round2(2 * (77.80 - 28 * 0.0961538) - 76.00) = round2(74.2153846) = 74.22 kg
+        val entries = listOf(
+            WeightEntry(date = cycleStart, weightKg = 77.80, updatedAtMillis = 1L),
+            WeightEntry(date = LocalDate.of(2026, 10, 20), weightKg = 76.00, updatedAtMillis = 2L),
+            WeightEntry(date = today, weightKg = 75.50, updatedAtMillis = 3L)
+        )
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(
+            entries = entries,
+            cycleStartDate = cycleStart,
+            referenceDate = today,
+            weightUnit = "kg",
+            startingWeightKg = 77.80,
+            targetWeightKg = 72.0,
+            cycleEndDate = cycleEnd
+        ) as PaceTargetsState.Available
+
+        assertEquals(ColumnState.NeedsLog(requiredDate = LocalDate.of(2026, 10, 15)), state.sevenDayAvgRow.expectedToday)
+        assertEquals(ColumnState.NeedsLog(requiredDate = LocalDate.of(2026, 10, 8)), state.fourteenDayAvgRow.expectedToday)
+        assertEquals(ColumnState.NeedsLog(requiredDate = LocalDate.of(2026, 10, 1)), state.twentyOneDayAvgRow.expectedToday)
+
+        val expected28d = state.twentyEightDayAvgRow.expectedToday as ColumnState.Value
+        assertEquals(74.22, expected28d.targetWeightDisplay, 1e-6)
+        assertEquals(77.80, expected28d.baselineWeightDisplay!!, 1e-6)
+
+        // Target Tomorrow never depends on the prior window, so every horizon still resolves a scale weight
+        state.rows.forEach { row -> assertTrue(row.targetTomorrow is ColumnState.Value) }
     }
 
     @Test

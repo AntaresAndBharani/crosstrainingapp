@@ -719,7 +719,7 @@ class WeightProgressionCardComposeTest {
     // Scenario 17: Pace & Linear Targets 3x4 Multi-Window Container (Feature 004 & 007)
     // =========================================================================
     @Test
-    fun scenario17_paceAndLinearTargets3x2ContainerRendersAt360dpFontScale13() {
+    fun scenario17_paceAndLinearTargets3x4ContainerRendersAt360dpFontScale13() {
         val cycleStart = LocalDate.of(2026, 9, 28)
         val referenceDate = LocalDate.of(2026, 10, 22)
         val cycleEnd = LocalDate.of(2026, 11, 30)
