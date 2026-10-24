@@ -1396,7 +1396,9 @@ internal fun resolveHorizonRowContentDescription(row: HorizonEstimationRow): Str
 
 internal const val PACE_AND_LINEAR_TARGETS_HEADER = "PACE & LINEAR TARGETS"
 internal const val TARGET_ROW_7D_AVG_HEADER = "7D ROLLING AVERAGE"
-internal const val TARGET_ROW_DAILY_HEADER = "DAILY WEIGH-IN"
+internal const val TARGET_ROW_14D_AVG_HEADER = "14D ROLLING AVERAGE"
+internal const val TARGET_ROW_21D_AVG_HEADER = "21D ROLLING AVERAGE"
+internal const val TARGET_ROW_28D_AVG_HEADER = "28D ROLLING AVERAGE"
 
 private fun formatTargetWeight(value: Double, useTwoDecimals: Boolean): String =
     if (useTwoDecimals) String.format(Locale.US, "%.2f", value) else value.trimmed()
@@ -1428,8 +1430,8 @@ internal fun resolveExpectedTodayValue(column: ColumnState): String = when (colu
     is ColumnState.InsufficientHistory -> NO_DATA_PLACEHOLDER
 }
 
-internal fun resolveExpectedTodaySubtitle(column: ColumnState): String? = when (column) {
-    is ColumnState.InsufficientHistory -> "Needs 7 days history"
+internal fun resolveExpectedTodaySubtitle(column: ColumnState, windowDays: Int = 7): String? = when (column) {
+    is ColumnState.InsufficientHistory -> "Needs $windowDays days history"
     is ColumnState.NeedsLog -> "Needs log from ${column.requiredDate.formatShort()}"
     is ColumnState.NeedsTodayLog -> "Needs today's log"
     is ColumnState.AlreadyBelowTarget -> null
@@ -1449,8 +1451,8 @@ internal fun resolveExpectedTodaySubtitle(column: ColumnState): String? = when (
 private fun resolveSpokenUnit(unitLabel: String): String =
     if (unitLabel.equals("kg", ignoreCase = true)) "kilograms" else "lbs"
 
-internal fun resolveExpectedTodayContentDescription(column: ColumnState): String = when (column) {
-    is ColumnState.InsufficientHistory -> "Expected Today: Needs 7 days history"
+internal fun resolveExpectedTodayContentDescription(column: ColumnState, windowDays: Int = 7): String = when (column) {
+    is ColumnState.InsufficientHistory -> "Expected Today: Needs $windowDays days history"
     is ColumnState.NeedsLog -> "Expected Today: Needs log from ${column.requiredDate.formatShort()}"
     is ColumnState.NeedsTodayLog -> "Expected Today: Needs today's log"
     is ColumnState.AlreadyBelowTarget -> {
@@ -1463,7 +1465,7 @@ internal fun resolveExpectedTodayContentDescription(column: ColumnState): String
         }
     }
     is ColumnState.Value -> {
-        val sub = resolveExpectedTodaySubtitle(column)
+        val sub = resolveExpectedTodaySubtitle(column, windowDays)
         val valStr = formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals)
         val base = if (sub != null) "Expected Today: $valStr ${column.unitLabel}, $sub"
         else "Expected Today: $valStr ${column.unitLabel}"
@@ -1485,8 +1487,8 @@ internal fun resolveTargetTomorrowValue(column: ColumnState): String = when (col
     is ColumnState.InsufficientHistory -> NO_DATA_PLACEHOLDER
 }
 
-internal fun resolveTargetTomorrowSubtitle(column: ColumnState): String? = when (column) {
-    is ColumnState.InsufficientHistory -> "Needs 7 days history"
+internal fun resolveTargetTomorrowSubtitle(column: ColumnState, windowDays: Int = 7): String? = when (column) {
+    is ColumnState.InsufficientHistory -> "Needs $windowDays days history"
     is ColumnState.NeedsLog -> "Needs log from ${column.requiredDate.formatShort()}"
     is ColumnState.NeedsTodayLog -> "Needs today's log"
     is ColumnState.AlreadyBelowTarget ->
@@ -1498,12 +1500,12 @@ internal fun resolveTargetTomorrowSubtitle(column: ColumnState): String? = when 
     }
 }
 
-internal fun resolveTargetTomorrowContentDescription(column: ColumnState): String = when (column) {
-    is ColumnState.InsufficientHistory -> "Target Tomorrow: Needs 7 days history"
+internal fun resolveTargetTomorrowContentDescription(column: ColumnState, windowDays: Int = 7): String = when (column) {
+    is ColumnState.InsufficientHistory -> "Target Tomorrow: Needs $windowDays days history"
     is ColumnState.NeedsLog -> "Target Tomorrow: Needs log from ${column.requiredDate.formatShort()}"
     is ColumnState.NeedsTodayLog -> "Target Tomorrow: Needs today's log"
     is ColumnState.AlreadyBelowTarget -> {
-        val sub = resolveTargetTomorrowSubtitle(column)
+        val sub = resolveTargetTomorrowSubtitle(column, windowDays)
         val base = "Target Tomorrow: ${column.targetWeightDisplay.trimmed()} ${column.unitLabel}, $sub"
         if (column.baselineWeightDisplay != null) {
             val spokenUnit = resolveSpokenUnit(column.unitLabel)
@@ -1513,7 +1515,7 @@ internal fun resolveTargetTomorrowContentDescription(column: ColumnState): Strin
         }
     }
     is ColumnState.Value -> {
-        val sub = resolveTargetTomorrowSubtitle(column)
+        val sub = resolveTargetTomorrowSubtitle(column, windowDays)
         val valStr = formatTargetWeight(column.targetWeightDisplay, column.useTwoDecimals)
         val base = if (sub != null) "Target Tomorrow: $valStr ${column.unitLabel}, $sub"
         else "Target Tomorrow: $valStr ${column.unitLabel}"
@@ -1598,23 +1600,19 @@ fun TheoreticalPaceTargetsBox(
                         overflow = TextOverflow.Ellipsis
                     )
 
-                    TargetRowSection(
-                        rowTitle = TARGET_ROW_7D_AVG_HEADER,
-                        rowState = paceTargets.sevenDayAvgRow,
-                        targetTextStyle = targetTextStyle,
-                        subtitleTextStyle = subtitleTextStyle
-                    )
-
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
-
-                    TargetRowSection(
-                        rowTitle = TARGET_ROW_DAILY_HEADER,
-                        rowState = paceTargets.dailyWeightRow,
-                        targetTextStyle = targetTextStyle,
-                        subtitleTextStyle = subtitleTextStyle
-                    )
+                    paceTargets.rows.forEachIndexed { index, rowState ->
+                        if (index > 0) {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            )
+                        }
+                        TargetRowSection(
+                            rowTitle = rowState.rowHeader,
+                            rowState = rowState,
+                            targetTextStyle = targetTextStyle,
+                            subtitleTextStyle = subtitleTextStyle
+                        )
+                    }
                 }
             }
         }
@@ -1671,7 +1669,7 @@ private fun TargetRowSection(
 
             // 2. Column: Expected Today
             val expectedValue = resolveExpectedTodayValue(rowState.expectedToday)
-            val expectedSub = resolveExpectedTodaySubtitle(rowState.expectedToday)
+            val expectedSub = resolveExpectedTodaySubtitle(rowState.expectedToday, rowState.windowDays)
             val expectedDesc = resolveTargetCellContentDescription(rowTitle, "Expected Today", expectedValue, expectedSub)
             TargetCellColumn(
                 label = "Expected Today",
@@ -1692,7 +1690,7 @@ private fun TargetRowSection(
 
             // 3. Column: Target Tomorrow
             val tomorrowValue = resolveTargetTomorrowValue(rowState.targetTomorrow)
-            val tomorrowSub = resolveTargetTomorrowSubtitle(rowState.targetTomorrow)
+            val tomorrowSub = resolveTargetTomorrowSubtitle(rowState.targetTomorrow, rowState.windowDays)
             val tomorrowDesc = resolveTargetCellContentDescription(rowTitle, "Target Tomorrow", tomorrowValue, tomorrowSub)
             val tomorrowSubColor = if (rowState.targetTomorrow is ColumnState.AlreadyBelowTarget) {
                 MaterialTheme.colorScheme.primary

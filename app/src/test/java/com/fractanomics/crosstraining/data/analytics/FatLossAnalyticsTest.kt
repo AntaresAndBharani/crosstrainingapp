@@ -3680,11 +3680,11 @@ class FatLossAnalyticsTest {
     }
 
     // =========================================================================
-    // Feature 004: Required-Pace & Linear Cycle Weight Targets (US1, US2, US3)
+    // Feature 004 & 007: Multi-Window Rolling Average Scale Weight Targets (7D, 14D, 21D, 28D)
     // =========================================================================
 
     @Test
-    fun `paceAndLinearTargets US1 & US2 - 2-decimal linear expected and tomorrow targets for 7D avg and daily weight in kg and lbs`() {
+    fun `paceAndLinearTargets US1 & US2 - 2-decimal linear expected and tomorrow scale targets for 7D 14D 21D 28D in kg and lbs`() {
         val cycleStart = LocalDate.of(2026, 9, 28)
         val today = LocalDate.of(2026, 10, 22)      // elapsedDays = 24
         val cycleEnd = LocalDate.of(2026, 11, 30)   // totalCycleDays = 63, daysRemaining = 39
@@ -3711,15 +3711,25 @@ class FatLossAnalyticsTest {
         assertTrue("State should be Available", stateKg is PaceTargetsState.Available)
         val availKg = stateKg as PaceTargetsState.Available
 
-        // Math in kg:
+        assertEquals(4, availKg.rows.size)
+        assertEquals(listOf(7, 14, 21, 28), availKg.rows.map { it.windowDays })
+        assertEquals(
+            listOf("7D ROLLING AVERAGE", "14D ROLLING AVERAGE", "21D ROLLING AVERAGE", "28D ROLLING AVERAGE"),
+            availKg.rows.map { it.rowHeader }
+        )
+
+        // Math in kg for 7D row:
         // start = 77.8, target = 72.0, today7dAvg = 75.66, remaining = 3.66, daysRemaining = 39
-        // dailyRequiredRate = -3.66 / 39 = -0.093846... -> dailyStepDisplay = -0.09
-        // weeklyRequiredRate = -3.66 * 7 / 39 = -0.656923...
-        // Linear Today: 77.8 + (72.0 - 77.8) * (24 / 63) = 77.8 - 2.2095238 = 75.590476 -> 75.59 kg
-        // Row 1 (7D Avg = 75.66):
-        //   Linear Today: 75.59 kg, delta = 75.66 - 75.59 = +0.07 kg (OFF_PACE)
-        //   Expected Today: round2(76.22 - 0.656923) = round2(75.56307) = 75.56 kg, delta = 75.66 - 75.56 = +0.10 kg (OFF_PACE)
-        //   Target Tomorrow: round2(75.66 - 0.093846) = round2(75.56615) = 75.57 kg, dailyStep = -0.09 kg/day
+        // dailyRequiredRate = -3.66 / 39 = -0.0938461538... -> dailyStepDisplay = -0.09
+        // weeklyRequiredRate = -3.66 * 7 / 39 = -0.6569230769...
+        // Linear Today: 77.8 + (72.0 - 77.8) * (24 / 63) = 75.590476 -> 75.59 kg, delta = 75.66 - 75.59 = +0.07 kg (OFF_PACE)
+        // Expected Today (scale weight to achieve targetAvgToday = 76.22 - 0.6569230769 = 75.5630769):
+        //   priorTodayEntries in [Oct 16, Oct 21] = [76.62] (kToday = 1)
+        //   W_expected_today = round2(2 * 75.5630769 - 76.62) = round2(74.5061538) = 74.51 kg
+        //   delta vs today's actual weigh-in (74.70) = 74.70 - 74.51 = +0.19 kg (OFF_PACE)
+        // Target Tomorrow (scale weight to achieve targetAvgTomorrow = 75.66 - 0.0938461538 = 75.5661538):
+        //   priorTomorrowEntries in [Oct 17, Oct 22] = [76.62, 74.70] (kTomorrow = 2, sum = 151.32)
+        //   W_target_tomorrow = round2(3 * 75.5661538 - 151.32) = round2(75.3784615) = 75.38 kg
         val row7d = availKg.sevenDayAvgRow
         val linear7d = row7d.linearToday as ColumnState.Value
         assertEquals(75.59, linear7d.targetWeightDisplay, 1e-6)
@@ -3728,51 +3738,52 @@ class FatLossAnalyticsTest {
         assertTrue(linear7d.useTwoDecimals)
 
         val expected7d = row7d.expectedToday as ColumnState.Value
-        assertEquals(75.56, expected7d.targetWeightDisplay, 1e-6)
-        assertEquals(0.10, expected7d.deltaDisplay!!, 1e-6)
+        assertEquals(74.51, expected7d.targetWeightDisplay, 1e-6)
+        assertEquals(0.19, expected7d.deltaDisplay!!, 1e-6)
         assertEquals(PaceTargetStatus.OFF_PACE, expected7d.status)
         assertEquals(76.22, expected7d.baselineWeightDisplay!!, 1e-6)
 
         val tomorrow7d = row7d.targetTomorrow as ColumnState.Value
-        assertEquals(75.57, tomorrow7d.targetWeightDisplay, 1e-6)
+        assertEquals(75.38, tomorrow7d.targetWeightDisplay, 1e-6)
         assertEquals(-0.09, tomorrow7d.deltaDisplay!!, 1e-6)
         assertTrue(tomorrow7d.isDailyStep)
 
-        // Row 2 (Daily Weigh-In: today = 74.70, t-7d = 76.22):
-        //   Linear Today: 75.59 kg, delta = 74.70 - 75.59 = -0.89 kg (AHEAD)
-        //   Expected Today: round2(76.22 - 0.656923) = 75.56 kg, delta = 74.70 - 75.56 = -0.86 kg (AHEAD)
-        //   Target Tomorrow: round2(74.70 - 0.093846) = round2(74.60615) = 74.61 kg, dailyStep = -0.09 kg/day
-        val rowDaily = availKg.dailyWeightRow
-        val linearDaily = rowDaily.linearToday as ColumnState.Value
-        assertEquals(75.59, linearDaily.targetWeightDisplay, 1e-6)
-        assertEquals(-0.89, linearDaily.deltaDisplay!!, 1e-6)
-        assertEquals(PaceTargetStatus.AHEAD, linearDaily.status)
+        // Verify 14D row:
+        // Today 14D window [Oct 9, Oct 22]: [76.22, 76.62, 74.70] -> avg = 227.54 / 3 = 75.846666... -> 75.85 kg
+        // Prior 14D window [Sep 25, Oct 8]: [Sep 28: 77.80] -> avg = 77.80 kg
+        val row14d = availKg.fourteenDayAvgRow
+        val linear14d = row14d.linearToday as ColumnState.Value
+        assertEquals(75.59, linear14d.targetWeightDisplay, 1e-6)
+        assertEquals(0.26, linear14d.deltaDisplay!!, 1e-6) // 75.85 - 75.59 = +0.26
+        assertTrue(row14d.expectedToday is ColumnState.Value)
+        assertTrue(row14d.targetTomorrow is ColumnState.Value)
 
-        val expectedDaily = rowDaily.expectedToday as ColumnState.Value
-        assertEquals(75.56, expectedDaily.targetWeightDisplay, 1e-6)
-        assertEquals(-0.86, expectedDaily.deltaDisplay!!, 1e-6)
-        assertEquals(PaceTargetStatus.AHEAD, expectedDaily.status)
+        // Verify 21D and 28D rows when t - 21 (Oct 1) and t - 28 (Sep 24):
+        // For 21D: prior window [Sep 11, Oct 1] contains Sep 28 (77.80) -> Value!
+        assertTrue(availKg.twentyOneDayAvgRow.expectedToday is ColumnState.Value)
+        // For 28D: anchorDate = Sep 24 < cycleStart (Sep 28), prior window [Aug 28, Sep 24] is empty -> InsufficientHistory!
+        assertEquals(ColumnState.InsufficientHistory, availKg.twentyEightDayAvgRow.expectedToday)
+        assertTrue(availKg.twentyEightDayAvgRow.targetTomorrow is ColumnState.Value)
 
-        val tomorrowDaily = rowDaily.targetTomorrow as ColumnState.Value
-        assertEquals(74.61, tomorrowDaily.targetWeightDisplay, 1e-6)
-        assertEquals(-0.09, tomorrowDaily.deltaDisplay!!, 1e-6)
-        assertTrue(tomorrowDaily.isDailyStep)
-
-        // Verify Imperial (lbs) localization
+        // Verify Imperial (lbs) localization across all 4 rows
         val stateLbs = FatLossAnalytics.compute7DayPaceTargets(entries, cycle, today, "lbs")
         assertTrue(stateLbs is PaceTargetsState.Available)
         val availLbs = stateLbs as PaceTargetsState.Available
-        assertEquals("lbs", (availLbs.sevenDayAvgRow.linearToday as ColumnState.Value).unitLabel)
-        assertEquals("lbs", (availLbs.dailyWeightRow.targetTomorrow as ColumnState.Value).unitLabel)
+        availLbs.rows.forEach { row ->
+            assertEquals("lbs", (row.linearToday as ColumnState.Value).unitLabel)
+            assertEquals("lbs", (row.targetTomorrow as ColumnState.Value).unitLabel)
+        }
     }
 
     @Test
-    fun `paceAndLinearTargets US1 - sub 0_1 daily step is preserved at 2 decimal precision`() {
+    fun `paceAndLinearTargets US1 - sub 0_1 daily step and scale weight solving at 2 decimal precision`() {
         val cycleStart = LocalDate.of(2026, 10, 1)
         val today = LocalDate.of(2026, 10, 15)
         val cycleEnd = today.plusDays(50) // 50 days remaining
         // Remaining = 75.0 - 72.0 = 3.0 kg over 50 days -> dailyRequiredRate = -0.06 kg/day
-        // At 1 decimal, 75.00 - 0.06 = 74.94 would round to 74.9 or 75.0; at 2 decimals it is exactly 74.94 kg and -0.06 kg/day!
+        // Prior today window [Oct 9, Oct 14] has kToday = 0 entries, so Expected Today scale weight = 1 * (75.42 - 0.42) = 75.00 kg.
+        // Tomorrow prior window [Oct 10, Oct 15] has kTomorrow = 1 entry (75.00 on Oct 15),
+        // so Target Tomorrow scale weight to bring 2-entry average to 74.94 is 2 * 74.94 - 75.00 = 74.88 kg!
         val entries = listOf(
             WeightEntry(date = cycleStart, weightKg = 77.0, updatedAtMillis = 1L),
             WeightEntry(date = LocalDate.of(2026, 10, 8), weightKg = 75.42, updatedAtMillis = 2L),
@@ -3789,18 +3800,61 @@ class FatLossAnalyticsTest {
         ) as PaceTargetsState.Available
 
         val tomorrow7d = state.sevenDayAvgRow.targetTomorrow as ColumnState.Value
-        assertEquals(74.94, tomorrow7d.targetWeightDisplay, 1e-6)
+        assertEquals(74.88, tomorrow7d.targetWeightDisplay, 1e-6)
         assertEquals(-0.06, tomorrow7d.deltaDisplay!!, 1e-6)
 
         val expected7d = state.sevenDayAvgRow.expectedToday as ColumnState.Value
-        // 75.42 + (-0.06 * 7) = 75.42 - 0.42 = 75.00 -> vs today 75.00 -> delta = 0.00 (ON_PACE)
         assertEquals(75.00, expected7d.targetWeightDisplay, 1e-6)
         assertEquals(0.00, expected7d.deltaDisplay!!, 1e-6)
         assertEquals(PaceTargetStatus.ON_PACE, expected7d.status)
     }
 
     @Test
-    fun `paceAndLinearTargets US3 - unlogged today degrades daily tomorrow to NeedsTodayLog while keeping 7D row intact`() {
+    fun `paceAndLinearTargets US1 - dense 7D window scale weight solving reconciles exact rolling average`() {
+        val cycleStart = LocalDate.of(2026, 10, 1)
+        val today = LocalDate.of(2026, 10, 15)
+        val cycleEnd = today.plusDays(30) // 30 days remaining
+        // Prior 7D [Oct 2, Oct 8]: all 76.00 kg -> prior7dAvg = 76.00
+        // Current 7D [Oct 9, Oct 15]: Oct 9..14 (6 days) all 75.50 kg, Oct 15 (today) = 75.50 kg -> today7dAvg = 75.50
+        // target = 72.50 -> remaining = 3.00 kg over 30 days -> dailyRequiredRate = -0.10 kg/day, weeklyRequiredRate = -0.70 kg/wk
+        // targetAvgToday = 76.00 - 0.70 = 75.30 kg
+        // With 6 prior days at 75.50 (sum = 453.00), W_expected_today = 7 * 75.30 - 453.00 = 527.10 - 453.00 = 74.10 kg!
+        // Check: (453.00 + 74.10) / 7 = 527.10 / 7 = 75.30 kg!
+        // targetAvgTomorrow = 75.50 - 0.10 = 75.40 kg
+        // With 6 prior days in [Oct 10, Oct 15] at 75.50 (sum = 453.00), W_target_tomorrow = 7 * 75.40 - 453.00 = 527.80 - 453.00 = 74.80 kg!
+        // Check: (453.00 + 74.80) / 7 = 527.80 / 7 = 75.40 kg!
+        val entries = buildList {
+            add(WeightEntry(date = cycleStart, weightKg = 76.50, updatedAtMillis = 1L))
+            for (d in 2..8) {
+                add(WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 76.00, updatedAtMillis = d.toLong()))
+            }
+            for (d in 9..15) {
+                add(WeightEntry(date = LocalDate.of(2026, 10, d), weightKg = 75.50, updatedAtMillis = d.toLong()))
+            }
+        }
+
+        val state = FatLossAnalytics.compute7DayPaceTargets(
+            entries = entries,
+            cycleStartDate = cycleStart,
+            referenceDate = today,
+            weightUnit = "kg",
+            startingWeightKg = 76.50,
+            targetWeightKg = 72.50,
+            cycleEndDate = cycleEnd
+        ) as PaceTargetsState.Available
+
+        val expected7d = state.sevenDayAvgRow.expectedToday as ColumnState.Value
+        assertEquals(74.10, expected7d.targetWeightDisplay, 1e-6)
+        assertEquals(1.40, expected7d.deltaDisplay!!, 1e-6) // 75.50 - 74.10 = +1.40
+        assertEquals(PaceTargetStatus.OFF_PACE, expected7d.status)
+
+        val tomorrow7d = state.sevenDayAvgRow.targetTomorrow as ColumnState.Value
+        assertEquals(74.80, tomorrow7d.targetWeightDisplay, 1e-6)
+        assertEquals(-0.10, tomorrow7d.deltaDisplay!!, 1e-6)
+    }
+
+    @Test
+    fun `paceAndLinearTargets US3 - unlogged today computes expected today with null delta and valid target tomorrow across rows`() {
         val cycleStart = LocalDate.of(2026, 9, 28)
         val today = LocalDate.of(2026, 10, 22)
         val cycleEnd = LocalDate.of(2026, 11, 30)
@@ -3821,24 +3875,18 @@ class FatLossAnalyticsTest {
             cycleEndDate = cycleEnd
         ) as PaceTargetsState.Available
 
-        // 7D Average Row is 100% populated with deltas
+        // 7D Average Row:
+        // Linear Today has delta (from current 7D avg over [Oct 16, Oct 22] = 75.6)
         assertTrue(state.sevenDayAvgRow.linearToday is ColumnState.Value)
         assertNotNull((state.sevenDayAvgRow.linearToday as ColumnState.Value).deltaDisplay)
-        assertTrue(state.sevenDayAvgRow.expectedToday is ColumnState.Value)
-        assertNotNull((state.sevenDayAvgRow.expectedToday as ColumnState.Value).deltaDisplay)
+
+        // Expected Today has a valid scale weight target, but null deltaDisplay/status because today is unlogged
+        val expected7d = state.sevenDayAvgRow.expectedToday as ColumnState.Value
+        assertNull(expected7d.deltaDisplay)
+        assertNull(expected7d.status)
+
+        // Target Tomorrow is still a valid ColumnState.Value (using kTomorrow = 1 entry from Oct 21)
         assertTrue(state.sevenDayAvgRow.targetTomorrow is ColumnState.Value)
-
-        // Daily Weigh-In Row:
-        // Linear Today and Expected Today show target weights with null delta/status; Target Tomorrow is NeedsTodayLog
-        val dailyLinear = state.dailyWeightRow.linearToday as ColumnState.Value
-        assertNull(dailyLinear.deltaDisplay)
-        assertNull(dailyLinear.status)
-
-        val dailyExpected = state.dailyWeightRow.expectedToday as ColumnState.Value
-        assertNull(dailyExpected.deltaDisplay)
-        assertNull(dailyExpected.status)
-
-        assertEquals(ColumnState.NeedsTodayLog, state.dailyWeightRow.targetTomorrow)
     }
 
     @Test

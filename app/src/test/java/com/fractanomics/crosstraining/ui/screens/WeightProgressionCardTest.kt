@@ -1189,10 +1189,18 @@ class WeightProgressionCardTest {
     fun paceAndLinearTargets_twoDecimalResolversAndBoundaryContainerText() {
         assertEquals("PACE & LINEAR TARGETS", PACE_AND_LINEAR_TARGETS_HEADER)
         assertEquals("7D ROLLING AVERAGE", TARGET_ROW_7D_AVG_HEADER)
-        assertEquals("DAILY WEIGH-IN", TARGET_ROW_DAILY_HEADER)
+        assertEquals("14D ROLLING AVERAGE", TARGET_ROW_14D_AVG_HEADER)
+        assertEquals("21D ROLLING AVERAGE", TARGET_ROW_21D_AVG_HEADER)
+        assertEquals("28D ROLLING AVERAGE", TARGET_ROW_28D_AVG_HEADER)
 
         assertEquals("Goal reached! 🎉", resolvePaceTargetsContainerStateText(PaceTargetsState.GoalReached))
         assertEquals("Cycle ended", resolvePaceTargetsContainerStateText(PaceTargetsState.CycleEnded))
+
+        // Horizon-specific InsufficientHistory subtitles for 7D, 14D, 21D, 28D
+        assertEquals("Needs 7 days history", resolveExpectedTodaySubtitle(ColumnState.InsufficientHistory, 7))
+        assertEquals("Needs 14 days history", resolveExpectedTodaySubtitle(ColumnState.InsufficientHistory, 14))
+        assertEquals("Needs 21 days history", resolveExpectedTodaySubtitle(ColumnState.InsufficientHistory, 21))
+        assertEquals("Needs 28 days history", resolveExpectedTodaySubtitle(ColumnState.InsufficientHistory, 28))
 
         // Linear Today 2-decimal formatting (trailing zero preserved: 75.50 kg, +0.10 kg off pace)
         val linearOffPace = ColumnState.Value(
@@ -1249,11 +1257,11 @@ class WeightProgressionCardTest {
         assertEquals("74.94 kg", resolveTargetTomorrowValue(tomorrowDailyStep))
         assertEquals("-0.06 kg/day", resolveTargetTomorrowSubtitle(tomorrowDailyStep))
 
-        // NeedsTodayLog fallback for Daily Weigh-In row Target Tomorrow
+        // NeedsTodayLog fallback
         assertEquals("—", resolveTargetTomorrowValue(ColumnState.NeedsTodayLog))
         assertEquals("Needs today's log", resolveTargetTomorrowSubtitle(ColumnState.NeedsTodayLog))
 
-        // Semantic content description per cell
+        // Semantic content description per cell across horizons
         assertEquals(
             "7D ROLLING AVERAGE Linear Today: 75.59 kg, +0.07 kg off pace",
             resolveTargetCellContentDescription(
@@ -1261,6 +1269,15 @@ class WeightProgressionCardTest {
                 "Linear Today",
                 "75.59 kg",
                 "+0.07 kg off pace"
+            )
+        )
+        assertEquals(
+            "28D ROLLING AVERAGE Expected Today: —, Needs 28 days history",
+            resolveTargetCellContentDescription(
+                TARGET_ROW_28D_AVG_HEADER,
+                "Expected Today",
+                "—",
+                "Needs 28 days history"
             )
         )
     }
