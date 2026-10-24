@@ -716,10 +716,10 @@ class WeightProgressionCardComposeTest {
     }
 
     // =========================================================================
-    // Scenario 17: Pace & Linear Targets 3x2 Container (Feature 004)
+    // Scenario 17: Pace & Linear Targets 3x4 Multi-Window Container (Feature 004 & 007)
     // =========================================================================
     @Test
-    fun scenario17_paceAndLinearTargets3x2ContainerRendersAt360dpFontScale13() {
+    fun scenario17_paceAndLinearTargets3x4ContainerRendersAt360dpFontScale13() {
         val cycleStart = LocalDate.of(2026, 9, 28)
         val referenceDate = LocalDate.of(2026, 10, 22)
         val cycleEnd = LocalDate.of(2026, 11, 30)
@@ -752,15 +752,17 @@ class WeightProgressionCardComposeTest {
 
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("PACE & LINEAR TARGETS"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("7D ROLLING AVERAGE"))
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("DAILY WEIGH-IN"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("14D ROLLING AVERAGE"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("21D ROLLING AVERAGE"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("28D ROLLING AVERAGE"))
 
-        composeTestRule.onAllNodesWithText("Linear Today").assertCountEquals(2)
-        composeTestRule.onAllNodesWithText("Expected Today").assertCountEquals(2)
-        composeTestRule.onAllNodesWithText("Target Tomorrow").assertCountEquals(2)
+        composeTestRule.onAllNodesWithText("Linear Today").assertCountEquals(4)
+        composeTestRule.onAllNodesWithText("Expected Today").assertCountEquals(4)
+        composeTestRule.onAllNodesWithText("Target Tomorrow").assertCountEquals(4)
 
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("75.57 kg"))
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("74.61 kg"))
-        composeTestRule.onAllNodesWithText("-0.09 kg/day").assertCountEquals(2)
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("74.51 kg"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("75.38 kg"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("Needs 28 days history"))
     }
 
     // =========================================================================
