@@ -760,7 +760,7 @@ class WeightProgressionCardComposeTest {
         composeTestRule.onAllNodesWithText("Expected Today").assertCountEquals(4)
         composeTestRule.onAllNodesWithText("Target Tomorrow").assertCountEquals(4)
 
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("74.51 kg"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("76.03 kg"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("75.38 kg"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("Needs 28 days history"))
     }

@@ -1620,7 +1620,9 @@ object FatLossAnalytics {
      * - For each rolling window N in {7, 14, 21, 28}:
      *   - Linear Today: straight-line cycle interpolation compared against the current ND rolling average.
      *   - Expected Today: the exact daily scale weigh-in needed today so that today's ND rolling average
-     *     equals the required-pace ND target average (compared against today's actual scale weigh-in when logged).
+     *     steps 1 day of required pace forward from yesterday's ND rolling average over [t - N, t - 1]
+     *     (compared against today's actual scale weigh-in when logged); the prior window [t - 2N + 1, t - N]
+     *     only gates history maturity (InsufficientHistory / NeedsLog).
      *   - Target Tomorrow: the exact daily scale weigh-in needed tomorrow so that tomorrow's ND rolling average
      *     equals tomorrow's required-pace ND target average.
      * - All target weights, deltas, and daily steps inside the container use 2-decimal precision (`round2`, `diff2`).
@@ -1777,7 +1779,6 @@ object FatLossAnalytics {
         // Exact unrounded required pace from current ND rolling average to targetWeight by cycleEndDate
         val remainingInUnit = currentNdInUnit - targetInUnit
         val dailyRequiredRateInUnit = -remainingInUnit / daysRemaining.toDouble()
-        val windowRequiredRateInUnit = dailyRequiredRateInUnit * windowDays.toDouble()
         val dailyStepDisplay = -kotlin.math.abs(round2(dailyRequiredRateInUnit))
 
         // Column 1: Linear Today (current ND rolling average vs linear interpolation)
@@ -1790,7 +1791,7 @@ object FatLossAnalytics {
             useTwoDecimals = true
         )
 
-        // Column 2: Expected Today (daily scale weight needed today so today's ND average = required-pace ND target)
+        // Column 2: Expected Today (daily scale weight needed today so today's ND average steps 1 day from yesterday's ND average)
         val anchorDate = referenceDate.minusDays(windowDays.toLong())
         val priorWindowStart = referenceDate.minusDays(2L * windowDays - 1L)
         val priorNdAvgKg = computeWindowAverageKg(allActiveEntries, priorWindowStart, anchorDate)
@@ -1801,15 +1802,20 @@ object FatLossAnalytics {
             priorNdAvgKg == null ->
                 ColumnState.NeedsLog(requiredDate = anchorDate)
             else -> {
-                val priorNdInUnit = toUnit(priorNdAvgKg, weightUnit)
-                val targetAvgTodayInUnit = priorNdInUnit + windowRequiredRateInUnit
+                val yesterdayNdAvgKg = computeWindowAverageKg(
+                    allActiveEntries,
+                    anchorDate,
+                    referenceDate.minusDays(1L)
+                ) ?: priorNdAvgKg
+                val yesterdayNdInUnit = toUnit(yesterdayNdAvgKg, weightUnit)
+                val targetAvgTodayInUnit = yesterdayNdInUnit + dailyRequiredRateInUnit
                 val priorTodayEntries = allActiveEntries.filter {
                     !it.date.isBefore(currentWindowStart) && !it.date.isAfter(referenceDate.minusDays(1L))
                 }
                 val kToday = priorTodayEntries.size
                 val sumPriorTodayInUnit = priorTodayEntries.sumOf { toUnit(it.weightKg, weightUnit) }
                 val expectedScaleTodayDisplay = round2((kToday + 1) * targetAvgTodayInUnit - sumPriorTodayInUnit)
-                val baselineNdDisplay = round2(priorNdInUnit)
+                val baselineNdDisplay = round2(yesterdayNdInUnit)
 
                 if (entryToday == null) {
                     ColumnState.Value(
