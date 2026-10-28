@@ -1620,7 +1620,9 @@ object FatLossAnalytics {
      * - For each rolling window N in {7, 14, 21, 28}:
      *   - Linear Today: straight-line cycle interpolation compared against the current ND rolling average.
      *   - Expected Today: the exact daily scale weigh-in needed today so that today's ND rolling average
-     *     equals the required-pace ND target average (compared against today's actual scale weigh-in when logged).
+     *     steps 1 day of required pace forward from yesterday's ND rolling average over [t - N, t - 1]
+     *     (compared against today's actual scale weigh-in when logged); the prior window [t - 2N + 1, t - N]
+     *     only gates history maturity (InsufficientHistory / NeedsLog).
      *   - Target Tomorrow: the exact daily scale weigh-in needed tomorrow so that tomorrow's ND rolling average
      *     equals tomorrow's required-pace ND target average.
      * - All target weights, deltas, and daily steps inside the container use 2-decimal precision (`round2`, `diff2`).
