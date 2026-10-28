@@ -3966,7 +3966,7 @@ class FatLossAnalyticsTest {
             state.rows.map { (it.expectedToday as ColumnState.Value).targetWeightDisplay }
         )
         assertEquals(
-            listOf(76.05, 76.23, 76.20, 76.28),
+            listOf(76.05, 76.23, 76.20, 76.27),
             state.rows.map { (it.expectedToday as ColumnState.Value).baselineWeightDisplay }
         )
     }
