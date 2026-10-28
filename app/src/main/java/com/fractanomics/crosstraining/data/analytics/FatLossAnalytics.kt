@@ -1777,7 +1777,6 @@ object FatLossAnalytics {
         // Exact unrounded required pace from current ND rolling average to targetWeight by cycleEndDate
         val remainingInUnit = currentNdInUnit - targetInUnit
         val dailyRequiredRateInUnit = -remainingInUnit / daysRemaining.toDouble()
-        val windowRequiredRateInUnit = dailyRequiredRateInUnit * windowDays.toDouble()
         val dailyStepDisplay = -kotlin.math.abs(round2(dailyRequiredRateInUnit))
 
         // Column 1: Linear Today (current ND rolling average vs linear interpolation)
@@ -1790,7 +1789,7 @@ object FatLossAnalytics {
             useTwoDecimals = true
         )
 
-        // Column 2: Expected Today (daily scale weight needed today so today's ND average = required-pace ND target)
+        // Column 2: Expected Today (daily scale weight needed today so today's ND average steps 1 day from yesterday's ND average)
         val anchorDate = referenceDate.minusDays(windowDays.toLong())
         val priorWindowStart = referenceDate.minusDays(2L * windowDays - 1L)
         val priorNdAvgKg = computeWindowAverageKg(allActiveEntries, priorWindowStart, anchorDate)
@@ -1801,15 +1800,20 @@ object FatLossAnalytics {
             priorNdAvgKg == null ->
                 ColumnState.NeedsLog(requiredDate = anchorDate)
             else -> {
-                val priorNdInUnit = toUnit(priorNdAvgKg, weightUnit)
-                val targetAvgTodayInUnit = priorNdInUnit + windowRequiredRateInUnit
+                val yesterdayNdAvgKg = computeWindowAverageKg(
+                    allActiveEntries,
+                    anchorDate,
+                    referenceDate.minusDays(1L)
+                ) ?: priorNdAvgKg
+                val yesterdayNdInUnit = toUnit(yesterdayNdAvgKg, weightUnit)
+                val targetAvgTodayInUnit = yesterdayNdInUnit + dailyRequiredRateInUnit
                 val priorTodayEntries = allActiveEntries.filter {
                     !it.date.isBefore(currentWindowStart) && !it.date.isAfter(referenceDate.minusDays(1L))
                 }
                 val kToday = priorTodayEntries.size
                 val sumPriorTodayInUnit = priorTodayEntries.sumOf { toUnit(it.weightKg, weightUnit) }
                 val expectedScaleTodayDisplay = round2((kToday + 1) * targetAvgTodayInUnit - sumPriorTodayInUnit)
-                val baselineNdDisplay = round2(priorNdInUnit)
+                val baselineNdDisplay = round2(yesterdayNdInUnit)
 
                 if (entryToday == null) {
                     ColumnState.Value(
