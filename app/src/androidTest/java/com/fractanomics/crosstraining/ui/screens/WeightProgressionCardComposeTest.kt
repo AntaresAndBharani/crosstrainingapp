@@ -818,8 +818,15 @@ class WeightProgressionCardComposeTest {
 
         // Verify Multi-Horizon Goal Estimations Card
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("GOAL ARRIVAL ESTIMATIONS"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("Current Goal & Target"))
         assertMaxTwoLinesNoOverflow(
             composeTestRule.onNodeWithText("Target: 28 Dec 2026 (9.6w left) · Required: -0.39 kg/wk")
+        )
+
+        // Verify primary Weighted Average row renders without overflow
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("Weighted Average"))
+        assertMaxTwoLinesNoOverflow(
+            composeTestRule.onNodeWithText("(Weighted pace of -0.27 kg/wk · 13.7 wks · 26 Jan 2027)")
         )
 
         // Verify all 4 horizon estimation rows render without overflow

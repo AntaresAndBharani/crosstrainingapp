@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
@@ -1196,6 +1197,8 @@ internal const val PACE_21_NULL_SUBTITLE = "Needs weigh-in 21+ days ago"
 internal const val PACE_28_NULL_SUBTITLE = "Needs weigh-in 28+ days ago"
 internal const val PACE_14_MATURE_SUBTITLE = "Smoothed trend"
 internal const val GOAL_ARRIVAL_ESTIMATIONS_HEADER = "GOAL ARRIVAL ESTIMATIONS"
+internal const val CURRENT_GOAL_AND_TARGET_HEADER = "Current Goal & Target"
+internal const val WEIGHTED_AVERAGE_ROW_TITLE = "Weighted Average"
 
 private val pillarDateFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("d MMM", Locale.US)
@@ -1377,6 +1380,9 @@ internal fun resolveHorizonRowLeftLabel(row: HorizonEstimationRow): String =
 internal fun resolveHorizonRowRightValue(row: HorizonEstimationRow): String =
     row.formatRightValue()
 
+internal fun resolveWeightedRowSummaryText(row: HorizonEstimationRow): String =
+    row.formatWeightedSummary()
+
 internal fun resolveHorizonRowBadgeText(row: HorizonEstimationRow): String? = when (val st = row.state) {
     is HorizonRowState.Projected -> st.badgeText
     is HorizonRowState.Stalled -> "Stalled"
@@ -1384,9 +1390,17 @@ internal fun resolveHorizonRowBadgeText(row: HorizonEstimationRow): String? = wh
 }
 
 internal fun resolveHorizonRowContentDescription(row: HorizonEstimationRow): String {
+    val badge = resolveHorizonRowBadgeText(row)
+    if (row.isWeightedAverage) {
+        val summary = row.formatWeightedSummary()
+        return if (badge != null) {
+            "$WEIGHTED_AVERAGE_ROW_TITLE $summary, $badge"
+        } else {
+            "$WEIGHTED_AVERAGE_ROW_TITLE $summary"
+        }
+    }
     val left = row.formatLeftLabel()
     val right = row.formatRightValue()
-    val badge = resolveHorizonRowBadgeText(row)
     return if (badge != null) {
         "${row.windowDays}-day horizon ($left): $right, $badge"
     } else {
@@ -2622,33 +2636,53 @@ internal fun MultiHorizonGoalEstimationsBanner(
         is MultiHorizonForecastState.Active -> {
             Surface(
                 modifier = modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh
             ) {
                 Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        text = GOAL_ARRIVAL_ESTIMATIONS_HEADER,
-                        style = MaterialTheme.typography.labelSmall,
-                        letterSpacing = 1.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = state.benchmarkHeader,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = GOAL_ARRIVAL_ESTIMATIONS_HEADER,
+                            style = MaterialTheme.typography.labelSmall,
+                            letterSpacing = 1.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = CURRENT_GOAL_AND_TARGET_HEADER,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = state.benchmarkHeader,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    WeightedAverageEstimationRowItem(
+                        row = state.weightedAverageRow
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
                     )
                     Column(
                         modifier = Modifier.fillMaxWidth(),
@@ -2659,6 +2693,119 @@ internal fun MultiHorizonGoalEstimationsBanner(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WeightedAverageEstimationRowItem(
+    row: HorizonEstimationRow
+) {
+    val contentDesc = resolveHorizonRowContentDescription(row)
+    val summaryText = resolveWeightedRowSummaryText(row)
+    val badgeText = resolveHorizonRowBadgeText(row)
+
+    val summaryColor = when (row.state) {
+        is HorizonRowState.Projected -> MaterialTheme.colorScheme.onSurface
+        is HorizonRowState.Stalled -> MaterialTheme.colorScheme.error
+        is HorizonRowState.NotEnoughData -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    val barFraction = when (val st = row.state) {
+        is HorizonRowState.Projected -> st.sufficiencyFraction.coerceIn(0f, 1f)
+        is HorizonRowState.Stalled, is HorizonRowState.NotEnoughData -> 0f
+    }
+    val isOnTrack = (row.state as? HorizonRowState.Projected)?.isOnTrack == true
+    val badgeColor = when (row.state) {
+        is HorizonRowState.Projected -> if (isOnTrack) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.tertiary
+        }
+        is HorizonRowState.Stalled -> MaterialTheme.colorScheme.error
+        is HorizonRowState.NotEnoughData -> MaterialTheme.colorScheme.outlineVariant
+    }
+    val barBrush = if (isOnTrack) {
+        Brush.horizontalGradient(
+            colors = listOf(
+                MaterialTheme.colorScheme.primary,
+                Color(0xFF10B981)
+            )
+        )
+    } else {
+        Brush.horizontalGradient(
+            colors = listOf(badgeColor, badgeColor)
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) { contentDescription = contentDesc },
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = "✦",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = badgeColor
+            )
+            Text(
+                text = WEIGHTED_AVERAGE_ROW_TITLE,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Text(
+            text = summaryText,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+            color = summaryColor,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(7.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                if (barFraction > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(barFraction)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(barBrush)
+                    )
+                }
+            }
+            if (badgeText != null) {
+                Text(
+                    text = badgeText,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = badgeColor,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }

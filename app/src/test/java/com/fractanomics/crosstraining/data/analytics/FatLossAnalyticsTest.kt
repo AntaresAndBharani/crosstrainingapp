@@ -4406,4 +4406,105 @@ class FatLossAnalyticsTest {
             FatLossAnalytics.computeMultiHorizonForecast(coldStartEntries, coldCycle, today, weightUnit = "kg")
         )
     }
+
+    @Test
+    fun `feature 009 US1 - computeMultiHorizonForecast computes 4_3_2_1 weightedAverageRow across full, partial, signed, stalled, capped, and lbs scenarios`() {
+        val today = LocalDate.of(2026, 11, 1)
+        val cycleStart = today.minusDays(35)
+        val cycleEnd = LocalDate.of(2026, 12, 28) // 57 days = 8.142857 weeks remaining -> 8.1w left
+        val cycle = Cycle(
+            id = 9001L,
+            name = "Holiday Cut",
+            startDate = cycleStart,
+            endDate = cycleEnd,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 79.0,
+            targetWeightKg = 72.0
+        )
+
+        // 1. All 4 horizons available matching shared spec numbers:
+        // Current weight = 75.1 kg -> remaining = 3.1 kg, Required = -3.1 / (57/7) = -0.3807 -> -0.38 kg/wk
+        // 7D  = -0.49 kg/wk (t-7  = 75.59)
+        // 14D = -0.35 kg/wk (t-14 = 75.80)
+        // 21D = -0.31 kg/wk (t-21 = 76.03)
+        // 28D = -0.31 kg/wk (t-28 = 76.34)
+        // Weighted (4:3:2:1): (4*-0.49 + 3*-0.35 + 2*-0.31 + 1*-0.31) / 10 = -3.94 / 10 = -0.394 -> -0.39 kg/wk
+        val fullEntries = listOf(
+            WeightEntry(date = today.minusDays(28), weightKg = 76.34, updatedAtMillis = 1L),
+            WeightEntry(date = today.minusDays(21), weightKg = 76.03, updatedAtMillis = 2L),
+            WeightEntry(date = today.minusDays(14), weightKg = 75.80, updatedAtMillis = 3L),
+            WeightEntry(date = today.minusDays(7), weightKg = 75.59, updatedAtMillis = 4L),
+            WeightEntry(date = today, weightKg = 75.10, updatedAtMillis = 5L)
+        )
+
+        val fullState = FatLossAnalytics.computeMultiHorizonForecast(fullEntries, cycle, today, weightUnit = "kg") as MultiHorizonForecastState.Active
+        val weightedFull = fullState.weightedAverageRow
+        assertTrue(weightedFull.isWeightedAverage)
+        assertEquals("Weighted Average", weightedFull.formatLeftLabel())
+        assertTrue(weightedFull.state is HorizonRowState.Projected)
+        val projWeightedFull = weightedFull.state as HorizonRowState.Projected
+        assertEquals("-0.39 kg/wk", projWeightedFull.paceDisplay2)
+        assertEquals(0.39, projWeightedFull.velocity2InUnit, 1e-6)
+        // 3.1 / 0.39 = 7.9487 -> 7.9 wks (8.1w left -> -0.2w ahead -> On time (-0.2w))
+        assertEquals(7.9, projWeightedFull.weeks, 1e-6)
+        assertTrue(projWeightedFull.isOnTrack)
+        assertEquals("On time (-0.2w)", projWeightedFull.badgeText)
+        assertEquals(
+            "(Weighted pace of -0.39 kg/wk · 7.9 wks · 26 Dec 2026)",
+            weightedFull.formatWeightedSummary()
+        )
+
+        // 2. Partial horizon availability (only 7D, 14D, 21D available; 28D null -> weights 4+3+2 = 9):
+        // (-0.49*4 + -0.35*3 + -0.31*2) / 9 = (-1.96 - 1.05 - 0.62) / 9 = -3.63 / 9 = -0.4033 -> -0.40 kg/wk
+        val partialCycle = cycle.copy(startDate = today.minusDays(24))
+        val partialEntries = fullEntries.drop(1)
+        val partialState = FatLossAnalytics.computeMultiHorizonForecast(partialEntries, partialCycle, today, weightUnit = "kg") as MultiHorizonForecastState.Active
+        val projPartial = partialState.weightedAverageRow.state as HorizonRowState.Projected
+        assertEquals("-0.40 kg/wk", projPartial.paceDisplay2)
+        assertEquals(0.40, projPartial.velocity2InUnit, 1e-6)
+        // 3.1 / 0.40 = 7.75 -> 7.8 wks (-0.3w ahead)
+        assertEquals(7.8, projPartial.weeks, 1e-6)
+        assertEquals("On time (-0.3w)", projPartial.badgeText)
+
+        // 3. Signed-rate blending when 7D is gaining (+0.10 kg/wk) while 14D (-0.30), 21D (-0.35), 28D (-0.40) are in deficit:
+        // (4*+0.10 + 3*-0.30 + 2*-0.35 + 1*-0.40) / 10 = (0.40 - 0.90 - 0.70 - 0.40) / 10 = -1.60 / 10 = -0.16 kg/wk
+        val signedEntries = listOf(
+            WeightEntry(date = today.minusDays(28), weightKg = 76.70, updatedAtMillis = 1L), // 28D: (75.10 - 76.70)/4 = -0.40
+            WeightEntry(date = today.minusDays(21), weightKg = 76.15, updatedAtMillis = 2L), // 21D: (75.10 - 76.15)/3 = -0.35
+            WeightEntry(date = today.minusDays(14), weightKg = 75.70, updatedAtMillis = 3L), // 14D: (75.10 - 75.70)/2 = -0.30
+            WeightEntry(date = today.minusDays(7), weightKg = 75.00, updatedAtMillis = 4L),  // 7D:  (75.10 - 75.00)/1 = +0.10
+            WeightEntry(date = today, weightKg = 75.10, updatedAtMillis = 5L)
+        )
+        val signedState = FatLossAnalytics.computeMultiHorizonForecast(signedEntries, cycle, today, weightUnit = "kg") as MultiHorizonForecastState.Active
+        assertTrue(signedState.rows[0].state is HorizonRowState.Stalled) // 7D is Stalled
+        assertTrue(signedState.weightedAverageRow.state is HorizonRowState.Projected) // Weighted Average still projects!
+        val projSigned = signedState.weightedAverageRow.state as HorizonRowState.Projected
+        assertEquals("-0.16 kg/wk", projSigned.paceDisplay2)
+
+        // 4. Stalled Weighted Average when blended rate is gaining (+0.20 kg/wk):
+        val stalledCycle = cycle.copy(startDate = today.minusDays(7), startingWeightKg = 74.90)
+        val stalledEntries = listOf(
+            WeightEntry(date = today.minusDays(7), weightKg = 74.90, updatedAtMillis = 1L),
+            WeightEntry(date = today, weightKg = 75.10, updatedAtMillis = 2L)
+        )
+        val stalledState = FatLossAnalytics.computeMultiHorizonForecast(stalledEntries, stalledCycle, today, weightUnit = "kg") as MultiHorizonForecastState.Active
+        assertEquals(
+            HorizonRowState.Stalled(windowDays = 0, paceDisplay2 = "+0.20 kg/wk"),
+            stalledState.weightedAverageRow.state
+        )
+        assertEquals(
+            "(Weighted pace of +0.20 kg/wk · Pace stalled)",
+            stalledState.weightedAverageRow.formatWeightedSummary()
+        )
+
+        // 5. Imperial (lbs) reconciliation:
+        val lbsState = FatLossAnalytics.computeMultiHorizonForecast(fullEntries, cycle, today, weightUnit = "lbs") as MultiHorizonForecastState.Active
+        val projLbs = lbsState.weightedAverageRow.state as HorizonRowState.Projected
+        assertTrue(projLbs.paceDisplay2.endsWith("lbs/wk"))
+        assertEquals(
+            FatLossAnalytics.round1(lbsState.remainingWeightInUnit / projLbs.velocity2InUnit),
+            projLbs.weeks,
+            1e-6
+        )
+    }
 }
