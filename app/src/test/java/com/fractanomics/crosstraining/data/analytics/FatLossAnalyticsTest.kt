@@ -4506,5 +4506,22 @@ class FatLossAnalyticsTest {
             projLbs.weeks,
             1e-6
         )
+
+        // 6. Imperial noise deadband: -0.04 kg/wk (-0.09 lbs/wk) is within the kg-equivalent noise threshold
+        // (Stalled), but the signed display must still match the 7D row's formatDisplay2 output.
+        val deadbandCycle = cycle.copy(startDate = today.minusDays(7), startingWeightKg = 75.14)
+        val deadbandEntries = listOf(
+            WeightEntry(date = today.minusDays(7), weightKg = 75.14, updatedAtMillis = 1L),
+            WeightEntry(date = today, weightKg = 75.10, updatedAtMillis = 2L)
+        )
+        val deadbandState = FatLossAnalytics.computeMultiHorizonForecast(deadbandEntries, deadbandCycle, today, weightUnit = "lbs") as MultiHorizonForecastState.Active
+        assertEquals(
+            HorizonRowState.Stalled(windowDays = 7, paceDisplay2 = "-0.09 lbs/wk"),
+            deadbandState.rows[0].state
+        )
+        assertEquals(
+            HorizonRowState.Stalled(windowDays = 0, paceDisplay2 = "-0.09 lbs/wk"),
+            deadbandState.weightedAverageRow.state
+        )
     }
 }

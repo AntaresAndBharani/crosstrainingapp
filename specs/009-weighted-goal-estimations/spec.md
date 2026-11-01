@@ -57,7 +57,7 @@ As an athlete using TalkBack screen reader or large accessibility font sizes (`1
 
 **Acceptance Scenarios**:
 
-1. **Given** the `GOAL ARRIVAL ESTIMATIONS` card in `Active` state, **When** inspected by an accessibility service (TalkBack), **Then** the `Weighted Average` row exposes a merged `contentDescription` announcing `"Weighted Average (Weighted pace of -0.39 kg/wk): 7.9 wks · 26 Dec 2026, On time (-0.2w)"` (or its stalled/capped equivalent) in logical top-to-bottom order before the `7D` row.
+1. **Given** the `GOAL ARRIVAL ESTIMATIONS` card in `Active` state, **When** inspected by an accessibility service (TalkBack), **Then** the `Weighted Average` row exposes a merged `contentDescription` announcing `"Weighted Average (Weighted pace of -0.39 kg/wk · 7.9 wks · 26 Dec 2026), On time (-0.2w)"` (or its stalled/capped equivalent) in logical top-to-bottom order before the `7D` row.
 2. **Given** a `360dp`-wide screen with `fontScale = 1.3f`, **When** the redesigned `GOAL ARRIVAL ESTIMATIONS` card renders with `Current Goal & Target`, `Weighted Average`, and `7D`–`28D` rows, **Then** the `Weighted Average` summary text wraps cleanly up to 2 lines without clipping, and all horizon rows and badges remain legible without overflow.
 
 ---

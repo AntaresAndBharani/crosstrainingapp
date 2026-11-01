@@ -2304,10 +2304,14 @@ object FatLossAnalytics {
             rawWeightedRateInUnit
         }
         val unitRateLabel = if (isImperial) "lbs/wk" else "kg/wk"
+        // Projection gating uses the kg/wk-equivalent noise threshold (mirrors getPaceTrend), while the
+        // signed display string mirrors PaceRateResult.formatDisplay2 (±0.05 deadband in the display unit)
+        // so the Weighted Average label formats identically to the 7D–28D rows in both kg and lbs.
         val isWeightedLoss = weightedRateKgPerWeek < -PACE_NOISE_THRESHOLD_KG_PER_WEEK && weightedRate2InUnit < 0.0
         val weightedPaceDisplay2 = when {
-            isWeightedLoss -> String.format(Locale.US, "%.2f %s", weightedRate2InUnit, unitRateLabel)
-            weightedRateKgPerWeek > PACE_NOISE_THRESHOLD_KG_PER_WEEK && weightedRate2InUnit > 0.0 ->
+            rawWeightedRateInUnit < -0.05 ->
+                String.format(Locale.US, "%.2f %s", weightedRate2InUnit, unitRateLabel)
+            rawWeightedRateInUnit > 0.05 ->
                 String.format(Locale.US, "+%.2f %s", weightedRate2InUnit, unitRateLabel)
             else -> String.format(Locale.US, "0.00 %s", unitRateLabel)
         }

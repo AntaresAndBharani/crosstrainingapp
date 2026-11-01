@@ -823,11 +823,17 @@ class WeightProgressionCardComposeTest {
             composeTestRule.onNodeWithText("Target: 28 Dec 2026 (9.6w left) · Required: -0.39 kg/wk")
         )
 
-        // Verify primary Weighted Average row renders without overflow
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("Weighted Average"))
+        // Verify primary Weighted Average row renders without overflow. The row merges descendants for
+        // TalkBack, so target the individual Text nodes in the unmerged tree; otherwise the merged node's
+        // GetTextLayoutResult resolves to the leading "✦" glyph instead of the title/summary under test.
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("Weighted Average", useUnmergedTree = true))
         assertMaxTwoLinesNoOverflow(
-            composeTestRule.onNodeWithText("(Weighted pace of -0.27 kg/wk · 13.7 wks · 26 Jan 2027)")
+            composeTestRule.onNodeWithText(
+                "(Weighted pace of -0.27 kg/wk · 13.7 wks · 26 Jan 2027)",
+                useUnmergedTree = true
+            )
         )
+        composeTestRule.onNodeWithText("+4.1w late", useUnmergedTree = true).assertIsDisplayed()
 
         // Verify all 4 horizon estimation rows render without overflow
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("7D (-0.28 kg/wk)"))
