@@ -2264,12 +2264,24 @@ fun WeightProgressionHeroCard(
                 }
             }
 
+            // 3. Goal Arrival Estimations / Forecast Banner (placed after Daily Weigh-In and before Pace & Linear Targets)
+            if (multiHorizonForecast != null || forecast != null) {
+                ForecastBanner(
+                    forecast = forecast,
+                    pace14 = pace14,
+                    pace7 = pace7,
+                    weightUnit = weightUnit,
+                    requiredPace = requiredPace,
+                    multiHorizonForecast = multiHorizonForecast
+                )
+            }
+
             // 7-Day Pace Targets Container
             if (paceTargets != null) {
                 TheoreticalPaceTargetsBox(paceTargets = paceTargets)
             }
 
-            // 3. Bottom Pace Metrics Split (2x2 Grid: 7D, 14D, 21D, 28D)
+            // 4. Bottom Pace Metrics Split (2x2 Grid: 7D, 14D, 21D, 28D)
             val fontScale = LocalDensity.current.fontScale
             val paceTextStyle = if (fontScale >= 1.25f) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
 
@@ -2355,18 +2367,6 @@ fun WeightProgressionHeroCard(
                             .fillMaxHeight()
                     )
                 }
-            }
-
-            // 4. Forecast Banner & CTA
-            if (multiHorizonForecast != null || forecast != null) {
-                ForecastBanner(
-                    forecast = forecast,
-                    pace14 = pace14,
-                    pace7 = pace7,
-                    weightUnit = weightUnit,
-                    requiredPace = requiredPace,
-                    multiHorizonForecast = multiHorizonForecast
-                )
             }
 
             Row(
@@ -2811,6 +2811,7 @@ private fun WeightedAverageEstimationRowItem(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HorizonEstimationRowItem(
     row: HorizonEstimationRow
@@ -2847,11 +2848,11 @@ private fun HorizonEstimationRowItem(
             .semantics(mergeDescendants = true) { contentDescription = contentDesc },
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        // Line 1: Left horizon + 2-dec pace label | Right estimated weeks + arrival date (or status)
-        Row(
+        // Line 1: Left horizon + 2-dec pace + avg weight label | Right estimated weeks + arrival date (or status)
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Text(
                 text = leftLabel,
