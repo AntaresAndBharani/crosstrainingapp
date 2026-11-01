@@ -346,7 +346,12 @@ sealed class MultiHorizonForecastState {
         val targetWeightInUnit: Double,
         val weightUnit: String,
         val requiredPace: RequiredPaceResult?,
-        val rows: List<HorizonEstimationRow>
+        val rows: List<HorizonEstimationRow>,
+        val weightedAverageRow: HorizonEstimationRow = HorizonEstimationRow(
+            windowDays = 0,
+            state = HorizonRowState.NotEnoughData(windowDays = 0),
+            isWeightedAverage = true
+        )
     ) : MultiHorizonForecastState() {
         override val displayText: String = "GOAL ARRIVAL ESTIMATIONS"
 
@@ -371,16 +376,21 @@ sealed class MultiHorizonForecastState {
 }
 
 /**
- * Individual horizon estimation row for 7D, 14D, 21D, or 28D pace.
+ * Individual horizon estimation row for 7D, 14D, 21D, or 28D pace, or the primary Weighted Average estimation (`windowDays == 0`).
  */
 data class HorizonEstimationRow(
     val windowDays: Int,
-    val state: HorizonRowState
+    val state: HorizonRowState,
+    val isWeightedAverage: Boolean = windowDays == 0
 ) {
-    fun formatLeftLabel(): String = when (state) {
-        is HorizonRowState.Projected -> "${windowDays}D (${state.paceDisplay2})"
-        is HorizonRowState.Stalled -> "${windowDays}D (${state.paceDisplay2})"
-        is HorizonRowState.NotEnoughData -> "${windowDays}D (—)"
+    fun formatLeftLabel(): String = if (isWeightedAverage) {
+        "Weighted Average"
+    } else {
+        when (state) {
+            is HorizonRowState.Projected -> "${windowDays}D (${state.paceDisplay2})"
+            is HorizonRowState.Stalled -> "${windowDays}D (${state.paceDisplay2})"
+            is HorizonRowState.NotEnoughData -> "${windowDays}D (—)"
+        }
     }
 
     fun formatRightValue(): String = when (state) {
@@ -391,7 +401,13 @@ data class HorizonEstimationRow(
             String.format(Locale.US, "%.1f wks · %s", state.weeks, dateStr)
         }
         is HorizonRowState.Stalled -> "Pace stalled"
-        is HorizonRowState.NotEnoughData -> "Needs ${windowDays}+ days"
+        is HorizonRowState.NotEnoughData -> if (isWeightedAverage) "Needs 7+ days" else "Needs ${windowDays}+ days"
+    }
+
+    fun formatWeightedSummary(): String = when (state) {
+        is HorizonRowState.Projected -> "(Weighted pace of ${state.paceDisplay2} · ${formatRightValue()})"
+        is HorizonRowState.Stalled -> "(Weighted pace of ${state.paceDisplay2} · Pace stalled)"
+        is HorizonRowState.NotEnoughData -> "(Needs 7+ days)"
     }
 }
 
@@ -2165,9 +2181,20 @@ object FatLossAnalytics {
     val HORIZON_WINDOWS: List<Int> = listOf(7, 14, 21, 28)
 
     /**
-     * Computes the visual Multi-Horizon Goal Estimations state across 7D, 14D, 21D, and 28D pace windows
-     * using 2-decimal pace velocity (`v2`), estimated weeks, projected arrival dates, proportional
-     * pace-to-required sufficiency bars, and ahead/late week badges.
+     * Linear recency weights across the 4 pace horizons:
+     * 7D = 4 (40%), 14D = 3 (30%), 21D = 2 (20%), 28D = 1 (10%).
+     */
+    val HORIZON_WEIGHTS: Map<Int, Int> = mapOf(
+        7 to 4,
+        14 to 3,
+        21 to 2,
+        28 to 1
+    )
+
+    /**
+     * Computes the visual Multi-Horizon Goal Estimations state across the primary Weighted Average
+     * and the 7D, 14D, 21D, and 28D pace windows using 2-decimal pace velocity (`v2`), estimated weeks,
+     * projected arrival dates, proportional pace-to-required sufficiency bars, and ahead/late week badges.
      */
     fun computeMultiHorizonForecast(
         entries: List<WeightEntry>,
@@ -2258,6 +2285,49 @@ object FatLossAnalytics {
             else -> (current1InUnit * MAX_SUSTAINABLE_WEEKLY_LOSS_FRACTION).coerceAtLeast(0.1)
         }
 
+        // Compute 4:3:2:1 dynamically re-normalized Weighted Average across available horizons
+        val availableHorizons = HORIZON_WINDOWS.mapNotNull { w ->
+            val p = pacesByWindow[w]
+            if (p != null) Pair(w, p) else null
+        }
+        val totalWeight = availableHorizons.sumOf { (w, _) -> HORIZON_WEIGHTS[w] ?: 1 }
+        val weightedSumInUnit = availableHorizons.sumOf { (w, p) ->
+            val weight = HORIZON_WEIGHTS[w] ?: 1
+            val r2 = round2(toUnit(p.rateKgPerWeek, normalizedUnit))
+            weight.toDouble() * r2
+        }
+        val rawWeightedRateInUnit = weightedSumInUnit / totalWeight.toDouble()
+        val weightedRate2InUnit = round2(rawWeightedRateInUnit)
+        val weightedRateKgPerWeek = if (isImperial) {
+            WeightAnalytics.lbsToKg(rawWeightedRateInUnit)
+        } else {
+            rawWeightedRateInUnit
+        }
+        val unitRateLabel = if (isImperial) "lbs/wk" else "kg/wk"
+        // Projection gating uses the kg/wk-equivalent noise threshold (mirrors getPaceTrend), while the
+        // signed display string mirrors PaceRateResult.formatDisplay2 (±0.05 deadband in the display unit)
+        // so the Weighted Average label formats identically to the 7D–28D rows in both kg and lbs.
+        val isWeightedLoss = weightedRateKgPerWeek < -PACE_NOISE_THRESHOLD_KG_PER_WEEK && weightedRate2InUnit < 0.0
+        val weightedPaceDisplay2 = when {
+            rawWeightedRateInUnit < -0.05 ->
+                String.format(Locale.US, "%.2f %s", weightedRate2InUnit, unitRateLabel)
+            rawWeightedRateInUnit > 0.05 ->
+                String.format(Locale.US, "+%.2f %s", weightedRate2InUnit, unitRateLabel)
+            else -> String.format(Locale.US, "0.00 %s", unitRateLabel)
+        }
+        val weightedV2 = if (weightedRate2InUnit < 0.0) -weightedRate2InUnit else 0.0
+        val weightedAverageRow = buildProjectedOrStalledHorizonRow(
+            windowDays = 0,
+            isWeightedAverage = true,
+            paceDisplay2 = weightedPaceDisplay2,
+            v2 = weightedV2,
+            isLossTrend = isWeightedLoss,
+            remainingInUnit = remainingInUnit,
+            today = today,
+            benchmarkV2 = benchmarkV2,
+            requiredPace = requiredPace
+        )
+
         val rows = HORIZON_WINDOWS.map { windowDays ->
             val pace = pacesByWindow[windowDays]
             if (pace == null) {
@@ -2268,69 +2338,17 @@ object FatLossAnalytics {
             } else {
                 val paceDisplay2 = pace.formatDisplay2(normalizedUnit)
                 val v2 = round2(toUnit(pace.deficitVelocityKgPerWeek, normalizedUnit))
-                if (pace.trend != PaceTrend.LOSS || v2 <= 0.0) {
-                    HorizonEstimationRow(
-                        windowDays = windowDays,
-                        state = HorizonRowState.Stalled(
-                            windowDays = windowDays,
-                            paceDisplay2 = paceDisplay2
-                        )
-                    )
-                } else {
-                    val rawWeeks = remainingInUnit / v2
-                    val roundedWeeks = round1(rawWeeks)
-                    val isCapped = roundedWeeks > 52.0
-                    val cappedWeeks = if (isCapped) 52.0 else roundedWeeks
-                    val targetDate = if (isCapped) {
-                        null
-                    } else {
-                        val daysToGoal = kotlin.math.round(roundedWeeks * 7.0).toLong()
-                        today.plusDays(daysToGoal)
-                    }
-                    val barFraction = (v2 / benchmarkV2).toFloat().coerceIn(0.05f, 1.0f)
-
-                    val weeksDelta: Double?
-                    val isOnTrack: Boolean
-                    val deltaBadgeText: String?
-
-                    if (requiredPace != null) {
-                        val rawDelta = diff1(roundedWeeks, round1(requiredPace.weeksRemaining))
-                        weeksDelta = rawDelta
-                        if (isCapped) {
-                            isOnTrack = false
-                            deltaBadgeText = "> 1 yr late"
-                        } else if (rawDelta < -0.05) {
-                            isOnTrack = true
-                            deltaBadgeText = String.format(Locale.US, "On time (%.1fw)", rawDelta)
-                        } else if (rawDelta <= 0.05) {
-                            isOnTrack = true
-                            deltaBadgeText = "On time"
-                        } else {
-                            isOnTrack = false
-                            deltaBadgeText = String.format(Locale.US, "+%.1fw late", rawDelta)
-                        }
-                    } else {
-                        weeksDelta = null
-                        isOnTrack = !isCapped
-                        deltaBadgeText = null
-                    }
-
-                    HorizonEstimationRow(
-                        windowDays = windowDays,
-                        state = HorizonRowState.Projected(
-                            windowDays = windowDays,
-                            paceDisplay2 = paceDisplay2,
-                            velocity2InUnit = v2,
-                            weeks = cappedWeeks,
-                            rawWeeks = rawWeeks,
-                            targetDate = targetDate,
-                            barFraction = barFraction,
-                            weeksDeltaVsTarget = weeksDelta,
-                            isOnTrack = isOnTrack,
-                            deltaBadgeText = deltaBadgeText
-                        )
-                    )
-                }
+                buildProjectedOrStalledHorizonRow(
+                    windowDays = windowDays,
+                    isWeightedAverage = false,
+                    paceDisplay2 = paceDisplay2,
+                    v2 = v2,
+                    isLossTrend = pace.trend == PaceTrend.LOSS,
+                    remainingInUnit = remainingInUnit,
+                    today = today,
+                    benchmarkV2 = benchmarkV2,
+                    requiredPace = requiredPace
+                )
             }
         }
 
@@ -2339,7 +2357,86 @@ object FatLossAnalytics {
             targetWeightInUnit = target1InUnit,
             weightUnit = normalizedUnit,
             requiredPace = requiredPace,
-            rows = rows
+            rows = rows,
+            weightedAverageRow = weightedAverageRow
+        )
+    }
+
+    private fun buildProjectedOrStalledHorizonRow(
+        windowDays: Int,
+        isWeightedAverage: Boolean,
+        paceDisplay2: String,
+        v2: Double,
+        isLossTrend: Boolean,
+        remainingInUnit: Double,
+        today: LocalDate,
+        benchmarkV2: Double,
+        requiredPace: RequiredPaceResult?
+    ): HorizonEstimationRow {
+        if (!isLossTrend || v2 <= 0.0) {
+            return HorizonEstimationRow(
+                windowDays = windowDays,
+                state = HorizonRowState.Stalled(
+                    windowDays = windowDays,
+                    paceDisplay2 = paceDisplay2
+                ),
+                isWeightedAverage = isWeightedAverage
+            )
+        }
+
+        val rawWeeks = remainingInUnit / v2
+        val roundedWeeks = round1(rawWeeks)
+        val isCapped = roundedWeeks > 52.0
+        val cappedWeeks = if (isCapped) 52.0 else roundedWeeks
+        val targetDate = if (isCapped) {
+            null
+        } else {
+            val daysToGoal = kotlin.math.round(roundedWeeks * 7.0).toLong()
+            today.plusDays(daysToGoal)
+        }
+        val barFraction = (v2 / benchmarkV2).toFloat().coerceIn(0.05f, 1.0f)
+
+        val weeksDelta: Double?
+        val isOnTrack: Boolean
+        val deltaBadgeText: String?
+
+        if (requiredPace != null) {
+            val rawDelta = diff1(roundedWeeks, round1(requiredPace.weeksRemaining))
+            weeksDelta = rawDelta
+            if (isCapped) {
+                isOnTrack = false
+                deltaBadgeText = "> 1 yr late"
+            } else if (rawDelta < -0.05) {
+                isOnTrack = true
+                deltaBadgeText = String.format(Locale.US, "On time (%.1fw)", rawDelta)
+            } else if (rawDelta <= 0.05) {
+                isOnTrack = true
+                deltaBadgeText = "On time"
+            } else {
+                isOnTrack = false
+                deltaBadgeText = String.format(Locale.US, "+%.1fw late", rawDelta)
+            }
+        } else {
+            weeksDelta = null
+            isOnTrack = !isCapped
+            deltaBadgeText = null
+        }
+
+        return HorizonEstimationRow(
+            windowDays = windowDays,
+            state = HorizonRowState.Projected(
+                windowDays = windowDays,
+                paceDisplay2 = paceDisplay2,
+                velocity2InUnit = v2,
+                weeks = cappedWeeks,
+                rawWeeks = rawWeeks,
+                targetDate = targetDate,
+                barFraction = barFraction,
+                weeksDeltaVsTarget = weeksDelta,
+                isOnTrack = isOnTrack,
+                deltaBadgeText = deltaBadgeText
+            ),
+            isWeightedAverage = isWeightedAverage
         )
     }
 

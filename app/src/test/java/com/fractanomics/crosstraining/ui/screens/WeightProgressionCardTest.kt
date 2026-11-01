@@ -1375,4 +1375,82 @@ class WeightProgressionCardTest {
             resolveHorizonRowContentDescription(missingRow)
         )
     }
+
+    @Test
+    fun feature009_weightedAverageEstimationResolversAndSemantics() {
+        assertEquals("Current Goal & Target", CURRENT_GOAL_AND_TARGET_HEADER)
+        assertEquals("Weighted Average", WEIGHTED_AVERAGE_ROW_TITLE)
+
+        val arrival = LocalDate.of(2026, 12, 25)
+        val weightedProjected = com.fractanomics.crosstraining.data.analytics.HorizonEstimationRow(
+            windowDays = 0,
+            state = com.fractanomics.crosstraining.data.analytics.HorizonRowState.Projected(
+                windowDays = 0,
+                paceDisplay2 = "-0.40 kg/wk",
+                velocity2InUnit = 0.40,
+                weeks = 7.7,
+                rawWeeks = 7.75,
+                targetDate = arrival,
+                barFraction = 1.0f,
+                weeksDeltaVsTarget = -0.3,
+                isOnTrack = true,
+                deltaBadgeText = "On time (-0.3w)"
+            ),
+            isWeightedAverage = true
+        )
+        assertEquals("Weighted Average", resolveHorizonRowLeftLabel(weightedProjected))
+        assertEquals("7.7 wks · 25 Dec 2026", resolveHorizonRowRightValue(weightedProjected))
+        assertEquals(
+            "(Weighted pace of -0.40 kg/wk · 7.7 wks · 25 Dec 2026)",
+            resolveWeightedRowSummaryText(weightedProjected)
+        )
+        assertEquals("On time (-0.3w)", resolveHorizonRowBadgeText(weightedProjected))
+        assertEquals(
+            "Weighted Average (Weighted pace of -0.40 kg/wk · 7.7 wks · 25 Dec 2026), On time (-0.3w)",
+            resolveHorizonRowContentDescription(weightedProjected)
+        )
+
+        val weightedCapped = com.fractanomics.crosstraining.data.analytics.HorizonEstimationRow(
+            windowDays = 0,
+            state = com.fractanomics.crosstraining.data.analytics.HorizonRowState.Projected(
+                windowDays = 0,
+                paceDisplay2 = "-0.06 kg/wk",
+                velocity2InUnit = 0.06,
+                weeks = 52.0,
+                rawWeeks = 61.7,
+                targetDate = null,
+                barFraction = 0.15f,
+                weeksDeltaVsTarget = 42.4,
+                isOnTrack = false,
+                deltaBadgeText = "> 1 yr late"
+            ),
+            isWeightedAverage = true
+        )
+        assertEquals(
+            "(Weighted pace of -0.06 kg/wk · > 1 year)",
+            resolveWeightedRowSummaryText(weightedCapped)
+        )
+        assertEquals(
+            "Weighted Average (Weighted pace of -0.06 kg/wk · > 1 year), > 1 yr late",
+            resolveHorizonRowContentDescription(weightedCapped)
+        )
+
+        val weightedStalled = com.fractanomics.crosstraining.data.analytics.HorizonEstimationRow(
+            windowDays = 0,
+            state = com.fractanomics.crosstraining.data.analytics.HorizonRowState.Stalled(
+                windowDays = 0,
+                paceDisplay2 = "+0.10 kg/wk"
+            ),
+            isWeightedAverage = true
+        )
+        assertEquals(
+            "(Weighted pace of +0.10 kg/wk · Pace stalled)",
+            resolveWeightedRowSummaryText(weightedStalled)
+        )
+        assertEquals("Stalled", resolveHorizonRowBadgeText(weightedStalled))
+        assertEquals(
+            "Weighted Average (Weighted pace of +0.10 kg/wk · Pace stalled), Stalled",
+            resolveHorizonRowContentDescription(weightedStalled)
+        )
+    }
 }
