@@ -1453,4 +1453,58 @@ class WeightProgressionCardTest {
             resolveHorizonRowContentDescription(weightedStalled)
         )
     }
+
+    @Test
+    fun feature010_horizonAndWeightedAverageWeightResolversAndSemantics() {
+        val arrivalWeighted = LocalDate.of(2026, 12, 26)
+        val weightedWithWeight = com.fractanomics.crosstraining.data.analytics.HorizonEstimationRow(
+            windowDays = 0,
+            state = com.fractanomics.crosstraining.data.analytics.HorizonRowState.Projected(
+                windowDays = 0,
+                paceDisplay2 = "-0.39 kg/wk",
+                velocity2InUnit = 0.39,
+                weeks = 7.9,
+                rawWeeks = 7.948,
+                targetDate = arrivalWeighted,
+                barFraction = 1.0f,
+                weeksDeltaVsTarget = -0.2,
+                isOnTrack = true,
+                deltaBadgeText = "On time (-0.2w)",
+                averageWeightDisplay = "82.3 kg"
+            ),
+            isWeightedAverage = true
+        )
+        assertEquals(
+            "(Weighted pace of -0.39 kg/wk · 82.3 kg · 7.9 wks · 26 Dec 2026)",
+            resolveWeightedRowSummaryText(weightedWithWeight)
+        )
+        assertEquals(
+            "Weighted Average (Weighted pace of -0.39 kg/wk · 82.3 kg · 7.9 wks · 26 Dec 2026), On time (-0.2w)",
+            resolveHorizonRowContentDescription(weightedWithWeight)
+        )
+
+        val arrival7d = LocalDate.of(2026, 12, 15)
+        val row7dWithWeight = com.fractanomics.crosstraining.data.analytics.HorizonEstimationRow(
+            windowDays = 7,
+            state = com.fractanomics.crosstraining.data.analytics.HorizonRowState.Projected(
+                windowDays = 7,
+                paceDisplay2 = "-0.49 kg/wk",
+                velocity2InUnit = 0.49,
+                weeks = 6.3,
+                rawWeeks = 6.326,
+                targetDate = arrival7d,
+                barFraction = 1.0f,
+                weeksDeltaVsTarget = -1.8,
+                isOnTrack = true,
+                deltaBadgeText = "On time (-1.8w)",
+                averageWeightDisplay = "81.5 kg"
+            )
+        )
+        assertEquals("7D (-0.49 kg/wk · 81.5 kg)", resolveHorizonRowLeftLabel(row7dWithWeight))
+        assertEquals("6.3 wks · 15 Dec 2026", resolveHorizonRowRightValue(row7dWithWeight))
+        assertEquals(
+            "7-day horizon (7D (-0.49 kg/wk · 81.5 kg)): 6.3 wks · 15 Dec 2026, On time (-1.8w)",
+            resolveHorizonRowContentDescription(row7dWithWeight)
+        )
+    }
 }

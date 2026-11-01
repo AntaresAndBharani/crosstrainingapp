@@ -4283,28 +4283,31 @@ class FatLossAnalyticsTest {
         assertEquals(4, active.rows.size)
         assertEquals(listOf(7, 14, 21, 28), active.rows.map { it.windowDays })
 
-        // Row 0: 7D (-0.28 kg/wk) -> 3.7 / 0.28 = 13.214 -> 13.2 wks (late by 13.2 - 9.6 = +3.6w late)
+        // Row 0: 7D (-0.28 kg/wk · 75.7 kg) -> 3.7 / 0.28 = 13.214 -> 13.2 wks (late by 13.2 - 9.6 = +3.6w late)
         val row7 = active.rows[0]
-        assertEquals("7D (-0.28 kg/wk)", row7.formatLeftLabel())
+        assertEquals("7D (-0.28 kg/wk · 75.7 kg)", row7.formatLeftLabel())
         assertTrue(row7.state is HorizonRowState.Projected)
         val proj7 = row7.state as HorizonRowState.Projected
+        assertEquals("75.7 kg", proj7.averageWeightDisplay)
         assertEquals(13.2, proj7.weeks, 1e-6)
         assertEquals(today.plusDays(kotlin.math.round(13.2 * 7.0).toLong()), proj7.arrivalDate)
         assertEquals("+3.6w late", proj7.badgeText)
         assertFalse(proj7.isOnTrack)
         assertEquals((0.28 / 0.39).toFloat(), proj7.sufficiencyFraction, 1e-3f)
 
-        // Row 1: 14D (-0.22 kg/wk) -> 3.7 / 0.22 = 16.818 -> 16.8 wks (+7.2w late)
+        // Row 1: 14D (-0.22 kg/wk · 75.8 kg) -> 3.7 / 0.22 = 16.818 -> 16.8 wks (+7.2w late)
         val row14 = active.rows[1]
-        assertEquals("14D (-0.22 kg/wk)", row14.formatLeftLabel())
+        assertEquals("14D (-0.22 kg/wk · 75.8 kg)", row14.formatLeftLabel())
         val proj14 = row14.state as HorizonRowState.Projected
+        assertEquals("75.8 kg", proj14.averageWeightDisplay)
         assertEquals(16.8, proj14.weeks, 1e-6)
         assertEquals("+7.2w late", proj14.badgeText)
 
-        // Row 2: 21D (-0.34 kg/wk) -> 3.7 / 0.34 = 10.882 -> 10.9 wks (+1.3w late)
+        // Row 2: 21D (-0.34 kg/wk · 75.9 kg) -> 3.7 / 0.34 = 10.882 -> 10.9 wks (+1.3w late)
         val row21 = active.rows[2]
-        assertEquals("21D (-0.34 kg/wk)", row21.formatLeftLabel())
+        assertEquals("21D (-0.34 kg/wk · 75.9 kg)", row21.formatLeftLabel())
         val proj21 = row21.state as HorizonRowState.Projected
+        assertEquals("75.9 kg", proj21.averageWeightDisplay)
         assertEquals(10.9, proj21.weeks, 1e-6)
         assertEquals("+1.3w late", proj21.badgeText)
 
@@ -4354,15 +4357,22 @@ class FatLossAnalyticsTest {
         assertEquals(1.0f, p7.sufficiencyFraction, 1e-4f)
         assertNull(p7.badgeText)
 
-        // 14D is Stalled (+0.10 kg/wk)
+        // 14D is Stalled (+0.10 kg/wk · 75.9 kg)
         val r14 = openActive.rows[1]
-        assertEquals("14D (+0.10 kg/wk)", r14.formatLeftLabel())
+        assertEquals("14D (+0.10 kg/wk · 75.9 kg)", r14.formatLeftLabel())
         assertEquals("Pace stalled", r14.formatRightValue())
-        assertEquals(HorizonRowState.Stalled(windowDays = 14, paceDisplay2 = "+0.10 kg/wk"), r14.state)
+        assertEquals(
+            HorizonRowState.Stalled(
+                windowDays = 14,
+                paceDisplay2 = "+0.10 kg/wk",
+                averageWeightDisplay = "75.9 kg"
+            ),
+            r14.state
+        )
 
         // 21D is > 1 year (61.7 wks)
         val r21 = openActive.rows[2]
-        assertEquals("21D (-0.06 kg/wk)", r21.formatLeftLabel())
+        assertEquals("21D (-0.06 kg/wk · 75.8 kg)", r21.formatLeftLabel())
         assertEquals("> 1 year", r21.formatRightValue())
         val p21 = r21.state as HorizonRowState.Projected
         assertTrue(p21.isOverOneYear)
@@ -4424,11 +4434,11 @@ class FatLossAnalyticsTest {
 
         // 1. All 4 horizons available matching shared spec numbers:
         // Current weight = 75.1 kg -> remaining = 3.1 kg, Required = -3.1 / (57/7) = -0.3807 -> -0.38 kg/wk
-        // 7D  = -0.49 kg/wk (t-7  = 75.59)
-        // 14D = -0.35 kg/wk (t-14 = 75.80)
-        // 21D = -0.31 kg/wk (t-21 = 76.03)
-        // 28D = -0.31 kg/wk (t-28 = 76.34)
-        // Weighted (4:3:2:1): (4*-0.49 + 3*-0.35 + 2*-0.31 + 1*-0.31) / 10 = -3.94 / 10 = -0.394 -> -0.39 kg/wk
+        // 7D  = -0.49 kg/wk (t-7  = 75.59), rolling avg = 75.1 kg
+        // 14D = -0.35 kg/wk (t-14 = 75.80), rolling avg = 75.3 kg
+        // 21D = -0.31 kg/wk (t-21 = 76.03), rolling avg = 75.5 kg
+        // 28D = -0.31 kg/wk (t-28 = 76.34), rolling avg = 75.6 kg
+        // Weighted (4:3:2:1): pace = -0.39 kg/wk, weight = (4*75.1 + 3*75.3 + 2*75.5 + 1*75.6)/10 = 75.29 -> 75.3 kg
         val fullEntries = listOf(
             WeightEntry(date = today.minusDays(28), weightKg = 76.34, updatedAtMillis = 1L),
             WeightEntry(date = today.minusDays(21), weightKg = 76.03, updatedAtMillis = 2L),
@@ -4438,19 +4448,24 @@ class FatLossAnalyticsTest {
         )
 
         val fullState = FatLossAnalytics.computeMultiHorizonForecast(fullEntries, cycle, today, weightUnit = "kg") as MultiHorizonForecastState.Active
+        assertEquals("7D (-0.49 kg/wk · 75.1 kg)", fullState.rows[0].formatLeftLabel())
+        assertEquals("14D (-0.35 kg/wk · 75.3 kg)", fullState.rows[1].formatLeftLabel())
+        assertEquals("21D (-0.31 kg/wk · 75.5 kg)", fullState.rows[2].formatLeftLabel())
+        assertEquals("28D (-0.31 kg/wk · 75.6 kg)", fullState.rows[3].formatLeftLabel())
         val weightedFull = fullState.weightedAverageRow
         assertTrue(weightedFull.isWeightedAverage)
         assertEquals("Weighted Average", weightedFull.formatLeftLabel())
         assertTrue(weightedFull.state is HorizonRowState.Projected)
         val projWeightedFull = weightedFull.state as HorizonRowState.Projected
         assertEquals("-0.39 kg/wk", projWeightedFull.paceDisplay2)
+        assertEquals("75.3 kg", projWeightedFull.averageWeightDisplay)
         assertEquals(0.39, projWeightedFull.velocity2InUnit, 1e-6)
         // 3.1 / 0.39 = 7.9487 -> 7.9 wks (8.1w left -> -0.2w ahead -> On time (-0.2w))
         assertEquals(7.9, projWeightedFull.weeks, 1e-6)
         assertTrue(projWeightedFull.isOnTrack)
         assertEquals("On time (-0.2w)", projWeightedFull.badgeText)
         assertEquals(
-            "(Weighted pace of -0.39 kg/wk · 7.9 wks · 26 Dec 2026)",
+            "(Weighted pace of -0.39 kg/wk · 75.3 kg · 7.9 wks · 26 Dec 2026)",
             weightedFull.formatWeightedSummary()
         )
 
@@ -4461,6 +4476,7 @@ class FatLossAnalyticsTest {
         val partialState = FatLossAnalytics.computeMultiHorizonForecast(partialEntries, partialCycle, today, weightUnit = "kg") as MultiHorizonForecastState.Active
         val projPartial = partialState.weightedAverageRow.state as HorizonRowState.Projected
         assertEquals("-0.40 kg/wk", projPartial.paceDisplay2)
+        assertEquals("75.3 kg", projPartial.averageWeightDisplay)
         assertEquals(0.40, projPartial.velocity2InUnit, 1e-6)
         // 3.1 / 0.40 = 7.75 -> 7.8 wks (-0.3w ahead)
         assertEquals(7.8, projPartial.weeks, 1e-6)
@@ -4489,11 +4505,11 @@ class FatLossAnalyticsTest {
         )
         val stalledState = FatLossAnalytics.computeMultiHorizonForecast(stalledEntries, stalledCycle, today, weightUnit = "kg") as MultiHorizonForecastState.Active
         assertEquals(
-            HorizonRowState.Stalled(windowDays = 0, paceDisplay2 = "+0.20 kg/wk"),
+            HorizonRowState.Stalled(windowDays = 0, paceDisplay2 = "+0.20 kg/wk", averageWeightDisplay = "75.1 kg"),
             stalledState.weightedAverageRow.state
         )
         assertEquals(
-            "(Weighted pace of +0.20 kg/wk · Pace stalled)",
+            "(Weighted pace of +0.20 kg/wk · 75.1 kg · Pace stalled)",
             stalledState.weightedAverageRow.formatWeightedSummary()
         )
 
@@ -4501,6 +4517,7 @@ class FatLossAnalyticsTest {
         val lbsState = FatLossAnalytics.computeMultiHorizonForecast(fullEntries, cycle, today, weightUnit = "lbs") as MultiHorizonForecastState.Active
         val projLbs = lbsState.weightedAverageRow.state as HorizonRowState.Projected
         assertTrue(projLbs.paceDisplay2.endsWith("lbs/wk"))
+        assertEquals("166.0 lbs", projLbs.averageWeightDisplay)
         assertEquals(
             FatLossAnalytics.round1(lbsState.remainingWeightInUnit / projLbs.velocity2InUnit),
             projLbs.weeks,
@@ -4516,11 +4533,11 @@ class FatLossAnalyticsTest {
         )
         val deadbandState = FatLossAnalytics.computeMultiHorizonForecast(deadbandEntries, deadbandCycle, today, weightUnit = "lbs") as MultiHorizonForecastState.Active
         assertEquals(
-            HorizonRowState.Stalled(windowDays = 7, paceDisplay2 = "-0.09 lbs/wk"),
+            HorizonRowState.Stalled(windowDays = 7, paceDisplay2 = "-0.09 lbs/wk", averageWeightDisplay = "165.6 lbs"),
             deadbandState.rows[0].state
         )
         assertEquals(
-            HorizonRowState.Stalled(windowDays = 0, paceDisplay2 = "-0.09 lbs/wk"),
+            HorizonRowState.Stalled(windowDays = 0, paceDisplay2 = "-0.09 lbs/wk", averageWeightDisplay = "165.6 lbs"),
             deadbandState.weightedAverageRow.state
         )
     }

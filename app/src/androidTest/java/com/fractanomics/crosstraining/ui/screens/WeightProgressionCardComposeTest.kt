@@ -829,17 +829,28 @@ class WeightProgressionCardComposeTest {
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("Weighted Average", useUnmergedTree = true))
         assertMaxTwoLinesNoOverflow(
             composeTestRule.onNodeWithText(
-                "(Weighted pace of -0.27 kg/wk · 13.7 wks · 26 Jan 2027)",
+                "(Weighted pace of -0.27 kg/wk · 75.8 kg · 13.7 wks · 26 Jan 2027)",
                 useUnmergedTree = true
             )
         )
         composeTestRule.onNodeWithText("+4.1w late", useUnmergedTree = true).assertIsDisplayed()
 
         // Verify all 4 horizon estimation rows render without overflow
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("7D (-0.28 kg/wk)"))
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("14D (-0.22 kg/wk)"))
-        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("21D (-0.34 kg/wk)"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("7D (-0.28 kg/wk · 75.7 kg)"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("14D (-0.22 kg/wk · 75.8 kg)"))
+        assertSingleLineNoOverflow(composeTestRule.onNodeWithText("21D (-0.34 kg/wk · 75.9 kg)"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("28D (—)"))
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("Needs 28+ days"))
+
+        // Verify vertical section ordering: DAILY WEIGH-IN -> GOAL ARRIVAL ESTIMATIONS -> PACE & LINEAR TARGETS -> 7-Day Pace
+        // The Daily Weigh-In header renders with the reference weekday suffix (22 Oct 2026 = Thursday).
+        val dailyWeighInTop = composeTestRule.onNodeWithText("DAILY WEIGH-IN (THU)", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
+        val estimationsTop = composeTestRule.onNodeWithText("GOAL ARRIVAL ESTIMATIONS", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
+        val paceTargetsTop = composeTestRule.onNodeWithText("PACE & LINEAR TARGETS", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
+        val pace7Top = composeTestRule.onNodeWithText("7-Day Pace", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
+
+        org.junit.Assert.assertTrue("Expected DAILY WEIGH-IN above GOAL ARRIVAL ESTIMATIONS", dailyWeighInTop < estimationsTop)
+        org.junit.Assert.assertTrue("Expected GOAL ARRIVAL ESTIMATIONS above PACE & LINEAR TARGETS", estimationsTop < paceTargetsTop)
+        org.junit.Assert.assertTrue("Expected PACE & LINEAR TARGETS above 7-Day Pace", paceTargetsTop < pace7Top)
     }
 }

@@ -387,8 +387,14 @@ data class HorizonEstimationRow(
         "Weighted Average"
     } else {
         when (state) {
-            is HorizonRowState.Projected -> "${windowDays}D (${state.paceDisplay2})"
-            is HorizonRowState.Stalled -> "${windowDays}D (${state.paceDisplay2})"
+            is HorizonRowState.Projected -> {
+                val weightPart = state.averageWeightDisplay?.let { " · $it" } ?: ""
+                "${windowDays}D (${state.paceDisplay2}$weightPart)"
+            }
+            is HorizonRowState.Stalled -> {
+                val weightPart = state.averageWeightDisplay?.let { " · $it" } ?: ""
+                "${windowDays}D (${state.paceDisplay2}$weightPart)"
+            }
             is HorizonRowState.NotEnoughData -> "${windowDays}D (—)"
         }
     }
@@ -405,14 +411,25 @@ data class HorizonEstimationRow(
     }
 
     fun formatWeightedSummary(): String = when (state) {
-        is HorizonRowState.Projected -> "(Weighted pace of ${state.paceDisplay2} · ${formatRightValue()})"
-        is HorizonRowState.Stalled -> "(Weighted pace of ${state.paceDisplay2} · Pace stalled)"
+        is HorizonRowState.Projected -> {
+            val weightPart = state.averageWeightDisplay?.let { " · $it" } ?: ""
+            "(Weighted pace of ${state.paceDisplay2}$weightPart · ${formatRightValue()})"
+        }
+        is HorizonRowState.Stalled -> {
+            val weightPart = state.averageWeightDisplay?.let { " · $it" } ?: ""
+            "(Weighted pace of ${state.paceDisplay2}$weightPart · Pace stalled)"
+        }
         is HorizonRowState.NotEnoughData -> "(Needs 7+ days)"
     }
 }
 
 /**
  * Per-horizon estimation row state inside [MultiHorizonForecastState.Active].
+ *
+ * `averageWeightDisplay` (on [Stalled] and [Projected]) is the pre-formatted 1-decimal display-unit
+ * average weight (e.g. `"75.3 kg"`): the horizon's N-day rolling average for 7D–28D rows, or the
+ * 4:3:2:1 weighted blend for the Weighted Average row. It is `null` when not supplied and is then
+ * omitted from the formatted labels.
  */
 sealed interface HorizonRowState {
     val windowDays: Int
@@ -423,7 +440,8 @@ sealed interface HorizonRowState {
 
     data class Stalled(
         override val windowDays: Int,
-        val paceDisplay2: String
+        val paceDisplay2: String,
+        val averageWeightDisplay: String? = null
     ) : HorizonRowState
 
     data class Projected(
@@ -436,7 +454,8 @@ sealed interface HorizonRowState {
         val barFraction: Float,
         val weeksDeltaVsTarget: Double? = null,
         val isOnTrack: Boolean = true,
-        val deltaBadgeText: String? = null
+        val deltaBadgeText: String? = null,
+        val averageWeightDisplay: String? = null
     ) : HorizonRowState {
         val isCapped: Boolean
             get() = targetDate == null || rawWeeks > 52.0
@@ -2195,6 +2214,12 @@ object FatLossAnalytics {
      * Computes the visual Multi-Horizon Goal Estimations state across the primary Weighted Average
      * and the 7D, 14D, 21D, and 28D pace windows using 2-decimal pace velocity (`v2`), estimated weeks,
      * projected arrival dates, proportional pace-to-required sufficiency bars, and ahead/late week badges.
+     *
+     * Each available horizon row also carries its 1-decimal display-unit rolling average weight over
+     * `[today - (N - 1), today]` (falling back to the window ending at the newest entry, then the current
+     * weight), and the Weighted Average row carries the 4:3:2:1 recency-weighted blend of those averages
+     * across the same available horizons. Weeks-to-goal and arrival dates remain anchored to the current
+     * 7D remaining weight to goal.
      */
     fun computeMultiHorizonForecast(
         entries: List<WeightEntry>,
@@ -2285,6 +2310,15 @@ object FatLossAnalytics {
             else -> (current1InUnit * MAX_SUSTAINABLE_WEEKLY_LOSS_FRACTION).coerceAtLeast(0.1)
         }
 
+        // Compute per-horizon 1-decimal display-unit rolling average weights over [today - (w - 1), today]
+        val allActiveEntries = getAllHistoricalWeightEntries(entries, today)
+        val horizonAvg1InUnit: Map<Int, Double> = HORIZON_WINDOWS.associateWith { w ->
+            val avgKg = computeWindowAverageKg(allActiveEntries, today.minusDays(w - 1L), today)
+                ?: computeWindowAverageKg(allActiveEntries, newest.date.minusDays(w - 1L), newest.date)
+                ?: currentWeightKg
+            round1InUnit(avgKg, normalizedUnit)
+        }
+
         // Compute 4:3:2:1 dynamically re-normalized Weighted Average across available horizons
         val availableHorizons = HORIZON_WINDOWS.mapNotNull { w ->
             val p = pacesByWindow[w]
@@ -2296,6 +2330,13 @@ object FatLossAnalytics {
             val r2 = round2(toUnit(p.rateKgPerWeek, normalizedUnit))
             weight.toDouble() * r2
         }
+        val weightedAvgWeightSumInUnit = availableHorizons.sumOf { (w, _) ->
+            val weight = HORIZON_WEIGHTS[w] ?: 1
+            val avg1 = horizonAvg1InUnit[w] ?: current1InUnit
+            weight.toDouble() * avg1
+        }
+        val weightedAvgWeight1InUnit = round1(weightedAvgWeightSumInUnit / totalWeight.toDouble())
+        val weightedAverageWeightDisplay = String.format(Locale.US, "%.1f %s", weightedAvgWeight1InUnit, normalizedUnit)
         val rawWeightedRateInUnit = weightedSumInUnit / totalWeight.toDouble()
         val weightedRate2InUnit = round2(rawWeightedRateInUnit)
         val weightedRateKgPerWeek = if (isImperial) {
@@ -2325,7 +2366,8 @@ object FatLossAnalytics {
             remainingInUnit = remainingInUnit,
             today = today,
             benchmarkV2 = benchmarkV2,
-            requiredPace = requiredPace
+            requiredPace = requiredPace,
+            averageWeightDisplay = weightedAverageWeightDisplay
         )
 
         val rows = HORIZON_WINDOWS.map { windowDays ->
@@ -2338,6 +2380,12 @@ object FatLossAnalytics {
             } else {
                 val paceDisplay2 = pace.formatDisplay2(normalizedUnit)
                 val v2 = round2(toUnit(pace.deficitVelocityKgPerWeek, normalizedUnit))
+                val avgWeightDisplay = String.format(
+                    Locale.US,
+                    "%.1f %s",
+                    horizonAvg1InUnit[windowDays] ?: current1InUnit,
+                    normalizedUnit
+                )
                 buildProjectedOrStalledHorizonRow(
                     windowDays = windowDays,
                     isWeightedAverage = false,
@@ -2347,7 +2395,8 @@ object FatLossAnalytics {
                     remainingInUnit = remainingInUnit,
                     today = today,
                     benchmarkV2 = benchmarkV2,
-                    requiredPace = requiredPace
+                    requiredPace = requiredPace,
+                    averageWeightDisplay = avgWeightDisplay
                 )
             }
         }
@@ -2371,14 +2420,16 @@ object FatLossAnalytics {
         remainingInUnit: Double,
         today: LocalDate,
         benchmarkV2: Double,
-        requiredPace: RequiredPaceResult?
+        requiredPace: RequiredPaceResult?,
+        averageWeightDisplay: String? = null
     ): HorizonEstimationRow {
         if (!isLossTrend || v2 <= 0.0) {
             return HorizonEstimationRow(
                 windowDays = windowDays,
                 state = HorizonRowState.Stalled(
                     windowDays = windowDays,
-                    paceDisplay2 = paceDisplay2
+                    paceDisplay2 = paceDisplay2,
+                    averageWeightDisplay = averageWeightDisplay
                 ),
                 isWeightedAverage = isWeightedAverage
             )
@@ -2434,7 +2485,8 @@ object FatLossAnalytics {
                 barFraction = barFraction,
                 weeksDeltaVsTarget = weeksDelta,
                 isOnTrack = isOnTrack,
-                deltaBadgeText = deltaBadgeText
+                deltaBadgeText = deltaBadgeText,
+                averageWeightDisplay = averageWeightDisplay
             ),
             isWeightedAverage = isWeightedAverage
         )
