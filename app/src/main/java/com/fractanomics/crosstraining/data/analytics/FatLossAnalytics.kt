@@ -425,6 +425,11 @@ data class HorizonEstimationRow(
 
 /**
  * Per-horizon estimation row state inside [MultiHorizonForecastState.Active].
+ *
+ * `averageWeightDisplay` (on [Stalled] and [Projected]) is the pre-formatted 1-decimal display-unit
+ * average weight (e.g. `"75.3 kg"`): the horizon's N-day rolling average for 7D–28D rows, or the
+ * 4:3:2:1 weighted blend for the Weighted Average row. It is `null` when not supplied and is then
+ * omitted from the formatted labels.
  */
 sealed interface HorizonRowState {
     val windowDays: Int
@@ -2209,6 +2214,12 @@ object FatLossAnalytics {
      * Computes the visual Multi-Horizon Goal Estimations state across the primary Weighted Average
      * and the 7D, 14D, 21D, and 28D pace windows using 2-decimal pace velocity (`v2`), estimated weeks,
      * projected arrival dates, proportional pace-to-required sufficiency bars, and ahead/late week badges.
+     *
+     * Each available horizon row also carries its 1-decimal display-unit rolling average weight over
+     * `[today - (N - 1), today]` (falling back to the window ending at the newest entry, then the current
+     * weight), and the Weighted Average row carries the 4:3:2:1 recency-weighted blend of those averages
+     * across the same available horizons. Weeks-to-goal and arrival dates remain anchored to the current
+     * 7D remaining weight to goal.
      */
     fun computeMultiHorizonForecast(
         entries: List<WeightEntry>,

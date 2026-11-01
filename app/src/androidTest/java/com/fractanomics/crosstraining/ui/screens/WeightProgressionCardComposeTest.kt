@@ -843,7 +843,8 @@ class WeightProgressionCardComposeTest {
         assertSingleLineNoOverflow(composeTestRule.onNodeWithText("Needs 28+ days"))
 
         // Verify vertical section ordering: DAILY WEIGH-IN -> GOAL ARRIVAL ESTIMATIONS -> PACE & LINEAR TARGETS -> 7-Day Pace
-        val dailyWeighInTop = composeTestRule.onNodeWithText("DAILY WEIGH-IN", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
+        // The Daily Weigh-In header renders with the reference weekday suffix (22 Oct 2026 = Thursday).
+        val dailyWeighInTop = composeTestRule.onNodeWithText("DAILY WEIGH-IN (THU)", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
         val estimationsTop = composeTestRule.onNodeWithText("GOAL ARRIVAL ESTIMATIONS", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
         val paceTargetsTop = composeTestRule.onNodeWithText("PACE & LINEAR TARGETS", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
         val pace7Top = composeTestRule.onNodeWithText("7-Day Pace", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
