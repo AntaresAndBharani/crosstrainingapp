@@ -1,5 +1,6 @@
 package com.fractanomics.crosstraining.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -63,6 +64,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -633,11 +635,7 @@ internal data class MovementSelectorUiState(
         get() = searchQuery.isNotEmpty()
 
     fun toggleExpanded(): MovementSelectorUiState =
-        if (expanded) {
-            copy(expanded = false, searchQuery = "")
-        } else {
-            copy(expanded = true, searchQuery = "")
-        }
+        copy(expanded = !expanded, searchQuery = "")
 
     fun open(): MovementSelectorUiState = copy(expanded = true)
 
@@ -671,6 +669,15 @@ private fun MovementGoalSelector(
         state.filterExercises(exercises)
     }
 
+    // The inline search panel lives inside the CycleEditorDialog window, so without this
+    // handler a system back press (after the IME is hidden) would dismiss the entire dialog
+    // and discard unsaved cycle edits. Collapse the selector first, matching the previous
+    // ExposedDropdownMenu popup's back-press behavior.
+    BackHandler(enabled = state.expanded) {
+        state = state.dismiss()
+        keyboardController?.hide()
+    }
+
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -686,7 +693,10 @@ private fun MovementGoalSelector(
             color = MaterialTheme.colorScheme.surface,
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable {
+                .clickable(
+                    onClickLabel = if (state.expanded) "Close movement search" else "Change movement",
+                    role = Role.Button
+                ) {
                     val next = state.toggleExpanded()
                     state = next
                     if (!next.expanded) {

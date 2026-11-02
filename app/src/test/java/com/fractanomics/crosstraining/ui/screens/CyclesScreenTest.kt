@@ -670,4 +670,31 @@ class CyclesScreenTest {
         assertEquals("", selectorState.searchQuery)
         assertEquals(airBike, goalDraft.exercise)
     }
+
+    @Test
+    fun us2_movementSelectorBackPressDismissCollapsesAndResetsWithoutSelecting() {
+        val catalog = listOf(airBike, backSquat, benchPress, pullUps)
+        val goalDraft = GoalDraftState(exercise = airBike, goalMetric = MetricType.CALORIES)
+
+        // Given the selector is open with a partial query
+        var selectorState = MovementSelectorUiState()
+            .toggleExpanded()
+            .onSearchQueryChanged("pull")
+        assertTrue(selectorState.expanded)
+        assertEquals(listOf(pullUps), selectorState.filterExercises(catalog))
+
+        // When system back is pressed (BackHandler -> dismiss())
+        selectorState = selectorState.dismiss()
+
+        // Then the selector collapses, the query resets, and the existing selection is preserved
+        assertFalse(selectorState.expanded)
+        assertEquals("", selectorState.searchQuery)
+        assertFalse(selectorState.hasSearchQuery)
+        assertEquals(airBike, goalDraft.exercise)
+
+        // Re-opening after dismiss starts from a clean, unfiltered list
+        selectorState = selectorState.toggleExpanded()
+        assertTrue(selectorState.expanded)
+        assertEquals(catalog, selectorState.filterExercises(catalog))
+    }
 }
