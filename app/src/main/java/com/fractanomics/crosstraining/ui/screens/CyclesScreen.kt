@@ -10,15 +10,19 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Remove
@@ -31,7 +35,6 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
@@ -39,7 +42,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
@@ -58,7 +60,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -610,6 +616,45 @@ data class GoalDraftState(
     }
 }
 
+internal fun filterMovementExercises(
+    exercises: List<Exercise>,
+    searchQuery: String
+): List<Exercise> {
+    if (searchQuery.isBlank()) return exercises
+    val q = searchQuery.trim()
+    return exercises.filter { it.name.contains(q, ignoreCase = true) }
+}
+
+internal data class MovementSelectorUiState(
+    val expanded: Boolean = false,
+    val searchQuery: String = ""
+) {
+    val hasSearchQuery: Boolean
+        get() = searchQuery.isNotEmpty()
+
+    fun toggleExpanded(): MovementSelectorUiState =
+        if (expanded) {
+            copy(expanded = false, searchQuery = "")
+        } else {
+            copy(expanded = true, searchQuery = "")
+        }
+
+    fun open(): MovementSelectorUiState = copy(expanded = true)
+
+    fun dismiss(): MovementSelectorUiState = copy(expanded = false, searchQuery = "")
+
+    fun onSearchQueryChanged(query: String): MovementSelectorUiState =
+        copy(expanded = true, searchQuery = query)
+
+    fun clearSearchQuery(): MovementSelectorUiState = copy(searchQuery = "")
+
+    fun onExerciseSelected(): MovementSelectorUiState =
+        copy(expanded = false, searchQuery = "")
+
+    fun filterExercises(exercises: List<Exercise>): List<Exercise> =
+        filterMovementExercises(exercises, searchQuery)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MovementGoalSelector(
@@ -618,16 +663,12 @@ private fun MovementGoalSelector(
     onSelect: (Exercise) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
+    var state by remember { mutableStateOf(MovementSelectorUiState()) }
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
 
-    val filteredExercises = remember(exercises, searchQuery) {
-        if (searchQuery.isBlank()) {
-            exercises
-        } else {
-            val q = searchQuery.trim()
-            exercises.filter { it.name.contains(q, ignoreCase = true) }
-        }
+    val filteredExercises = remember(exercises, state.searchQuery) {
+        state.filterExercises(exercises)
     }
 
     Column(
@@ -639,90 +680,156 @@ private fun MovementGoalSelector(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = {
-                expanded = it
-                if (!it) searchQuery = ""
-            },
-            modifier = Modifier.fillMaxWidth()
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    val next = state.toggleExpanded()
+                    state = next
+                    if (!next.expanded) {
+                        keyboardController?.hide()
+                    }
+                }
         ) {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                color = MaterialTheme.colorScheme.surface,
+            Row(
                 modifier = Modifier
-                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                     .fillMaxWidth()
-                    .clickable { expanded = true }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Search,
-                            contentDescription = "Search movement",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = selected?.name ?: "Select movement…",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = "Search movement",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
                     Text(
-                        text = "Change ▾",
-                        style = MaterialTheme.typography.labelMedium,
+                        text = selected?.name ?: "Select movement…",
+                        style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
-            }
-
-            ExposedDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = {
-                    expanded = false
-                    searchQuery = ""
-                }
-            ) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholder = { Text("Search movement…") },
-                    singleLine = true,
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Filled.Search,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                Text(
+                    text = if (state.expanded) "Change ▴" else "Change ▾",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
                 )
-                filteredExercises.forEach { option ->
-                    DropdownMenuItem(
-                        text = { Text(option.name) },
-                        onClick = {
-                            onSelect(option)
-                            expanded = false
-                            searchQuery = ""
-                        }
+            }
+        }
+
+        if (state.expanded) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                tonalElevation = 2.dp,
+                shadowElevation = 4.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = state.searchQuery,
+                        onValueChange = { state = state.onSearchQueryChanged(it) },
+                        placeholder = { Text("Search movement…") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(
+                            onSearch = {
+                                filteredExercises.firstOrNull()?.let { option ->
+                                    onSelect(option)
+                                    state = state.onExerciseSelected()
+                                    keyboardController?.hide()
+                                }
+                            }
+                        ),
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Filled.Search,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        trailingIcon = if (state.hasSearchQuery) {
+                            {
+                                IconButton(
+                                    onClick = {
+                                        state = state.clearSearchQuery()
+                                        runCatching { focusRequester.requestFocus() }
+                                        keyboardController?.show()
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Close,
+                                        contentDescription = "Clear search",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        } else {
+                            null
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                            .focusRequester(focusRequester)
                     )
+
+                    LaunchedEffect(Unit) {
+                        runCatching { focusRequester.requestFocus() }
+                        keyboardController?.show()
+                    }
+
+                    if (filteredExercises.isEmpty()) {
+                        Text(
+                            text = "No matching movements found",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            filteredExercises.forEach { option ->
+                                val isSelected = option.id == selected?.id
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = option.name,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            }
+                                        )
+                                    },
+                                    onClick = {
+                                        onSelect(option)
+                                        state = state.onExerciseSelected()
+                                        keyboardController?.hide()
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
