@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Search
@@ -63,10 +64,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -84,6 +91,8 @@ import com.fractanomics.crosstraining.ui.components.ScreenList
 import com.fractanomics.crosstraining.ui.formatLong
 import com.fractanomics.crosstraining.ui.trimmed
 import kotlinx.coroutines.launch
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.DayOfWeek
 import java.time.LocalDate
 
@@ -398,13 +407,66 @@ data class GoalDraftState(
     val isManuallyEdited: Boolean = false,
     val goalMetric: MetricType = CycleGoal.defaultGoalMetricFor(exercise),
     val timeWindowMinutes: Int? = null,
-    val notes: String = ""
+    val notes: String = "",
+    val isCollapsed: Boolean = false,
+    val showTargetError: Boolean = false
 ) {
     val hasStartWeight: Boolean
         get() = startWeight.replace(',', '.').toDoubleOrNull()?.let { it > 0.0 } == true
 
+    val hasValidTarget: Boolean
+        get() = targetWeight.replace(',', '.').toDoubleOrNull()?.let { it > 0.0 } == true
+
     val unitLabel: String
         get() = CycleGoal.unitLabelFor(goalMetric, exercise?.unit)
+
+    val contextBadgeText: String
+        get() = when (goalMetric) {
+            MetricType.WEIGHT -> "${(reps.toIntOrNull() ?: 1).coerceAtLeast(1)}RM"
+            else -> CycleGoal.formatTimeWindowLabel(timeWindowMinutes)
+        }
+
+    val targetBadgeText: String
+        get() {
+            val parsed = targetWeight.replace(',', '.').toDoubleOrNull()
+            val valueStr = if (parsed != null && parsed > 0.0) parsed.trimmed() else targetWeight.ifBlank { "0" }
+            return "Target: $valueStr $unitLabel"
+        }
+
+    fun formatCollapsedSummaryTitle(index: Int): String {
+        val movementName = exercise?.name ?: "Select movement…"
+        return "Goal ${index + 1}: $movementName"
+    }
+
+    fun collapsedAccessibilityDescription(index: Int): String {
+        val movementName = exercise?.name ?: "Select movement"
+        val parsed = targetWeight.replace(',', '.').toDoubleOrNull()
+        val valueStr = if (parsed != null && parsed > 0.0) parsed.trimmed() else targetWeight.ifBlank { "0" }
+        return "Goal ${index + 1}: $movementName, $contextBadgeText, Target $valueStr $unitLabel. Collapsed. Double-tap to edit goal."
+    }
+
+    val targetStepperOptions: List<Pair<Double, String>>
+        get() = when (goalMetric) {
+            MetricType.WEIGHT -> {
+                val u = unitLabel
+                listOf(
+                    -2.5 to "-2.5 $u",
+                    2.5 to "+2.5 $u",
+                    5.0 to "+5 $u"
+                )
+            }
+            MetricType.CALORIES -> listOf(
+                -5.0 to "-5 cal",
+                5.0 to "+5 cal",
+                10.0 to "+10 cal"
+            )
+            MetricType.REPS -> listOf(
+                -1.0 to "-1 rep",
+                1.0 to "+1 rep",
+                5.0 to "+5 reps"
+            )
+            else -> emptyList()
+        }
 
     val scaleOptions: List<Pair<Double, String>>
         get() = when (goalMetric) {
@@ -429,6 +491,30 @@ data class GoalDraftState(
             else -> emptyList()
         }
 
+    fun stepTarget(delta: Double): GoalDraftState {
+        val current = targetWeight.replace(',', '.').toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
+        val nextBd = BigDecimal.valueOf(current)
+            .add(BigDecimal.valueOf(delta))
+            .setScale(2, RoundingMode.HALF_UP)
+        val clamped = nextBd.toDouble().coerceAtLeast(0.0)
+        val formatted = clamped.trimmed().replace(',', '.')
+        return copy(
+            targetWeight = formatted,
+            selectedModifier = delta,
+            isManuallyEdited = true,
+            showTargetError = if (clamped > 0.0) false else showTargetError
+        )
+    }
+
+    fun tryCollapse(): GoalDraftState =
+        if (hasValidTarget) {
+            copy(isCollapsed = true, showTargetError = false)
+        } else {
+            copy(isCollapsed = false, showTargetError = true)
+        }
+
+    fun expand(): GoalDraftState = copy(isCollapsed = false, showTargetError = false)
+
     fun onExerciseChanged(newExercise: Exercise?, bestWeight: Double?): GoalDraftState {
         val inferredMetric = CycleGoal.defaultGoalMetricFor(newExercise)
         val preservedWindow = if (inferredMetric == MetricType.WEIGHT) null else timeWindowMinutes
@@ -441,7 +527,8 @@ data class GoalDraftState(
                 startWeight = weightStr,
                 targetWeight = weightStr,
                 selectedModifier = 0.0,
-                isManuallyEdited = false
+                isManuallyEdited = false,
+                showTargetError = false
             )
         } else {
             copy(
@@ -471,7 +558,8 @@ data class GoalDraftState(
                 startWeight = valStr,
                 targetWeight = valStr,
                 selectedModifier = 0.0,
-                isManuallyEdited = false
+                isManuallyEdited = false,
+                showTargetError = false
             )
         } else {
             copy(
@@ -513,7 +601,8 @@ data class GoalDraftState(
                 startWeight = weightStr,
                 targetWeight = weightStr,
                 selectedModifier = 0.0,
-                isManuallyEdited = false
+                isManuallyEdited = false,
+                showTargetError = false
             )
         } else {
             copy(
@@ -541,10 +630,12 @@ data class GoalDraftState(
     }
 
     fun onTargetWeightChanged(newTarget: String): GoalDraftState {
+        val parsed = newTarget.replace(',', '.').toDoubleOrNull()
         return copy(
             targetWeight = newTarget,
             selectedModifier = null,
-            isManuallyEdited = true
+            isManuallyEdited = true,
+            showTargetError = if (parsed != null && parsed > 0.0) false else showTargetError
         )
     }
 
@@ -554,7 +645,8 @@ data class GoalDraftState(
         val scaled = computeScaledTarget(base, percentage, goalMetric)
         return copy(
             targetWeight = scaled.trimmed().replace(',', '.'),
-            selectedModifier = percentage
+            selectedModifier = percentage,
+            showTargetError = false
         )
     }
 
@@ -564,7 +656,8 @@ data class GoalDraftState(
         val scaled = computeScaledTarget(base, 0.0, goalMetric)
         return copy(
             targetWeight = scaled.trimmed().replace(',', '.'),
-            selectedModifier = 0.0
+            selectedModifier = 0.0,
+            showTargetError = false
         )
     }
 
@@ -612,10 +705,62 @@ data class GoalDraftState(
                 isManuallyEdited = true,
                 goalMetric = metric,
                 timeWindowMinutes = goal.timeWindowMinutes,
-                notes = goal.cleanNotes
+                notes = goal.cleanNotes,
+                isCollapsed = goal.targetWeight > 0.0,
+                showTargetError = false
             )
         }
     }
+}
+
+internal fun collapseGoalDraftAt(
+    drafts: List<GoalDraftState>,
+    index: Int
+): List<GoalDraftState> {
+    if (index !in drafts.indices) return drafts
+    return drafts.mapIndexed { idx, draft ->
+        if (idx == index) draft.tryCollapse() else draft
+    }
+}
+
+internal fun expandGoalDraftAt(
+    drafts: List<GoalDraftState>,
+    targetIndex: Int
+): List<GoalDraftState> {
+    if (targetIndex !in drafts.indices) return drafts
+    val invalidOpenIndex = drafts.indexOfFirst { !it.isCollapsed && !it.hasValidTarget }
+    if (invalidOpenIndex != -1 && invalidOpenIndex != targetIndex) {
+        return drafts.mapIndexed { idx, draft ->
+            if (idx == invalidOpenIndex) draft.tryCollapse() else draft
+        }
+    }
+    return drafts.mapIndexed { idx, draft ->
+        if (idx == targetIndex) {
+            draft.expand()
+        } else if (!draft.isCollapsed) {
+            draft.copy(isCollapsed = true, showTargetError = false)
+        } else {
+            draft
+        }
+    }
+}
+
+internal fun appendMovementGoalDraft(
+    drafts: List<GoalDraftState>,
+    newDraft: GoalDraftState
+): Pair<List<GoalDraftState>, Boolean> {
+    val invalidOpenIndex = drafts.indexOfFirst { !it.isCollapsed && !it.hasValidTarget }
+    if (invalidOpenIndex != -1) {
+        val flagged = drafts.mapIndexed { idx, draft ->
+            if (idx == invalidOpenIndex) draft.tryCollapse() else draft
+        }
+        return flagged to false
+    }
+    val collapsedExisting = drafts.map { draft ->
+        if (!draft.isCollapsed) draft.copy(isCollapsed = true, showTargetError = false) else draft
+    }
+    val appended = collapsedExisting + newDraft.copy(isCollapsed = false, showTargetError = false)
+    return appended to true
 }
 
 internal fun filterMovementExercises(
@@ -846,6 +991,105 @@ private fun MovementGoalSelector(
     }
 }
 
+@Composable
+private fun CollapsedGoalSummaryCard(
+    index: Int,
+    draft: GoalDraftState,
+    onExpand: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val a11yDescription = draft.collapsedAccessibilityDescription(index)
+    OutlinedCard(
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) {
+                contentDescription = a11yDescription
+            }
+            .clickable(
+                onClickLabel = "Edit goal",
+                role = Role.Button,
+                onClick = onExpand
+            )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = draft.formatCollapsedSummaryTitle(index),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer
+                    ) {
+                        Text(
+                            text = draft.contextBadgeText,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Text(
+                            text = draft.targetBadgeText,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = "Remove goal",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onExpand,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowDown,
+                        contentDescription = "Expand goal",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun CycleEditorDialog(
@@ -881,6 +1125,8 @@ fun CycleEditorDialog(
     }
 
     val coroutineScope = rememberCoroutineScope()
+    val hapticFeedback = LocalHapticFeedback.current
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     suspend fun resolveBestValue(exerciseId: Long, metric: MetricType, reps: Int): Double? {
         return when {
@@ -913,6 +1159,11 @@ fun CycleEditorDialog(
                 add(GoalDraftState.fromCycleGoal(g, ex))
             }
         }
+    }
+
+    fun applyGoalDrafts(updated: List<GoalDraftState>) {
+        goalDrafts.clear()
+        goalDrafts.addAll(updated)
     }
 
     val startVal = startingWeightStr.replace(',', '.').toDoubleOrNull()
@@ -1120,18 +1371,22 @@ fun CycleEditorDialog(
                     TextButton(onClick = {
                         val defaultEx = exercises.firstOrNull()
                         val defaultMetric = CycleGoal.defaultGoalMetricFor(defaultEx)
-                        val newIndex = goalDrafts.size
                         val newDraft = GoalDraftState(
                             exercise = defaultEx,
                             reps = "1",
-                            goalMetric = defaultMetric
+                            goalMetric = defaultMetric,
+                            isCollapsed = false
                         )
-                        goalDrafts.add(newDraft)
-                        if (defaultEx != null && (onFetchBestMetricValue != null || onFetchBestRm != null)) {
-                            coroutineScope.launch {
-                                val best = resolveBestValue(defaultEx.id, defaultMetric, 1)
-                                val cur = goalDrafts.getOrNull(newIndex) ?: return@launch
-                                goalDrafts[newIndex] = cur.onExerciseChanged(defaultEx, best)
+                        val (updated, wasAppended) = appendMovementGoalDraft(goalDrafts.toList(), newDraft)
+                        applyGoalDrafts(updated)
+                        if (wasAppended) {
+                            val newIndex = goalDrafts.lastIndex
+                            if (defaultEx != null && (onFetchBestMetricValue != null || onFetchBestRm != null) && newIndex >= 0) {
+                                coroutineScope.launch {
+                                    val best = resolveBestValue(defaultEx.id, defaultMetric, 1)
+                                    val cur = goalDrafts.getOrNull(newIndex) ?: return@launch
+                                    goalDrafts[newIndex] = cur.onExerciseChanged(defaultEx, best)
+                                }
                             }
                         }
                     }) {
@@ -1141,231 +1396,280 @@ fun CycleEditorDialog(
                 }
 
                 if (goalDrafts.isEmpty()) {
-                    Text("No target movement goals added yet.", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        text = "No movement goals in this cycle yet. Tap + Movement to add a target.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
                 goalDrafts.forEachIndexed { index, draft ->
-                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                    if (draft.isCollapsed) {
+                        CollapsedGoalSummaryCard(
+                            index = index,
+                            draft = draft,
+                            onExpand = {
+                                val updated = expandGoalDraftAt(goalDrafts.toList(), index)
+                                applyGoalDrafts(updated)
+                            },
+                            onDelete = {
+                                goalDrafts.removeAt(index)
+                            }
+                        )
+                    } else {
+                        OutlinedCard(
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Text("Goal ${index + 1}", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                                IconButton(onClick = { goalDrafts.removeAt(index) }) {
-                                    Icon(Icons.Filled.Delete, contentDescription = "Remove goal")
-                                }
-                            }
-
-                            MovementGoalSelector(
-                                exercises = exercises,
-                                selected = draft.exercise,
-                                onSelect = { selectedEx ->
-                                    val inferredMetric = CycleGoal.defaultGoalMetricFor(selectedEx)
-                                    val repsInt = (draft.reps.toIntOrNull() ?: 1).coerceAtLeast(1)
-                                    if (onFetchBestMetricValue != null || onFetchBestRm != null) {
-                                        coroutineScope.launch {
-                                            val best = resolveBestValue(selectedEx.id, inferredMetric, repsInt)
-                                            val cur = goalDrafts.getOrNull(index) ?: return@launch
-                                            goalDrafts[index] = cur.onExerciseChanged(selectedEx, best)
-                                        }
-                                    } else {
-                                        goalDrafts[index] = draft.onExerciseChanged(selectedEx, null)
-                                    }
-                                }
-                            )
-
-                            // Goal Metric Segmented Pill Row
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = "Goal Metric:",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                val weightUnit = CycleGoal.unitLabelFor(MetricType.WEIGHT, draft.exercise?.unit)
-                                val metricPills = listOf(
-                                    MetricType.WEIGHT to "Weight ($weightUnit)",
-                                    MetricType.CALORIES to "Calories (cal)",
-                                    MetricType.REPS to "Reps"
-                                )
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    metricPills.forEach { (metric, pillLabel) ->
-                                        FilterChip(
-                                            selected = draft.goalMetric == metric,
-                                            onClick = {
-                                                val ex = draft.exercise
-                                                val repsInt = (draft.reps.toIntOrNull() ?: 1).coerceAtLeast(1)
-                                                // Re-tapping the active metric keeps manual Start/Target edits intact.
-                                                if (draft.goalMetric != metric) {
-                                                    if (ex != null && (onFetchBestMetricValue != null || onFetchBestRm != null)) {
-                                                        coroutineScope.launch {
-                                                            val best = resolveBestValue(ex.id, metric, repsInt)
-                                                            val cur = goalDrafts.getOrNull(index) ?: return@launch
-                                                            goalDrafts[index] = cur.onGoalMetricChanged(metric, best)
-                                                        }
-                                                    } else {
-                                                        goalDrafts[index] = draft.onGoalMetricChanged(metric, null)
-                                                    }
-                                                }
-                                            },
-                                            label = { Text(pillLabel, style = MaterialTheme.typography.labelSmall) }
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Contextual Row: Reps (RM) stepper + presets vs Time Window pills
-                            if (draft.goalMetric == MetricType.WEIGHT) {
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     Text(
-                                        text = "Reps (RM)",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        text = "Goal ${index + 1}",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
                                     )
-                                    val currentRepsInt = (draft.reps.toIntOrNull() ?: 1).coerceAtLeast(1)
                                     Row(
-                                        modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
-                                        OutlinedIconButton(
-                                            onClick = {
-                                                val nextReps = draft.nextSteppedReps(-1)
-                                                val ex = draft.exercise
-                                                if (ex != null && (onFetchBestMetricValue != null || onFetchBestRm != null)) {
-                                                    coroutineScope.launch {
-                                                        val best = resolveBestValue(ex.id, MetricType.WEIGHT, nextReps)
-                                                        val cur = goalDrafts.getOrNull(index) ?: return@launch
-                                                        // Apply the exact reps the lookup was made for so rapid taps
-                                                        // can't pair an RM count with another RM's best weight.
-                                                        goalDrafts[index] = cur.onRepsChanged(nextReps.toString(), best)
-                                                    }
-                                                } else {
-                                                    goalDrafts[index] = draft.stepReps(-1, null)
-                                                }
-                                            },
-                                            enabled = currentRepsInt > 1,
-                                            modifier = Modifier.size(34.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Remove,
-                                                contentDescription = "Decrease RM",
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
                                         Surface(
                                             shape = RoundedCornerShape(8.dp),
-                                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                                            modifier = Modifier.padding(horizontal = 4.dp)
+                                            color = MaterialTheme.colorScheme.primaryContainer,
+                                            modifier = Modifier.clickable(
+                                                onClickLabel = "Collapse goal",
+                                                role = Role.Button,
+                                                onClick = {
+                                                    val updated = collapseGoalDraftAt(goalDrafts.toList(), index)
+                                                    applyGoalDrafts(updated)
+                                                    if (updated.getOrNull(index)?.isCollapsed == true) {
+                                                        keyboardController?.hide()
+                                                    }
+                                                }
+                                            )
                                         ) {
                                             Text(
-                                                text = "$currentRepsInt RM",
-                                                style = MaterialTheme.typography.bodyMedium,
+                                                text = "Done ▲",
+                                                style = MaterialTheme.typography.labelMedium,
                                                 fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                             )
                                         }
-                                        OutlinedIconButton(
-                                            onClick = {
-                                                val nextReps = draft.nextSteppedReps(1)
-                                                val ex = draft.exercise
-                                                if (ex != null && (onFetchBestMetricValue != null || onFetchBestRm != null)) {
-                                                    coroutineScope.launch {
-                                                        val best = resolveBestValue(ex.id, MetricType.WEIGHT, nextReps)
-                                                        val cur = goalDrafts.getOrNull(index) ?: return@launch
-                                                        // Apply the exact reps the lookup was made for so rapid taps
-                                                        // can't pair an RM count with another RM's best weight.
-                                                        goalDrafts[index] = cur.onRepsChanged(nextReps.toString(), best)
-                                                    }
-                                                } else {
-                                                    goalDrafts[index] = draft.stepReps(1, null)
-                                                }
-                                            },
-                                            modifier = Modifier.size(34.dp)
+                                        IconButton(
+                                            onClick = { goalDrafts.removeAt(index) },
+                                            modifier = Modifier.size(36.dp)
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Filled.Add,
-                                                contentDescription = "Increase RM",
-                                                modifier = Modifier.size(16.dp)
+                                                imageVector = Icons.Filled.Delete,
+                                                contentDescription = "Remove goal",
+                                                modifier = Modifier.size(18.dp)
                                             )
                                         }
                                     }
+                                }
 
-                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        CycleGoal.RM_PRESETS.forEach { presetReps ->
-                                            val presetStr = presetReps.toString()
+                                MovementGoalSelector(
+                                    exercises = exercises,
+                                    selected = draft.exercise,
+                                    onSelect = { selectedEx ->
+                                        val inferredMetric = CycleGoal.defaultGoalMetricFor(selectedEx)
+                                        val repsInt = (draft.reps.toIntOrNull() ?: 1).coerceAtLeast(1)
+                                        if (onFetchBestMetricValue != null || onFetchBestRm != null) {
+                                            coroutineScope.launch {
+                                                val best = resolveBestValue(selectedEx.id, inferredMetric, repsInt)
+                                                val cur = goalDrafts.getOrNull(index) ?: return@launch
+                                                goalDrafts[index] = cur.onExerciseChanged(selectedEx, best)
+                                            }
+                                        } else {
+                                            goalDrafts[index] = draft.onExerciseChanged(selectedEx, null)
+                                        }
+                                    }
+                                )
+
+                                // Single-Row Goal Metric Selector
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = "Goal Metric:",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    val weightUnit = CycleGoal.unitLabelFor(MetricType.WEIGHT, draft.exercise?.unit)
+                                    val metricPills = listOf(
+                                        MetricType.WEIGHT to "Weight ($weightUnit)",
+                                        MetricType.CALORIES to "Calories (cal)",
+                                        MetricType.REPS to "Reps"
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        metricPills.forEach { (metric, pillLabel) ->
                                             FilterChip(
-                                                selected = draft.reps == presetStr,
+                                                selected = draft.goalMetric == metric,
                                                 onClick = {
+                                                    val ex = draft.exercise
+                                                    val repsInt = (draft.reps.toIntOrNull() ?: 1).coerceAtLeast(1)
+                                                    // Re-tapping the active metric keeps manual Target edits intact.
+                                                    if (draft.goalMetric != metric) {
+                                                        if (ex != null && (onFetchBestMetricValue != null || onFetchBestRm != null)) {
+                                                            coroutineScope.launch {
+                                                                val best = resolveBestValue(ex.id, metric, repsInt)
+                                                                val cur = goalDrafts.getOrNull(index) ?: return@launch
+                                                                goalDrafts[index] = cur.onGoalMetricChanged(metric, best)
+                                                            }
+                                                        } else {
+                                                            goalDrafts[index] = draft.onGoalMetricChanged(metric, null)
+                                                        }
+                                                    }
+                                                },
+                                                label = {
+                                                    Text(
+                                                        text = pillLabel,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Contextual Row: Reps (RM) stepper + presets vs Time Window pills
+                                if (draft.goalMetric == MetricType.WEIGHT) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text(
+                                            text = "Reps (RM)",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        val currentRepsInt = (draft.reps.toIntOrNull() ?: 1).coerceAtLeast(1)
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            OutlinedIconButton(
+                                                onClick = {
+                                                    val nextReps = draft.nextSteppedReps(-1)
                                                     val ex = draft.exercise
                                                     if (ex != null && (onFetchBestMetricValue != null || onFetchBestRm != null)) {
                                                         coroutineScope.launch {
-                                                            val best = resolveBestValue(ex.id, MetricType.WEIGHT, presetReps)
+                                                            val best = resolveBestValue(ex.id, MetricType.WEIGHT, nextReps)
                                                             val cur = goalDrafts.getOrNull(index) ?: return@launch
-                                                            goalDrafts[index] = cur.onRepsChanged(presetStr, best)
+                                                            // Apply the exact reps the lookup was made for so rapid taps
+                                                            // can't pair an RM count with another RM's best weight.
+                                                            goalDrafts[index] = cur.onRepsChanged(nextReps.toString(), best)
                                                         }
                                                     } else {
-                                                        goalDrafts[index] = draft.onRepsChanged(presetStr, null)
+                                                        goalDrafts[index] = draft.stepReps(-1, null)
                                                     }
                                                 },
-                                                label = { Text(presetStr, style = MaterialTheme.typography.labelSmall) }
-                                            )
-                                        }
-                                    }
-                                }
-                            } else {
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text(
-                                        text = "Time Window",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        CycleGoal.TIME_WINDOW_OPTIONS.forEach { windowMin ->
-                                            val label = CycleGoal.formatTimeWindowLabel(windowMin)
-                                            FilterChip(
-                                                selected = draft.timeWindowMinutes == windowMin,
+                                                enabled = currentRepsInt > 1,
+                                                modifier = Modifier.size(34.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.Remove,
+                                                    contentDescription = "Decrease RM",
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                                modifier = Modifier.padding(horizontal = 4.dp)
+                                            ) {
+                                                Text(
+                                                    text = "$currentRepsInt RM",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                                )
+                                            }
+                                            OutlinedIconButton(
                                                 onClick = {
-                                                    goalDrafts[index] = draft.onTimeWindowChanged(windowMin)
+                                                    val nextReps = draft.nextSteppedReps(1)
+                                                    val ex = draft.exercise
+                                                    if (ex != null && (onFetchBestMetricValue != null || onFetchBestRm != null)) {
+                                                        coroutineScope.launch {
+                                                            val best = resolveBestValue(ex.id, MetricType.WEIGHT, nextReps)
+                                                            val cur = goalDrafts.getOrNull(index) ?: return@launch
+                                                            // Apply the exact reps the lookup was made for so rapid taps
+                                                            // can't pair an RM count with another RM's best weight.
+                                                            goalDrafts[index] = cur.onRepsChanged(nextReps.toString(), best)
+                                                        }
+                                                    } else {
+                                                        goalDrafts[index] = draft.stepReps(1, null)
+                                                    }
                                                 },
-                                                label = { Text(label, style = MaterialTheme.typography.labelSmall) }
-                                            )
+                                                modifier = Modifier.size(34.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.Add,
+                                                    contentDescription = "Increase RM",
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+
+                                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            CycleGoal.RM_PRESETS.forEach { presetReps ->
+                                                val presetStr = presetReps.toString()
+                                                FilterChip(
+                                                    selected = draft.reps == presetStr,
+                                                    onClick = {
+                                                        val ex = draft.exercise
+                                                        if (ex != null && (onFetchBestMetricValue != null || onFetchBestRm != null)) {
+                                                            coroutineScope.launch {
+                                                                val best = resolveBestValue(ex.id, MetricType.WEIGHT, presetReps)
+                                                                val cur = goalDrafts.getOrNull(index) ?: return@launch
+                                                                goalDrafts[index] = cur.onRepsChanged(presetStr, best)
+                                                            }
+                                                        } else {
+                                                            goalDrafts[index] = draft.onRepsChanged(presetStr, null)
+                                                        }
+                                                    },
+                                                    label = { Text(presetStr, style = MaterialTheme.typography.labelSmall) }
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text(
+                                            text = "Time Window",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            CycleGoal.TIME_WINDOW_OPTIONS.forEach { windowMin ->
+                                                val label = CycleGoal.formatTimeWindowLabel(windowMin)
+                                                FilterChip(
+                                                    selected = draft.timeWindowMinutes == windowMin,
+                                                    onClick = {
+                                                        goalDrafts[index] = draft.onTimeWindowChanged(windowMin)
+                                                    },
+                                                    label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                                                )
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            // Start & Target Fields Row
-                            val unit = draft.unitLabel
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                OutlinedTextField(
-                                    value = draft.startWeight,
-                                    onValueChange = { newStart ->
-                                        goalDrafts[index] = draft.onStartWeightChanged(newStart)
-                                    },
-                                    label = { Text("Start ($unit)") },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-
-                                Text(
-                                    text = "+ →",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-
+                                // Single Full-Width Target Input Field
+                                val unit = draft.unitLabel
                                 OutlinedTextField(
                                     value = draft.targetWeight,
                                     onValueChange = { newTarget ->
@@ -1373,32 +1677,51 @@ fun CycleEditorDialog(
                                     },
                                     label = { Text("Target ($unit)") },
                                     singleLine = true,
-                                    modifier = Modifier.weight(1f)
+                                    isError = draft.showTargetError,
+                                    supportingText = if (draft.showTargetError) {
+                                        { Text("Please enter a target value greater than 0") }
+                                    } else null,
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = KeyboardType.Decimal,
+                                        imeAction = ImeAction.Done
+                                    ),
+                                    keyboardActions = KeyboardActions(
+                                        onDone = {
+                                            val updated = collapseGoalDraftAt(goalDrafts.toList(), index)
+                                            applyGoalDrafts(updated)
+                                            if (updated.getOrNull(index)?.isCollapsed == true) {
+                                                keyboardController?.hide()
+                                            }
+                                        }
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
                                 )
-                            }
 
-                            // Adaptive Scale Modifier Chips Row
-                            val hasStart = draft.hasStartWeight
-                            FlowRow(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    "Scale:",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (hasStart) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                    modifier = Modifier.align(Alignment.CenterVertically).padding(end = 2.dp)
-                                )
-                                draft.scaleOptions.forEach { (modVal, label) ->
-                                    FilterChip(
-                                        selected = draft.selectedModifier == modVal,
-                                        enabled = hasStart,
-                                        onClick = {
-                                            goalDrafts[index] = if (modVal == 0.0) draft.resetModifier() else draft.applyModifier(modVal)
-                                        },
-                                        label = { Text(label, style = MaterialTheme.typography.labelSmall) }
-                                    )
+                                // Quick Target Stepper Pills Row (1A)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    draft.targetStepperOptions.forEach { (stepDelta, pillLabel) ->
+                                        FilterChip(
+                                            selected = draft.selectedModifier == stepDelta,
+                                            onClick = {
+                                                hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                goalDrafts[index] = draft.stepTarget(stepDelta)
+                                            },
+                                            label = {
+                                                Text(
+                                                    text = pillLabel,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
                                 }
                             }
                         }
