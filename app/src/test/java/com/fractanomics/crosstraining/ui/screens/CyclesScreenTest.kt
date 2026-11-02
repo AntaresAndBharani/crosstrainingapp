@@ -591,4 +591,110 @@ class CyclesScreenTest {
         assertEquals(15.0, repsEval.currentBest, 0.001)
         assertEquals(50, repsEval.progressPercent)
     }
+
+    // =========================================================================
+    // T003 [US1]: MovementSelectorUiState Expansion, Search Filtering & Selection
+    // =========================================================================
+
+    @Test
+    fun us1_movementSelectorExpandsFiltersCaseInsensitivelyAndResetsOnSelection() {
+        val airSquat = Exercise(id = 5L, name = "Air Squat", category = ExerciseCategory.GYMNASTICS)
+        val frontSquat = Exercise(id = 6L, name = "Front Squat")
+        val cleanAndJerk = Exercise(id = 7L, name = "Clean & Jerk")
+        val catalog = listOf(airBike, airSquat, backSquat, benchPress, cleanAndJerk, frontSquat, pullUps)
+
+        var selectorState = MovementSelectorUiState()
+        assertFalse(selectorState.expanded)
+        assertEquals("", selectorState.searchQuery)
+        assertFalse(selectorState.hasSearchQuery)
+
+        // Expanding the Movement (Basic) selector opens the inline search box with all movements visible
+        selectorState = selectorState.toggleExpanded()
+        assertTrue(selectorState.expanded)
+        assertEquals(catalog, selectorState.filterExercises(catalog))
+
+        // Typing in "Search movement…" filters movements in real time (case-insensitive & trimmed)
+        selectorState = selectorState.onSearchQueryChanged("  sQuAt ")
+        assertTrue(selectorState.expanded)
+        assertTrue(selectorState.hasSearchQuery)
+        val squatMatches = selectorState.filterExercises(catalog)
+        assertEquals(listOf(airSquat, backSquat, frontSquat), squatMatches)
+
+        // Selecting a movement from the filtered list updates GoalDraftState and collapses/resets the selector
+        var goalDraft = GoalDraftState(exercise = airBike, goalMetric = MetricType.CALORIES)
+        val chosen = squatMatches[1] // Back Squat
+        goalDraft = goalDraft.onExerciseChanged(chosen, bestWeight = 140.0)
+        selectorState = selectorState.onExerciseSelected()
+
+        assertEquals(backSquat, goalDraft.exercise)
+        assertEquals(MetricType.WEIGHT, goalDraft.goalMetric)
+        assertEquals("140", goalDraft.startWeight)
+        assertEquals("140", goalDraft.targetWeight)
+        assertFalse(selectorState.expanded)
+        assertEquals("", selectorState.searchQuery)
+        assertFalse(selectorState.hasSearchQuery)
+    }
+
+    // =========================================================================
+    // T005 [US2]: Clear Search Action, Empty Filter Feedback & Toggle Collapse
+    // =========================================================================
+
+    @Test
+    fun us2_movementSelectorClearSearchEmptyFilterAndToggleCollapsePreservesSelection() {
+        val catalog = listOf(airBike, backSquat, benchPress, pullUps)
+
+        // Given Goal 1 has Air Bike selected and the user opens the movement selector
+        val goalDraft = GoalDraftState(exercise = airBike, goalMetric = MetricType.CALORIES)
+        var selectorState = MovementSelectorUiState().open()
+        assertTrue(selectorState.expanded)
+
+        // When the user types a non-matching query, filteredExercises is empty (triggers empty-state message)
+        selectorState = selectorState.onSearchQueryChanged("snatch")
+        assertTrue(selectorState.hasSearchQuery)
+        assertTrue(selectorState.filterExercises(catalog).isEmpty())
+
+        // When the user taps "Clear search", the query resets to empty while keeping the selector open
+        selectorState = selectorState.clearSearchQuery()
+        assertTrue("Selector must stay expanded after clearing search", selectorState.expanded)
+        assertEquals("", selectorState.searchQuery)
+        assertFalse(selectorState.hasSearchQuery)
+        assertEquals(catalog, selectorState.filterExercises(catalog))
+
+        // When the user types a partial query and then taps "Change ▴" to toggle collapse without selecting
+        selectorState = selectorState.onSearchQueryChanged("bench")
+        assertEquals(listOf(benchPress), selectorState.filterExercises(catalog))
+        selectorState = selectorState.toggleExpanded()
+
+        // Then the selector collapses, clears the partial search query, and preserves the existing selection
+        assertFalse(selectorState.expanded)
+        assertEquals("", selectorState.searchQuery)
+        assertEquals(airBike, goalDraft.exercise)
+    }
+
+    @Test
+    fun us2_movementSelectorBackPressDismissCollapsesAndResetsWithoutSelecting() {
+        val catalog = listOf(airBike, backSquat, benchPress, pullUps)
+        val goalDraft = GoalDraftState(exercise = airBike, goalMetric = MetricType.CALORIES)
+
+        // Given the selector is open with a partial query
+        var selectorState = MovementSelectorUiState()
+            .toggleExpanded()
+            .onSearchQueryChanged("pull")
+        assertTrue(selectorState.expanded)
+        assertEquals(listOf(pullUps), selectorState.filterExercises(catalog))
+
+        // When system back is pressed (BackHandler -> dismiss())
+        selectorState = selectorState.dismiss()
+
+        // Then the selector collapses, the query resets, and the existing selection is preserved
+        assertFalse(selectorState.expanded)
+        assertEquals("", selectorState.searchQuery)
+        assertFalse(selectorState.hasSearchQuery)
+        assertEquals(airBike, goalDraft.exercise)
+
+        // Re-opening after dismiss starts from a clean, unfiltered list
+        selectorState = selectorState.toggleExpanded()
+        assertTrue(selectorState.expanded)
+        assertEquals(catalog, selectorState.filterExercises(catalog))
+    }
 }
