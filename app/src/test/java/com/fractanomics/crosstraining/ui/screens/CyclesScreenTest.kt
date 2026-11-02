@@ -68,18 +68,18 @@ class CyclesScreenTest {
         val bestRm = rmLookup[backSquat.id to 1]
         val updatedDraft = initialDraft.onExerciseChanged(backSquat, bestRm)
 
-        // Then CycleGoal.startWeight is populated with 100.0 kg and targetWeight displays 100.0 kg
-        assertEquals("100", updatedDraft.startWeight)
+        // Then targetWeight is pre-filled with 100.0 kg; the hidden Start stays empty (SPEC-CYCLE-GOAL-04)
+        assertEquals("", updatedDraft.startWeight)
         assertEquals("100", updatedDraft.targetWeight)
-        assertTrue(updatedDraft.hasStartWeight)
+        assertFalse(updatedDraft.hasStartWeight)
 
-        // Verify conversion to CycleGoal entity fixes startWeight = 0.0 defect
+        // Target-only goals persist startWeight = 0.0 so ProgressScreen derives the baseline
         val goalEntity = updatedDraft.toCycleGoal(cycleId = 42L)
         assertNotNull(goalEntity)
         assertEquals(42L, goalEntity!!.cycleId)
         assertEquals(backSquat.id, goalEntity.exerciseId)
         assertEquals(1, goalEntity.targetReps)
-        assertEquals(100.0, goalEntity.startWeight, 0.001)
+        assertEquals(0.0, goalEntity.startWeight, 0.001)
         assertEquals(100.0, goalEntity.targetWeight, 0.001)
     }
 
@@ -97,17 +97,17 @@ class CyclesScreenTest {
 
         var draft = GoalDraftState(exercise = backSquat, reps = "1")
             .onExerciseChanged(backSquat, rmLookup[backSquat.id to 1])
-        assertEquals("100", draft.startWeight)
+        assertEquals("", draft.startWeight)
         assertEquals("100", draft.targetWeight)
 
         // When Reps is changed from 1 to 5
         val fiveRm = rmLookup[backSquat.id to 5]
         draft = draft.onRepsChanged("5", fiveRm)
 
-        // Then CycleGoal.startWeight updates to 85.0 kg and targetWeight updates to 85.0 kg
-        assertEquals("85", draft.startWeight)
+        // Then targetWeight updates to 85.0 kg and startWeight stays empty (persisted as 0.0)
+        assertEquals("", draft.startWeight)
         assertEquals("85", draft.targetWeight)
-        assertEquals(85.0, draft.toCycleGoal(1L)!!.startWeight, 0.001)
+        assertEquals(0.0, draft.toCycleGoal(1L)!!.startWeight, 0.001)
         assertEquals(85.0, draft.toCycleGoal(1L)!!.targetWeight, 0.001)
 
         // When Reps is changed to 8 (which has no RM record)
@@ -296,31 +296,33 @@ class CyclesScreenTest {
             .onExerciseChanged(backSquat, rmLookup[backSquat.id to 1])
         assertEquals(MetricType.WEIGHT, draft.goalMetric)
         assertEquals("1", draft.reps)
-        assertEquals("160", draft.startWeight)
+        assertEquals("", draft.startWeight)
+        assertEquals("160", draft.targetWeight)
 
         // Stepping down at 1 RM clamps at 1 RM and preserves state
         assertEquals(1, draft.nextSteppedReps(-1))
         draft = draft.stepReps(-1)
         assertEquals("1", draft.reps)
-        assertEquals("160", draft.startWeight)
+        assertEquals("160", draft.targetWeight)
 
-        // Stepping up (+1) to 2 RM updates reps and Start/Target from lookup
+        // Stepping up (+1) to 2 RM updates reps and Target from lookup
         val nextUp = draft.nextSteppedReps(1)
         assertEquals(2, nextUp)
         draft = draft.stepReps(1, rmLookup[backSquat.id to nextUp])
         assertEquals("2", draft.reps)
-        assertEquals("150", draft.startWeight)
+        assertEquals("", draft.startWeight)
         assertEquals("150", draft.targetWeight)
 
         // Selecting preset 5 RM (from CycleGoal.RM_PRESETS = [1, 3, 5, 10])
         assertEquals(listOf(1, 3, 5, 10), CycleGoal.RM_PRESETS)
         draft = draft.onRepsChanged("5", rmLookup[backSquat.id to 5])
         assertEquals("5", draft.reps)
-        assertEquals("140", draft.startWeight)
+        assertEquals("", draft.startWeight)
+        assertEquals("140", draft.targetWeight)
 
-        // Applying +5% on 140 kg -> 147 kg -> 147.0 ("147")
-        draft = draft.applyModifier(5.0)
-        assertEquals("147", draft.targetWeight)
+        // Quick target stepper +5 kg on 140 kg -> 145 kg
+        draft = draft.stepTarget(5.0)
+        assertEquals("145", draft.targetWeight)
     }
 
     // =========================================================================
@@ -337,14 +339,14 @@ class CyclesScreenTest {
         var draft = GoalDraftState().onExerciseChanged(airBike, bestWeight = 40.0)
         assertEquals(MetricType.CALORIES, draft.goalMetric)
         assertEquals("cal", draft.unitLabel)
-        assertEquals("40", draft.startWeight)
+        assertEquals("", draft.startWeight)
         assertEquals("40", draft.targetWeight)
 
         // Selecting Pull-ups defaults goalMetric to REPS and unitLabel to "reps"
         draft = draft.onExerciseChanged(pullUps, bestWeight = 12.0)
         assertEquals(MetricType.REPS, draft.goalMetric)
         assertEquals("reps", draft.unitLabel)
-        assertEquals("12", draft.startWeight)
+        assertEquals("", draft.startWeight)
         assertEquals("12", draft.targetWeight)
 
         // Coach manually overrides Pull-ups goalMetric to WEIGHT (e.g. weighted pull-ups)
@@ -352,7 +354,7 @@ class CyclesScreenTest {
         assertEquals(MetricType.WEIGHT, draft.goalMetric)
         assertEquals("kg", draft.unitLabel)
         assertNull(draft.timeWindowMinutes)
-        assertEquals("25", draft.startWeight)
+        assertEquals("", draft.startWeight)
         assertEquals("25", draft.targetWeight)
     }
 
@@ -386,7 +388,8 @@ class CyclesScreenTest {
         )
         assertEquals(40.0, bestCal ?: 0.0, 0.001)
 
-        var draft = GoalDraftState().onExerciseChanged(airBike, bestCal)
+        // Legacy additive Scale helpers still operate on an explicit (legacy) Start value
+        var draft = GoalDraftState().onExerciseChanged(airBike, bestCal).copy(startWeight = "40")
         assertEquals(MetricType.CALORIES, draft.goalMetric)
         assertNull("Default Time Window must be Open (null)", draft.timeWindowMinutes)
 
@@ -426,7 +429,8 @@ class CyclesScreenTest {
         )
         assertEquals(12.0, bestReps ?: 0.0, 0.001)
 
-        var draft = GoalDraftState().onExerciseChanged(pullUps, bestReps)
+        // Legacy additive Scale helpers still operate on an explicit (legacy) Start value
+        var draft = GoalDraftState().onExerciseChanged(pullUps, bestReps).copy(startWeight = "12")
         assertEquals(MetricType.REPS, draft.goalMetric)
         assertNull(draft.timeWindowMinutes)
 
@@ -628,7 +632,7 @@ class CyclesScreenTest {
 
         assertEquals(backSquat, goalDraft.exercise)
         assertEquals(MetricType.WEIGHT, goalDraft.goalMetric)
-        assertEquals("140", goalDraft.startWeight)
+        assertEquals("", goalDraft.startWeight)
         assertEquals("140", goalDraft.targetWeight)
         assertFalse(selectorState.expanded)
         assertEquals("", selectorState.searchQuery)
@@ -696,5 +700,323 @@ class CyclesScreenTest {
         selectorState = selectorState.toggleExpanded()
         assertTrue(selectorState.expanded)
         assertEquals(catalog, selectorState.filterExercises(catalog))
+    }
+
+    // =========================================================================
+    // SPEC-CYCLE-GOAL-04 (013): Target-Only Input & Quick Target Stepper Pills (1A)
+    // =========================================================================
+
+    @Test
+    fun spec013_us1_targetStepperOptionsAndInPlaceSteppingWithZeroFloorClamping() {
+        val overheadSquat = Exercise(id = 8L, name = "Overhead Squat", unit = "kg")
+
+        // 1. Weight Goal Steppers: -2.5 kg, +2.5 kg, +5 kg
+        var weightDraft = GoalDraftState(
+            exercise = overheadSquat,
+            reps = "3",
+            targetWeight = "60",
+            goalMetric = MetricType.WEIGHT
+        )
+        assertEquals(
+            listOf(-2.5 to "-2.5 kg", 2.5 to "+2.5 kg", 5.0 to "+5 kg"),
+            weightDraft.targetStepperOptions
+        )
+
+        weightDraft = weightDraft.stepTarget(2.5)
+        assertEquals("62.5", weightDraft.targetWeight)
+        assertEquals(2.5, weightDraft.selectedModifier)
+
+        weightDraft = weightDraft.stepTarget(5.0)
+        assertEquals("67.5", weightDraft.targetWeight)
+        assertEquals(5.0, weightDraft.selectedModifier)
+
+        weightDraft = weightDraft.stepTarget(-2.5)
+        assertEquals("65", weightDraft.targetWeight)
+        assertEquals(-2.5, weightDraft.selectedModifier)
+
+        // 2. Empty or 0 Target initializes from 0.0 and clamps at 0 floor
+        var emptyDraft = GoalDraftState(
+            exercise = overheadSquat,
+            reps = "1",
+            targetWeight = "",
+            goalMetric = MetricType.WEIGHT,
+            showTargetError = true
+        )
+        emptyDraft = emptyDraft.stepTarget(-2.5)
+        assertEquals("0", emptyDraft.targetWeight)
+        assertTrue("Stepping to 0 keeps showTargetError active", emptyDraft.showTargetError)
+
+        emptyDraft = emptyDraft.stepTarget(5.0)
+        assertEquals("5", emptyDraft.targetWeight)
+        assertFalse("Stepping above 0 clears showTargetError", emptyDraft.showTargetError)
+
+        // Stepping down from 2.0 by -2.5 clamps at 0
+        val clampedDraft = emptyDraft.onTargetWeightChanged("2").stepTarget(-2.5)
+        assertEquals("0", clampedDraft.targetWeight)
+
+        // 3. Calories Goal Steppers: -5 cal, +5 cal, +10 cal
+        var calDraft = GoalDraftState(
+            exercise = airBike,
+            targetWeight = "40",
+            goalMetric = MetricType.CALORIES,
+            timeWindowMinutes = 5
+        )
+        assertEquals(
+            listOf(-5.0 to "-5 cal", 5.0 to "+5 cal", 10.0 to "+10 cal"),
+            calDraft.targetStepperOptions
+        )
+        calDraft = calDraft.stepTarget(10.0)
+        assertEquals("50", calDraft.targetWeight)
+        calDraft = calDraft.stepTarget(-5.0)
+        assertEquals("45", calDraft.targetWeight)
+
+        // 4. Reps Goal Steppers: -1 rep, +1 rep, +5 reps
+        var repsDraft = GoalDraftState(
+            exercise = pullUps,
+            targetWeight = "10",
+            goalMetric = MetricType.REPS
+        )
+        assertEquals(
+            listOf(-1.0 to "-1 rep", 1.0 to "+1 rep", 5.0 to "+5 reps"),
+            repsDraft.targetStepperOptions
+        )
+        repsDraft = repsDraft.stepTarget(5.0)
+        assertEquals("15", repsDraft.targetWeight)
+        repsDraft = repsDraft.stepTarget(-1.0)
+        assertEquals("14", repsDraft.targetWeight)
+        repsDraft = repsDraft.stepTarget(1.0)
+        assertEquals("15", repsDraft.targetWeight)
+    }
+
+    // =========================================================================
+    // SPEC-CYCLE-GOAL-04 (013): Collapsible Summary Card & Accordion Transitions (Option 2)
+    // =========================================================================
+
+    @Test
+    fun spec013_us2_existingSavedGoalsInitializeCollapsedAndFormatBadgesAndA11y() {
+        val overheadSquat = Exercise(id = 8L, name = "Overhead Squat", unit = "kg")
+        val savedWeightGoal = CycleGoal(
+            id = 11L,
+            cycleId = 1L,
+            exerciseId = overheadSquat.id,
+            targetReps = 3,
+            startWeight = 0.0,
+            targetWeight = 65.0,
+            goalMetric = MetricType.WEIGHT
+        )
+        val savedCalGoal = CycleGoal(
+            id = 12L,
+            cycleId = 1L,
+            exerciseId = airBike.id,
+            targetReps = 1,
+            startWeight = 0.0,
+            targetWeight = 45.0,
+            goalMetric = MetricType.CALORIES,
+            timeWindowMinutes = 5
+        )
+        val savedRepsGoal = CycleGoal(
+            id = 13L,
+            cycleId = 1L,
+            exerciseId = pullUps.id,
+            targetReps = 1,
+            startWeight = 0.0,
+            targetWeight = 15.0,
+            goalMetric = MetricType.REPS,
+            timeWindowMinutes = null
+        )
+
+        val draft1 = GoalDraftState.fromCycleGoal(savedWeightGoal, overheadSquat)
+        val draft2 = GoalDraftState.fromCycleGoal(savedCalGoal, airBike)
+        val draft3 = GoalDraftState.fromCycleGoal(savedRepsGoal, pullUps)
+
+        // All saved goals with targetWeight > 0 load in Collapsed Summary State by default
+        assertTrue(draft1.isCollapsed)
+        assertTrue(draft2.isCollapsed)
+        assertTrue(draft3.isCollapsed)
+
+        // Verify Collapsed Summary titles, context badges, target badges, and accessibility strings
+        assertEquals("Goal 1: Overhead Squat", draft1.formatCollapsedSummaryTitle(0))
+        assertEquals("3RM", draft1.contextBadgeText)
+        assertEquals("Target: 65 kg", draft1.targetBadgeText)
+        assertEquals(
+            "Goal 1: Overhead Squat, 3RM, Target 65 kg. Collapsed. Double-tap to edit goal.",
+            draft1.collapsedAccessibilityDescription(0)
+        )
+
+        assertEquals("Goal 2: Air Bike", draft2.formatCollapsedSummaryTitle(1))
+        assertEquals("5 min", draft2.contextBadgeText)
+        assertEquals("Target: 45 cal", draft2.targetBadgeText)
+
+        assertEquals("Goal 3: Pull-ups", draft3.formatCollapsedSummaryTitle(2))
+        assertEquals("Open", draft3.contextBadgeText)
+        assertEquals("Target: 15 reps", draft3.targetBadgeText)
+    }
+
+    @Test
+    fun spec013_us2_exclusiveSingleExpandAccordionAndValidationOnCollapseAndAppend() {
+        val overheadSquat = Exercise(id = 8L, name = "Overhead Squat", unit = "kg")
+        val g1 = GoalDraftState(
+            id = 1L,
+            exercise = overheadSquat,
+            reps = "3",
+            targetWeight = "65",
+            goalMetric = MetricType.WEIGHT,
+            isCollapsed = true
+        )
+        val g2 = GoalDraftState(
+            id = 2L,
+            exercise = airBike,
+            targetWeight = "45",
+            goalMetric = MetricType.CALORIES,
+            timeWindowMinutes = 5,
+            isCollapsed = true
+        )
+
+        var drafts = listOf(g1, g2)
+
+        // 1. Tapping collapsed Goal 1 expands it
+        drafts = expandGoalDraftAt(drafts, 0)
+        assertFalse(drafts[0].isCollapsed)
+        assertTrue(drafts[1].isCollapsed)
+
+        // 2. Tapping collapsed Goal 2 while Goal 1 is valid auto-collapses Goal 1 and expands Goal 2
+        drafts = expandGoalDraftAt(drafts, 1)
+        assertTrue("Goal 1 must auto-collapse when Goal 2 is expanded", drafts[0].isCollapsed)
+        assertFalse("Goal 2 must expand", drafts[1].isCollapsed)
+
+        // 3. Clearing Goal 2's target and attempting to tap Done ▲ or switch to Goal 1 blocks collapse
+        drafts = drafts.toMutableList().also {
+            it[1] = it[1].onTargetWeightChanged("")
+        }
+        drafts = collapseGoalDraftAt(drafts, 1)
+        assertFalse("Invalid card must remain expanded when Done ▲ is tapped", drafts[1].isCollapsed)
+        assertTrue("Invalid card must display inline target error", drafts[1].showTargetError)
+
+        // Attempting to expand Goal 1 while Goal 2 has invalid target is also blocked
+        drafts = expandGoalDraftAt(drafts, 0)
+        assertTrue("Goal 1 must stay collapsed while Goal 2 has an invalid target", drafts[0].isCollapsed)
+        assertFalse("Goal 2 must stay expanded", drafts[1].isCollapsed)
+        assertTrue(drafts[1].showTargetError)
+
+        // Attempting to tap + Movement while Goal 2 has invalid target is also blocked
+        val newDraft = GoalDraftState(exercise = pullUps, goalMetric = MetricType.REPS)
+        val (blockedList, wasAppendedBlocked) = appendMovementGoalDraft(drafts, newDraft)
+        assertFalse("Adding a new movement goal must be blocked when open card has invalid target", wasAppendedBlocked)
+        assertEquals(2, blockedList.size)
+        assertTrue(blockedList[1].showTargetError)
+
+        // 4. Fixing Goal 2's target clears the error and allows + Movement to auto-collapse Goal 2 and append Goal 3 expanded
+        drafts = blockedList.toMutableList().also {
+            it[1] = it[1].onTargetWeightChanged("50")
+        }
+        assertFalse("Entering valid target > 0 clears showTargetError", drafts[1].showTargetError)
+
+        val (appendedList, wasAppended) = appendMovementGoalDraft(drafts, newDraft)
+        assertTrue(wasAppended)
+        assertEquals(3, appendedList.size)
+        assertTrue("Goal 1 remains collapsed", appendedList[0].isCollapsed)
+        assertTrue("Goal 2 auto-collapses on + Movement", appendedList[1].isCollapsed)
+        assertFalse("Newly added Goal 3 opens in Expanded Edit State", appendedList[2].isCollapsed)
+    }
+
+    // =========================================================================
+    // SPEC-CYCLE-GOAL-04 (013): Target-Only Persistence & Progress Baseline Derivation
+    // =========================================================================
+
+    @Test
+    fun spec013_us3_targetOnlyGoalsPersistZeroStartWeightAndDeriveHistoricalBaseline() {
+        val overheadSquat = Exercise(id = 8L, name = "Overhead Squat", unit = "kg")
+
+        // 1. Target-only GoalDraftState (startWeight = "") persists startWeight = 0.0
+        val weightDraft = GoalDraftState(
+            exercise = overheadSquat,
+            reps = "3",
+            startWeight = "",
+            targetWeight = "65",
+            goalMetric = MetricType.WEIGHT
+        )
+        val savedWeightGoal = weightDraft.toCycleGoal(cycleId = 10L)!!
+        assertEquals(0.0, savedWeightGoal.startWeight, 0.001)
+        assertEquals(65.0, savedWeightGoal.targetWeight, 0.001)
+        assertEquals("Overhead Squat (3RM): 65kg", savedWeightGoal.formatSummaryChip("Overhead Squat", "kg"))
+
+        val calGoal = GoalDraftState(
+            exercise = airBike,
+            startWeight = "",
+            targetWeight = "50",
+            goalMetric = MetricType.CALORIES,
+            timeWindowMinutes = 5
+        ).toCycleGoal(cycleId = 10L)!!
+        assertEquals(0.0, calGoal.startWeight, 0.001)
+        assertEquals("Air Bike (5 min): 50 cal", calGoal.formatSummaryChip("Air Bike", "cal"))
+
+        val repsGoal = GoalDraftState(
+            exercise = pullUps,
+            startWeight = "",
+            targetWeight = "20",
+            goalMetric = MetricType.REPS
+        ).toCycleGoal(cycleId = 10L)!!
+        assertEquals(0.0, repsGoal.startWeight, 0.001)
+        assertEquals("Pull-ups (Open): 20 reps", repsGoal.formatSummaryChip("Pull-ups", "kg"))
+
+        // 2. evaluateCycleGoalProgress automatically derives baselineStartWeight when startWeight == 0.0
+        val cycleStart = LocalDate.of(2026, 11, 1)
+        val cycleEnd = LocalDate.of(2026, 12, 27)
+        val cycle = Cycle(id = 10L, name = "Winter Peak", startDate = cycleStart, endDate = cycleEnd, isActive = true)
+
+        val priorDate = LocalDate.of(2026, 10, 20)
+        val inCycleDate = LocalDate.of(2026, 11, 15)
+
+        val repMaxes = listOf(
+            RepMax(id = 1L, exerciseId = overheadSquat.id, reps = 3, weight = 55.0, date = priorDate),
+            RepMax(id = 2L, exerciseId = overheadSquat.id, reps = 3, weight = 60.0, date = inCycleDate)
+        )
+
+        val priorSession = Session(id = 1L, cycleId = 9L, date = priorDate, title = "Prior Baseline")
+        val inCycleSession = Session(id = 2L, cycleId = 10L, date = inCycleDate, title = "Cycle Test")
+
+        val sessions = listOf(
+            SessionWithBlocks(
+                session = priorSession,
+                blocks = listOf(
+                    BlockWithSets(
+                        block = SessionBlock(id = 10L, sessionId = 1L, position = 0, mainExerciseId = airBike.id),
+                        sets = listOf(BlockSet(id = 1L, blockId = 10L, position = 0, reps = 1, metricValue = 40.0))
+                    ),
+                    BlockWithSets(
+                        block = SessionBlock(id = 11L, sessionId = 1L, position = 1, mainExerciseId = pullUps.id),
+                        sets = listOf(BlockSet(id = 2L, blockId = 11L, position = 0, reps = 10))
+                    )
+                )
+            ),
+            SessionWithBlocks(
+                session = inCycleSession,
+                blocks = listOf(
+                    BlockWithSets(
+                        block = SessionBlock(id = 20L, sessionId = 2L, position = 0, mainExerciseId = airBike.id),
+                        sets = listOf(BlockSet(id = 3L, blockId = 20L, position = 0, reps = 1, metricValue = 45.0))
+                    ),
+                    BlockWithSets(
+                        block = SessionBlock(id = 21L, sessionId = 2L, position = 1, mainExerciseId = pullUps.id),
+                        sets = listOf(BlockSet(id = 4L, blockId = 21L, position = 0, reps = 15))
+                    )
+                )
+            )
+        )
+
+        val weightEval = evaluateCycleGoalProgress(savedWeightGoal, cycle, repMaxes, sessions)
+        assertEquals(55.0, weightEval.baselineStartWeight, 0.001)
+        assertEquals(60.0, weightEval.currentBest, 0.001)
+        assertEquals(50, weightEval.progressPercent)
+
+        val calEval = evaluateCycleGoalProgress(calGoal, cycle, repMaxes, sessions)
+        assertEquals(40.0, calEval.baselineStartWeight, 0.001)
+        assertEquals(45.0, calEval.currentBest, 0.001)
+        assertEquals(50, calEval.progressPercent)
+
+        val repsEval = evaluateCycleGoalProgress(repsGoal, cycle, repMaxes, sessions)
+        assertEquals(10.0, repsEval.baselineStartWeight, 0.001)
+        assertEquals(15.0, repsEval.currentBest, 0.001)
+        assertEquals(50, repsEval.progressPercent)
     }
 }
