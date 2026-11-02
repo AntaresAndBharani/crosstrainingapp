@@ -3075,31 +3075,31 @@ private fun CycleGoalsProgress(
         )
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-        goals.forEach { goal ->
-            val exercise = exercises.firstOrNull { it.id == goal.exerciseId }
-            val exName = exercise?.name ?: "Basic Movement"
-            val unit = if (goal.goalMetric == MetricType.WEIGHT) (exercise?.unit ?: "kg") else goal.unitLabel
-            val eval = evaluateCycleGoalProgress(goal, currentCycle, repMaxes, sessions)
-            val baselineStartWeight = eval.baselineStartWeight
-            val currentBest = eval.currentBest
-            val remainingGap = eval.remainingGap
-            val progressFraction = eval.progressFraction
-            val progressPercent = eval.progressPercent
-
-            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            goal.formatProgressHeader(exName),
+        goals.forEach { goal ->
+            val exercise = exercises.firstOrNull { it.id == goal.exerciseId }
+            val exName = exercise?.name ?: "Basic Movement"
+            val unit = if (goal.goalMetric == MetricType.WEIGHT) (exercise?.unit ?: "kg") else goal.unitLabel
+            val eval = evaluateCycleGoalProgress(goal, currentCycle, repMaxes, sessions)
+            val baselineStartWeight = eval.baselineStartWeight
+            val currentBest = eval.currentBest
+            val remainingGap = eval.remainingGap
+            val progressFraction = eval.progressFraction
+            val progressPercent = eval.progressPercent
+
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            goal.formatProgressHeader(exName),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )

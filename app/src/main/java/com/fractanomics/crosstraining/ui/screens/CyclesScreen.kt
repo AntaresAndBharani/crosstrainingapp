@@ -449,6 +449,9 @@ data class GoalDraftState(
     }
 
     fun onGoalMetricChanged(newMetric: MetricType, bestValue: Double? = null): GoalDraftState {
+        // Re-selecting the active metric is a no-op so manually entered Start/Target
+        // values and the selected Scale chip are not wiped by an accidental tap.
+        if (newMetric == goalMetric) return this
         val normalizedReps = if ((reps.toIntOrNull() ?: 0) <= 0) "1" else reps
         val window = if (newMetric == MetricType.WEIGHT) null else timeWindowMinutes
         return if (bestValue != null && bestValue > 0.0) {
@@ -1082,14 +1085,17 @@ fun CycleEditorDialog(
                                             onClick = {
                                                 val ex = draft.exercise
                                                 val repsInt = (draft.reps.toIntOrNull() ?: 1).coerceAtLeast(1)
-                                                if (ex != null && (onFetchBestMetricValue != null || onFetchBestRm != null)) {
-                                                    coroutineScope.launch {
-                                                        val best = resolveBestValue(ex.id, metric, repsInt)
-                                                        val cur = goalDrafts.getOrNull(index) ?: return@launch
-                                                        goalDrafts[index] = cur.onGoalMetricChanged(metric, best)
+                                                // Re-tapping the active metric keeps manual Start/Target edits intact.
+                                                if (draft.goalMetric != metric) {
+                                                    if (ex != null && (onFetchBestMetricValue != null || onFetchBestRm != null)) {
+                                                        coroutineScope.launch {
+                                                            val best = resolveBestValue(ex.id, metric, repsInt)
+                                                            val cur = goalDrafts.getOrNull(index) ?: return@launch
+                                                            goalDrafts[index] = cur.onGoalMetricChanged(metric, best)
+                                                        }
+                                                    } else {
+                                                        goalDrafts[index] = draft.onGoalMetricChanged(metric, null)
                                                     }
-                                                } else {
-                                                    goalDrafts[index] = draft.onGoalMetricChanged(metric, null)
                                                 }
                                             },
                                             label = { Text(pillLabel, style = MaterialTheme.typography.labelSmall) }
@@ -1120,7 +1126,9 @@ fun CycleEditorDialog(
                                                     coroutineScope.launch {
                                                         val best = resolveBestValue(ex.id, MetricType.WEIGHT, nextReps)
                                                         val cur = goalDrafts.getOrNull(index) ?: return@launch
-                                                        goalDrafts[index] = cur.stepReps(-1, best)
+                                                        // Apply the exact reps the lookup was made for so rapid taps
+                                                        // can't pair an RM count with another RM's best weight.
+                                                        goalDrafts[index] = cur.onRepsChanged(nextReps.toString(), best)
                                                     }
                                                 } else {
                                                     goalDrafts[index] = draft.stepReps(-1, null)
@@ -1155,7 +1163,9 @@ fun CycleEditorDialog(
                                                     coroutineScope.launch {
                                                         val best = resolveBestValue(ex.id, MetricType.WEIGHT, nextReps)
                                                         val cur = goalDrafts.getOrNull(index) ?: return@launch
-                                                        goalDrafts[index] = cur.stepReps(1, best)
+                                                        // Apply the exact reps the lookup was made for so rapid taps
+                                                        // can't pair an RM count with another RM's best weight.
+                                                        goalDrafts[index] = cur.onRepsChanged(nextReps.toString(), best)
                                                     }
                                                 } else {
                                                     goalDrafts[index] = draft.stepReps(1, null)

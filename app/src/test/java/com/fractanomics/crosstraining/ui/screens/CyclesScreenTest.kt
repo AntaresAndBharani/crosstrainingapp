@@ -357,6 +357,23 @@ class CyclesScreenTest {
     }
 
     @Test
+    fun us2_reselectingActiveGoalMetricPreservesManualStartAndTarget() {
+        val edited = GoalDraftState()
+            .onExerciseChanged(airBike, bestWeight = 40.0)
+            .onTimeWindowChanged(5)
+            .onStartWeightChanged("42")
+            .onTargetWeightChanged("55")
+
+        // Tapping the already-selected Calories pill (even with a fresh lookup) is a no-op
+        val reselected = edited.onGoalMetricChanged(MetricType.CALORIES, bestValue = 40.0)
+        assertEquals(edited, reselected)
+        assertEquals("42", reselected.startWeight)
+        assertEquals("55", reselected.targetWeight)
+        assertEquals(5, reselected.timeWindowMinutes)
+        assertTrue(reselected.isManuallyEdited)
+    }
+
+    @Test
     fun us2_caloriesGoalTimeWindowAndAdditiveScaleModifiers() {
         val workingSets = listOf(
             BlockSet(id = 1, blockId = 1, position = 0, reps = 1, metricValue = 32.0),
