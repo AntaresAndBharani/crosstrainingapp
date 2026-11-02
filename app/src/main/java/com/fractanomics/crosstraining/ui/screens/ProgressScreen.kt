@@ -2914,6 +2914,108 @@ private fun HorizonEstimationRowItem(
 
 // --- Cycle Goals View --------------------------------------------------------
 
+internal data class EvaluatedCycleGoalProgress(
+    val baselineStartWeight: Double,
+    val currentBest: Double,
+    val totalSpan: Double,
+    val achievedGain: Double,
+    val remainingGap: Double,
+    val progressFraction: Float,
+    val progressPercent: Int
+)
+
+internal fun evaluateCycleGoalProgress(
+    goal: CycleGoal,
+    currentCycle: Cycle,
+    repMaxes: List<RepMax>,
+    sessions: List<SessionWithBlocks>
+): EvaluatedCycleGoalProgress {
+    val cycleSessions = sessions.filter {
+        it.session.date >= currentCycle.startDate &&
+            (currentCycle.endDate == null || it.session.date <= currentCycle.endDate)
+    }.sortedBy { it.session.date }
+
+    val (baselineStartWeight, currentBest) = when (goal.goalMetric) {
+        MetricType.WEIGHT -> {
+            val priorRm = repMaxes.filter {
+                it.exerciseId == goal.exerciseId &&
+                    it.reps == goal.targetReps &&
+                    it.date <= currentCycle.startDate
+            }.maxByOrNull { it.date }?.weight
+
+            val firstLoggedWeightInCycle = cycleSessions.flatMap { swb ->
+                swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }.flatMap { b ->
+                    b.sets.filter { !it.isWarmup && !it.isFailed && it.reps == goal.targetReps }
+                        .mapNotNull { it.weight ?: it.metricValue }
+                }
+            }.firstOrNull()
+
+            val baseline = if (goal.startWeight > 0.0) {
+                goal.startWeight
+            } else {
+                priorRm ?: firstLoggedWeightInCycle ?: 0.0
+            }
+
+            val cycleRms = repMaxes.filter {
+                it.exerciseId == goal.exerciseId &&
+                    it.reps == goal.targetReps &&
+                    it.date >= currentCycle.startDate &&
+                    (currentCycle.endDate == null || it.date <= currentCycle.endDate)
+            }
+            val loggedRmBest = cycleRms.maxOfOrNull { it.weight }
+            val blockWorkingBest = cycleSessions.flatMap { swb ->
+                swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }.flatMap { b ->
+                    b.sets.filter { !it.isWarmup && !it.isFailed && it.reps == goal.targetReps }
+                        .mapNotNull { it.weight ?: it.metricValue }
+                }
+            }.maxOrNull()
+
+            val best = maxOf(baseline, loggedRmBest ?: 0.0, blockWorkingBest ?: 0.0)
+            baseline to best
+        }
+        else -> {
+            val priorSets = sessions.filter { it.session.date <= currentCycle.startDate }
+                .flatMap { swb ->
+                    swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }
+                        .flatMap { b -> b.sets.filter { !it.isWarmup && !it.isFailed } }
+                }
+            val priorBest = CycleGoal.extractBestWorkingSetMetricValue(priorSets, goal.goalMetric)
+
+            val cycleWorkingSets = cycleSessions.flatMap { swb ->
+                swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }
+                    .flatMap { b -> b.sets.filter { !it.isWarmup && !it.isFailed } }
+            }
+            val firstInCycle = cycleWorkingSets.firstOrNull()?.let {
+                CycleGoal.extractBestWorkingSetMetricValue(listOf(it), goal.goalMetric)
+            }
+            val baseline = if (goal.startWeight > 0.0) {
+                goal.startWeight
+            } else {
+                priorBest ?: firstInCycle ?: 0.0
+            }
+            val inCycleBest = CycleGoal.extractBestWorkingSetMetricValue(cycleWorkingSets, goal.goalMetric)
+            val best = maxOf(baseline, inCycleBest ?: 0.0)
+            baseline to best
+        }
+    }
+
+    val totalSpan = (goal.targetWeight - baselineStartWeight).coerceAtLeast(0.1)
+    val achievedGain = (currentBest - baselineStartWeight).coerceAtLeast(0.0)
+    val remainingGap = (goal.targetWeight - currentBest).coerceAtLeast(0.0)
+    val progressFraction = (achievedGain / totalSpan).coerceIn(0.0, 1.0).toFloat()
+    val progressPercent = (progressFraction * 100).toInt()
+
+    return EvaluatedCycleGoalProgress(
+        baselineStartWeight = baselineStartWeight,
+        currentBest = currentBest,
+        totalSpan = totalSpan,
+        achievedGain = achievedGain,
+        remainingGap = remainingGap,
+        progressFraction = progressFraction,
+        progressPercent = progressPercent
+    )
+}
+
 @Composable
 private fun CycleGoalsProgress(
     cycles: List<Cycle>,
@@ -2973,70 +3075,31 @@ private fun CycleGoalsProgress(
         )
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-        goals.forEach { goal ->
-            val exercise = exercises.firstOrNull { it.id == goal.exerciseId }
-            val exName = exercise?.name ?: "Basic Movement"
-            val unit = exercise?.unit ?: "kg"
-
-            // 1. Prior Rep Max before or at start date of cycle
-            val priorRm = repMaxes.filter {
-                it.exerciseId == goal.exerciseId &&
-                it.reps == goal.targetReps &&
-                it.date <= currentCycle.startDate
-            }.maxByOrNull { it.date }?.weight
-
-            // 2. Cycle sessions in chronological order
-            val cycleSessions = sessions.filter {
-                it.session.date >= currentCycle.startDate &&
-                (currentCycle.endDate == null || it.session.date <= currentCycle.endDate)
-            }.sortedBy { it.session.date }
-
-            val firstLoggedWeightInCycle = cycleSessions.flatMap { swb ->
-                swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }.flatMap { b ->
-                    b.sets.filter { !it.isWarmup && !it.isFailed && it.reps == goal.targetReps }
-                        .mapNotNull { it.weight ?: it.metricValue }
-                }
-            }.firstOrNull()
-
-            val baselineStartWeight = priorRm ?: firstLoggedWeightInCycle ?: 0.0
-
-            val cycleRms = repMaxes.filter {
-                it.exerciseId == goal.exerciseId &&
-                it.reps == goal.targetReps &&
-                it.date >= currentCycle.startDate &&
-                (currentCycle.endDate == null || it.date <= currentCycle.endDate)
-            }
-
-            val loggedRmBest = cycleRms.maxOfOrNull { it.weight }
-            val blockWorkingBest = cycleSessions.flatMap { swb ->
-                swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }.flatMap { b ->
-                    b.sets.filter { !it.isWarmup && !it.isFailed && it.reps == goal.targetReps }
-                        .mapNotNull { it.weight ?: it.metricValue }
-                }
-            }.maxOrNull()
-
-            val currentBest = maxOf(baselineStartWeight, loggedRmBest ?: 0.0, blockWorkingBest ?: 0.0)
-
-            val totalSpan = (goal.targetWeight - baselineStartWeight).coerceAtLeast(0.1)
-            val achievedGain = (currentBest - baselineStartWeight).coerceAtLeast(0.0)
-            val remainingGap = (goal.targetWeight - currentBest).coerceAtLeast(0.0)
-            val progressFraction = (achievedGain / totalSpan).coerceIn(0.0, 1.0).toFloat()
-            val progressPercent = (progressFraction * 100).toInt()
-
-            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "$exName (${goal.targetReps}RM Goal)",
+        goals.forEach { goal ->
+            val exercise = exercises.firstOrNull { it.id == goal.exerciseId }
+            val exName = exercise?.name ?: "Basic Movement"
+            val unit = if (goal.goalMetric == MetricType.WEIGHT) (exercise?.unit ?: "kg") else goal.unitLabel
+            val eval = evaluateCycleGoalProgress(goal, currentCycle, repMaxes, sessions)
+            val baselineStartWeight = eval.baselineStartWeight
+            val currentBest = eval.currentBest
+            val remainingGap = eval.remainingGap
+            val progressFraction = eval.progressFraction
+            val progressPercent = eval.progressPercent
+
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            goal.formatProgressHeader(exName),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )

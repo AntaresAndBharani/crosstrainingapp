@@ -392,6 +392,12 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     suspend fun getBestRepMaxWeight(exerciseId: Long, reps: Int): Double? =
         repo.getBestRepMaxWeight(exerciseId, reps)
 
+    suspend fun getBestMetricValueForExercise(
+        exerciseId: Long,
+        goalMetric: MetricType,
+        reps: Int = 1
+    ): Double? = repo.getBestMetricValueForExercise(exerciseId, goalMetric, reps)
+
     suspend fun getLatestWeightOnOrBefore(date: LocalDate, minDate: LocalDate): com.fractanomics.crosstraining.data.model.WeightEntry? =
         repo.getLatestWeightOnOrBefore(date, minDate)
 

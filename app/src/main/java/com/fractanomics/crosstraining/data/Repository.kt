@@ -345,6 +345,24 @@ class Repository(
     suspend fun getBestRepMaxWeight(exerciseId: Long, reps: Int): Double? =
         repMaxDao.bestWeight(exerciseId, reps)
 
+    suspend fun getBestMetricValueForExercise(
+        exerciseId: Long,
+        goalMetric: MetricType,
+        reps: Int = 1
+    ): Double? {
+        if (goalMetric == MetricType.WEIGHT) {
+            return repMaxDao.bestWeight(exerciseId, reps)
+        }
+        val matchingBlockIds = blockDao.getAllBlocksOnce()
+            .filter { it.mainExerciseId == exerciseId }
+            .map { it.id }
+            .toSet()
+        if (matchingBlockIds.isEmpty()) return null
+        val workingSets = blockDao.getAllSetsOnce()
+            .filter { it.blockId in matchingBlockIds && !it.isWarmup && !it.isFailed }
+        return CycleGoal.extractBestWorkingSetMetricValue(workingSets, goalMetric)
+    }
+
     // --- Weight Entries ------------------------------------------------------
     val weightEntries: Flow<List<com.fractanomics.crosstraining.data.model.WeightEntry>> = weightDao.getAllActiveEntries()
 
