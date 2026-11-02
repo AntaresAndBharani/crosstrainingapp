@@ -68,18 +68,18 @@ class CyclesScreenTest {
         val bestRm = rmLookup[backSquat.id to 1]
         val updatedDraft = initialDraft.onExerciseChanged(backSquat, bestRm)
 
-        // Then CycleGoal.startWeight is populated with 100.0 kg and targetWeight displays 100.0 kg
-        assertEquals("100", updatedDraft.startWeight)
+        // Then targetWeight is pre-filled with 100.0 kg; the hidden Start stays empty (SPEC-CYCLE-GOAL-04)
+        assertEquals("", updatedDraft.startWeight)
         assertEquals("100", updatedDraft.targetWeight)
-        assertTrue(updatedDraft.hasStartWeight)
+        assertFalse(updatedDraft.hasStartWeight)
 
-        // Verify conversion to CycleGoal entity fixes startWeight = 0.0 defect
+        // Target-only goals persist startWeight = 0.0 so ProgressScreen derives the baseline
         val goalEntity = updatedDraft.toCycleGoal(cycleId = 42L)
         assertNotNull(goalEntity)
         assertEquals(42L, goalEntity!!.cycleId)
         assertEquals(backSquat.id, goalEntity.exerciseId)
         assertEquals(1, goalEntity.targetReps)
-        assertEquals(100.0, goalEntity.startWeight, 0.001)
+        assertEquals(0.0, goalEntity.startWeight, 0.001)
         assertEquals(100.0, goalEntity.targetWeight, 0.001)
     }
 
@@ -97,17 +97,17 @@ class CyclesScreenTest {
 
         var draft = GoalDraftState(exercise = backSquat, reps = "1")
             .onExerciseChanged(backSquat, rmLookup[backSquat.id to 1])
-        assertEquals("100", draft.startWeight)
+        assertEquals("", draft.startWeight)
         assertEquals("100", draft.targetWeight)
 
         // When Reps is changed from 1 to 5
         val fiveRm = rmLookup[backSquat.id to 5]
         draft = draft.onRepsChanged("5", fiveRm)
 
-        // Then CycleGoal.startWeight updates to 85.0 kg and targetWeight updates to 85.0 kg
-        assertEquals("85", draft.startWeight)
+        // Then targetWeight updates to 85.0 kg and startWeight stays empty (persisted as 0.0)
+        assertEquals("", draft.startWeight)
         assertEquals("85", draft.targetWeight)
-        assertEquals(85.0, draft.toCycleGoal(1L)!!.startWeight, 0.001)
+        assertEquals(0.0, draft.toCycleGoal(1L)!!.startWeight, 0.001)
         assertEquals(85.0, draft.toCycleGoal(1L)!!.targetWeight, 0.001)
 
         // When Reps is changed to 8 (which has no RM record)
@@ -296,31 +296,33 @@ class CyclesScreenTest {
             .onExerciseChanged(backSquat, rmLookup[backSquat.id to 1])
         assertEquals(MetricType.WEIGHT, draft.goalMetric)
         assertEquals("1", draft.reps)
-        assertEquals("160", draft.startWeight)
+        assertEquals("", draft.startWeight)
+        assertEquals("160", draft.targetWeight)
 
         // Stepping down at 1 RM clamps at 1 RM and preserves state
         assertEquals(1, draft.nextSteppedReps(-1))
         draft = draft.stepReps(-1)
         assertEquals("1", draft.reps)
-        assertEquals("160", draft.startWeight)
+        assertEquals("160", draft.targetWeight)
 
-        // Stepping up (+1) to 2 RM updates reps and Start/Target from lookup
+        // Stepping up (+1) to 2 RM updates reps and Target from lookup
         val nextUp = draft.nextSteppedReps(1)
         assertEquals(2, nextUp)
         draft = draft.stepReps(1, rmLookup[backSquat.id to nextUp])
         assertEquals("2", draft.reps)
-        assertEquals("150", draft.startWeight)
+        assertEquals("", draft.startWeight)
         assertEquals("150", draft.targetWeight)
 
         // Selecting preset 5 RM (from CycleGoal.RM_PRESETS = [1, 3, 5, 10])
         assertEquals(listOf(1, 3, 5, 10), CycleGoal.RM_PRESETS)
         draft = draft.onRepsChanged("5", rmLookup[backSquat.id to 5])
         assertEquals("5", draft.reps)
-        assertEquals("140", draft.startWeight)
+        assertEquals("", draft.startWeight)
+        assertEquals("140", draft.targetWeight)
 
-        // Applying +5% on 140 kg -> 147 kg -> 147.0 ("147")
-        draft = draft.applyModifier(5.0)
-        assertEquals("147", draft.targetWeight)
+        // Quick target stepper +5 kg on 140 kg -> 145 kg
+        draft = draft.stepTarget(5.0)
+        assertEquals("145", draft.targetWeight)
     }
 
     // =========================================================================
@@ -337,14 +339,14 @@ class CyclesScreenTest {
         var draft = GoalDraftState().onExerciseChanged(airBike, bestWeight = 40.0)
         assertEquals(MetricType.CALORIES, draft.goalMetric)
         assertEquals("cal", draft.unitLabel)
-        assertEquals("40", draft.startWeight)
+        assertEquals("", draft.startWeight)
         assertEquals("40", draft.targetWeight)
 
         // Selecting Pull-ups defaults goalMetric to REPS and unitLabel to "reps"
         draft = draft.onExerciseChanged(pullUps, bestWeight = 12.0)
         assertEquals(MetricType.REPS, draft.goalMetric)
         assertEquals("reps", draft.unitLabel)
-        assertEquals("12", draft.startWeight)
+        assertEquals("", draft.startWeight)
         assertEquals("12", draft.targetWeight)
 
         // Coach manually overrides Pull-ups goalMetric to WEIGHT (e.g. weighted pull-ups)
@@ -352,7 +354,7 @@ class CyclesScreenTest {
         assertEquals(MetricType.WEIGHT, draft.goalMetric)
         assertEquals("kg", draft.unitLabel)
         assertNull(draft.timeWindowMinutes)
-        assertEquals("25", draft.startWeight)
+        assertEquals("", draft.startWeight)
         assertEquals("25", draft.targetWeight)
     }
 
@@ -386,7 +388,8 @@ class CyclesScreenTest {
         )
         assertEquals(40.0, bestCal ?: 0.0, 0.001)
 
-        var draft = GoalDraftState().onExerciseChanged(airBike, bestCal)
+        // Legacy additive Scale helpers still operate on an explicit (legacy) Start value
+        var draft = GoalDraftState().onExerciseChanged(airBike, bestCal).copy(startWeight = "40")
         assertEquals(MetricType.CALORIES, draft.goalMetric)
         assertNull("Default Time Window must be Open (null)", draft.timeWindowMinutes)
 
@@ -426,7 +429,8 @@ class CyclesScreenTest {
         )
         assertEquals(12.0, bestReps ?: 0.0, 0.001)
 
-        var draft = GoalDraftState().onExerciseChanged(pullUps, bestReps)
+        // Legacy additive Scale helpers still operate on an explicit (legacy) Start value
+        var draft = GoalDraftState().onExerciseChanged(pullUps, bestReps).copy(startWeight = "12")
         assertEquals(MetricType.REPS, draft.goalMetric)
         assertNull(draft.timeWindowMinutes)
 
@@ -628,7 +632,7 @@ class CyclesScreenTest {
 
         assertEquals(backSquat, goalDraft.exercise)
         assertEquals(MetricType.WEIGHT, goalDraft.goalMetric)
-        assertEquals("140", goalDraft.startWeight)
+        assertEquals("", goalDraft.startWeight)
         assertEquals("140", goalDraft.targetWeight)
         assertFalse(selectorState.expanded)
         assertEquals("", selectorState.searchQuery)

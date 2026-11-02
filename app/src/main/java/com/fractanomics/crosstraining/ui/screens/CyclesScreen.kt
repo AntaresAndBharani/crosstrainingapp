@@ -64,7 +64,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -515,6 +514,11 @@ data class GoalDraftState(
 
     fun expand(): GoalDraftState = copy(isCollapsed = false, showTargetError = false)
 
+    // SPEC-CYCLE-GOAL-04: the Start field is no longer shown, so re-querying a movement,
+    // metric, or RM only pre-fills Target from the historical best and clears startWeight.
+    // Persisting startWeight = 0.0 lets evaluateCycleGoalProgress derive the baseline from
+    // records on/before the cycle start instead of a hidden, uneditable value captured at
+    // edit time (which could already include in-cycle PRs when a goal is edited mid-cycle).
     fun onExerciseChanged(newExercise: Exercise?, bestWeight: Double?): GoalDraftState {
         val inferredMetric = CycleGoal.defaultGoalMetricFor(newExercise)
         val preservedWindow = if (inferredMetric == MetricType.WEIGHT) null else timeWindowMinutes
@@ -524,7 +528,7 @@ data class GoalDraftState(
                 exercise = newExercise,
                 goalMetric = inferredMetric,
                 timeWindowMinutes = preservedWindow,
-                startWeight = weightStr,
+                startWeight = "",
                 targetWeight = weightStr,
                 selectedModifier = 0.0,
                 isManuallyEdited = false,
@@ -555,7 +559,7 @@ data class GoalDraftState(
                 goalMetric = newMetric,
                 reps = normalizedReps,
                 timeWindowMinutes = window,
-                startWeight = valStr,
+                startWeight = "",
                 targetWeight = valStr,
                 selectedModifier = 0.0,
                 isManuallyEdited = false,
@@ -598,7 +602,7 @@ data class GoalDraftState(
             val weightStr = bestWeight.trimmed().replace(',', '.')
             copy(
                 reps = newReps,
-                startWeight = weightStr,
+                startWeight = "",
                 targetWeight = weightStr,
                 selectedModifier = 0.0,
                 isManuallyEdited = false,
@@ -1444,17 +1448,21 @@ fun CycleEditorDialog(
                                         Surface(
                                             shape = RoundedCornerShape(8.dp),
                                             color = MaterialTheme.colorScheme.primaryContainer,
-                                            modifier = Modifier.clickable(
-                                                onClickLabel = "Collapse goal",
-                                                role = Role.Button,
-                                                onClick = {
-                                                    val updated = collapseGoalDraftAt(goalDrafts.toList(), index)
-                                                    applyGoalDrafts(updated)
-                                                    if (updated.getOrNull(index)?.isCollapsed == true) {
-                                                        keyboardController?.hide()
-                                                    }
+                                            modifier = Modifier
+                                                .semantics(mergeDescendants = true) {
+                                                    contentDescription = "Done, collapse goal ${index + 1}"
                                                 }
-                                            )
+                                                .clickable(
+                                                    onClickLabel = "Collapse goal",
+                                                    role = Role.Button,
+                                                    onClick = {
+                                                        val updated = collapseGoalDraftAt(goalDrafts.toList(), index)
+                                                        applyGoalDrafts(updated)
+                                                        if (updated.getOrNull(index)?.isCollapsed == true) {
+                                                            keyboardController?.hide()
+                                                        }
+                                                    }
+                                                )
                                         ) {
                                             Text(
                                                 text = "Done ▲",
