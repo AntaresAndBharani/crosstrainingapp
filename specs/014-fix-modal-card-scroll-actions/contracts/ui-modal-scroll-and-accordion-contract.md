@@ -17,6 +17,7 @@
      - Any other open card with `hasValidTarget == true` auto-collapses.
      - Any other open card with `hasValidTarget == false` that has no prior valid target (`id == 0L && !canRestoreValidTarget`) is automatically discarded (removed from `goalDrafts`).
      - Any other open card with `hasValidTarget == false` that previously had a valid target (`canRestoreValidTarget == true`) restores `targetWeight = lastValidTargetWeight` and auto-collapses.
+     - Any other open persisted card (`id != 0L`) with `hasValidTarget == false` and no restorable target is never removed; it auto-collapses so the user can edit or delete it explicitly.
    - **Viewport Auto-Scroll**:
      - Triggers an automatic scroll request targeting the newly expanded card's index after the next layout frame so its form controls are visible inside the `AlertDialog` scroll viewport.
 

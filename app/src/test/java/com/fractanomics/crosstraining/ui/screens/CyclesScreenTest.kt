@@ -18,6 +18,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import java.time.LocalDate
@@ -30,9 +31,16 @@ import java.util.Locale
  */
 class CyclesScreenTest {
 
+    private val originalLocale: Locale = Locale.getDefault()
+
     @Before
     fun setUp() {
         Locale.setDefault(Locale.US)
+    }
+
+    @After
+    fun tearDown() {
+        Locale.setDefault(originalLocale)
     }
 
     private val backSquat = Exercise(
@@ -1128,6 +1136,57 @@ class CyclesScreenTest {
         assertTrue("Goal 2 collapses with restored target", result[1].isCollapsed)
         assertEquals("40", result[1].targetWeight)
         assertFalse(result[1].showTargetError)
+    }
+
+    @Test
+    fun spec014_us1_expandGoalDraftAtNeverDiscardsPersistedGoalWithoutRestorableTarget() {
+        val frontSquat = Exercise(id = 6L, name = "Front Squat", unit = "kg")
+        val g1 = GoalDraftState(
+            id = 1L,
+            exercise = frontSquat,
+            reps = "3",
+            targetWeight = "65",
+            goalMetric = MetricType.WEIGHT,
+            isCollapsed = true
+        )
+        // Legacy persisted goal (id != 0) loaded with targetWeight = 0.0 opens expanded with no restorable target
+        val legacy = GoalDraftState.fromCycleGoal(
+            CycleGoal(id = 7L, cycleId = 1L, exerciseId = backSquat.id, targetReps = 1, startWeight = 0.0, targetWeight = 0.0),
+            backSquat
+        )
+        assertFalse(legacy.isCollapsed)
+        assertFalse(legacy.canRestoreValidTarget)
+        assertFalse("Persisted goals are never discardable", legacy.isDiscardableEmptyDraft)
+
+        val result = expandGoalDraftAt(listOf(g1, legacy), 0)
+        assertEquals("Persisted goal must not be silently removed", 2, result.size)
+        assertFalse(result[0].isCollapsed)
+        assertTrue(result[1].isCollapsed)
+        assertEquals(7L, result[1].id)
+        assertFalse(result[1].showTargetError)
+    }
+
+    @Test
+    fun spec014_us1_changingMovementOrMetricWithoutHistoryDropsStaleRestorableTarget() {
+        val valid = GoalDraftState(exercise = backSquat, targetWeight = "100", goalMetric = MetricType.WEIGHT)
+        assertEquals("100", valid.lastValidTargetWeight)
+
+        // Switching metric (kg -> cal) without history must not later restore "100" as calories
+        val metricSwitched = valid.onGoalMetricChanged(MetricType.CALORIES, null)
+        assertEquals("", metricSwitched.targetWeight)
+        assertFalse(metricSwitched.canRestoreValidTarget)
+        assertTrue(metricSwitched.isDiscardableEmptyDraft)
+
+        // Switching movement without history must not restore the previous movement's target
+        val exerciseSwitched = valid.onExerciseChanged(airBike, null)
+        assertEquals("", exerciseSwitched.targetWeight)
+        assertFalse(exerciseSwitched.canRestoreValidTarget)
+
+        // Changing reps on the same movement/unit keeps the last valid target restorable
+        val repsChanged = valid.onRepsChanged("5", null)
+        assertEquals("", repsChanged.targetWeight)
+        assertTrue(repsChanged.canRestoreValidTarget)
+        assertEquals("100", repsChanged.lastValidTargetWeight)
     }
 
     @Test

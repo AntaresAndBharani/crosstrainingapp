@@ -28,7 +28,9 @@
   - When expanding `targetIndex`, any other currently open card (`idx != targetIndex && !draft.isCollapsed`):
     1. If `draft.hasValidTarget`: collapses cleanly (`isCollapsed = true, showTargetError = false`).
     2. If `!draft.hasValidTarget && draft.canRestoreValidTarget`: restores `targetWeight = draft.lastValidTargetWeight` and collapses (`isCollapsed = true, showTargetError = false`).
-    3. If `!draft.hasValidTarget && !draft.canRestoreValidTarget` (an unsaved draft that has never had a valid positive target): is **removed (auto-discarded)** from the list, while the requested card (`targetIndex`) expands (`isCollapsed = false, showTargetError = false`).
+    3. If `draft.isDiscardableEmptyDraft` (an unsaved `id == 0L` draft that has never had a valid positive target): is **removed (auto-discarded)** from the list, while the requested card (`targetIndex`) expands (`isCollapsed = false, showTargetError = false`).
+    4. If `!draft.hasValidTarget && !draft.canRestoreValidTarget && draft.id != 0L` (a persisted goal, e.g. a legacy goal loaded with `targetWeight = 0.0`): is **never removed**; it collapses (`isCollapsed = true, showTargetError = false`) so the user can still edit or delete it explicitly.
+  - `lastValidTargetWeight` is reset to `""` when `onExerciseChanged` / `onGoalMetricChanged` find no historical best, so a previous movement's or metric's target (possibly in a different unit) is never restored onto the new movement/metric. `onRepsChanged` keeps it (same movement and unit).
 - **`appendMovementGoalDraft(drafts: List<GoalDraftState>, newDraft: GoalDraftState): Pair<List<GoalDraftState>, Boolean>`**:
   - If an open card has `!hasValidTarget`, flags `showTargetError = true` on that open card and returns `flagged to false` (and the caller scrolls directly to `invalidOpenIndex` so the error is visible).
   - Otherwise collapses all open cards, appends `newDraft.copy(isCollapsed = false, showTargetError = false)`, and returns `appended to true` (and the caller scrolls directly to `appended.lastIndex`).

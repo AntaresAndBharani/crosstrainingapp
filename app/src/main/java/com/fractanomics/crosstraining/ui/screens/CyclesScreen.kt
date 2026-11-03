@@ -548,6 +548,8 @@ data class GoalDraftState(
                 lastValidTargetWeight = weightStr
             )
         } else {
+            // A previous movement's target is meaningless (and possibly a different unit)
+            // for the new movement, so it must not be restored later by expandGoalDraftAt.
             copy(
                 exercise = newExercise,
                 goalMetric = inferredMetric,
@@ -555,7 +557,8 @@ data class GoalDraftState(
                 startWeight = "",
                 targetWeight = "",
                 selectedModifier = null,
-                isManuallyEdited = false
+                isManuallyEdited = false,
+                lastValidTargetWeight = ""
             )
         }
     }
@@ -580,6 +583,8 @@ data class GoalDraftState(
                 lastValidTargetWeight = valStr
             )
         } else {
+            // The previous metric's target is in a different unit (kg vs cal vs reps),
+            // so it must not be restored later by expandGoalDraftAt.
             copy(
                 goalMetric = newMetric,
                 reps = normalizedReps,
@@ -587,7 +592,8 @@ data class GoalDraftState(
                 startWeight = "",
                 targetWeight = "",
                 selectedModifier = null,
-                isManuallyEdited = false
+                isManuallyEdited = false,
+                lastValidTargetWeight = ""
             )
         }
     }
@@ -808,17 +814,21 @@ internal fun expandGoalDraftAt(
                 result.add(draft.expand())
             }
             !draft.isCollapsed && !draft.hasValidTarget -> {
-                if (draft.canRestoreValidTarget) {
-                    result.add(
+                when {
+                    draft.canRestoreValidTarget -> result.add(
                         draft.copy(
                             targetWeight = draft.lastValidTargetWeight,
                             isCollapsed = true,
                             showTargetError = false
                         )
                     )
+                    // Unsaved empty draft that never had a valid target:
+                    // omit from result to auto-discard cleanly without blocking expansion.
+                    draft.isDiscardableEmptyDraft -> Unit
+                    // Persisted goal (id != 0) without a restorable target: never silently
+                    // remove it from the list; collapse it so the user can still edit or delete it.
+                    else -> result.add(draft.copy(isCollapsed = true, showTargetError = false))
                 }
-                // Otherwise (unsaved empty draft that never had a valid target):
-                // omit from result to auto-discard cleanly without blocking expansion.
             }
             !draft.isCollapsed -> {
                 result.add(draft.copy(isCollapsed = true, showTargetError = false))
