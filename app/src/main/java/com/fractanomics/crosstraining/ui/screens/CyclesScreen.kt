@@ -55,7 +55,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -408,13 +412,20 @@ data class GoalDraftState(
     val timeWindowMinutes: Int? = null,
     val notes: String = "",
     val isCollapsed: Boolean = false,
-    val showTargetError: Boolean = false
+    val showTargetError: Boolean = false,
+    val lastValidTargetWeight: String = if (targetWeight.replace(',', '.').toDoubleOrNull()?.let { it > 0.0 } == true) targetWeight else ""
 ) {
     val hasStartWeight: Boolean
         get() = startWeight.replace(',', '.').toDoubleOrNull()?.let { it > 0.0 } == true
 
     val hasValidTarget: Boolean
         get() = targetWeight.replace(',', '.').toDoubleOrNull()?.let { it > 0.0 } == true
+
+    val canRestoreValidTarget: Boolean
+        get() = lastValidTargetWeight.replace(',', '.').toDoubleOrNull()?.let { it > 0.0 } == true
+
+    val isDiscardableEmptyDraft: Boolean
+        get() = id == 0L && !hasValidTarget && !canRestoreValidTarget
 
     val unitLabel: String
         get() = CycleGoal.unitLabelFor(goalMetric, exercise?.unit)
@@ -501,7 +512,8 @@ data class GoalDraftState(
             targetWeight = formatted,
             selectedModifier = delta,
             isManuallyEdited = true,
-            showTargetError = if (clamped > 0.0) false else showTargetError
+            showTargetError = if (clamped > 0.0) false else showTargetError,
+            lastValidTargetWeight = if (clamped > 0.0) formatted else lastValidTargetWeight
         )
     }
 
@@ -532,9 +544,12 @@ data class GoalDraftState(
                 targetWeight = weightStr,
                 selectedModifier = 0.0,
                 isManuallyEdited = false,
-                showTargetError = false
+                showTargetError = false,
+                lastValidTargetWeight = weightStr
             )
         } else {
+            // A previous movement's target is meaningless (and possibly a different unit)
+            // for the new movement, so it must not be restored later by expandGoalDraftAt.
             copy(
                 exercise = newExercise,
                 goalMetric = inferredMetric,
@@ -542,7 +557,8 @@ data class GoalDraftState(
                 startWeight = "",
                 targetWeight = "",
                 selectedModifier = null,
-                isManuallyEdited = false
+                isManuallyEdited = false,
+                lastValidTargetWeight = ""
             )
         }
     }
@@ -563,9 +579,12 @@ data class GoalDraftState(
                 targetWeight = valStr,
                 selectedModifier = 0.0,
                 isManuallyEdited = false,
-                showTargetError = false
+                showTargetError = false,
+                lastValidTargetWeight = valStr
             )
         } else {
+            // The previous metric's target is in a different unit (kg vs cal vs reps),
+            // so it must not be restored later by expandGoalDraftAt.
             copy(
                 goalMetric = newMetric,
                 reps = normalizedReps,
@@ -573,7 +592,8 @@ data class GoalDraftState(
                 startWeight = "",
                 targetWeight = "",
                 selectedModifier = null,
-                isManuallyEdited = false
+                isManuallyEdited = false,
+                lastValidTargetWeight = ""
             )
         }
     }
@@ -606,7 +626,8 @@ data class GoalDraftState(
                 targetWeight = weightStr,
                 selectedModifier = 0.0,
                 isManuallyEdited = false,
-                showTargetError = false
+                showTargetError = false,
+                lastValidTargetWeight = weightStr
             )
         } else {
             copy(
@@ -626,20 +647,24 @@ data class GoalDraftState(
         } else {
             targetWeight
         }
+        val newTargetValid = newTarget.replace(',', '.').toDoubleOrNull()?.let { it > 0.0 } == true
         return copy(
             startWeight = newStart,
             targetWeight = newTarget,
-            isManuallyEdited = true
+            isManuallyEdited = true,
+            lastValidTargetWeight = if (newTargetValid) newTarget else lastValidTargetWeight
         )
     }
 
     fun onTargetWeightChanged(newTarget: String): GoalDraftState {
         val parsed = newTarget.replace(',', '.').toDoubleOrNull()
+        val isValid = parsed != null && parsed > 0.0
         return copy(
             targetWeight = newTarget,
             selectedModifier = null,
             isManuallyEdited = true,
-            showTargetError = if (parsed != null && parsed > 0.0) false else showTargetError
+            showTargetError = if (isValid) false else showTargetError,
+            lastValidTargetWeight = if (isValid) newTarget else lastValidTargetWeight
         )
     }
 
@@ -647,10 +672,12 @@ data class GoalDraftState(
         val base = startWeight.replace(',', '.').toDoubleOrNull() ?: return this
         if (base <= 0.0) return this
         val scaled = computeScaledTarget(base, percentage, goalMetric)
+        val formatted = scaled.trimmed().replace(',', '.')
         return copy(
-            targetWeight = scaled.trimmed().replace(',', '.'),
+            targetWeight = formatted,
             selectedModifier = percentage,
-            showTargetError = false
+            showTargetError = false,
+            lastValidTargetWeight = if (scaled > 0.0) formatted else lastValidTargetWeight
         )
     }
 
@@ -658,10 +685,12 @@ data class GoalDraftState(
         val base = startWeight.replace(',', '.').toDoubleOrNull() ?: return this
         if (base <= 0.0) return this
         val scaled = computeScaledTarget(base, 0.0, goalMetric)
+        val formatted = scaled.trimmed().replace(',', '.')
         return copy(
-            targetWeight = scaled.trimmed().replace(',', '.'),
+            targetWeight = formatted,
             selectedModifier = 0.0,
-            showTargetError = false
+            showTargetError = false,
+            lastValidTargetWeight = if (scaled > 0.0) formatted else lastValidTargetWeight
         )
     }
 
@@ -699,22 +728,68 @@ data class GoalDraftState(
             } else {
                 "1"
             }
+            val targetStr = if (goal.targetWeight > 0.0) goal.targetWeight.trimmed().replace(',', '.') else ""
             return GoalDraftState(
                 id = goal.id,
                 exercise = exercise,
                 reps = repsStr,
                 startWeight = if (goal.startWeight > 0.0) goal.startWeight.trimmed().replace(',', '.') else "",
-                targetWeight = if (goal.targetWeight > 0.0) goal.targetWeight.trimmed().replace(',', '.') else "",
+                targetWeight = targetStr,
                 selectedModifier = null,
                 isManuallyEdited = true,
                 goalMetric = metric,
                 timeWindowMinutes = goal.timeWindowMinutes,
                 notes = goal.cleanNotes,
                 isCollapsed = goal.targetWeight > 0.0,
-                showTargetError = false
+                showTargetError = false,
+                lastValidTargetWeight = targetStr
             )
         }
     }
+}
+
+internal data class CardLayoutBounds(
+    val topPx: Int,
+    val heightPx: Int
+) {
+    val bottomPx: Int
+        get() = topPx + heightPx
+}
+
+/**
+ * Pure scroll-offset solver for bringing a newly added, newly expanded, or validation-error
+ * card into the visible vertical scroll viewport inside a modal dialog.
+ */
+internal fun resolveGoalCardScrollOffset(
+    cardTopPx: Int,
+    cardHeightPx: Int,
+    viewportHeightPx: Int,
+    currentScrollPx: Int,
+    maxScrollPx: Int,
+    topPaddingPx: Int = 24
+): Int {
+    if (viewportHeightPx <= 0 || maxScrollPx <= 0 || cardHeightPx <= 0) {
+        return currentScrollPx.coerceIn(0, maxScrollPx.coerceAtLeast(0))
+    }
+    val cardBottomPx = cardTopPx + cardHeightPx
+    val visibleTopPx = currentScrollPx
+    val visibleBottomPx = currentScrollPx + viewportHeightPx
+
+    val desiredOffset = when {
+        // Card is taller than viewport or clipped above the top edge: align top edge
+        cardHeightPx >= viewportHeightPx || cardTopPx < visibleTopPx -> {
+            (cardTopPx - topPaddingPx).coerceAtLeast(0)
+        }
+        // Card extends below the visible bottom edge: scroll down so bottom (or top if needed) is visible
+        cardBottomPx > visibleBottomPx -> {
+            val alignBottomOffset = cardBottomPx - viewportHeightPx + topPaddingPx
+            val maxTopAlignedOffset = (cardTopPx - topPaddingPx).coerceAtLeast(0)
+            alignBottomOffset.coerceAtMost(maxTopAlignedOffset)
+        }
+        // Card is already completely within the visible viewport
+        else -> currentScrollPx
+    }
+    return desiredOffset.coerceIn(0, maxScrollPx)
 }
 
 internal fun collapseGoalDraftAt(
@@ -732,21 +807,38 @@ internal fun expandGoalDraftAt(
     targetIndex: Int
 ): List<GoalDraftState> {
     if (targetIndex !in drafts.indices) return drafts
-    val invalidOpenIndex = drafts.indexOfFirst { !it.isCollapsed && !it.hasValidTarget }
-    if (invalidOpenIndex != -1 && invalidOpenIndex != targetIndex) {
-        return drafts.mapIndexed { idx, draft ->
-            if (idx == invalidOpenIndex) draft.tryCollapse() else draft
+    val result = mutableListOf<GoalDraftState>()
+    drafts.forEachIndexed { idx, draft ->
+        when {
+            idx == targetIndex -> {
+                result.add(draft.expand())
+            }
+            !draft.isCollapsed && !draft.hasValidTarget -> {
+                when {
+                    draft.canRestoreValidTarget -> result.add(
+                        draft.copy(
+                            targetWeight = draft.lastValidTargetWeight,
+                            isCollapsed = true,
+                            showTargetError = false
+                        )
+                    )
+                    // Unsaved empty draft that never had a valid target:
+                    // omit from result to auto-discard cleanly without blocking expansion.
+                    draft.isDiscardableEmptyDraft -> Unit
+                    // Persisted goal (id != 0) without a restorable target: never silently
+                    // remove it from the list; collapse it so the user can still edit or delete it.
+                    else -> result.add(draft.copy(isCollapsed = true, showTargetError = false))
+                }
+            }
+            !draft.isCollapsed -> {
+                result.add(draft.copy(isCollapsed = true, showTargetError = false))
+            }
+            else -> {
+                result.add(draft)
+            }
         }
     }
-    return drafts.mapIndexed { idx, draft ->
-        if (idx == targetIndex) {
-            draft.expand()
-        } else if (!draft.isCollapsed) {
-            draft.copy(isCollapsed = true, showTargetError = false)
-        } else {
-            draft
-        }
-    }
+    return result
 }
 
 internal fun appendMovementGoalDraft(
@@ -1008,7 +1100,7 @@ private fun CollapsedGoalSummaryCard(
         shape = RoundedCornerShape(14.dp),
         modifier = modifier
             .fillMaxWidth()
-            .semantics(mergeDescendants = true) {
+            .semantics {
                 contentDescription = a11yDescription
             }
             .clickable(
@@ -1066,7 +1158,10 @@ private fun CollapsedGoalSummaryCard(
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 IconButton(
                     onClick = onDelete,
                     modifier = Modifier.size(36.dp)
@@ -1165,9 +1260,42 @@ fun CycleEditorDialog(
         }
     }
 
+    val scrollState = rememberScrollState()
+    var viewportHeightPx by remember { mutableIntStateOf(0) }
+    val cardBoundsMap = remember { mutableMapOf<Int, CardLayoutBounds>() }
+    var pendingScrollCardIndex by remember { mutableIntStateOf(-1) }
+    var scrollTriggerToken by remember { mutableIntStateOf(0) }
+
+    fun requestScrollToGoalCard(cardIndex: Int) {
+        if (cardIndex >= 0) {
+            pendingScrollCardIndex = cardIndex
+            scrollTriggerToken++
+        }
+    }
+
+    LaunchedEffect(scrollTriggerToken) {
+        if (scrollTriggerToken > 0 && pendingScrollCardIndex >= 0) {
+            repeat(2) { withFrameNanos { } }
+            val bounds = cardBoundsMap[pendingScrollCardIndex]
+            if (bounds != null) {
+                val targetOffset = resolveGoalCardScrollOffset(
+                    cardTopPx = bounds.topPx,
+                    cardHeightPx = bounds.heightPx,
+                    viewportHeightPx = viewportHeightPx,
+                    currentScrollPx = scrollState.value,
+                    maxScrollPx = scrollState.maxValue
+                )
+                if (targetOffset != scrollState.value) {
+                    scrollState.animateScrollTo(targetOffset)
+                }
+            }
+        }
+    }
+
     fun applyGoalDrafts(updated: List<GoalDraftState>) {
         goalDrafts.clear()
         goalDrafts.addAll(updated)
+        cardBoundsMap.keys.retainAll(0 until goalDrafts.size)
     }
 
     val startVal = startingWeightStr.replace(',', '.').toDoubleOrNull()
@@ -1180,7 +1308,11 @@ fun CycleEditorDialog(
         title = { Text(if (original == null) "New cycle" else "Edit cycle") },
         text = {
             Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
+                modifier = Modifier
+                    .onGloballyPositioned { coords ->
+                        viewportHeightPx = coords.size.height
+                    }
+                    .verticalScroll(scrollState),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 OutlinedTextField(
@@ -1385,12 +1517,18 @@ fun CycleEditorDialog(
                         applyGoalDrafts(updated)
                         if (wasAppended) {
                             val newIndex = goalDrafts.lastIndex
+                            requestScrollToGoalCard(newIndex)
                             if (defaultEx != null && (onFetchBestMetricValue != null || onFetchBestRm != null) && newIndex >= 0) {
                                 coroutineScope.launch {
                                     val best = resolveBestValue(defaultEx.id, defaultMetric, 1)
                                     val cur = goalDrafts.getOrNull(newIndex) ?: return@launch
                                     goalDrafts[newIndex] = cur.onExerciseChanged(defaultEx, best)
                                 }
+                            }
+                        } else {
+                            val errorIndex = updated.indexOfFirst { !it.isCollapsed && it.showTargetError }
+                            if (errorIndex >= 0) {
+                                requestScrollToGoalCard(errorIndex)
                             }
                         }
                     }) {
@@ -1408,6 +1546,12 @@ fun CycleEditorDialog(
                 }
 
                 goalDrafts.forEachIndexed { index, draft ->
+                    val cardPositionModifier = Modifier.onGloballyPositioned { coords ->
+                        cardBoundsMap[index] = CardLayoutBounds(
+                            topPx = coords.positionInParent().y.toInt(),
+                            heightPx = coords.size.height
+                        )
+                    }
                     if (draft.isCollapsed) {
                         CollapsedGoalSummaryCard(
                             index = index,
@@ -1415,15 +1559,21 @@ fun CycleEditorDialog(
                             onExpand = {
                                 val updated = expandGoalDraftAt(goalDrafts.toList(), index)
                                 applyGoalDrafts(updated)
+                                val expandedIndex = updated.indexOfFirst { !it.isCollapsed }
+                                if (expandedIndex >= 0) {
+                                    requestScrollToGoalCard(expandedIndex)
+                                }
                             },
                             onDelete = {
                                 goalDrafts.removeAt(index)
-                            }
+                                cardBoundsMap.keys.retainAll(0 until goalDrafts.size)
+                            },
+                            modifier = cardPositionModifier
                         )
                     } else {
                         OutlinedCard(
                             shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = cardPositionModifier.fillMaxWidth()
                         ) {
                             Column(
                                 modifier = Modifier
@@ -1460,6 +1610,8 @@ fun CycleEditorDialog(
                                                         applyGoalDrafts(updated)
                                                         if (updated.getOrNull(index)?.isCollapsed == true) {
                                                             keyboardController?.hide()
+                                                        } else if (updated.getOrNull(index)?.showTargetError == true) {
+                                                            requestScrollToGoalCard(index)
                                                         }
                                                     }
                                                 )
@@ -1473,7 +1625,10 @@ fun CycleEditorDialog(
                                             )
                                         }
                                         IconButton(
-                                            onClick = { goalDrafts.removeAt(index) },
+                                            onClick = {
+                                                goalDrafts.removeAt(index)
+                                                cardBoundsMap.keys.retainAll(0 until goalDrafts.size)
+                                            },
                                             modifier = Modifier.size(36.dp)
                                         ) {
                                             Icon(
@@ -1699,6 +1854,8 @@ fun CycleEditorDialog(
                                             applyGoalDrafts(updated)
                                             if (updated.getOrNull(index)?.isCollapsed == true) {
                                                 keyboardController?.hide()
+                                            } else if (updated.getOrNull(index)?.showTargetError == true) {
+                                                requestScrollToGoalCard(index)
                                             }
                                         }
                                     ),

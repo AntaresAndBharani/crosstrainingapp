@@ -18,8 +18,11 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
+import org.junit.Before
 import org.junit.Test
 import java.time.LocalDate
+import java.util.Locale
 
 /**
  * Unit tests verifying CyclesScreen Goal Dialog RM Auto-Fill, Modifier Chips,
@@ -27,6 +30,18 @@ import java.time.LocalDate
  * Progress Evaluation.
  */
 class CyclesScreenTest {
+
+    private val originalLocale: Locale = Locale.getDefault()
+
+    @Before
+    fun setUp() {
+        Locale.setDefault(Locale.US)
+    }
+
+    @After
+    fun tearDown() {
+        Locale.setDefault(originalLocale)
+    }
 
     private val backSquat = Exercise(
         id = 1L,
@@ -884,7 +899,7 @@ class CyclesScreenTest {
         assertTrue("Goal 1 must auto-collapse when Goal 2 is expanded", drafts[0].isCollapsed)
         assertFalse("Goal 2 must expand", drafts[1].isCollapsed)
 
-        // 3. Clearing Goal 2's target and attempting to tap Done ▲ or switch to Goal 1 blocks collapse
+        // 3. Clearing Goal 2's target and attempting to tap Done ▲ or + Movement blocks collapse/append
         drafts = drafts.toMutableList().also {
             it[1] = it[1].onTargetWeightChanged("")
         }
@@ -892,18 +907,19 @@ class CyclesScreenTest {
         assertFalse("Invalid card must remain expanded when Done ▲ is tapped", drafts[1].isCollapsed)
         assertTrue("Invalid card must display inline target error", drafts[1].showTargetError)
 
-        // Attempting to expand Goal 1 while Goal 2 has invalid target is also blocked
-        drafts = expandGoalDraftAt(drafts, 0)
-        assertTrue("Goal 1 must stay collapsed while Goal 2 has an invalid target", drafts[0].isCollapsed)
-        assertFalse("Goal 2 must stay expanded", drafts[1].isCollapsed)
-        assertTrue(drafts[1].showTargetError)
-
         // Attempting to tap + Movement while Goal 2 has invalid target is also blocked
         val newDraft = GoalDraftState(exercise = pullUps, goalMetric = MetricType.REPS)
         val (blockedList, wasAppendedBlocked) = appendMovementGoalDraft(drafts, newDraft)
         assertFalse("Adding a new movement goal must be blocked when open card has invalid target", wasAppendedBlocked)
         assertEquals(2, blockedList.size)
         assertTrue(blockedList[1].showTargetError)
+
+        // Expanding Goal 1 while Goal 2 was cleared never deadlocks: Goal 2 restores its last valid target ("45") and collapses
+        val switchedToGoal1 = expandGoalDraftAt(blockedList, 0)
+        assertFalse("Goal 1 must expand without deadlocking", switchedToGoal1[0].isCollapsed)
+        assertTrue("Goal 2 must collapse cleanly with restored valid target", switchedToGoal1[1].isCollapsed)
+        assertEquals("45", switchedToGoal1[1].targetWeight)
+        assertFalse(switchedToGoal1[1].showTargetError)
 
         // 4. Fixing Goal 2's target clears the error and allows + Movement to auto-collapse Goal 2 and append Goal 3 expanded
         drafts = blockedList.toMutableList().also {
@@ -1018,5 +1034,207 @@ class CyclesScreenTest {
         assertEquals(10.0, repsEval.baselineStartWeight, 0.001)
         assertEquals(15.0, repsEval.currentBest, 0.001)
         assertEquals(50, repsEval.progressPercent)
+    }
+
+    // =========================================================================
+    // SPEC-014 (T004 & T005): Non-Blocking Goal Expansion & Viewport Auto-Scroll
+    // =========================================================================
+
+    @Test
+    fun spec014_us1_expandGoalDraftAtAutoDiscardsOpenEmptyDraftAndNeverBlocksAfterTwoGoals() {
+        val frontSquat = Exercise(id = 6L, name = "Front Squat", unit = "kg")
+        val snatch = Exercise(id = 9L, name = "Snatch", unit = "kg")
+
+        // Reproduce the exact scenario from the bug report:
+        // Goal 1 (Front Squat, 3RM, Target 65 kg) and Goal 2 (Snatch, 2RM, Target 40 kg) are collapsed
+        val goal1 = GoalDraftState(
+            id = 0L,
+            exercise = frontSquat,
+            reps = "3",
+            targetWeight = "65",
+            goalMetric = MetricType.WEIGHT,
+            isCollapsed = true
+        )
+        val goal2 = GoalDraftState(
+            id = 0L,
+            exercise = snatch,
+            reps = "2",
+            targetWeight = "40",
+            goalMetric = MetricType.WEIGHT,
+            isCollapsed = true
+        )
+
+        // User taps "+ Add Movement", appending Goal 3 (Air Bike) with no historical record -> targetWeight = ""
+        val emptyNewDraft = GoalDraftState(
+            id = 0L,
+            exercise = airBike,
+            reps = "1",
+            goalMetric = MetricType.CALORIES,
+            isCollapsed = false
+        ).onExerciseChanged(airBike, bestWeight = null)
+        assertTrue(emptyNewDraft.isDiscardableEmptyDraft)
+
+        val (withGoal3, wasAppended) = appendMovementGoalDraft(listOf(goal1, goal2), emptyNewDraft)
+        assertTrue(wasAppended)
+        assertEquals(3, withGoal3.size)
+        assertFalse(withGoal3[2].hasValidTarget)
+        assertFalse(withGoal3[2].canRestoreValidTarget)
+
+        // When the user taps "▾" on Goal 1 (index 0), the untouched empty Goal 3 is auto-discarded
+        // and Goal 1 expands immediately instead of deadlocking!
+        val expandedGoal1 = expandGoalDraftAt(withGoal3, 0)
+        assertEquals(2, expandedGoal1.size)
+        assertFalse("Goal 1 must expand immediately", expandedGoal1[0].isCollapsed)
+        assertEquals(frontSquat, expandedGoal1[0].exercise)
+        assertTrue("Goal 2 remains collapsed", expandedGoal1[1].isCollapsed)
+        assertEquals(snatch, expandedGoal1[1].exercise)
+
+        // Similarly, if an untouched empty draft is at index 0 and the user expands Goal 2 at index 1,
+        // index 0 is auto-discarded and Goal 2 becomes the expanded item at index 0.
+        val emptyFirstList = listOf(emptyNewDraft, goal1, goal2)
+        val expandedAfterLeadingDiscard = expandGoalDraftAt(emptyFirstList, 2)
+        assertEquals(2, expandedAfterLeadingDiscard.size)
+        assertTrue("Goal 1 stays collapsed at new index 0", expandedAfterLeadingDiscard[0].isCollapsed)
+        assertFalse("Goal 2 expands at new index 1", expandedAfterLeadingDiscard[1].isCollapsed)
+        assertEquals(1, expandedAfterLeadingDiscard.indexOfFirst { !it.isCollapsed })
+    }
+
+    @Test
+    fun spec014_us1_expandGoalDraftAtRestoresLastValidTargetWeightWhenSwitchingAwayFromClearedCard() {
+        val frontSquat = Exercise(id = 6L, name = "Front Squat", unit = "kg")
+        val snatch = Exercise(id = 9L, name = "Snatch", unit = "kg")
+
+        val g1 = GoalDraftState(
+            id = 1L,
+            exercise = frontSquat,
+            reps = "3",
+            targetWeight = "65",
+            goalMetric = MetricType.WEIGHT,
+            isCollapsed = true
+        )
+        // Goal 2 starts empty, then gets a valid target via stepper / RM lookup, then user clears it to ""
+        val g2 = GoalDraftState(
+            id = 0L,
+            exercise = snatch,
+            reps = "2",
+            targetWeight = "",
+            goalMetric = MetricType.WEIGHT,
+            isCollapsed = false
+        )
+            .stepTarget(40.0)
+            .onTargetWeightChanged("")
+
+        assertFalse(g2.hasValidTarget)
+        assertTrue(g2.canRestoreValidTarget)
+        assertEquals("40", g2.lastValidTargetWeight)
+        assertFalse(g2.isDiscardableEmptyDraft)
+
+        // Tapping Goal 1 restores Goal 2's last valid target ("40"), collapses Goal 2, and expands Goal 1
+        val result = expandGoalDraftAt(listOf(g1, g2), 0)
+        assertEquals(2, result.size)
+        assertFalse("Goal 1 expands", result[0].isCollapsed)
+        assertTrue("Goal 2 collapses with restored target", result[1].isCollapsed)
+        assertEquals("40", result[1].targetWeight)
+        assertFalse(result[1].showTargetError)
+    }
+
+    @Test
+    fun spec014_us1_expandGoalDraftAtNeverDiscardsPersistedGoalWithoutRestorableTarget() {
+        val frontSquat = Exercise(id = 6L, name = "Front Squat", unit = "kg")
+        val g1 = GoalDraftState(
+            id = 1L,
+            exercise = frontSquat,
+            reps = "3",
+            targetWeight = "65",
+            goalMetric = MetricType.WEIGHT,
+            isCollapsed = true
+        )
+        // Legacy persisted goal (id != 0) loaded with targetWeight = 0.0 opens expanded with no restorable target
+        val legacy = GoalDraftState.fromCycleGoal(
+            CycleGoal(id = 7L, cycleId = 1L, exerciseId = backSquat.id, targetReps = 1, startWeight = 0.0, targetWeight = 0.0),
+            backSquat
+        )
+        assertFalse(legacy.isCollapsed)
+        assertFalse(legacy.canRestoreValidTarget)
+        assertFalse("Persisted goals are never discardable", legacy.isDiscardableEmptyDraft)
+
+        val result = expandGoalDraftAt(listOf(g1, legacy), 0)
+        assertEquals("Persisted goal must not be silently removed", 2, result.size)
+        assertFalse(result[0].isCollapsed)
+        assertTrue(result[1].isCollapsed)
+        assertEquals(7L, result[1].id)
+        assertFalse(result[1].showTargetError)
+    }
+
+    @Test
+    fun spec014_us1_changingMovementOrMetricWithoutHistoryDropsStaleRestorableTarget() {
+        val valid = GoalDraftState(exercise = backSquat, targetWeight = "100", goalMetric = MetricType.WEIGHT)
+        assertEquals("100", valid.lastValidTargetWeight)
+
+        // Switching metric (kg -> cal) without history must not later restore "100" as calories
+        val metricSwitched = valid.onGoalMetricChanged(MetricType.CALORIES, null)
+        assertEquals("", metricSwitched.targetWeight)
+        assertFalse(metricSwitched.canRestoreValidTarget)
+        assertTrue(metricSwitched.isDiscardableEmptyDraft)
+
+        // Switching movement without history must not restore the previous movement's target
+        val exerciseSwitched = valid.onExerciseChanged(airBike, null)
+        assertEquals("", exerciseSwitched.targetWeight)
+        assertFalse(exerciseSwitched.canRestoreValidTarget)
+
+        // Changing reps on the same movement/unit keeps the last valid target restorable
+        val repsChanged = valid.onRepsChanged("5", null)
+        assertEquals("", repsChanged.targetWeight)
+        assertTrue(repsChanged.canRestoreValidTarget)
+        assertEquals("100", repsChanged.lastValidTargetWeight)
+    }
+
+    @Test
+    fun spec014_us1_resolveGoalCardScrollOffsetScrollsClippedCardsIntoViewAndPreservesVisibleOnes() {
+        // 1. Newly added Goal 3 below Goal 1 & Goal 2 (clipped below the bottom of a 900px viewport)
+        // Viewport = 900px, currentScroll = 0, maxScroll = 800, cardTop = 920, cardHeight = 420 (bottom = 1340)
+        val offsetForGoal3 = resolveGoalCardScrollOffset(
+            cardTopPx = 920,
+            cardHeightPx = 420,
+            viewportHeightPx = 900,
+            currentScrollPx = 0,
+            maxScrollPx = 800,
+            topPaddingPx = 24
+        )
+        // alignBottomOffset = 1340 - 900 + 24 = 464 (keeps card bottom + 24px margin inside 900px viewport)
+        assertEquals(464, offsetForGoal3)
+
+        // 2. Card already fully visible inside viewport -> no scroll jump
+        val offsetWhenAlreadyVisible = resolveGoalCardScrollOffset(
+            cardTopPx = 500,
+            cardHeightPx = 180,
+            viewportHeightPx = 900,
+            currentScrollPx = 400,
+            maxScrollPx = 800,
+            topPaddingPx = 24
+        )
+        assertEquals(400, offsetWhenAlreadyVisible)
+
+        // 3. Card clipped above the top of the viewport (e.g. scrolling back up to an expanded/error Goal 1)
+        val offsetWhenClippedAbove = resolveGoalCardScrollOffset(
+            cardTopPx = 200,
+            cardHeightPx = 380,
+            viewportHeightPx = 900,
+            currentScrollPx = 450,
+            maxScrollPx = 800,
+            topPaddingPx = 24
+        )
+        assertEquals(176, offsetWhenClippedAbove)
+
+        // 4. Card taller than the viewport -> aligns top edge (cardTop - topPadding)
+        val offsetWhenTallerThanViewport = resolveGoalCardScrollOffset(
+            cardTopPx = 600,
+            cardHeightPx = 950,
+            viewportHeightPx = 800,
+            currentScrollPx = 100,
+            maxScrollPx = 1000,
+            topPaddingPx = 24
+        )
+        assertEquals(576, offsetWhenTallerThanViewport)
     }
 }
