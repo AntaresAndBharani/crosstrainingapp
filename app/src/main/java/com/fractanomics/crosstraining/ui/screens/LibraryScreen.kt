@@ -77,8 +77,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -1090,6 +1093,31 @@ private fun RoutineEditorDialog(
         initialBlocks.toMutableStateList()
     }
 
+    val scrollState = rememberScrollState()
+    var viewportHeightPx by remember { mutableIntStateOf(0) }
+    val blockBoundsMap = remember { mutableMapOf<Int, CardLayoutBounds>() }
+    var pendingScrollBlockIndex by remember { mutableIntStateOf(-1) }
+    var scrollTriggerToken by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(scrollTriggerToken) {
+        if (scrollTriggerToken > 0 && pendingScrollBlockIndex >= 0) {
+            repeat(2) { withFrameNanos { } }
+            val bounds = blockBoundsMap[pendingScrollBlockIndex]
+            if (bounds != null) {
+                val targetOffset = resolveGoalCardScrollOffset(
+                    cardTopPx = bounds.topPx,
+                    cardHeightPx = bounds.heightPx,
+                    viewportHeightPx = viewportHeightPx,
+                    currentScrollPx = scrollState.value,
+                    maxScrollPx = scrollState.maxValue
+                )
+                if (targetOffset != scrollState.value) {
+                    scrollState.animateScrollTo(targetOffset)
+                }
+            }
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (original == null) "New Daily Routine" else "Edit Daily Routine") },
@@ -1097,7 +1125,10 @@ private fun RoutineEditorDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .onGloballyPositioned { coords ->
+                        viewportHeightPx = coords.size.height
+                    }
+                    .verticalScroll(scrollState),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 OutlinedTextField(
@@ -1118,7 +1149,16 @@ private fun RoutineEditorDialog(
                 Text("Routine Blocks", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
 
                 blockStates.forEachIndexed { index, block ->
-                    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    ElevatedCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onGloballyPositioned { coords ->
+                                blockBoundsMap[index] = CardLayoutBounds(
+                                    topPx = coords.positionInParent().y.toInt(),
+                                    heightPx = coords.size.height
+                                )
+                            }
+                    ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1132,7 +1172,10 @@ private fun RoutineEditorDialog(
                             ) {
                                 Text("Block ${index + 1}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                 IconButton(
-                                    onClick = { blockStates.removeAt(index) },
+                                    onClick = {
+                                        blockStates.removeAt(index)
+                                        blockBoundsMap.keys.retainAll(0 until blockStates.size)
+                                    },
                                     enabled = blockStates.size > 1
                                 ) {
                                     Icon(Icons.Filled.Close, contentDescription = "Remove block")
@@ -1432,6 +1475,8 @@ private fun RoutineEditorDialog(
                                 kind = BlockKind.WEIGHTLIFTING
                             )
                         )
+                        pendingScrollBlockIndex = blockStates.lastIndex
+                        scrollTriggerToken++
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
