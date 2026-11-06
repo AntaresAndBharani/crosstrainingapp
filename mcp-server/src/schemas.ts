@@ -41,46 +41,65 @@ export const GoalMetricValues = [
   "REPS",
 ] as const;
 
-export const ExerciseCategorySchema = z
-  .enum(ExerciseCategoryValues)
-  .describe("Movement classification: BARBELL, GYMNASTICS, MACHINE, ACCESSORY, or OTHER");
+// Always return a fresh Zod schema instance from helper factories so `zod-to-json-schema`
+// never deduplicates shared references into `"$ref": "#/properties/..."` (which Gemini rejects).
+const exerciseCategorySchema = () =>
+  z
+    .enum(ExerciseCategoryValues)
+    .describe("Movement classification: BARBELL, GYMNASTICS, MACHINE, ACCESSORY, or OTHER");
 
-export const MetricTypeSchema = z
-  .enum(MetricTypeValues)
-  .describe("Primary measurement type: WEIGHT, CALORIES, DISTANCE, TIME, or REPS");
+const metricTypeSchema = () =>
+  z
+    .enum(MetricTypeValues)
+    .describe("Primary measurement type: WEIGHT, CALORIES, DISTANCE, TIME, or REPS");
 
-export const BlockKindSchema = z
-  .enum(BlockKindValues)
-  .describe("Block role within a workout or routine");
+const blockKindSchema = () =>
+  z
+    .enum(BlockKindValues)
+    .describe("Block role within a workout or routine");
 
-export const CycleTypeSchema = z
-  .enum(CycleTypeValues)
-  .describe("Training cycle orientation: STRENGTH_WEIGHTLIFTING or FAT_LOSS_BODYBUILDING");
+const goalMetricSchema = () =>
+  z
+    .enum(GoalMetricValues)
+    .describe("Cycle goal metric: WEIGHT, CALORIES, or REPS");
 
-export const GoalMetricSchema = z
-  .enum(GoalMetricValues)
-  .describe("Cycle goal metric: WEIGHT, CALORIES, or REPS");
+/** True only for a real calendar date in strict `YYYY-MM-DD` form (rejects `2026-02-30`, `2026-1-5`). */
+export function isValidIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const ms = Date.parse(`${value}T00:00:00Z`);
+  return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 10) === value;
+}
 
-export const IsoDateSchema = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD ISO date format")
-  .describe("Date in YYYY-MM-DD format");
+// Runtime validation uses `.refine()` instead of `.regex()`: refinements are enforced by Zod on
+// every tools/call but emit no JSON Schema keyword, so the advertised tool schema stays a plain
+// `{"type":"string"}` that every connector (Gemini, Claude, ChatGPT) accepts.
+const isoDateSchema = () =>
+  z
+    .string()
+    .refine(isValidIsoDate, "Expected a valid YYYY-MM-DD ISO date")
+    .describe("Date in YYYY-MM-DD format");
+
+export const ExerciseCategorySchema = exerciseCategorySchema();
+export const MetricTypeSchema = metricTypeSchema();
+export const BlockKindSchema = blockKindSchema();
+export const GoalMetricSchema = goalMetricSchema();
+export const IsoDateSchema = isoDateSchema();
 
 // ============================================================================
-// Tool Input Schemas (Gemini / Claude / ChatGPT Compatible)
+// Tool Input Schemas (Gemini / Claude / ChatGPT Compatible — Zero $ref, Zero exclusiveMinimum)
 // ============================================================================
 
 export const UpsertExerciseInputSchema = {
   name: z.string().min(1).max(200).describe("Canonical exercise name, e.g. 'Back Squat' or 'Snatch'"),
-  category: ExerciseCategorySchema.optional().describe("Movement category (defaults to BARBELL)"),
-  metricType: MetricTypeSchema.optional().describe("Primary metric type (defaults to WEIGHT)"),
+  category: exerciseCategorySchema().optional().describe("Movement category (defaults to BARBELL)"),
+  metricType: metricTypeSchema().optional().describe("Primary metric type (defaults to WEIGHT)"),
   unit: z.string().max(20).optional().describe("Display unit, e.g. 'kg', 'cal', 'm', 'sec', 'reps'"),
   tracksRepMax: z.boolean().optional().describe("Whether this movement tracks 1RM/3RM/5RM personal records"),
 };
 
 export const RoutineBlockInputSchema = z.object({
   name: z.string().min(1).max(300).describe("Block title, e.g. 'Snatch Waves' or 'Conditioning AMRAP'"),
-  kind: BlockKindSchema.optional().describe("Block type (defaults to WEIGHTLIFTING)"),
+  kind: blockKindSchema().optional().describe("Block type (defaults to WEIGHTLIFTING)"),
   format: z.string().max(200).optional().describe("Format string, e.g. 'E2MOM', 'AMRAP 12', '4 Sets'"),
   setsCount: z.number().int().min(1).max(100).optional().describe("Number of sets in this block"),
   targetRepsScheme: z.string().max(200).optional().describe("Target rep scheme, e.g. '5-5-3-3-1' or '10'"),
@@ -114,7 +133,7 @@ export const SessionSetInputSchema = z.object({
 
 export const SessionBlockInputSchema = z.object({
   name: z.string().min(1).max(300).describe("Block title, e.g. 'Back Squat 5x5' or 'Fran'"),
-  kind: BlockKindSchema.optional().describe("Block kind (defaults to WEIGHTLIFTING)"),
+  kind: blockKindSchema().optional().describe("Block kind (defaults to WEIGHTLIFTING)"),
   format: z.string().max(200).optional().describe("Format, e.g. 'E3MOM', 'For Time', 'AMRAP 15'"),
   scheme: z.string().max(200).optional().describe("Rep scheme, e.g. '5-5-5-5-5' or '21-15-9'"),
   mainExerciseName: z.string().max(200).optional().describe("Primary exercise name tracked in this block"),
@@ -130,7 +149,7 @@ export const SessionBlockInputSchema = z.object({
 });
 
 export const UpsertSessionInputSchema = {
-  date: IsoDateSchema.describe("Workout date in YYYY-MM-DD format"),
+  date: isoDateSchema().describe("Workout date in YYYY-MM-DD format"),
   title: z.string().min(1).max(300).describe("Session title, e.g. 'Lower Body Strength' or 'Monday Session'"),
   notes: z.string().max(2000).optional().describe("Overall session notes, readiness, or feedback"),
   cycleId: z.number().int().min(0).optional().describe("Cycle ID (defaults to 1 for active cycle)"),
@@ -139,19 +158,19 @@ export const UpsertSessionInputSchema = {
 };
 
 export const ListSessionsInputSchema = {
-  startDate: IsoDateSchema.optional().describe("Optional start date filter (YYYY-MM-DD, inclusive)"),
-  endDate: IsoDateSchema.optional().describe("Optional end date filter (YYYY-MM-DD, inclusive)"),
+  startDate: isoDateSchema().optional().describe("Optional start date filter (YYYY-MM-DD, inclusive)"),
+  endDate: isoDateSchema().optional().describe("Optional end date filter (YYYY-MM-DD, inclusive)"),
   limit: z.number().int().min(1).max(200).optional().describe("Max sessions to return (default 30)"),
 };
 
 export const DeleteSessionInputSchema = {
-  date: IsoDateSchema.describe("Workout date in YYYY-MM-DD format"),
+  date: isoDateSchema().describe("Workout date in YYYY-MM-DD format"),
   title: z.string().min(1).max(300).describe("Exact title of the workout session to delete"),
 };
 
 export const UpsertCycleGoalInputSchema = {
   exerciseName: z.string().min(1).max(200).describe("Target exercise name, e.g. 'Snatch', 'Back Squat', 'Air Bike'"),
-  goalMetric: GoalMetricSchema.optional().describe("Goal metric: WEIGHT (default), CALORIES, or REPS"),
+  goalMetric: goalMetricSchema().optional().describe("Goal metric: WEIGHT (default), CALORIES, or REPS"),
   targetReps: z.number().int().min(1).max(100).optional().describe("Rep max target when goalMetric is WEIGHT (e.g. 1 for 1RM, 5 for 5RM)"),
   timeWindowMinutes: z.number().int().min(1).max(60).optional().describe("Time window in minutes (1, 3, or 5) for CALORIES/REPS goals; omit for Open"),
   startWeight: z.number().min(0).max(2000).optional().describe("Starting baseline value (kg, cal, or reps)"),
@@ -170,23 +189,23 @@ export const DeleteCycleGoalInputSchema = {
 export const RecordRepMaxInputSchema = {
   exerciseName: z.string().min(1).max(200).describe("Exercise name, e.g. 'Clean & Jerk'"),
   reps: z.number().int().min(1).max(100).describe("Repetition count (e.g. 1 for 1RM, 3 for 3RM, 5 for 5RM)"),
-  weight: z.number().positive().max(2000).describe("Weight lifted in kg"),
-  date: IsoDateSchema.optional().describe("Date achieved in YYYY-MM-DD format (defaults to today)"),
+  weight: z.number().min(0.1).max(2000).describe("Weight lifted in kg"),
+  date: isoDateSchema().optional().describe("Date achieved in YYYY-MM-DD format (defaults to today)"),
   cycleId: z.number().int().min(1).optional().describe("Optional training cycle ID"),
 };
 
 export const UpsertWeightEntryInputSchema = {
-  date: IsoDateSchema.optional().describe("Date in YYYY-MM-DD format (defaults to today)"),
-  weightKg: z.number().positive().max(500).describe("Body weight in kilograms"),
+  date: isoDateSchema().optional().describe("Date in YYYY-MM-DD format (defaults to today)"),
+  weightKg: z.number().min(0.1).max(500).describe("Body weight in kilograms"),
   notes: z.string().max(500).optional().describe("Optional weigh-in notes"),
 };
 
 export const DeleteWeightEntryInputSchema = {
-  date: IsoDateSchema.describe("Date of the body weight entry to delete (YYYY-MM-DD)"),
+  date: isoDateSchema().describe("Date of the body weight entry to delete (YYYY-MM-DD)"),
 };
 
 export const UpsertDailyLogInputSchema = {
-  date: IsoDateSchema.optional().describe("Date in YYYY-MM-DD format (defaults to today)"),
+  date: isoDateSchema().optional().describe("Date in YYYY-MM-DD format (defaults to today)"),
   fastCompleted: z.boolean().optional().describe("Whether scheduled intermittent fast was completed"),
   isRestDay: z.boolean().optional().describe("Whether this day is a rest/recovery day"),
   caloriesKcal: z.number().int().min(0).max(20000).optional().describe("Total daily energy intake in kcal"),
@@ -197,8 +216,8 @@ export const UpsertDailyLogInputSchema = {
 };
 
 export const ListDateRangeInputSchema = {
-  startDate: IsoDateSchema.optional().describe("Start date filter (YYYY-MM-DD, inclusive)"),
-  endDate: IsoDateSchema.optional().describe("End date filter (YYYY-MM-DD, inclusive)"),
+  startDate: isoDateSchema().optional().describe("Start date filter (YYYY-MM-DD, inclusive)"),
+  endDate: isoDateSchema().optional().describe("End date filter (YYYY-MM-DD, inclusive)"),
 };
 
 /**

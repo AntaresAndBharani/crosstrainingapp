@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import type { Request, Response, NextFunction, Router } from "express";
 import express from "express";
 import type { AppEnv, UserContext } from "./store.js";
@@ -250,8 +251,19 @@ export class OAuthServer {
     );
   }
 
+  private hashClientId(clientId: string): string {
+    return base64UrlEncode(
+      crypto.createHash("sha256").update(clientId).digest().subarray(0, 16)
+    );
+  }
+
   private encodeClientId(reg: ClientRegistration): string {
-    const body = base64UrlEncode(JSON.stringify(reg));
+    const jsonBytes = Buffer.from(JSON.stringify(reg), "utf8");
+    const compressed = zlib.deflateRawSync(jsonBytes);
+    const body =
+      compressed.length < jsonBytes.length
+        ? `z_${base64UrlEncode(compressed)}`
+        : base64UrlEncode(jsonBytes);
     return `ct_client_${body}.${this.hmac("client_id", body)}`;
   }
 
@@ -261,7 +273,10 @@ export class OAuthServer {
     if (!body || !sig || extra !== undefined) return null;
     if (!safeEqual(sig, this.hmac("client_id", body))) return null;
     try {
-      const reg = JSON.parse(base64UrlDecode(body).toString("utf8")) as ClientRegistration;
+      const rawJson = body.startsWith("z_")
+        ? zlib.inflateRawSync(base64UrlDecode(body.slice(2)), { maxOutputLength: 16384 }).toString("utf8")
+        : base64UrlDecode(body).toString("utf8");
+      const reg = JSON.parse(rawJson) as ClientRegistration;
       if (!Array.isArray(reg.r) || typeof reg.m !== "string") return null;
       return reg;
     } catch {
@@ -301,7 +316,7 @@ export class OAuthServer {
     } catch {
       return "Malformed client credentials";
     }
-    if (!creds.clientId || creds.clientId !== expectedClientId) {
+    if (!creds.clientId || (creds.clientId !== expectedClientId && this.hashClientId(creds.clientId) !== expectedClientId)) {
       return "client_id does not match the client the grant was issued to";
     }
     const reg = this.decodeClientId(creds.clientId);
@@ -616,7 +631,7 @@ export class OAuthServer {
               email: record.email,
               env: record.env,
               type: "access",
-              clientId: record.clientId,
+              clientId: this.hashClientId(record.clientId),
               iat: nowSec,
               exp: accessExp,
             },
@@ -629,7 +644,7 @@ export class OAuthServer {
               email: record.email,
               env: record.env,
               type: "refresh",
-              clientId: record.clientId,
+              clientId: this.hashClientId(record.clientId),
               iat: nowSec,
               exp: refreshExp,
             },
