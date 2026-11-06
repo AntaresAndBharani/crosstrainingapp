@@ -545,7 +545,9 @@ object UserCloudSyncManager {
                                             "setsCount" to b.setsCount,
                                             "targetRepsScheme" to b.targetRepsScheme,
                                             "exerciseIdsCsv" to b.exerciseIdsCsv,
-                                            "notes" to b.notes
+                                            "notes" to b.notes,
+                                            "section" to b.section,
+                                            "subBlock" to b.subBlock
                                         )
                                     }
                                 )
@@ -587,6 +589,9 @@ object UserCloudSyncManager {
                                                 "resultText" to sb.block.resultText,
                                                 "resultValue" to sb.block.resultValue,
                                                 "notes" to sb.block.notes,
+                                                "section" to sb.block.section,
+                                                "exerciseIdsCsv" to sb.block.exerciseIdsCsv,
+                                                "subBlock" to sb.block.subBlock,
                                                 "isCompleted" to sb.block.isCompleted
                                             ),
                                             "sets" to sb.sets.map { st ->
@@ -741,7 +746,23 @@ object UserCloudSyncManager {
         }
     }
 
-    suspend fun downloadUserData(repo: Repository): Result<Unit> {
+    /**
+     * Downloads the signed-in user's cloud collections into the local [repo].
+     *
+     * @param importUnmarkedRemoteRecords When `true` (default — login / device-restore flows), every
+     * remote exercise, routine, session, cycle goal and rep max missing locally is imported. When
+     * `false` (manual [com.fractanomics.crosstraining.ui.AppViewModel.triggerCloudSync], which runs
+     * download *before* upload), only records carrying an `updatedAtMillis` stamp are imported or
+     * applied in place. The Android upload payload never writes `updatedAtMillis` for these five
+     * collections, so the stamp identifies pending remote (MCP server) edits; unstamped remote
+     * records are this device's own last upload, and re-importing them would resurrect rows the user
+     * deleted locally (these collections have no tombstones) or overwrite newer local edits.
+     * Weight entries and daily logs always use their tombstone-aware Last-Write-Wins merge.
+     */
+    suspend fun downloadUserData(
+        repo: Repository,
+        importUnmarkedRemoteRecords: Boolean = true
+    ): Result<Unit> {
         val testHandler = downloadUserDataHandler
         if (testHandler != null) {
             return testHandler(repo)
@@ -819,14 +840,58 @@ object UserCloudSyncManager {
                     }
                 }
 
-                // 1. Download Exercises
+                // Pending remote (MCP) edits carry an updatedAtMillis stamp; see KDoc above.
+                // A legacy-account migration is always a full import.
+                val importAllRemoteRecords = importUnmarkedRemoteRecords || isMigratedFromLegacy
+                fun shouldImport(map: Map<String, Any>?): Boolean =
+                    importAllRemoteRecords || map?.get("updatedAtMillis") != null
+
+                // 1. Download Exercises & Build Remote-to-Local Exercise Mapping
+                val remoteExerciseIdToLocalId = mutableMapOf<Long, Long>()
                 if (exList.isNotEmpty()) {
+                    val localExercises = if (importAllRemoteRecords) emptyList() else repo.getAllExercisesOnce()
                     exList.forEach { map ->
                         val name = map["name"] as? String ?: return@forEach
                         val category = runCatching { ExerciseCategory.valueOf(map["category"] as String) }.getOrDefault(ExerciseCategory.BARBELL)
                         val metricType = runCatching { MetricType.valueOf(map["metricType"] as String) }.getOrDefault(MetricType.WEIGHT)
-                        repo.getOrCreateExercise(name, category, metricType)
+                        val localEx = if (shouldImport(map)) {
+                            repo.getOrCreateExercise(name, category, metricType)
+                        } else {
+                            // Map onto an existing local exercise only; never resurrect a locally deleted one.
+                            localExercises.firstOrNull { it.name.trim().equals(name.trim(), ignoreCase = true) }
+                                ?: return@forEach
+                        }
+                        val remoteId = (map["id"] as? Number)?.toLong()
+                        if (remoteId != null) {
+                            remoteExerciseIdToLocalId[remoteId] = localEx.id
+                        }
                     }
+                }
+
+                suspend fun resolveLocalExerciseId(rawId: Long?, rawName: String?): Long? {
+                    if (!rawName.isNullOrBlank()) {
+                        return repo.getOrCreateExercise(rawName.trim()).id
+                    }
+                    if (rawId != null) {
+                        return remoteExerciseIdToLocalId[rawId] ?: rawId
+                    }
+                    return null
+                }
+
+                suspend fun resolveExerciseCsv(idsCsv: String?, namesCsv: String?): String {
+                    if (!namesCsv.isNullOrBlank()) {
+                        val ids = namesCsv.split(",")
+                            .mapNotNull { n -> n.trim().takeIf { it.isNotEmpty() } }
+                            .map { name -> repo.getOrCreateExercise(name).id }
+                        if (ids.isNotEmpty()) return ids.joinToString(",")
+                    }
+                    if (!idsCsv.isNullOrBlank()) {
+                        return idsCsv.split(",")
+                            .mapNotNull { s -> s.trim().toLongOrNull() }
+                            .map { id -> remoteExerciseIdToLocalId[id] ?: id }
+                            .joinToString(",")
+                    }
+                    return ""
                 }
 
                 // 2. Download Routines
@@ -834,13 +899,24 @@ object UserCloudSyncManager {
                     routList.forEach { rwbMap ->
                         @Suppress("UNCHECKED_CAST")
                         val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
+                        // saveRoutineWithBlocks upserts by name, so an unstamped (stale) remote copy would
+                        // overwrite newer local edits or resurrect a locally deleted routine.
+                        if (!shouldImport(rMap)) return@forEach
                         val name = rMap["name"] as? String ?: return@forEach
                         val description = rMap["description"] as? String ?: ""
                         val defaultFormat = rMap["defaultFormat"] as? String ?: ""
+                        val mainExId = resolveLocalExerciseId(
+                            (rMap["mainExerciseId"] as? Number)?.toLong(),
+                            rMap["mainExerciseName"] as? String
+                        )
 
                         @Suppress("UNCHECKED_CAST")
                         val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
                         val blocks = bList.mapIndexed { idx, bMap ->
+                            val resolvedCsv = resolveExerciseCsv(
+                                bMap["exerciseIdsCsv"] as? String,
+                                bMap["exerciseNamesCsv"] as? String
+                            )
                             RoutineBlock(
                                 id = 0,
                                 routineId = 0,
@@ -850,29 +926,55 @@ object UserCloudSyncManager {
                                 format = bMap["format"] as? String ?: "",
                                 setsCount = (bMap["setsCount"] as? Number)?.toInt() ?: 1,
                                 targetRepsScheme = bMap["targetRepsScheme"] as? String ?: "",
-                                exerciseIdsCsv = bMap["exerciseIdsCsv"] as? String ?: "",
-                                notes = bMap["notes"] as? String ?: ""
+                                exerciseIdsCsv = resolvedCsv,
+                                notes = bMap["notes"] as? String ?: "",
+                                section = bMap["section"] as? String ?: "",
+                                subBlock = bMap["subBlock"] as? String ?: ""
                             )
                         }
-                        repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
+                        repo.saveRoutineWithBlocks(
+                            Routine(name = name, description = description, mainExerciseId = mainExId, defaultFormat = defaultFormat),
+                            blocks
+                        )
                     }
                     repo.cleanupDuplicateRoutines()
                 }
 
-                // 3. Download Cycle Goals
+                // 3. Download Cycle Goals (Upsert in place when matching goal exists)
                 if (goalsList.isNotEmpty()) {
+                    val existingGoals = repo.snapshotCycleGoals().toMutableList()
                     goalsList.forEach { map ->
+                        if (!shouldImport(map)) return@forEach
                         val cycleId = (map["cycleId"] as? Number)?.toLong() ?: return@forEach
-                        val exerciseId = (map["exerciseId"] as? Number)?.toLong() ?: return@forEach
+                        val exerciseId = resolveLocalExerciseId(
+                            (map["exerciseId"] as? Number)?.toLong(),
+                            map["exerciseName"] as? String
+                        ) ?: return@forEach
                         val targetReps = (map["targetReps"] as? Number)?.toInt() ?: 1
                         val startWeight = (map["startWeight"] as? Number)?.toDouble() ?: 0.0
                         val targetWeight = (map["targetWeight"] as? Number)?.toDouble() ?: 0.0
                         val notes = map["notes"] as? String ?: ""
-                        repo.saveCycleGoal(com.fractanomics.crosstraining.data.model.CycleGoal(cycleId = cycleId, exerciseId = exerciseId, targetReps = targetReps, startWeight = startWeight, targetWeight = targetWeight, notes = notes))
+
+                        val existing = existingGoals.find {
+                            it.cycleId == cycleId && it.exerciseId == exerciseId && it.targetReps == targetReps
+                        }
+                        val goalToSave = com.fractanomics.crosstraining.data.model.CycleGoal(
+                            id = existing?.id ?: 0L,
+                            cycleId = cycleId,
+                            exerciseId = exerciseId,
+                            targetReps = targetReps,
+                            startWeight = startWeight,
+                            targetWeight = targetWeight,
+                            notes = notes
+                        )
+                        val savedId = repo.saveCycleGoal(goalToSave)
+                        if (existing == null) {
+                            existingGoals.add(goalToSave.copy(id = savedId))
+                        }
                     }
                 }
 
-                // 4. Download Sessions & Logs (Workouts)
+                // 4. Download Sessions & Logs (Workouts — Upsert when updatedAtMillis is present)
                 if (sessList.isNotEmpty()) {
                     val existingSessions = repo.getAllSessionsWithBlocksOnce()
                     sessList.forEach { swbMap ->
@@ -883,9 +985,14 @@ object UserCloudSyncManager {
                         val title = sMap["title"] as? String ?: ""
                         val notes = sMap["notes"] as? String ?: ""
                         val cycleId = (sMap["cycleId"] as? Number)?.toLong() ?: 0L
+                        val hasRemoteUpdateTimestamp = sMap["updatedAtMillis"] != null
 
-                        val alreadyExists = existingSessions.any { it.session.date == date && it.session.title == title }
-                        if (!alreadyExists) {
+                        val existingSession = existingSessions.find {
+                            it.session.date == date && it.session.title.equals(title, ignoreCase = true)
+                        }
+                        // Do not resurrect a session the user deleted locally since the last upload.
+                        if (existingSession == null && !shouldImport(sMap)) return@forEach
+                        if (existingSession == null || hasRemoteUpdateTimestamp) {
                             @Suppress("UNCHECKED_CAST")
                             val bList = swbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
                             val blockInserts = bList.mapIndexed { bIdx, bMapRaw ->
@@ -897,6 +1004,14 @@ object UserCloudSyncManager {
                                     null -> true
                                     else -> true
                                 }
+                                val resolvedMainExId = resolveLocalExerciseId(
+                                    (bMap["mainExerciseId"] as? Number)?.toLong(),
+                                    bMap["mainExerciseName"] as? String
+                                )
+                                val resolvedExCsv = resolveExerciseCsv(
+                                    bMap["exerciseIdsCsv"] as? String,
+                                    bMap["exerciseNamesCsv"] as? String
+                                )
                                 val block = SessionBlock(
                                     id = 0,
                                     sessionId = 0,
@@ -905,12 +1020,15 @@ object UserCloudSyncManager {
                                     kind = runCatching { BlockKind.valueOf(bMap["kind"] as String) }.getOrDefault(BlockKind.WEIGHTLIFTING),
                                     format = bMap["format"] as? String ?: "",
                                     scheme = bMap["scheme"] as? String ?: "",
-                                    mainExerciseId = (bMap["mainExerciseId"] as? Number)?.toLong(),
+                                    mainExerciseId = resolvedMainExId,
                                     routineId = (bMap["routineId"] as? Number)?.toLong(),
                                     description = bMap["description"] as? String ?: "",
                                     resultText = bMap["resultText"] as? String ?: "",
                                     resultValue = (bMap["resultValue"] as? Number)?.toDouble(),
                                     notes = bMap["notes"] as? String ?: "",
+                                    section = bMap["section"] as? String ?: "",
+                                    exerciseIdsCsv = resolvedExCsv,
+                                    subBlock = bMap["subBlock"] as? String ?: "",
                                     isCompleted = isCompleted
                                 )
                                 @Suppress("UNCHECKED_CAST")
@@ -931,7 +1049,17 @@ object UserCloudSyncManager {
                                 }
                                 com.fractanomics.crosstraining.data.BlockInsert(block = block, sets = sets)
                             }
-                            repo.saveSession(Session(id = 0, cycleId = cycleId, date = date, title = title, notes = notes), blockInserts)
+                            if (existingSession == null) {
+                                repo.saveSession(
+                                    Session(id = 0, cycleId = cycleId, date = date, title = title, notes = notes),
+                                    blockInserts
+                                )
+                            } else {
+                                repo.updateSession(
+                                    existingSession.session.copy(cycleId = cycleId, title = title, notes = notes),
+                                    blockInserts
+                                )
+                            }
                         }
                     }
                 }
@@ -940,7 +1068,11 @@ object UserCloudSyncManager {
                 if (rmList.isNotEmpty()) {
                     val existingRms = repo.exportSnapshot().repMaxes
                     rmList.forEach { map ->
-                        val exerciseId = (map["exerciseId"] as? Number)?.toLong() ?: return@forEach
+                        if (!shouldImport(map)) return@forEach
+                        val exerciseId = resolveLocalExerciseId(
+                            (map["exerciseId"] as? Number)?.toLong(),
+                            map["exerciseName"] as? String
+                        ) ?: return@forEach
                         val reps = (map["reps"] as? Number)?.toInt() ?: return@forEach
                         val weight = (map["weight"] as? Number)?.toDouble() ?: return@forEach
                         val dateStr = map["date"] as? String ?: return@forEach

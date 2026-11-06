@@ -562,7 +562,9 @@ class FakeSampleAppDatabase : AppDatabase() {
         }
 
         override suspend fun deleteBlocksForSession(sessionId: Long) {
+            val removedBlockIds = blocksStorage.filter { it.sessionId == sessionId }.map { it.id }.toSet()
             blocksStorage.removeAll { it.sessionId == sessionId }
+            setsStorage.removeAll { it.blockId in removedBlockIds }
         }
 
         override suspend fun deleteAllSets() {

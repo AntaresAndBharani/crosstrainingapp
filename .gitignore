@@ -53,3 +53,8 @@ logs/local-pipeline/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Node.js / MCP Server
+node_modules/
+mcp-server/dist/
+.env

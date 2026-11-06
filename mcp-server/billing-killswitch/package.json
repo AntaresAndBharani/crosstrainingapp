@@ -1,0 +1,10 @@
+{
+  "name": "virgymia-billing-killswitch",
+  "version": "1.0.0",
+  "description": "Automated GCP Pub/Sub Budget Kill-Switch that unlinks billing from virgymia-c2cc7 if costAmount >= budgetAmount",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
