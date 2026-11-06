@@ -55,13 +55,16 @@ $killSwitchSa = "$killSwitchSaName@$ProjectId.iam.gserviceaccount.com"
 $jwtSecretName = "mcp-jwt-secret"
 
 Write-Host "=== 3b. Granting Cloud Build & Runtime IAM Roles to $runtimeSa ===" -ForegroundColor Cyan
+# The default compute SA is both the Cloud Build identity for `gcloud run deploy --source` and the
+# MCP server runtime identity. Firebase ID-token verification (verifyIdToken without checkRevoked)
+# uses Google's public signing keys and needs no IAM role, so roles/firebaseauth.admin is NOT granted
+# to this internet-facing runtime identity.
 $runtimeRoles = @(
     "roles/cloudbuild.builds.builder",
     "roles/storage.admin",
     "roles/artifactregistry.writer",
     "roles/logging.logWriter",
-    "roles/datastore.user",
-    "roles/firebaseauth.admin"
+    "roles/datastore.user"
 )
 foreach ($role in $runtimeRoles) {
     gcloud projects add-iam-policy-binding $ProjectId `
@@ -69,23 +72,33 @@ foreach ($role in $runtimeRoles) {
         --role=$role `
         --condition=None `
         --quiet | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to grant $role to $runtimeSa." }
 }
 
 Write-Host "=== 4. Creating Pub/Sub Topic '$BudgetTopic' & Provisioning Service Agent ===" -ForegroundColor Cyan
 $existingTopics = gcloud pubsub topics list --project=$ProjectId --format="value(name)" --quiet
 if (-not ($existingTopics -match "/topics/$BudgetTopic$")) {
     gcloud pubsub topics create $BudgetTopic --project=$ProjectId --quiet
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create Pub/Sub topic '$BudgetTopic'." }
 }
+
+# Builds REST headers from a fresh gcloud access token. Content-Type is passed via -ContentType
+# (not -Headers) because Windows PowerShell 5.1 rejects a Content-Type entry in -Headers.
+function Get-GoogleApiHeaders {
+    $token = gcloud auth print-access-token --quiet
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($token)) { throw "Failed to obtain a gcloud access token." }
+    return @{
+        Authorization         = "Bearer $token"
+        "x-goog-user-project" = $ProjectId
+    }
+}
+
 # Provision the Google-managed Pub/Sub service identity via Service Usage REST API (no gcloud beta component needed)
-$accessToken = gcloud auth print-access-token --quiet
-$apiHeaders = @{
-    Authorization         = "Bearer $accessToken"
-    "x-goog-user-project" = $ProjectId
-    "Content-Type"        = "application/json"
-}
 Invoke-RestMethod -Method Post `
     -Uri "https://serviceusage.googleapis.com/v1beta1/projects/$ProjectId/services/pubsub.googleapis.com:generateServiceIdentity" `
-    -Headers $apiHeaders | Out-Null
+    -Headers (Get-GoogleApiHeaders) `
+    -ContentType "application/json" `
+    -Body "{}" | Out-Null
 
 # Grant Cloud Billing Budget alert system service account permission to publish to this topic
 gcloud pubsub topics add-iam-policy-binding $BudgetTopic `
@@ -93,6 +106,7 @@ gcloud pubsub topics add-iam-policy-binding $BudgetTopic `
     --member="serviceAccount:billing-budget-alert@system.gserviceaccount.com" `
     --role="roles/pubsub.publisher" `
     --quiet | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Failed to grant billing-budget-alert publisher access on '$BudgetTopic'." }
 
 Write-Host "=== 5a. Creating least-privilege Kill-Switch service account (if not exists) ===" -ForegroundColor Cyan
 $existingSas = gcloud iam service-accounts list --project=$ProjectId --format="value(email)" --quiet
@@ -155,13 +169,17 @@ if (-not ($existingSubs -match "/subscriptions/$pushSubscription$")) {
         --push-auth-service-account=$killSwitchSa `
         --ack-deadline=30 `
         --quiet
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create push subscription '$pushSubscription'." }
 }
 
 Write-Host "=== 5d. Ensuring 5-Cap Cloud Billing Budget Connected to Pub/Sub '$BudgetTopic' ===" -ForegroundColor Cyan
+if ([string]::IsNullOrWhiteSpace($billingAccountId)) { throw "Could not resolve the billing account linked to '$ProjectId'." }
 $currencyCode = gcloud billing accounts describe $billingAccountId --format="value(currencyCode)" --quiet
 if ([string]::IsNullOrWhiteSpace($currencyCode)) { $currencyCode = "EUR" }
 $budgetDisplayName = "CrossTraining MCP 5-Cap KillSwitch"
-$existingBudgetsJson = gcloud billing budgets list --billing-account=$billingAccountId --format="json" --quiet | ConvertFrom-Json
+$existingBudgetsRaw = gcloud billing budgets list --billing-account=$billingAccountId --format="json" --quiet
+if ($LASTEXITCODE -ne 0) { throw "Failed to list Cloud Billing budgets for billing account '$billingAccountId'." }
+$existingBudgetsJson = ($existingBudgetsRaw | Out-String) | ConvertFrom-Json
 $matchingBudget = $existingBudgetsJson | Where-Object { $_.displayName -eq $budgetDisplayName }
 if (-not $matchingBudget) {
     gcloud billing budgets create `
@@ -175,6 +193,7 @@ if (-not $matchingBudget) {
         --threshold-rule="percent=1.0" `
         --notifications-rule-pubsub-topic="projects/$ProjectId/topics/$BudgetTopic" `
         --quiet
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create Cloud Billing Budget '$budgetDisplayName' (5 $currencyCode)." }
     Write-Host "Created Cloud Billing Budget '$budgetDisplayName' (5 $currencyCode) wired to Pub/Sub '$BudgetTopic'." -ForegroundColor Green
 } else {
     Write-Host "Cloud Billing Budget '$budgetDisplayName' already exists." -ForegroundColor Green
@@ -185,8 +204,7 @@ $existingSecrets = gcloud secrets list --project=$ProjectId --format="value(name
 if (-not ($existingSecrets -match "/secrets/$jwtSecretName$")) {
     $secretBytes = New-Object byte[] 48
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $rng.GetBytes($secretBytes)
-    $rng.Dispose()
+    try { $rng.GetBytes($secretBytes) } finally { $rng.Dispose() }
     $secretFile = [System.IO.Path]::GetTempFileName()
     try {
         [System.IO.File]::WriteAllText($secretFile, [Convert]::ToBase64String($secretBytes))
@@ -195,6 +213,7 @@ if (-not ($existingSecrets -match "/secrets/$jwtSecretName$")) {
             --replication-policy=automatic `
             --data-file=$secretFile `
             --quiet
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create Secret Manager secret '$jwtSecretName'." }
     }
     finally {
         Remove-Item $secretFile -Force -ErrorAction SilentlyContinue
@@ -205,6 +224,7 @@ gcloud secrets add-iam-policy-binding $jwtSecretName `
     --member="serviceAccount:$runtimeSa" `
     --role="roles/secretmanager.secretAccessor" `
     --quiet | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Failed to grant secretAccessor on '$jwtSecretName' to $runtimeSa." }
 
 Write-Host "=== 6. Deploying CrossTraining Remote MCP Server (Hard Cap: max-instances=1, 256Mi) ===" -ForegroundColor Cyan
 $mcpDir = Join-Path $PSScriptRoot ".."
@@ -254,14 +274,18 @@ gcloud artifacts repositories set-cleanup-policies cloud-run-source-deploy `
     --policy=$policyFile `
     --no-dry-run `
     --quiet
-
+$cleanupExitCode = $LASTEXITCODE
 Remove-Item $policyFile -ErrorAction SilentlyContinue
+if ($cleanupExitCode -ne 0) { throw "Failed to apply Artifact Registry cleanup policy." }
 
 $serviceUrl = gcloud run services describe $ServiceName --region=$Region --project=$ProjectId --format="value(status.url)" --quiet
+if ([string]::IsNullOrWhiteSpace($serviceUrl)) { throw "Could not resolve $ServiceName URL." }
 $serviceDomain = ([Uri]$serviceUrl).Host
 $regionalDomain = "$ServiceName-$projectNumber.$Region.run.app"
 
 Write-Host "=== 8. Registering Cloud Run Domains in Firebase Auth Authorized Domains ===" -ForegroundColor Cyan
+# Refresh the token: the source builds above can outlive a token minted earlier in the run.
+$apiHeaders = Get-GoogleApiHeaders
 $cfg = Invoke-RestMethod -Uri "https://identitytoolkit.googleapis.com/admin/v2/projects/$ProjectId/config" -Headers $apiHeaders
 $domains = [System.Collections.Generic.List[string]]::new()
 foreach ($d in $cfg.authorizedDomains) { $domains.Add([string]$d) }
@@ -273,11 +297,15 @@ foreach ($newDomain in @($serviceDomain, $regionalDomain)) {
     }
 }
 if ($changed) {
-    $patchBody = @{ authorizedDomains = $domains } | ConvertTo-Json
+    $patchBody = @{ authorizedDomains = $domains.ToArray() } | ConvertTo-Json
     Invoke-RestMethod -Method Patch `
         -Uri "https://identitytoolkit.googleapis.com/admin/v2/projects/$ProjectId/config?updateMask=authorizedDomains" `
         -Headers $apiHeaders `
+        -ContentType "application/json" `
         -Body $patchBody | Out-Null
+    Write-Host "Added Cloud Run domains to Firebase Auth authorizedDomains." -ForegroundColor Green
+} else {
+    Write-Host "Cloud Run domains already present in Firebase Auth authorizedDomains." -ForegroundColor Green
 }
 
 Write-Host ""
