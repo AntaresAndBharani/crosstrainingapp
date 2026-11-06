@@ -113,7 +113,7 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     assert.ok(code);
     assert.equal(callbackUrl.searchParams.get("state"), "xyz-state-123");
 
-    // 4. Reject invalid PKCE verifier without burning valid flow test
+    // 4. Exchange the code (bound to the registered client_id and redirect_uri)
     const tokenRes = await fetch(`${baseUrl}/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -121,6 +121,8 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
         grant_type: "authorization_code",
         code,
         code_verifier: codeVerifier,
+        client_id: regData.client_id,
+        redirect_uri: "https://gemini.google.com/oauth/callback",
       }),
     });
     assert.equal(tokenRes.status, 200);
@@ -138,11 +140,123 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       body: JSON.stringify({
         grant_type: "refresh_token",
         refresh_token: tokenData.refresh_token,
+        client_id: regData.client_id,
       }),
     });
     assert.equal(refreshRes.status, 200);
     const refreshedData = (await refreshRes.json()) as { access_token: string };
     assert.ok(refreshedData.access_token);
+
+    // 6. The refresh token is bound to the client it was issued to
+    const otherReg = (await (
+      await fetch(`${baseUrl}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ redirect_uris: ["https://claude.ai/api/mcp/auth_callback"] }),
+      })
+    ).json()) as { client_id: string };
+    const crossClientRefresh = await fetch(`${baseUrl}/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        refresh_token: tokenData.refresh_token,
+        client_id: otherReg.client_id,
+      }),
+    });
+    assert.equal(crossClientRefresh.status, 401);
+  });
+
+  it("rejects unregistered clients, unregistered redirect_uris, missing/plain PKCE, and forged client_ids", async () => {
+    const codeVerifier = base64Url(crypto.randomBytes(32));
+    const codeChallenge = base64Url(
+      crypto.createHash("sha256").update(codeVerifier, "ascii").digest()
+    );
+
+    // DCR rejects script-capable and non-loopback plain-http redirect URIs
+    for (const badUri of ["javascript:alert(1)", "http://evil.example.com/cb", "https://x.example/cb#frag"]) {
+      const res = await fetch(`${baseUrl}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ redirect_uris: [badUri] }),
+      });
+      assert.equal(res.status, 400, `expected ${badUri} to be rejected`);
+    }
+
+    const reg = (await (
+      await fetch(`${baseUrl}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Claude Code",
+          redirect_uris: ["http://localhost:33418/callback"],
+        }),
+      })
+    ).json()) as { client_id: string; client_secret?: string };
+    assert.equal(reg.client_secret, undefined, "public clients must not receive a client_secret");
+
+    async function postAuthorize(overrides: Record<string, unknown>) {
+      return fetch(`${baseUrl}/authorize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          id_token: "valid-firebase-id-token-athlete",
+          env: "production",
+          client_id: reg.client_id,
+          redirect_uri: "http://localhost:33418/callback",
+          code_challenge: codeChallenge,
+          code_challenge_method: "S256",
+          ...overrides,
+        }),
+      });
+    }
+
+    // Authorization codes are never issued to arbitrary redirect URIs or unknown clients
+    assert.equal((await postAuthorize({ redirect_uri: "https://attacker.example/steal" })).status, 400);
+    assert.equal((await postAuthorize({ client_id: "default" })).status, 400);
+    const forgedId = reg.client_id.replace(/\.[^.]+$/, ".AAAA");
+    assert.equal((await postAuthorize({ client_id: forgedId })).status, 400);
+    // PKCE is mandatory and S256-only
+    assert.equal((await postAuthorize({ code_challenge: "" })).status, 400);
+    assert.equal((await postAuthorize({ code_challenge_method: "plain" })).status, 400);
+
+    // GET /authorize refuses to render the consent page for an unregistered redirect_uri
+    const badGet = await fetch(
+      `${baseUrl}/authorize?client_id=${encodeURIComponent(reg.client_id)}` +
+        `&redirect_uri=${encodeURIComponent("https://attacker.example/steal")}` +
+        `&code_challenge=${codeChallenge}&code_challenge_method=S256&response_type=code`
+    );
+    assert.equal(badGet.status, 400);
+
+    // Loopback redirect URIs may use any port (RFC 8252 §7.3); state with '&' / quotes is embedded safely
+    const state = `a&b="c"</script>`;
+    const goodGet = await fetch(
+      `${baseUrl}/authorize?client_id=${encodeURIComponent(reg.client_id)}` +
+        `&redirect_uri=${encodeURIComponent("http://localhost:50123/callback")}` +
+        `&state=${encodeURIComponent(state)}` +
+        `&code_challenge=${codeChallenge}&code_challenge_method=S256&response_type=code`
+    );
+    assert.equal(goodGet.status, 200);
+    const html = await goodGet.text();
+    assert.ok(!html.includes("</script>\"") && !html.includes(`"c"</script>`), "state must not break out of the script");
+    assert.ok(html.includes("Claude Code"));
+    assert.ok(html.includes("localhost:50123"));
+
+    // A code is bound to the client it was issued to
+    const okAuth = await postAuthorize({ redirect_uri: "http://localhost:50123/callback" });
+    assert.equal(okAuth.status, 200);
+    const code = new URL(((await okAuth.json()) as { redirect_to: string }).redirect_to).searchParams.get("code");
+    const wrongClient = await fetch(`${baseUrl}/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        code,
+        code_verifier: codeVerifier,
+        client_id: "ct_client_someone_else",
+      }),
+    });
+    assert.equal(wrongClient.status, 401);
   });
 
   it("rejects unauthenticated /mcp calls with 401 and WWW-Authenticate header", async () => {

@@ -25,6 +25,8 @@ export interface ExerciseRecord {
   metricType: string;
   unit: string;
   tracksRepMax: boolean;
+  /** Set on MCP writes; the Android manual sync only imports stamped records (see UserCloudSyncManager). */
+  updatedAtMillis?: number;
 }
 
 export interface RoutineBlockRecord {
@@ -128,6 +130,7 @@ export interface RepMaxRecord {
   weight: number;
   date: string;
   cycleId: number | null;
+  updatedAtMillis?: number;
 }
 
 export interface WeightEntryRecord {
@@ -305,6 +308,7 @@ export class WorkoutDomainService {
           input.tracksRepMax ??
           current.tracksRepMax ??
           (input.metricType ?? current.metricType ?? "WEIGHT") === "WEIGHT",
+        updatedAtMillis: Date.now(),
       };
       exercises[existingIndex] = updated;
       await this.backing.writeCollection(ctx, "exercises", exercises);
@@ -320,6 +324,7 @@ export class WorkoutDomainService {
       metricType,
       unit: input.unit ?? defaultUnitForMetric(metricType),
       tracksRepMax: input.tracksRepMax ?? metricType === "WEIGHT",
+      updatedAtMillis: Date.now(),
     };
     exercises.push(created);
     await this.backing.writeCollection(ctx, "exercises", exercises);
@@ -351,6 +356,7 @@ export class WorkoutDomainService {
           metricType: "WEIGHT",
           unit: "kg",
           tracksRepMax: true,
+          updatedAtMillis: Date.now(),
         };
         exercises.push(found);
         mutated = true;
@@ -818,6 +824,7 @@ export class WorkoutDomainService {
       weight: input.weight,
       date,
       cycleId: input.cycleId ?? 1,
+      updatedAtMillis: Date.now(),
     };
     repMaxes.push(created);
     await this.backing.writeCollection(ctx, "rep_maxes", repMaxes);

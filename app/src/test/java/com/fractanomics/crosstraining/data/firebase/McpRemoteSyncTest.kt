@@ -5,6 +5,7 @@ import com.fractanomics.crosstraining.data.FakeSampleAppDatabase
 import com.fractanomics.crosstraining.data.FakeTransactionRunner
 import com.fractanomics.crosstraining.data.Repository
 import com.fractanomics.crosstraining.data.model.Cycle
+import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.ui.AppViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -166,6 +167,59 @@ class McpRemoteSyncTest {
         assertEquals("CycleGoal must be updated in place, not duplicated", 1, goalsAfterSecond.size)
         assertEquals(100.0, goalsAfterSecond[0].targetWeight, 0.01)
         assertEquals("Phase 2 bump", goalsAfterSecond[0].notes)
+    }
+
+    @Test
+    fun downloadUserData_manualSyncMode_skipsUnstampedRemoteRecords_butAppliesMcpStampedEdits() = runTest {
+        val date = LocalDate.of(2026, 11, 6)
+        repo.saveRoutineWithBlocks(Routine(name = "Leg Day", description = "Local edit"), emptyList())
+
+        // "Deleted Locally" is this device's previous upload (no updatedAtMillis) for a session the user
+        // has since deleted; "Added via MCP" was written by the MCP server (stamped with updatedAtMillis).
+        val remoteSessions: List<Map<String, Any>> = listOf(
+            mapOf(
+                "session" to mapOf("id" to 1L, "cycleId" to 1L, "date" to date.toString(), "title" to "Deleted Locally", "notes" to ""),
+                "blocks" to emptyList<Map<String, Any>>()
+            ),
+            mapOf(
+                "session" to mapOf(
+                    "id" to 2L, "cycleId" to 1L, "date" to date.toString(), "title" to "Added via MCP",
+                    "notes" to "From Claude", "updatedAtMillis" to 3000L
+                ),
+                "blocks" to emptyList<Map<String, Any>>()
+            )
+        )
+        val remoteRoutines: List<Map<String, Any>> = listOf(
+            mapOf(
+                "routine" to mapOf("id" to 1L, "name" to "Leg Day", "description" to "Stale remote copy"),
+                "blocks" to emptyList<Map<String, Any>>()
+            ),
+            mapOf(
+                "routine" to mapOf("id" to 2L, "name" to "MCP Engine Builder", "description" to "From Gemini", "updatedAtMillis" to 3000L),
+                "blocks" to emptyList<Map<String, Any>>()
+            )
+        )
+
+        UserCloudSyncManager.documentReaderForTesting = { uid, col ->
+            when {
+                uid != "mcp-user-123" -> emptyList()
+                col == "sessions" -> remoteSessions
+                col == "routines" -> remoteRoutines
+                else -> emptyList()
+            }
+        }
+
+        assertTrue(UserCloudSyncManager.downloadUserData(repo, importUnmarkedRemoteRecords = false).isSuccess)
+
+        val sessions = repo.getAllSessionsWithBlocksOnce()
+        assertEquals(
+            "Locally deleted (unstamped) sessions must not be resurrected by manual sync",
+            listOf("Added via MCP"),
+            sessions.map { it.session.title }
+        )
+        val routines = repo.getAllRoutinesWithBlocksOnce().associateBy { it.routine.name }
+        assertEquals("Stale remote copy must not overwrite a newer local edit", "Local edit", routines["Leg Day"]?.routine?.description)
+        assertEquals("From Gemini", routines["MCP Engine Builder"]?.routine?.description)
     }
 
     @Test

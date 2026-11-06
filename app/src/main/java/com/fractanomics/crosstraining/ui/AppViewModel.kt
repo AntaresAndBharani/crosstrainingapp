@@ -203,7 +203,13 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         UserCloudSyncManager.resetSyncStatus()
         _lastSyncError.value = null
         return viewModelScope.launch {
-            val downloadRes = UserCloudSyncManager.downloadUserData(data.realRepository)
+            // Download first so pending MCP edits (stamped with updatedAtMillis) are pulled in before
+            // the full-list upload overwrites the remote documents. Unstamped remote records are this
+            // device's previous upload and are not re-imported, so local deletions stay deleted.
+            val downloadRes = UserCloudSyncManager.downloadUserData(
+                data.realRepository,
+                importUnmarkedRemoteRecords = false
+            )
             val uploadRes = UserCloudSyncManager.uploadUserData(data.realRepository)
 
             val uploadOk = uploadRes.isSuccess

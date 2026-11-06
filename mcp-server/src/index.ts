@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import cors from "cors";
 import express, { type Express, type Request, type Response } from "express";
@@ -147,6 +146,12 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
       res.status(404).json({ error: "Unknown SSE sessionId" });
       return;
     }
+    // Bind the SSE session to the user who opened it.
+    const caller = res.locals.user as UserContext;
+    if (caller.uid !== entry.user.uid || caller.env !== entry.user.env) {
+      res.status(403).json({ error: "SSE session belongs to a different user" });
+      return;
+    }
     await entry.transport.handlePostMessage(req, res, req.body);
   });
 
@@ -176,9 +181,16 @@ async function main() {
     return;
   }
 
-  const jwtSecret =
-    process.env.MCP_JWT_SECRET ||
-    crypto.createHash("sha256").update(`crosstraining-mcp-${projectId}`).digest("hex");
+  // The signing secret MUST come from the environment (Secret Manager on Cloud Run). Never derive it
+  // from public values such as the project ID — anyone could then forge Bearer tokens for any uid.
+  const jwtSecret = process.env.MCP_JWT_SECRET || "";
+  if (jwtSecret.length < 32) {
+    console.error(
+      "Error: MCP_JWT_SECRET must be set to a random value of at least 32 characters " +
+        "(e.g. `openssl rand -base64 48`)."
+    );
+    process.exit(1);
+  }
 
   const app = createMcpExpressApp({
     backingStore,

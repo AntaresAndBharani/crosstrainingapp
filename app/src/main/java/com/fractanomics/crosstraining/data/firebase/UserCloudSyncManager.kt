@@ -545,7 +545,9 @@ object UserCloudSyncManager {
                                             "setsCount" to b.setsCount,
                                             "targetRepsScheme" to b.targetRepsScheme,
                                             "exerciseIdsCsv" to b.exerciseIdsCsv,
-                                            "notes" to b.notes
+                                            "notes" to b.notes,
+                                            "section" to b.section,
+                                            "subBlock" to b.subBlock
                                         )
                                     }
                                 )
@@ -587,6 +589,9 @@ object UserCloudSyncManager {
                                                 "resultText" to sb.block.resultText,
                                                 "resultValue" to sb.block.resultValue,
                                                 "notes" to sb.block.notes,
+                                                "section" to sb.block.section,
+                                                "exerciseIdsCsv" to sb.block.exerciseIdsCsv,
+                                                "subBlock" to sb.block.subBlock,
                                                 "isCompleted" to sb.block.isCompleted
                                             ),
                                             "sets" to sb.sets.map { st ->
@@ -741,7 +746,23 @@ object UserCloudSyncManager {
         }
     }
 
-    suspend fun downloadUserData(repo: Repository): Result<Unit> {
+    /**
+     * Downloads the signed-in user's cloud collections into the local [repo].
+     *
+     * @param importUnmarkedRemoteRecords When `true` (default — login / device-restore flows), every
+     * remote exercise, routine, session, cycle goal and rep max missing locally is imported. When
+     * `false` (manual [com.fractanomics.crosstraining.ui.AppViewModel.triggerCloudSync], which runs
+     * download *before* upload), only records carrying an `updatedAtMillis` stamp are imported or
+     * applied in place. The Android upload payload never writes `updatedAtMillis` for these five
+     * collections, so the stamp identifies pending remote (MCP server) edits; unstamped remote
+     * records are this device's own last upload, and re-importing them would resurrect rows the user
+     * deleted locally (these collections have no tombstones) or overwrite newer local edits.
+     * Weight entries and daily logs always use their tombstone-aware Last-Write-Wins merge.
+     */
+    suspend fun downloadUserData(
+        repo: Repository,
+        importUnmarkedRemoteRecords: Boolean = true
+    ): Result<Unit> {
         val testHandler = downloadUserDataHandler
         if (testHandler != null) {
             return testHandler(repo)
@@ -819,14 +840,27 @@ object UserCloudSyncManager {
                     }
                 }
 
+                // Pending remote (MCP) edits carry an updatedAtMillis stamp; see KDoc above.
+                // A legacy-account migration is always a full import.
+                val importAllRemoteRecords = importUnmarkedRemoteRecords || isMigratedFromLegacy
+                fun shouldImport(map: Map<String, Any>?): Boolean =
+                    importAllRemoteRecords || map?.get("updatedAtMillis") != null
+
                 // 1. Download Exercises & Build Remote-to-Local Exercise Mapping
                 val remoteExerciseIdToLocalId = mutableMapOf<Long, Long>()
                 if (exList.isNotEmpty()) {
+                    val localExercises = if (importAllRemoteRecords) emptyList() else repo.getAllExercisesOnce()
                     exList.forEach { map ->
                         val name = map["name"] as? String ?: return@forEach
                         val category = runCatching { ExerciseCategory.valueOf(map["category"] as String) }.getOrDefault(ExerciseCategory.BARBELL)
                         val metricType = runCatching { MetricType.valueOf(map["metricType"] as String) }.getOrDefault(MetricType.WEIGHT)
-                        val localEx = repo.getOrCreateExercise(name, category, metricType)
+                        val localEx = if (shouldImport(map)) {
+                            repo.getOrCreateExercise(name, category, metricType)
+                        } else {
+                            // Map onto an existing local exercise only; never resurrect a locally deleted one.
+                            localExercises.firstOrNull { it.name.trim().equals(name.trim(), ignoreCase = true) }
+                                ?: return@forEach
+                        }
                         val remoteId = (map["id"] as? Number)?.toLong()
                         if (remoteId != null) {
                             remoteExerciseIdToLocalId[remoteId] = localEx.id
@@ -865,6 +899,9 @@ object UserCloudSyncManager {
                     routList.forEach { rwbMap ->
                         @Suppress("UNCHECKED_CAST")
                         val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
+                        // saveRoutineWithBlocks upserts by name, so an unstamped (stale) remote copy would
+                        // overwrite newer local edits or resurrect a locally deleted routine.
+                        if (!shouldImport(rMap)) return@forEach
                         val name = rMap["name"] as? String ?: return@forEach
                         val description = rMap["description"] as? String ?: ""
                         val defaultFormat = rMap["defaultFormat"] as? String ?: ""
@@ -907,6 +944,7 @@ object UserCloudSyncManager {
                 if (goalsList.isNotEmpty()) {
                     val existingGoals = repo.snapshotCycleGoals().toMutableList()
                     goalsList.forEach { map ->
+                        if (!shouldImport(map)) return@forEach
                         val cycleId = (map["cycleId"] as? Number)?.toLong() ?: return@forEach
                         val exerciseId = resolveLocalExerciseId(
                             (map["exerciseId"] as? Number)?.toLong(),
@@ -952,6 +990,8 @@ object UserCloudSyncManager {
                         val existingSession = existingSessions.find {
                             it.session.date == date && it.session.title.equals(title, ignoreCase = true)
                         }
+                        // Do not resurrect a session the user deleted locally since the last upload.
+                        if (existingSession == null && !shouldImport(sMap)) return@forEach
                         if (existingSession == null || hasRemoteUpdateTimestamp) {
                             @Suppress("UNCHECKED_CAST")
                             val bList = swbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
@@ -1028,6 +1068,7 @@ object UserCloudSyncManager {
                 if (rmList.isNotEmpty()) {
                     val existingRms = repo.exportSnapshot().repMaxes
                     rmList.forEach { map ->
+                        if (!shouldImport(map)) return@forEach
                         val exerciseId = resolveLocalExerciseId(
                             (map["exerciseId"] as? Number)?.toLong(),
                             map["exerciseName"] as? String

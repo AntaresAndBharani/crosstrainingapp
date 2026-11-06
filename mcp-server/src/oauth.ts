@@ -20,15 +20,19 @@ export interface OAuthConfig {
   verifyFirebaseIdToken: (idToken: string) => Promise<{ uid: string; email?: string }>;
 }
 
-interface RegisteredClient {
-  client_id: string;
-  client_secret?: string;
-  client_name?: string;
-  redirect_uris: string[];
-  grant_types: string[];
-  response_types: string[];
-  token_endpoint_auth_method: string;
-  created_at: number;
+/**
+ * Client registration metadata. Encoded *inside* the HMAC-signed `client_id` (stateless DCR) so that
+ * registrations survive Cloud Run scale-to-zero restarts (min-instances=0) without a database.
+ */
+interface ClientRegistration {
+  /** Registered redirect URIs */
+  r: string[];
+  /** token_endpoint_auth_method */
+  m: string;
+  /** client_name (display only — attacker-controlled, never trusted) */
+  n: string;
+  /** issued-at (seconds) */
+  t: number;
 }
 
 interface AuthCodeRecord {
@@ -112,16 +116,108 @@ export function verifyStatelessToken(
   }
 }
 
+/**
+ * Verifies an RFC 7636 PKCE code_verifier. OAuth 2.1 / MCP authorization only permits `S256`;
+ * the `plain` method is rejected.
+ */
 export function verifyPkceChallenge(
   codeVerifier: string,
   codeChallenge: string,
   method = "S256"
 ): boolean {
-  if (method.toUpperCase() === "PLAIN") {
-    return codeVerifier === codeChallenge;
+  if (method !== "S256") {
+    return false;
   }
   const hash = crypto.createHash("sha256").update(codeVerifier, "ascii").digest();
-  return base64UrlEncode(hash) === codeChallenge;
+  return safeEqual(base64UrlEncode(hash), codeChallenge);
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  return aBuf.length === bBuf.length && crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+const MIN_JWT_SECRET_LENGTH = 32;
+const MAX_REDIRECT_URIS = 10;
+const MAX_REDIRECT_URI_LENGTH = 512;
+const DISALLOWED_REDIRECT_SCHEMES = new Set([
+  "javascript:",
+  "data:",
+  "vbscript:",
+  "file:",
+  "blob:",
+  "about:",
+  "ftp:",
+  "ws:",
+  "wss:",
+]);
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
+/**
+ * Accepts `https:` redirect URIs, `http:` only on loopback hosts (RFC 8252 §7.3 — e.g. Claude Code),
+ * and private-use native-app schemes (RFC 8252 §7.1). Rejects fragments and script-capable schemes.
+ */
+export function isAllowedRedirectUri(raw: string): boolean {
+  if (raw.length === 0 || raw.length > MAX_REDIRECT_URI_LENGTH) return false;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.hash) return false;
+  if (url.protocol === "https:") return true;
+  if (url.protocol === "http:") return isLoopbackHost(url.hostname);
+  return !DISALLOWED_REDIRECT_SCHEMES.has(url.protocol);
+}
+
+/**
+ * Exact-match redirect URI comparison, except that loopback `http:` URIs may use any port
+ * (RFC 8252 §7.3) because native clients bind an ephemeral port per login.
+ */
+export function redirectUriMatches(registered: string[], requested: string): boolean {
+  if (registered.includes(requested)) return true;
+  let req: URL;
+  try {
+    req = new URL(requested);
+  } catch {
+    return false;
+  }
+  if (req.protocol !== "http:" || !isLoopbackHost(req.hostname)) return false;
+  return registered.some((r) => {
+    try {
+      const u = new URL(r);
+      return (
+        u.protocol === "http:" &&
+        u.hostname === req.hostname &&
+        u.pathname === req.pathname &&
+        u.search === req.search
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Encodes a value as a JavaScript literal that is safe to embed inside an inline <script>. */
+function jsLiteral(value: string): string {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026");
+}
+
+function describeRedirectTarget(redirectUri: string): string {
+  try {
+    const u = new URL(redirectUri);
+    return u.host || u.protocol;
+  } catch {
+    return redirectUri;
+  }
 }
 
 function resolveIssuer(req: Request, configuredIssuer?: string): string {
@@ -134,10 +230,125 @@ function resolveIssuer(req: Request, configuredIssuer?: string): string {
 }
 
 export class OAuthServer {
-  private readonly clients = new Map<string, RegisteredClient>();
   private readonly authCodes = new Map<string, AuthCodeRecord>();
 
-  constructor(private readonly config: OAuthConfig) {}
+  constructor(private readonly config: OAuthConfig) {
+    if (!config.jwtSecret || config.jwtSecret.length < MIN_JWT_SECRET_LENGTH) {
+      throw new Error(
+        `OAuthConfig.jwtSecret must be at least ${MIN_JWT_SECRET_LENGTH} characters (set MCP_JWT_SECRET)`
+      );
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Stateless client registry: client_id = "ct_client_<payload>.<hmac>"
+  // --------------------------------------------------------------------------
+
+  private hmac(purpose: string, data: string): string {
+    return base64UrlEncode(
+      crypto.createHmac("sha256", this.config.jwtSecret).update(`${purpose}:${data}`).digest()
+    );
+  }
+
+  private encodeClientId(reg: ClientRegistration): string {
+    const body = base64UrlEncode(JSON.stringify(reg));
+    return `ct_client_${body}.${this.hmac("client_id", body)}`;
+  }
+
+  private decodeClientId(clientId: string): ClientRegistration | null {
+    if (!clientId.startsWith("ct_client_")) return null;
+    const [body, sig, extra] = clientId.slice("ct_client_".length).split(".");
+    if (!body || !sig || extra !== undefined) return null;
+    if (!safeEqual(sig, this.hmac("client_id", body))) return null;
+    try {
+      const reg = JSON.parse(base64UrlDecode(body).toString("utf8")) as ClientRegistration;
+      if (!Array.isArray(reg.r) || typeof reg.m !== "string") return null;
+      return reg;
+    } catch {
+      return null;
+    }
+  }
+
+  private clientSecretFor(clientId: string): string {
+    return this.hmac("client_secret", clientId);
+  }
+
+  /** Extracts client credentials from `client_secret_basic` (Authorization header) or the request body. */
+  private readClientCredentials(req: Request): { clientId: string; clientSecret?: string } {
+    const header = req.headers.authorization || "";
+    const basic = /^Basic\s+(.+)$/i.exec(header.trim());
+    if (basic) {
+      const decoded = Buffer.from(basic[1], "base64").toString("utf8");
+      const sep = decoded.indexOf(":");
+      if (sep >= 0) {
+        return {
+          clientId: decodeURIComponent(decoded.slice(0, sep)),
+          clientSecret: decodeURIComponent(decoded.slice(sep + 1)),
+        };
+      }
+    }
+    return {
+      clientId: String(req.body?.client_id || ""),
+      clientSecret: req.body?.client_secret ? String(req.body.client_secret) : undefined,
+    };
+  }
+
+  /** Authenticates the client at the token endpoint and checks it matches [expectedClientId]. */
+  private authenticateClient(req: Request, expectedClientId: string): string | null {
+    let creds: { clientId: string; clientSecret?: string };
+    try {
+      creds = this.readClientCredentials(req);
+    } catch {
+      return "Malformed client credentials";
+    }
+    if (!creds.clientId || creds.clientId !== expectedClientId) {
+      return "client_id does not match the client the grant was issued to";
+    }
+    const reg = this.decodeClientId(creds.clientId);
+    if (!reg) {
+      return "Unknown client_id";
+    }
+    if (reg.m !== "none") {
+      if (!creds.clientSecret || !safeEqual(creds.clientSecret, this.clientSecretFor(creds.clientId))) {
+        return "Invalid client credentials";
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Validates an authorization request against the signed client registration.
+   * Returns an error description, or null when the request is acceptable.
+   */
+  private validateAuthorizationRequest(params: {
+    clientId: string;
+    redirectUri: string;
+    codeChallenge: string;
+    codeChallengeMethod: string;
+    responseType?: string;
+  }): { error: string } | { registration: ClientRegistration } {
+    const registration = this.decodeClientId(params.clientId);
+    if (!registration) {
+      return { error: "Unknown or invalid client_id. Register the client via POST /register first." };
+    }
+    if (!params.redirectUri || !redirectUriMatches(registration.r, params.redirectUri)) {
+      return { error: "redirect_uri is not registered for this client_id" };
+    }
+    if (params.responseType !== undefined && params.responseType !== "code") {
+      return { error: "Unsupported response_type (only 'code' is supported)" };
+    }
+    if (!params.codeChallenge || params.codeChallengeMethod !== "S256") {
+      return { error: "PKCE is required: provide code_challenge with code_challenge_method=S256" };
+    }
+    return { registration };
+  }
+
+  private pruneExpiredAuthCodes(): void {
+    const now = Date.now();
+    for (const [code, record] of this.authCodes) {
+      if (record.expiresAt <= now) this.authCodes.delete(code);
+    }
+  }
 
   createRouter(): Router {
     const router = express.Router();
@@ -157,7 +368,7 @@ export class OAuthServer {
           "client_secret_post",
           "client_secret_basic",
         ],
-        code_challenge_methods_supported: ["S256", "plain"],
+        code_challenge_methods_supported: ["S256"],
         scopes_supported: ["mcp:tools", "profile", "email"],
       });
     });
@@ -176,37 +387,55 @@ export class OAuthServer {
     // 3. RFC 7591 Dynamic Client Registration (DCR) — required by Gemini Connected Apps & Claude
     router.post("/register", express.json(), (req, res) => {
       const body = req.body ?? {};
-      const redirectUris = Array.isArray(body.redirect_uris)
+      const redirectUris: string[] = Array.isArray(body.redirect_uris)
         ? body.redirect_uris.map(String)
         : [];
 
-      const clientId = `ct_client_${crypto.randomBytes(12).toString("hex")}`;
-      const clientSecret = crypto.randomBytes(24).toString("hex");
+      if (redirectUris.length === 0 || redirectUris.length > MAX_REDIRECT_URIS) {
+        res.status(400).json({
+          error: "invalid_redirect_uri",
+          error_description: `Provide between 1 and ${MAX_REDIRECT_URIS} redirect_uris`,
+        });
+        return;
+      }
+      const rejected = redirectUris.find((u) => !isAllowedRedirectUri(u));
+      if (rejected !== undefined) {
+        res.status(400).json({
+          error: "invalid_redirect_uri",
+          error_description: `redirect_uri not allowed: ${rejected.slice(0, 200)}`,
+        });
+        return;
+      }
+
+      const authMethod = String(body.token_endpoint_auth_method || "none");
+      if (!["none", "client_secret_post", "client_secret_basic"].includes(authMethod)) {
+        res.status(400).json({
+          error: "invalid_client_metadata",
+          error_description: `Unsupported token_endpoint_auth_method: ${authMethod.slice(0, 100)}`,
+        });
+        return;
+      }
+
       const nowSec = Math.floor(Date.now() / 1000);
-
-      const record: RegisteredClient = {
-        client_id: clientId,
-        client_secret: clientSecret,
-        client_name: String(body.client_name || "MCP AI Assistant"),
-        redirect_uris: redirectUris,
-        grant_types: Array.isArray(body.grant_types)
-          ? body.grant_types
-          : ["authorization_code", "refresh_token"],
-        response_types: Array.isArray(body.response_types)
-          ? body.response_types
-          : ["code"],
-        token_endpoint_auth_method: String(
-          body.token_endpoint_auth_method || "none"
-        ),
-        created_at: nowSec,
-      };
-
-      this.clients.set(clientId, record);
+      const clientName = String(body.client_name || "MCP AI Assistant").slice(0, 100);
+      const clientId = this.encodeClientId({
+        r: redirectUris,
+        m: authMethod,
+        n: clientName,
+        t: nowSec,
+      });
 
       res.status(201).json({
-        ...record,
+        client_id: clientId,
+        ...(authMethod === "none"
+          ? {}
+          : { client_secret: this.clientSecretFor(clientId), client_secret_expires_at: 0 }),
         client_id_issued_at: nowSec,
-        client_secret_expires_at: 0,
+        client_name: clientName,
+        redirect_uris: redirectUris,
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        token_endpoint_auth_method: authMethod,
       });
     });
 
@@ -217,9 +446,19 @@ export class OAuthServer {
       const state = String(req.query.state || "");
       const codeChallenge = String(req.query.code_challenge || "");
       const codeChallengeMethod = String(req.query.code_challenge_method || "S256");
+      const responseType =
+        req.query.response_type !== undefined ? String(req.query.response_type) : undefined;
 
-      if (!redirectUri) {
-        res.status(400).send("Missing required parameter: redirect_uri");
+      // Never redirect to an unvalidated redirect_uri: report errors on this page instead.
+      const validation = this.validateAuthorizationRequest({
+        clientId,
+        redirectUri,
+        codeChallenge,
+        codeChallengeMethod,
+        responseType,
+      });
+      if ("error" in validation) {
+        res.status(400).type("text/plain").send(`invalid_request: ${validation.error}`);
         return;
       }
 
@@ -228,9 +467,12 @@ export class OAuthServer {
       const projectId = this.config.firebaseProjectId || "virgymia-c2cc7";
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("X-Frame-Options", "DENY");
+      res.setHeader("Referrer-Policy", "no-referrer");
       res.send(
         renderConsentPageHtml({
           clientId,
+          clientName: validation.registration.n,
           redirectUri,
           state,
           codeChallenge,
@@ -265,22 +507,32 @@ export class OAuthServer {
             return;
           }
 
+          const validation = this.validateAuthorizationRequest({
+            clientId: String(client_id || ""),
+            redirectUri: String(redirect_uri),
+            codeChallenge: String(code_challenge || ""),
+            codeChallengeMethod: String(code_challenge_method || "S256"),
+          });
+          if ("error" in validation) {
+            res.status(400).json({ error: "invalid_request", error_description: validation.error });
+            return;
+          }
+
           const verified = await this.config.verifyFirebaseIdToken(String(id_token));
           const targetEnv: AppEnv =
             env === "snapshot" ? "snapshot" : "production";
 
+          this.pruneExpiredAuthCodes();
           const code = base64UrlEncode(crypto.randomBytes(24));
           this.authCodes.set(code, {
             code,
-            clientId: String(client_id || "default"),
+            clientId: String(client_id),
             redirectUri: String(redirect_uri),
             uid: verified.uid,
             email: verified.email,
             env: targetEnv,
-            codeChallenge: code_challenge ? String(code_challenge) : undefined,
-            codeChallengeMethod: code_challenge_method
-              ? String(code_challenge_method)
-              : "S256",
+            codeChallenge: String(code_challenge),
+            codeChallengeMethod: "S256",
             expiresAt: Date.now() + 5 * 60 * 1000, // 5 minutes
           });
 
@@ -327,21 +579,31 @@ export class OAuthServer {
           // Single-use code
           this.authCodes.delete(code);
 
-          if (record.codeChallenge) {
-            if (
-              !codeVerifier ||
-              !verifyPkceChallenge(
-                codeVerifier,
-                record.codeChallenge,
-                record.codeChallengeMethod
-              )
-            ) {
-              res.status(400).json({
-                error: "invalid_grant",
-                error_description: "PKCE code_verifier validation failed",
-              });
-              return;
-            }
+          const clientError = this.authenticateClient(req, record.clientId);
+          if (clientError) {
+            res.status(401).json({ error: "invalid_client", error_description: clientError });
+            return;
+          }
+
+          const redirectUri = req.body?.redirect_uri;
+          if (redirectUri !== undefined && String(redirectUri) !== record.redirectUri) {
+            res.status(400).json({
+              error: "invalid_grant",
+              error_description: "redirect_uri does not match the authorization request",
+            });
+            return;
+          }
+
+          if (
+            !record.codeChallenge ||
+            !codeVerifier ||
+            !verifyPkceChallenge(codeVerifier, record.codeChallenge, record.codeChallengeMethod)
+          ) {
+            res.status(400).json({
+              error: "invalid_grant",
+              error_description: "PKCE code_verifier validation failed",
+            });
+            return;
           }
 
           const nowSec = Math.floor(Date.now() / 1000);
@@ -395,6 +657,12 @@ export class OAuthServer {
               error: "invalid_grant",
               error_description: "Invalid or expired refresh_token",
             });
+            return;
+          }
+
+          const clientError = this.authenticateClient(req, verified.clientId);
+          if (clientError) {
+            res.status(401).json({ error: "invalid_client", error_description: clientError });
             return;
           }
 
@@ -457,8 +725,8 @@ export class OAuthServer {
     // Check optional dev bearer token for local CLI / Antigravity usage
     if (
       this.config.devBearerToken &&
-      rawToken === this.config.devBearerToken &&
-      this.config.devDefaultUid
+      this.config.devDefaultUid &&
+      safeEqual(rawToken, this.config.devBearerToken)
     ) {
       const envHeader = req.headers["x-app-env"];
       const env: AppEnv = envHeader === "snapshot" ? "snapshot" : "production";
@@ -504,6 +772,7 @@ function escapeHtml(s: string): string {
 
 function renderConsentPageHtml(params: {
   clientId: string;
+  clientName: string;
   redirectUri: string;
   state: string;
   codeChallenge: string;
@@ -581,6 +850,7 @@ function renderConsentPageHtml(params: {
   <div class="card">
     <h1>Connect CrossTraining</h1>
     <p>Sign in with your CrossTraining account to allow your AI assistant (Gemini, Claude, or ChatGPT) to view and update your workouts, plans, and logs.</p>
+    <p><strong>${escapeHtml(params.clientName)}</strong> is requesting access and will receive it at <strong>${escapeHtml(describeRedirectTarget(params.redirectUri))}</strong>. Only continue if you started this connection.</p>
 
     <label for="env">Target App Environment</label>
     <select id="env">
@@ -602,9 +872,9 @@ function renderConsentPageHtml(params: {
     import { getAuth, signInWithEmailAndPassword, GoogleAuthProvider, signInWithPopup } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 
     const firebaseConfig = {
-      apiKey: "${escapeHtml(params.apiKey)}",
-      authDomain: "${escapeHtml(params.projectId)}.firebaseapp.com",
-      projectId: "${escapeHtml(params.projectId)}"
+      apiKey: ${jsLiteral(params.apiKey)},
+      authDomain: ${jsLiteral(`${params.projectId}.firebaseapp.com`)},
+      projectId: ${jsLiteral(params.projectId)}
     };
 
     const app = initializeApp(firebaseConfig);
@@ -625,11 +895,11 @@ function renderConsentPageHtml(params: {
         body: JSON.stringify({
           id_token: idToken,
           env,
-          client_id: "${escapeHtml(params.clientId)}",
-          redirect_uri: "${escapeHtml(params.redirectUri)}",
-          state: "${escapeHtml(params.state)}",
-          code_challenge: "${escapeHtml(params.codeChallenge)}",
-          code_challenge_method: "${escapeHtml(params.codeChallengeMethod)}"
+          client_id: ${jsLiteral(params.clientId)},
+          redirect_uri: ${jsLiteral(params.redirectUri)},
+          state: ${jsLiteral(params.state)},
+          code_challenge: ${jsLiteral(params.codeChallenge)},
+          code_challenge_method: ${jsLiteral(params.codeChallengeMethod)}
         })
       });
       const data = await resp.json();
