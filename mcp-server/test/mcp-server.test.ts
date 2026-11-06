@@ -306,6 +306,15 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     });
     const tools = listResp.result.tools as Array<{ name: string }>;
     assert.ok(tools.length >= 16);
+    const toolsJson = JSON.stringify(tools);
+    assert.equal(toolsJson.includes('"$ref"'), false, "Tool schemas must never contain $ref (rejected by Gemini)");
+    assert.equal(toolsJson.includes('"exclusiveMinimum"'), false, "Tool schemas must never contain exclusiveMinimum (rejected by Gemini)");
+
+    const headResp = await fetch(`${baseUrl}/mcp`, {
+      method: "HEAD",
+      headers: { Authorization: "Bearer dev-static-token-123" },
+    });
+    assert.equal(headResp.status, 200);
     for (const tool of tools) {
       assert.ok(
         tool.name.length <= 60 && /^[a-z0-9_]+$/.test(tool.name),

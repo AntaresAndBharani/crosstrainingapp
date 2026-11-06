@@ -30,7 +30,7 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
   app.use(
     cors({
       origin: "*",
-      methods: ["GET", "POST", "DELETE", "OPTIONS"],
+      methods: ["GET", "HEAD", "POST", "DELETE", "OPTIONS"],
       allowedHeaders: [
         "Content-Type",
         "Authorization",
@@ -80,6 +80,7 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
       const server = createCrossTrainingMcpServer(domain, () => user);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined, // Stateless per-request JSON-RPC mode for Cloud Run scale-to-zero
+        enableJsonResponse: true,
       });
       res.on("close", () => {
         void transport.close();
@@ -99,6 +100,10 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
         });
       }
     }
+  });
+
+  app.head("/mcp", oauth.requireAuth, (_req: Request, res: Response) => {
+    res.status(200).end();
   });
 
   app.get("/mcp", oauth.requireAuth, (_req: Request, res: Response) => {
