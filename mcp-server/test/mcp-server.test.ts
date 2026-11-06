@@ -132,6 +132,9 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     };
     assert.ok(tokenData.access_token);
     assert.ok(tokenData.refresh_token);
+    // Tokens carry a 16-byte client_id digest, never the full (potentially multi-KB) client_id.
+    assert.ok(tokenData.access_token.length < 600, `access_token too large: ${tokenData.access_token.length}`);
+    assert.ok(tokenData.refresh_token.length < 600, `refresh_token too large: ${tokenData.refresh_token.length}`);
 
     // 5. Refresh token rotation
     const refreshRes = await fetch(`${baseUrl}/token`, {
@@ -165,6 +168,34 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       }),
     });
     assert.equal(crossClientRefresh.status, 401);
+
+    // 7. Multi-URI registrations are deflate-compressed (`z_` prefix) and still decode on /authorize
+    const multiRedirects = Array.from(
+      { length: 8 },
+      (_, i) => `https://connector-${i}.example.com/oauth/callback/very/long/path/segment`
+    );
+    const multiReg = (await (
+      await fetch(`${baseUrl}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_name: "Multi-URI Connector", redirect_uris: multiRedirects }),
+      })
+    ).json()) as { client_id: string };
+    assert.ok(multiReg.client_id.startsWith("ct_client_z_"), "Large client registrations must be compressed");
+    const multiAuthRes = await fetch(`${baseUrl}/authorize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        id_token: "valid-firebase-id-token-athlete",
+        env: "production",
+        client_id: multiReg.client_id,
+        redirect_uri: multiRedirects[5],
+        state: "multi-state",
+        code_challenge: codeChallenge,
+        code_challenge_method: "S256",
+      }),
+    });
+    assert.equal(multiAuthRes.status, 200);
   });
 
   it("rejects unregistered clients, unregistered redirect_uris, missing/plain PKCE, and forged client_ids", async () => {
@@ -315,6 +346,21 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       headers: { Authorization: "Bearer dev-static-token-123" },
     });
     assert.equal(headResp.status, 200);
+
+    // Date validation is enforced at runtime even though the advertised schema has no `pattern`.
+    const badDateResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 99,
+      method: "tools/call",
+      params: {
+        name: "upsert_session",
+        arguments: { date: "2026-02-30", title: "Impossible Date", blocks: [] },
+      },
+    });
+    assert.ok(
+      badDateResp.error || badDateResp.result?.isError === true,
+      `Invalid ISO date must be rejected, got: ${JSON.stringify(badDateResp)}`
+    );
     for (const tool of tools) {
       assert.ok(
         tool.name.length <= 60 && /^[a-z0-9_]+$/.test(tool.name),

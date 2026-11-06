@@ -63,9 +63,20 @@ const goalMetricSchema = () =>
     .enum(GoalMetricValues)
     .describe("Cycle goal metric: WEIGHT, CALORIES, or REPS");
 
+/** True only for a real calendar date in strict `YYYY-MM-DD` form (rejects `2026-02-30`, `2026-1-5`). */
+export function isValidIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const ms = Date.parse(`${value}T00:00:00Z`);
+  return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 10) === value;
+}
+
+// Runtime validation uses `.refine()` instead of `.regex()`: refinements are enforced by Zod on
+// every tools/call but emit no JSON Schema keyword, so the advertised tool schema stays a plain
+// `{"type":"string"}` that every connector (Gemini, Claude, ChatGPT) accepts.
 const isoDateSchema = () =>
   z
     .string()
+    .refine(isValidIsoDate, "Expected a valid YYYY-MM-DD ISO date")
     .describe("Date in YYYY-MM-DD format");
 
 export const ExerciseCategorySchema = exerciseCategorySchema();
