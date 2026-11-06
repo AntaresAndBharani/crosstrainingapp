@@ -203,8 +203,8 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         UserCloudSyncManager.resetSyncStatus()
         _lastSyncError.value = null
         return viewModelScope.launch {
-            val uploadRes = UserCloudSyncManager.uploadUserData(data.realRepository)
             val downloadRes = UserCloudSyncManager.downloadUserData(data.realRepository)
+            val uploadRes = UserCloudSyncManager.uploadUserData(data.realRepository)
 
             val uploadOk = uploadRes.isSuccess
             val downloadOk = downloadRes.isSuccess
