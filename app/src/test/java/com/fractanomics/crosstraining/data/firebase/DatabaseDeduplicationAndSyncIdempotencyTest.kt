@@ -411,6 +411,16 @@ class DatabaseDeduplicationAndSyncIdempotencyTest {
         assertEquals("saveExercise with id=0 must reuse existing exercise by normalized name", ex1, ex2)
         assertEquals(1, repo.getAllExercisesOnce().size)
 
+        // Quick-add of an existing name (bare Exercise(name = ...)) must not reset its configuration
+        val rowId = repo.saveExercise(
+            Exercise(id = 0, name = "Row", category = ExerciseCategory.MACHINE, metricType = MetricType.CALORIES, unit = "cal", tracksRepMax = false)
+        )
+        assertEquals(rowId, repo.saveExercise(Exercise(name = "row")))
+        val row = repo.getAllExercisesOnce().single { it.id == rowId }
+        assertEquals(ExerciseCategory.MACHINE, row.category)
+        assertEquals(MetricType.CALORIES, row.metricType)
+        assertEquals("cal", row.unit)
+
         val r1 = repo.saveRoutine(Routine(id = 0, name = "Heavy Day"))
         val r2 = repo.saveRoutine(Routine(id = 0, name = " heavy day "))
         assertEquals("saveRoutine with id=0 must reuse existing routine by normalized name", r1, r2)
@@ -441,6 +451,57 @@ class DatabaseDeduplicationAndSyncIdempotencyTest {
         assertEquals(rm1, rm2)
         assertEquals(rm1, rm3)
         assertEquals(1, repo.exportSnapshot().repMaxes.size)
+    }
+
+    @Test
+    fun sync_preservesDistinctSameTitledSessionsOnSameDay_andCollapsesExactRemoteCopies() = runTest {
+        val cycleId = repo.saveCycle(Cycle(name = "Recomposition", startDate = LocalDate.of(2026, 9, 28), isActive = true))
+        val squat = repo.getOrCreateExercise("Back Squat")
+        val date = LocalDate.of(2026, 10, 6)
+        fun wod(blockName: String, reps: Int, weight: Double) = listOf(
+            BlockInsert(
+                block = SessionBlock(sessionId = 0, position = 0, name = blockName, kind = BlockKind.STRENGTH, mainExerciseId = squat.id),
+                sets = listOf(BlockSet(blockId = 0, position = 0, reps = reps, weight = weight))
+            )
+        )
+        repo.saveSession(Session(cycleId = cycleId, date = date, title = "WOD"), wod("AM Squat", 5, 80.0))
+        repo.saveSession(Session(cycleId = cycleId, date = date, title = "WOD"), wod("PM Squat", 3, 90.0))
+
+        val remoteStore = mutableMapOf<String, List<Map<String, Any>>>()
+        UserCloudSyncManager.documentReaderForTesting = { _, col -> remoteStore[col] ?: emptyList() }
+        UserCloudSyncManager.documentWriterForTesting = { col, data ->
+            @Suppress("UNCHECKED_CAST")
+            remoteStore[col] = data["list"] as? List<Map<String, Any>> ?: emptyList()
+        }
+
+        // Upload must not drop the second same-titled session from the whole-list cloud backup
+        assertTrue(UserCloudSyncManager.uploadUserData(repo).isSuccess)
+        assertEquals(2, remoteStore["sessions"]?.size)
+
+        // Restoring on a fresh device must bring back both distinct sessions, idempotently
+        val freshDb = FakeSampleAppDatabase()
+        val freshRepo = Repository(freshDb, FakeTransactionRunner(freshDb))
+        repeat(3) {
+            assertTrue(UserCloudSyncManager.downloadUserData(freshRepo, importUnmarkedRemoteRecords = true).isSuccess)
+        }
+        val restored = freshRepo.getAllSessionsWithBlocksOnce()
+        assertEquals(2, restored.size)
+        assertEquals(
+            setOf("AM Squat", "PM Squat"),
+            restored.map { it.blocks.single().block.name }.toSet()
+        )
+
+        // Exact remote copies of one session (differing only by ids) must collapse to a single local row
+        val original = remoteStore["sessions"]!!.first()
+        @Suppress("UNCHECKED_CAST")
+        val copies = (1..3).map { n ->
+            original + ("session" to ((original["session"] as Map<String, Any>) + ("id" to 100L + n)))
+        }
+        remoteStore["sessions"] = copies
+        val copyDb = FakeSampleAppDatabase()
+        val copyRepo = Repository(copyDb, FakeTransactionRunner(copyDb))
+        assertTrue(UserCloudSyncManager.downloadUserData(copyRepo, importUnmarkedRemoteRecords = true).isSuccess)
+        assertEquals(1, copyRepo.getAllSessionsWithBlocksOnce().size)
     }
 
     @Test

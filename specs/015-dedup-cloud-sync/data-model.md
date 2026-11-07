@@ -51,7 +51,8 @@
 - **Sync Identity Key**: `(date: LocalDate, normalizedTitle = title.trim().lowercase())`
 - **Local Deduplication Key**: `(cycleId, date, title.trim().lowercase(), blockSignature)` where `blockSignature` captures ordered block names/kinds/schemes/sets so identical duplicate sessions are collapsed while genuinely distinct multiple sessions on the same day with different content are preserved.
 - **Deduplication & Upsert Rule**:
-  - During `downloadUserData`, incoming `sessList` is deduplicated by `(date, title.trim().lowercase())` (keeping the latest `updatedAtMillis` entry), and `existingSessions` is maintained mutably so repeated entries in the same batch or across syncs update in place rather than inserting duplicates.
+  - During `downloadUserData`, incoming `sessList` is deduplicated by `(date, title.trim().lowercase(), remoteSessionContentSignature)` (keeping the latest `updatedAtMillis` entry), so exact remote copies collapse while distinct same-titled sessions on the same day are kept. Incoming sessions are paired with local sessions first by exact `(date, title, content signature)` and then by the first *unclaimed* `(date, title)` match, and `existingSessions` is maintained mutably so repeated entries in the same batch or across syncs update in place rather than inserting duplicates.
+  - During `uploadUserData`, sessions are **not** re-deduplicated by `(cycleId, date, title)`; the pre-upload `cleanupDuplicateData()` pass already collapsed true duplicates, and a coarser key would drop distinct same-titled sessions from the whole-list cloud backup.
   - During `cleanupDuplicateSessions()`, duplicate sessions sharing `(date, title.trim().lowercase())` and identical block/set signatures are collapsed into the canonical session (lowest `id`), remapping any `RepMax.sessionId` references before deleting duplicates.
 
 ### 6. `RepMax` (`rep_maxes`)

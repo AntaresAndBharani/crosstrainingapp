@@ -135,6 +135,9 @@ class Repository(
 
     suspend fun snapshotCycleGoals(): List<CycleGoal> = cycleGoalDao.snapshot()
 
+    /** Lightweight one-shot read of all cycles (avoids a full [exportSnapshot] table scan). */
+    suspend fun getAllCyclesOnce(): List<Cycle> = cycleDao.getAllOnce()
+
     suspend fun saveCycleWithGoals(cycle: Cycle, goals: List<CycleGoal>): Long =
         withDatabaseTransaction {
             val cycleId = if (cycle.id == 0L) cycleDao.insert(cycle) else {
@@ -206,8 +209,10 @@ class Repository(
             val trimmed = exercise.name.trim()
             val existing = exerciseDao.byName(trimmed)
             if (existing != null) {
-                val updated = exercise.copy(id = existing.id, name = trimmed)
-                exerciseDao.update(updated)
+                // Reuse the existing exercise WITHOUT overwriting it: id = 0 callers (e.g. Library
+                // quick-add, which passes a bare Exercise(name = ...)) must never reset an existing
+                // exercise's category / metricType / unit / tracksRepMax to defaults. This matches the
+                // pre-existing unique-name `OnConflictStrategy.IGNORE` semantics and getOrCreateExercise().
                 existing.id
             } else {
                 exerciseDao.insert(exercise.copy(name = trimmed))

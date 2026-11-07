@@ -31,7 +31,7 @@
     - *Canonical selection*: Prefer `isActive == true`, then non-null `targetWeightKg`/`startingWeightKg`, then lowest `id`. Remap `cycle_goals.cycleId`, `sessions.cycleId`, and `rep_maxes.cycleId` before deleting duplicate cycles.
   - **CycleGoal**: `(cycleId, exerciseId, goalMetric, targetReps)`
     - *Canonical selection*: Keep the first goal with lowest `id` (preserving card chip order) while merging any non-zero `targetWeight`/`startWeight` or non-blank `notes` from later duplicates if the first had empty values; delete all other duplicates in the group.
-  - **Session**: `(cycleId, date, title.trim().lowercase())` with identical block/set content signature (or during sync upsert by `(date, title.trim().lowercase())`)
+  - **Session**: `(cycleId, date, title.trim().lowercase())` with identical block/set content signature (during sync download, incoming copies collapse by `(date, title.trim().lowercase(), content signature)` and pair with unclaimed local sessions by `(date, title.trim().lowercase())`)
     - *Canonical selection*: Prefer session with more blocks/sets or completed sets, then lowest `id`. Remap `rep_maxes.sessionId` before deleting duplicate sessions and their blocks/sets.
   - **RepMax**: `(exerciseId, reps, BigDecimal(weight).setScale(2, HALF_UP), date)`
     - *Canonical selection*: Prefer row with non-null `sessionId`/`cycleId`, then lowest `id`.

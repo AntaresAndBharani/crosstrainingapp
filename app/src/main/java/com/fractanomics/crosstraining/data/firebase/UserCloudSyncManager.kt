@@ -486,6 +486,84 @@ object UserCloudSyncManager {
     private fun normalizeWeight(value: Double): BigDecimal =
         BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP)
 
+    /**
+     * Id-independent content signature of a remote `sessions` payload entry (blocks + sets), so exact
+     * remote copies of one workout collapse during download while distinct workouts sharing a date and
+     * title are both kept. Mirrors the block/set fields used by `Repository.cleanupDuplicateSessions()`.
+     */
+    internal fun remoteSessionContentSignature(swbMap: Map<String, Any>): String {
+        @Suppress("UNCHECKED_CAST")
+        val bList = swbMap["blocks"] as? List<Map<String, Any>> ?: return ""
+        fun str(map: Map<String, Any>, key: String): String = (map[key] as? String)?.trim()?.lowercase() ?: ""
+        fun num(map: Map<String, Any>, key: String): BigDecimal =
+            normalizeWeight((map[key] as? Number)?.toDouble() ?: 0.0)
+        return bList
+            .mapIndexed { idx, raw ->
+                @Suppress("UNCHECKED_CAST")
+                val bMap = raw["block"] as? Map<String, Any> ?: raw
+                idx to (raw to bMap)
+            }
+            .sortedBy { (idx, pair) -> (pair.second["position"] as? Number)?.toInt() ?: idx }
+            .joinToString("|") { (_, pair) ->
+                val (raw, bMap) = pair
+                val exerciseRef = str(bMap, "mainExerciseName").ifEmpty {
+                    (bMap["mainExerciseId"] as? Number)?.toLong()?.toString() ?: ""
+                }
+                @Suppress("UNCHECKED_CAST")
+                val sets = raw["sets"] as? List<Map<String, Any>> ?: emptyList()
+                val setsSig = sets
+                    .mapIndexed { sIdx, s -> ((s["position"] as? Number)?.toInt() ?: sIdx) to s }
+                    .sortedBy { it.first }
+                    .joinToString(",") { (_, s) ->
+                        "${(s["groupIndex"] as? Number)?.toInt()}:${(s["reps"] as? Number)?.toInt()}:" +
+                            "${num(s, "weight")}:${num(s, "metricValue")}:${s["isWarmup"] == true}:${s["isFailed"] == true}"
+                    }
+                "${str(bMap, "name")}#${bMap["kind"]}#${str(bMap, "format")}#${str(bMap, "scheme")}#" +
+                    "$exerciseRef#${str(bMap, "resultText")}#${num(bMap, "resultValue")}#[$setsSig]"
+            }
+    }
+
+    /**
+     * Projects a local [SessionWithBlocks] into the minimal remote `sessions` payload shape consumed by
+     * [remoteSessionContentSignature], so local and incoming sessions are compared by the same signature.
+     */
+    private fun localSessionAsRemotePayload(
+        swb: SessionWithBlocks,
+        exerciseNamesById: Map<Long, String>
+    ): Map<String, Any> = mapOf(
+        "blocks" to swb.blocks.map { bws ->
+            val b = bws.block
+            val blockMap = mutableMapOf<String, Any>(
+                "position" to b.position,
+                "name" to b.name,
+                "kind" to b.kind.name,
+                "format" to b.format,
+                "scheme" to b.scheme,
+                "resultText" to b.resultText
+            )
+            b.resultValue?.let { blockMap["resultValue"] = it }
+            b.mainExerciseId?.let { id ->
+                blockMap["mainExerciseId"] = id
+                exerciseNamesById[id]?.let { blockMap["mainExerciseName"] = it }
+            }
+            mapOf(
+                "block" to blockMap,
+                "sets" to bws.sets.map { st ->
+                    val setMap = mutableMapOf<String, Any>(
+                        "position" to st.position,
+                        "reps" to st.reps,
+                        "isWarmup" to st.isWarmup,
+                        "isFailed" to st.isFailed
+                    )
+                    st.groupIndex?.let { setMap["groupIndex"] = it }
+                    st.weight?.let { setMap["weight"] = it }
+                    st.metricValue?.let { setMap["metricValue"] = it }
+                    setMap
+                }
+            )
+        }
+    )
+
     suspend fun uploadUserData(repo: Repository): Result<Unit> {
         val testHandler = uploadUserDataHandler
         if (testHandler != null) {
@@ -514,7 +592,7 @@ object UserCloudSyncManager {
 
                 val allExercises = repo.getAllExercisesOnce().distinctBy { it.name.trim().lowercase() }
                 val exercisesById = allExercises.associateBy { it.id }
-                val cyclesById = repo.exportSnapshot().cycles.associateBy { it.id }
+                val cyclesById = repo.getAllCyclesOnce().associateBy { it.id }
 
                 val doc = if (documentWriterForTesting != null) null else userDoc(uid)
                 val collectionErrors = mutableMapOf<String, Throwable>()
@@ -596,8 +674,11 @@ object UserCloudSyncManager {
 
                     val taskSessions = async {
                         runCatching {
+                            // Local duplicates were already collapsed by cleanupDuplicateData() using the full
+                            // (cycleId, date, title, blocksSignature) natural key. Do NOT re-deduplicate here by
+                            // (cycleId, date, title) alone: two distinct same-titled workouts logged on the same
+                            // day would silently be dropped from the whole-list cloud backup.
                             val sessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
-                                .distinctBy { Triple(it.session.cycleId, it.session.date, it.session.title.trim().lowercase()) }
                             val sessionsPayload = sessionsWithBlocks.map { swb ->
                                 val cycleName = cyclesById[swb.session.cycleId]?.name
                                 val sessionMap = mutableMapOf<String, Any?>(
@@ -980,13 +1061,18 @@ object UserCloudSyncManager {
                     return ""
                 }
 
+                // Cached once per download (cycles are local-only and only created below), instead of
+                // re-reading the entire database via exportSnapshot() for every goal / session / rep max.
+                var cachedLocalCycles: List<Cycle>? = null
                 suspend fun resolveLocalCycleId(rawCycleId: Long?, rawCycleName: String?): Long? {
-                    val localCycles = repo.exportSnapshot().cycles
+                    val localCycles = cachedLocalCycles ?: repo.getAllCyclesOnce().also { cachedLocalCycles = it }
                     if (localCycles.isEmpty()) {
                         if (!rawCycleName.isNullOrBlank()) {
-                            return repo.saveCycle(
+                            val createdId = repo.saveCycle(
                                 Cycle(name = rawCycleName.trim(), startDate = LocalDate.now(), isActive = true)
                             )
+                            cachedLocalCycles = null
+                            return createdId
                         }
                         return rawCycleId
                     }
@@ -1143,14 +1229,16 @@ object UserCloudSyncManager {
 
                 // 4. Download Sessions & Logs (Workouts — Deduplicate incoming & upsert in place)
                 if (sessList.isNotEmpty()) {
-                    val deduplicatedSessions = LinkedHashMap<Pair<LocalDate, String>, Map<String, Any>>()
+                    // Incoming natural key = (date, title, block/set content). Exact remote copies collapse,
+                    // while distinct same-titled workouts logged on the same day are both preserved.
+                    val deduplicatedSessions = LinkedHashMap<Triple<LocalDate, String, String>, Map<String, Any>>()
                     sessList.forEach { swbMap ->
                         @Suppress("UNCHECKED_CAST")
                         val sMap = swbMap["session"] as? Map<String, Any> ?: return@forEach
                         val dateStr = sMap["date"] as? String ?: return@forEach
                         val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
                         val title = (sMap["title"] as? String) ?: ""
-                        val key = Pair(date, title.trim().lowercase())
+                        val key = Triple(date, title.trim().lowercase(), remoteSessionContentSignature(swbMap))
                         val existing = deduplicatedSessions[key]
                         if (existing == null) {
                             deduplicatedSessions[key] = swbMap
@@ -1166,24 +1254,66 @@ object UserCloudSyncManager {
                     }
 
                     val existingSessions = repo.getAllSessionsWithBlocksOnce().toMutableList()
-                    deduplicatedSessions.values.forEach { swbMap ->
+                    val incomingSessions = deduplicatedSessions.values.toList()
+                    // Local session ids already paired with an incoming record during this pass, so a second
+                    // distinct same-titled remote session is never collapsed onto (or overwrites) the first.
+                    val claimedLocalSessionIds = mutableSetOf<Long>()
+                    // Pass 1: pair incoming sessions with the local session of identical date/title/content
+                    // first, so a stamped (edited) remote session can only fall back to a local session that
+                    // has no exact remote counterpart — independent of remote list order.
+                    val exactPairByIncomingIndex = HashMap<Int, Long>()
+                    run {
+                        val exerciseNamesById = repo.getAllExercisesOnce().associate { it.id to it.name }
+                        val localSignatures = existingSessions.associate {
+                            it.session.id to remoteSessionContentSignature(localSessionAsRemotePayload(it, exerciseNamesById))
+                        }
+                        incomingSessions.forEachIndexed { incomingIndex, swbMap ->
+                            @Suppress("UNCHECKED_CAST")
+                            val sMap = swbMap["session"] as? Map<String, Any> ?: return@forEachIndexed
+                            val date = (sMap["date"] as? String)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+                                ?: return@forEachIndexed
+                            val title = (sMap["title"] as? String ?: "").trim()
+                            val signature = remoteSessionContentSignature(swbMap)
+                            existingSessions.firstOrNull {
+                                it.session.id !in claimedLocalSessionIds &&
+                                    it.session.date == date &&
+                                    it.session.title.trim().equals(title, ignoreCase = true) &&
+                                    localSignatures[it.session.id] == signature
+                            }?.let {
+                                exactPairByIncomingIndex[incomingIndex] = it.session.id
+                                claimedLocalSessionIds.add(it.session.id)
+                            }
+                        }
+                    }
+                    // Pass 2: reconcile every incoming session (exact pair, else first unclaimed date/title match).
+                    incomingSessions.forEachIndexed { incomingIndex, swbMap ->
                         @Suppress("UNCHECKED_CAST")
-                        val sMap = swbMap["session"] as? Map<String, Any> ?: return@forEach
-                        val dateStr = sMap["date"] as? String ?: return@forEach
-                        val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
+                        val sMap = swbMap["session"] as? Map<String, Any> ?: return@forEachIndexed
+                        val dateStr = sMap["date"] as? String ?: return@forEachIndexed
+                        val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEachIndexed
                         val title = sMap["title"] as? String ?: ""
                         val notes = sMap["notes"] as? String ?: ""
                         val rawCycleId = (sMap["cycleId"] as? Number)?.toLong()
                         val rawCycleName = sMap["cycleName"] as? String
-                        val cycleId = resolveLocalCycleId(rawCycleId, rawCycleName) ?: (rawCycleId ?: 0L)
                         val hasRemoteUpdateTimestamp = sMap["updatedAtMillis"] != null
 
-                        val existingIndex = existingSessions.indexOfFirst {
-                            it.session.date == date && it.session.title.trim().equals(title.trim(), ignoreCase = true)
+                        val exactLocalId = exactPairByIncomingIndex[incomingIndex]
+                        val existingIndex = if (exactLocalId != null) {
+                            existingSessions.indexOfFirst { it.session.id == exactLocalId }
+                        } else {
+                            existingSessions.indexOfFirst {
+                                it.session.id !in claimedLocalSessionIds &&
+                                    it.session.date == date &&
+                                    it.session.title.trim().equals(title.trim(), ignoreCase = true)
+                            }
                         }
                         val existingSession = if (existingIndex >= 0) existingSessions[existingIndex] else null
+                        existingSession?.let { claimedLocalSessionIds.add(it.session.id) }
                         // Do not resurrect a session the user deleted locally since the last upload.
-                        if (existingSession == null && !shouldImport(sMap)) return@forEach
+                        if (existingSession == null && !shouldImport(sMap)) return@forEachIndexed
+                        // Unchanged (unstamped) sessions that already exist locally need no work at all.
+                        if (existingSession != null && !hasRemoteUpdateTimestamp) return@forEachIndexed
+                        val cycleId = resolveLocalCycleId(rawCycleId, rawCycleName) ?: (rawCycleId ?: 0L)
                         if (existingSession == null || hasRemoteUpdateTimestamp) {
                             @Suppress("UNCHECKED_CAST")
                             val bList = swbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
@@ -1244,6 +1374,7 @@ object UserCloudSyncManager {
                             if (existingSession == null) {
                                 val newSession = Session(id = 0, cycleId = cycleId, date = date, title = title, notes = notes)
                                 val savedId = repo.saveSession(newSession, blockInserts)
+                                claimedLocalSessionIds.add(savedId)
                                 repo.sessionById(savedId)?.let { existingSessions.add(it) }
                                     ?: existingSessions.add(SessionWithBlocks(newSession.copy(id = savedId), emptyList()))
                             } else {
