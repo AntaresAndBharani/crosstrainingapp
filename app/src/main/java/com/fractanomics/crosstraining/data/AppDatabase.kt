@@ -238,7 +238,9 @@ abstract class AppDatabase : RoomDatabase() {
                             isProduction = isProduction
                         )
                         provisionDefaultCycleIfNeeded(database)
-                        Repository(database).reconcileLegacyWorkoutSubBlocks()
+                        val repo = Repository(database)
+                        repo.reconcileLegacyWorkoutSubBlocks()
+                        repo.cleanupDuplicateData()
                     }
                 }
 
@@ -246,7 +248,9 @@ abstract class AppDatabase : RoomDatabase() {
                     super.onOpen(db)
                     CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
                         provisionDefaultCycleIfNeeded(database)
-                        Repository(database).reconcileLegacyWorkoutSubBlocks()
+                        val repo = Repository(database)
+                        repo.reconcileLegacyWorkoutSubBlocks()
+                        repo.cleanupDuplicateData()
                     }
                 }
             }

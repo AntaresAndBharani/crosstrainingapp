@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.Query
+import androidx.room.Update
 import com.fractanomics.crosstraining.data.model.RepMax
 import kotlinx.coroutines.flow.Flow
 
@@ -11,6 +12,9 @@ import kotlinx.coroutines.flow.Flow
 interface RepMaxDao {
     @Insert
     suspend fun insert(repMax: RepMax): Long
+
+    @Update
+    suspend fun update(repMax: RepMax)
 
     @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
     suspend fun insertAll(repMaxes: List<RepMax>)

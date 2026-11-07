@@ -29,7 +29,7 @@ interface ExerciseDao {
     @Query("SELECT * FROM exercises WHERE id = :id")
     suspend fun byId(id: Long): Exercise?
 
-    @Query("SELECT * FROM exercises WHERE name = :name COLLATE NOCASE LIMIT 1")
+    @Query("SELECT * FROM exercises WHERE LOWER(TRIM(name)) = LOWER(TRIM(:name)) COLLATE NOCASE LIMIT 1")
     suspend fun byName(name: String): Exercise?
 
     @Query("SELECT COUNT(*) FROM exercises")

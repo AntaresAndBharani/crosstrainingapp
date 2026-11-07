@@ -160,6 +160,7 @@ fun ProfileScreen(
                         if (ok) {
                             val displayName = googleIdTokenCredential.displayName ?: googleIdTokenCredential.id
                             scope.launch { snackbar.showSnackbar("Welcome back, $displayName!") }
+                            // Serialized by UserCloudSyncManager.syncMutex after logInWithGoogle download completes
                             viewModel.triggerCloudSync { }
                         } else {
                             scope.launch { snackbar.showSnackbar(err ?: "Sign in failed") }

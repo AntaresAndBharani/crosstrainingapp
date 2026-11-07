@@ -89,7 +89,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     init {
         viewModelScope.launch {
             runCatching { repo.provisionDefaultCycleIfNeeded() }
-            runCatching { repo.cleanupDuplicateRoutines() }
+            runCatching { repo.cleanupDuplicateData() }
             val persisted = runCatching { data.getPersistedAuthUser() }.getOrNull()
             if (persisted != null) {
                 if (persisted.uid.contains("@")) {

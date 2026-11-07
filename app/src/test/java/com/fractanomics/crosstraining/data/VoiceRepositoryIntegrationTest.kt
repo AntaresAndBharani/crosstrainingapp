@@ -399,7 +399,11 @@ class FakeSampleAppDatabase : AppDatabase() {
         val blocks: List<SessionBlock>,
         val sets: List<BlockSet>,
         val weightEntries: List<com.fractanomics.crosstraining.data.model.WeightEntry>,
-        val dailyLogs: List<com.fractanomics.crosstraining.data.model.DailyLog>
+        val dailyLogs: List<com.fractanomics.crosstraining.data.model.DailyLog>,
+        val cycleGoals: List<CycleGoal> = emptyList(),
+        val routines: List<Routine> = emptyList(),
+        val routineBlocks: List<RoutineBlock> = emptyList(),
+        val repMaxes: List<RepMax> = emptyList()
     )
 
     fun createSnapshot(): DbSnapshot = DbSnapshot(
@@ -409,7 +413,11 @@ class FakeSampleAppDatabase : AppDatabase() {
         blocks = ArrayList(blocksStorage),
         sets = ArrayList(setsStorage),
         weightEntries = ArrayList(weightStorage),
-        dailyLogs = ArrayList(dailyLogsStorage)
+        dailyLogs = ArrayList(dailyLogsStorage),
+        cycleGoals = ArrayList(cycleGoalsStorage),
+        routines = ArrayList(routinesStorage),
+        routineBlocks = ArrayList(routineBlocksStorage),
+        repMaxes = ArrayList(repMaxesStorage)
     )
 
     fun restoreSnapshot(snapshot: DbSnapshot) {
@@ -420,6 +428,10 @@ class FakeSampleAppDatabase : AppDatabase() {
         setsStorage.clear(); setsStorage.addAll(snapshot.sets)
         weightStorage.clear(); weightStorage.addAll(snapshot.weightEntries)
         dailyLogsStorage.clear(); dailyLogsStorage.addAll(snapshot.dailyLogs)
+        cycleGoalsStorage.clear(); cycleGoalsStorage.addAll(snapshot.cycleGoals)
+        routinesStorage.clear(); routinesStorage.addAll(snapshot.routines)
+        routineBlocksStorage.clear(); routineBlocksStorage.addAll(snapshot.routineBlocks)
+        repMaxesStorage.clear(); repMaxesStorage.addAll(snapshot.repMaxes)
     }
 
     fun populateSampleData() {
@@ -459,7 +471,7 @@ class FakeSampleAppDatabase : AppDatabase() {
         override suspend fun byId(id: Long): Exercise? = exercisesStorage.find { it.id == id }
 
         override suspend fun byName(name: String): Exercise? =
-            exercisesStorage.find { it.name.equals(name.trim(), ignoreCase = true) }
+            exercisesStorage.find { it.name.trim().equals(name.trim(), ignoreCase = true) }
 
         override suspend fun count(): Int = exercisesStorage.size
 
@@ -495,6 +507,9 @@ class FakeSampleAppDatabase : AppDatabase() {
         }
 
         override suspend fun deleteSession(session: Session) {
+            val removedBlockIds = blocksStorage.filter { it.sessionId == session.id }.map { it.id }.toSet()
+            blocksStorage.removeAll { it.sessionId == session.id }
+            setsStorage.removeAll { it.blockId in removedBlockIds }
             sessionsStorage.removeAll { it.id == session.id }
         }
 
@@ -524,6 +539,11 @@ class FakeSampleAppDatabase : AppDatabase() {
             val created = block.copy(id = nextId)
             blocksStorage.add(created)
             return nextId
+        }
+
+        override suspend fun updateBlock(block: SessionBlock) {
+            val idx = blocksStorage.indexOfFirst { it.id == block.id }
+            if (idx >= 0) blocksStorage[idx] = block
         }
 
         override suspend fun insertBlocks(blocks: List<SessionBlock>) {
@@ -675,7 +695,7 @@ class FakeSampleAppDatabase : AppDatabase() {
             routinesStorage.map { r -> RoutineWithBlocks(r, routineBlocksStorage.filter { it.routineId == r.id }) }
         )
         override suspend fun byId(id: Long): Routine? = routinesStorage.find { it.id == id }
-        override suspend fun byName(name: String): Routine? = routinesStorage.find { it.name.equals(name, ignoreCase = true) }
+        override suspend fun byName(name: String): Routine? = routinesStorage.find { it.name.trim().equals(name.trim(), ignoreCase = true) }
         override suspend fun insertBlocks(blocks: List<RoutineBlock>) {
             blocks.forEach { insertBlock(it) }
         }
@@ -698,6 +718,10 @@ class FakeSampleAppDatabase : AppDatabase() {
             val created = repMax.copy(id = nextId)
             repMaxesStorage.add(created)
             return nextId
+        }
+        override suspend fun update(repMax: RepMax) {
+            val idx = repMaxesStorage.indexOfFirst { it.id == repMax.id }
+            if (idx >= 0) repMaxesStorage[idx] = repMax
         }
         override suspend fun insertAll(repMaxes: List<RepMax>) {
             repMaxes.forEach { insert(it) }

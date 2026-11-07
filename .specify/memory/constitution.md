@@ -14,8 +14,8 @@ Every domain calculation, state transition, and UI string/state resolver MUST be
 ### IV. Responsive Mobile UX & Accessibility
 All Jetpack Compose cards, grids, and progress visualizations MUST render without text clipping, overlap, or layout overflow on `360dp`-wide viewports up to `fontScale = 1.3f`. Composite metric rows and cells MUST provide merged TalkBack accessibility semantics (`Modifier.semantics(mergeDescendants = true)`) announcing context, value, and status clearly.
 
-### V. Offline-First & Environment Isolation
-Local Room SQLite persistence is the primary source of truth, with asynchronous cloud synchronization where configured. Repository `gradle.properties` MUST NEVER contain machine-specific paths (such as `org.gradle.java.home`). Database schema modifications require explicit migrations; features that can be derived from existing entities MUST avoid unnecessary schema changes.
+### V. Offline-First, Idempotent Synchronization & Environment Isolation
+Local Room SQLite persistence is the primary source of truth, with asynchronous cloud synchronization where configured. Cloud synchronization (`Sync Now`, upload, and download) and repository persistence MUST be strictly idempotent by natural entity identity (`CycleGoal`, `Exercise`, `Routine`, `Session`, `RepMax`, `WeightEntry`, `DailyLog`), ensuring repeated synchronization actions never duplicate records and pre-existing duplicates are automatically deduplicated locally and in Cloud Firestore. Repository `gradle.properties` MUST NEVER contain machine-specific paths (such as `org.gradle.java.home`). Database schema modifications require explicit migrations; features that can be derived from existing entities MUST avoid unnecessary schema changes.
 
 ### VI. Agentic Collaboration, Automated PR Review & Self-Healing Governance
 GitHub collaboration and Pull Request governance MUST integrate deterministic AI review and self-healing workflow automation without redundant build overhead or self-cancellation races.
@@ -43,4 +43,4 @@ GitHub collaboration and Pull Request governance MUST integrate deterministic AI
 
 This Constitution supersedes ad-hoc conventions across specifications, implementation plans, and code reviews. Amendments require updating `.specify/memory/constitution.md` with an incremented semantic version (`MAJOR.MINOR.PATCH`), an updated `Last Amended` ISO date, and verification that active templates and plans comply with all Core Principles.
 
-**Version**: 1.1.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-23
+**Version**: 1.2.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-11-07

@@ -8,8 +8,10 @@ import com.fractanomics.crosstraining.data.ai.ParsedBlock
 import com.fractanomics.crosstraining.data.ai.ParsedBlockSet
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
+import com.fractanomics.crosstraining.data.model.BlockWithSets
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
+import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.CycleWithGoals
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
@@ -26,6 +28,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.LocalDate
 
 /**
@@ -91,10 +95,41 @@ class Repository(
             cycleDao.update(cycle); cycle.id
         }
 
-    suspend fun saveCycleGoal(goal: CycleGoal): Long =
-        if (goal.id == 0L) cycleGoalDao.insert(goal) else {
-            cycleGoalDao.update(goal); goal.id
+    suspend fun saveCycleGoal(goal: CycleGoal): Long = withDatabaseTransaction {
+        val allGoals = cycleGoalDao.snapshot()
+        val matches = allGoals.filter {
+            it.cycleId == goal.cycleId &&
+                it.exerciseId == goal.exerciseId &&
+                it.goalMetric == goal.goalMetric &&
+                it.targetReps == goal.targetReps
+        }.sortedBy { it.id }
+
+        if (goal.id == 0L) {
+            if (matches.isNotEmpty()) {
+                val primary = matches.first()
+                val updated = goal.copy(id = primary.id)
+                cycleGoalDao.update(updated)
+                matches.drop(1).forEach { cycleGoalDao.delete(it) }
+                primary.id
+            } else {
+                cycleGoalDao.insert(goal)
+            }
+        } else {
+            if (allGoals.any { it.id == goal.id }) {
+                cycleGoalDao.update(goal)
+                matches.filter { it.id != goal.id }.forEach { cycleGoalDao.delete(it) }
+                goal.id
+            } else if (matches.isNotEmpty()) {
+                val primary = matches.first()
+                val updated = goal.copy(id = primary.id)
+                cycleGoalDao.update(updated)
+                matches.drop(1).forEach { cycleGoalDao.delete(it) }
+                primary.id
+            } else {
+                cycleGoalDao.insert(goal)
+            }
         }
+    }
 
     suspend fun deleteCycleGoal(goal: CycleGoal) = cycleGoalDao.delete(goal)
 
@@ -107,7 +142,11 @@ class Repository(
             }
             cycleGoalDao.deleteByCycle(cycleId)
             if (goals.isNotEmpty()) {
-                cycleGoalDao.insertAll(goals.map { it.copy(cycleId = cycleId) })
+                val deduplicatedGoals = goals
+                    .associateBy { Triple(it.exerciseId, it.goalMetric, it.targetReps) }
+                    .values
+                    .map { it.copy(id = 0L, cycleId = cycleId) }
+                cycleGoalDao.insertAll(deduplicatedGoals)
             }
             cycleId
         }
@@ -163,7 +202,17 @@ class Repository(
     val exercises: Flow<List<Exercise>> = exerciseDao.observeAll()
 
     suspend fun saveExercise(exercise: Exercise): Long =
-        if (exercise.id == 0L) exerciseDao.insert(exercise) else {
+        if (exercise.id == 0L) {
+            val trimmed = exercise.name.trim()
+            val existing = exerciseDao.byName(trimmed)
+            if (existing != null) {
+                val updated = exercise.copy(id = existing.id, name = trimmed)
+                exerciseDao.update(updated)
+                existing.id
+            } else {
+                exerciseDao.insert(exercise.copy(name = trimmed))
+            }
+        } else {
             exerciseDao.update(exercise); exercise.id
         }
 
@@ -199,7 +248,17 @@ class Repository(
     val routinesWithBlocks: Flow<List<RoutineWithBlocks>> = routineDao.observeWithBlocks()
 
     suspend fun saveRoutine(routine: Routine): Long =
-        if (routine.id == 0L) routineDao.insert(routine) else {
+        if (routine.id == 0L) {
+            val trimmed = routine.name.trim()
+            val existing = routineDao.byName(trimmed)
+            if (existing != null) {
+                val updated = routine.copy(id = existing.id, name = trimmed)
+                routineDao.update(updated)
+                existing.id
+            } else {
+                routineDao.insert(routine.copy(name = trimmed))
+            }
+        } else {
             routineDao.update(routine); routine.id
         }
 
@@ -220,19 +279,332 @@ class Repository(
             routineId
         }
 
+    suspend fun cleanupDuplicateExercises() = withDatabaseTransaction {
+        cleanupDuplicateExercisesInternal()
+    }
+
+    suspend fun cleanupDuplicateCycles() = withDatabaseTransaction {
+        cleanupDuplicateCyclesInternal()
+    }
+
     suspend fun cleanupDuplicateRoutines() = withDatabaseTransaction {
-        val allRoutines = routineDao.getAllOnce()
-        val grouped = allRoutines.groupBy { it.name.trim().lowercase() }
+        cleanupDuplicateRoutinesInternal()
+    }
+
+    suspend fun cleanupDuplicateCycleGoals() = withDatabaseTransaction {
+        cleanupDuplicateCycleGoalsInternal()
+    }
+
+    suspend fun cleanupDuplicateSessions() = withDatabaseTransaction {
+        cleanupDuplicateSessionsInternal()
+    }
+
+    suspend fun cleanupDuplicateRepMaxes() = withDatabaseTransaction {
+        cleanupDuplicateRepMaxesInternal()
+    }
+
+    /**
+     * Atomically deduplicates all entities in the local database in foreign-key dependency order:
+     * 1. Exercises (remapping CycleGoal, RepMax, Routine, RoutineBlock, and SessionBlock references)
+     * 2. Cycles (remapping CycleGoal, Session, and RepMax references)
+     * 3. Routines (remapping SessionBlock references)
+     * 4. CycleGoals (retaining lowest id and merging non-zero weights / notes)
+     * 5. Sessions (remapping RepMax references)
+     * 6. RepMaxes (retaining lowest id and merging session/cycle references)
+     */
+    suspend fun cleanupDuplicateData() = withDatabaseTransaction {
+        cleanupDuplicateExercisesInternal()
+        cleanupDuplicateCyclesInternal()
+        cleanupDuplicateRoutinesInternal()
+        cleanupDuplicateCycleGoalsInternal()
+        cleanupDuplicateSessionsInternal()
+        cleanupDuplicateRepMaxesInternal()
+    }
+
+    private fun remapExerciseIdsCsv(csv: String, dupIds: Set<Long>, primaryId: Long): String {
+        if (csv.isBlank()) return csv
+        return csv.split(",")
+            .mapNotNull { token -> token.trim().takeIf { it.isNotEmpty() } }
+            .map { token ->
+                val id = token.toLongOrNull()
+                if (id != null && id in dupIds) primaryId.toString() else token
+            }
+            .distinct()
+            .joinToString(",")
+    }
+
+    private suspend fun cleanupDuplicateExercisesInternal() {
+        val allExercises = exerciseDao.getAllOnce()
+        val grouped = allExercises.groupBy { it.name.trim().lowercase() }
         grouped.forEach { (_, list) ->
             if (list.size > 1) {
-                val primary = list.first()
-                val duplicates = list.drop(1)
+                val sorted = list.sortedBy { it.id }
+                val primary = sorted.first()
+                val duplicates = sorted.drop(1)
+                val dupIds = duplicates.map { it.id }.toSet()
+
+                cycleGoalDao.snapshot().forEach { goal ->
+                    if (goal.exerciseId in dupIds) {
+                        cycleGoalDao.update(goal.copy(exerciseId = primary.id))
+                    }
+                }
+                repMaxDao.getAllOnce().forEach { rm ->
+                    if (rm.exerciseId in dupIds) {
+                        repMaxDao.update(rm.copy(exerciseId = primary.id))
+                    }
+                }
+                routineDao.getAllOnce().forEach { routine ->
+                    if (routine.mainExerciseId != null && routine.mainExerciseId in dupIds) {
+                        routineDao.update(routine.copy(mainExerciseId = primary.id))
+                    }
+                }
+                routineDao.getAllWithBlocksOnce().forEach { rwb ->
+                    var blocksChanged = false
+                    val updatedBlocks = rwb.blocks.map { block ->
+                        val remappedCsv = remapExerciseIdsCsv(block.exerciseIdsCsv, dupIds, primary.id)
+                        if (remappedCsv != block.exerciseIdsCsv) {
+                            blocksChanged = true
+                            block.copy(exerciseIdsCsv = remappedCsv)
+                        } else {
+                            block
+                        }
+                    }
+                    if (blocksChanged) {
+                        routineDao.deleteBlocksForRoutine(rwb.routine.id)
+                        routineDao.insertBlocks(
+                            updatedBlocks.mapIndexed { idx, b ->
+                                b.copy(id = 0, routineId = rwb.routine.id, position = idx)
+                            }
+                        )
+                    }
+                }
+                blockDao.getAllBlocksOnce().forEach { sb ->
+                    val newMainId = if (sb.mainExerciseId != null && sb.mainExerciseId in dupIds) {
+                        primary.id
+                    } else {
+                        sb.mainExerciseId
+                    }
+                    val newCsv = remapExerciseIdsCsv(sb.exerciseIdsCsv, dupIds, primary.id)
+                    if (newMainId != sb.mainExerciseId || newCsv != sb.exerciseIdsCsv) {
+                        blockDao.updateBlock(sb.copy(mainExerciseId = newMainId, exerciseIdsCsv = newCsv))
+                    }
+                }
+
+                duplicates.forEach { dup ->
+                    exerciseDao.delete(dup)
+                }
+            }
+        }
+    }
+
+    private data class CycleNaturalKey(
+        val normalizedName: String,
+        val startDate: LocalDate,
+        val endDate: LocalDate?,
+        val type: CycleType
+    )
+
+    private suspend fun cleanupDuplicateCyclesInternal() {
+        val allCycles = cycleDao.getAllOnce()
+        val grouped = allCycles.groupBy {
+            CycleNaturalKey(it.name.trim().lowercase(), it.startDate, it.endDate, it.type)
+        }
+        grouped.forEach { (_, list) ->
+            if (list.size > 1) {
+                val sorted = list.sortedWith(
+                    compareByDescending<Cycle> { it.isActive }
+                        .thenByDescending { it.targetWeightKg != null || it.startingWeightKg != null }
+                        .thenBy { it.id }
+                )
+                val primary = sorted.first()
+                val duplicates = sorted.drop(1)
+                val dupIds = duplicates.map { it.id }.toSet()
+
+                cycleGoalDao.snapshot().forEach { goal ->
+                    if (goal.cycleId in dupIds) {
+                        cycleGoalDao.update(goal.copy(cycleId = primary.id))
+                    }
+                }
+                sessionDao.getAllSessionsOnce().forEach { session ->
+                    if (session.cycleId in dupIds) {
+                        sessionDao.updateSession(session.copy(cycleId = primary.id))
+                    }
+                }
+                repMaxDao.getAllOnce().forEach { rm ->
+                    if (rm.cycleId != null && rm.cycleId in dupIds) {
+                        repMaxDao.update(rm.copy(cycleId = primary.id))
+                    }
+                }
+                duplicates.forEach { dup ->
+                    cycleDao.delete(dup)
+                }
+            }
+        }
+    }
+
+    private suspend fun cleanupDuplicateRoutinesInternal() {
+        val allRoutines = routineDao.getAllWithBlocksOnce()
+        val grouped = allRoutines.groupBy { it.routine.name.trim().lowercase() }
+        grouped.forEach { (_, list) ->
+            if (list.size > 1) {
+                val sorted = list.sortedWith(
+                    compareByDescending<RoutineWithBlocks> { it.blocks.isNotEmpty() }
+                        .thenBy { it.routine.id }
+                )
+                val primary = sorted.first().routine
+                val duplicates = sorted.drop(1).map { it.routine }
+                val dupIds = duplicates.map { it.id }.toSet()
+
+                blockDao.getAllBlocksOnce().forEach { sb ->
+                    if (sb.routineId != null && sb.routineId in dupIds) {
+                        blockDao.updateBlock(sb.copy(routineId = primary.id))
+                    }
+                }
                 duplicates.forEach { dup ->
                     routineDao.deleteBlocksForRoutine(dup.id)
                     routineDao.delete(dup)
                 }
             }
         }
+    }
+
+    private data class CycleGoalNaturalKey(
+        val cycleId: Long,
+        val exerciseId: Long,
+        val goalMetric: MetricType,
+        val targetReps: Int
+    )
+
+    private suspend fun cleanupDuplicateCycleGoalsInternal() {
+        val allGoals = cycleGoalDao.snapshot()
+        val grouped = allGoals.groupBy {
+            CycleGoalNaturalKey(it.cycleId, it.exerciseId, it.goalMetric, it.targetReps)
+        }
+        grouped.forEach { (_, list) ->
+            if (list.size > 1) {
+                val sorted = list.sortedBy { it.id }
+                val primary = sorted.first()
+                val bestStartWeight = sorted.lastOrNull { it.startWeight > 0.0 }?.startWeight ?: primary.startWeight
+                val bestTargetWeight = sorted.lastOrNull { it.targetWeight > 0.0 }?.targetWeight ?: primary.targetWeight
+                val bestNotes = sorted.lastOrNull { it.notes.isNotBlank() }?.notes ?: primary.notes
+                val mergedPrimary = primary.copy(
+                    startWeight = bestStartWeight,
+                    targetWeight = bestTargetWeight,
+                    notes = bestNotes
+                )
+                if (mergedPrimary != primary) {
+                    cycleGoalDao.update(mergedPrimary)
+                }
+                sorted.drop(1).forEach { dup ->
+                    cycleGoalDao.delete(dup)
+                }
+            }
+        }
+    }
+
+    private data class SessionNaturalKey(
+        val cycleId: Long,
+        val date: LocalDate,
+        val normalizedTitle: String,
+        val blocksSignature: String
+    )
+
+    private fun normalizeWeightValue(value: Double): BigDecimal =
+        BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP)
+
+    private fun sessionBlocksSignature(blocks: List<BlockWithSets>): String =
+        blocks.sortedBy { it.block.position }.joinToString("|") { bws ->
+            val b = bws.block
+            val setsSig = bws.sets.sortedBy { it.position }.joinToString(",") { s ->
+                "${s.groupIndex}:${s.reps}:${normalizeWeightValue(s.weight ?: 0.0)}:${normalizeWeightValue(s.metricValue ?: 0.0)}:${s.isWarmup}:${s.isFailed}"
+            }
+            "${b.name.trim().lowercase()}#${b.kind.name}#${b.format.trim().lowercase()}#${b.scheme.trim().lowercase()}#${b.mainExerciseId ?: 0L}#${b.resultText.trim().lowercase()}#${normalizeWeightValue(b.resultValue ?: 0.0)}#[$setsSig]"
+        }
+
+    private suspend fun cleanupDuplicateSessionsInternal() {
+        val allSessions = getAllSessionsWithBlocksOnce()
+        val grouped = allSessions.groupBy { swb ->
+            SessionNaturalKey(
+                cycleId = swb.session.cycleId,
+                date = swb.session.date,
+                normalizedTitle = swb.session.title.trim().lowercase(),
+                blocksSignature = sessionBlocksSignature(swb.blocks)
+            )
+        }
+        grouped.forEach { (_, list) ->
+            if (list.size > 1) {
+                val sorted = list.sortedBy { it.session.id }
+                val primary = sorted.first().session
+                val duplicates = sorted.drop(1).map { it.session }
+                val dupIds = duplicates.map { it.id }.toSet()
+
+                repMaxDao.getAllOnce().forEach { rm ->
+                    if (rm.sessionId != null && rm.sessionId in dupIds) {
+                        repMaxDao.update(rm.copy(sessionId = primary.id, blockId = null))
+                    }
+                }
+                duplicates.forEach { dup ->
+                    blockDao.deleteBlocksForSession(dup.id)
+                    sessionDao.deleteSession(dup)
+                }
+            }
+        }
+    }
+
+    private data class RepMaxNaturalKey(
+        val exerciseId: Long,
+        val reps: Int,
+        val normalizedWeight: BigDecimal,
+        val date: LocalDate
+    )
+
+    private suspend fun cleanupDuplicateRepMaxesInternal() {
+        val allRepMaxes = repMaxDao.getAllOnce()
+        val grouped = allRepMaxes.groupBy {
+            RepMaxNaturalKey(it.exerciseId, it.reps, normalizeWeightValue(it.weight), it.date)
+        }
+        grouped.forEach { (_, list) ->
+            if (list.size > 1) {
+                val sorted = list.sortedBy { it.id }
+                val primary = sorted.first()
+                val merged = primary.copy(
+                    sessionId = primary.sessionId ?: sorted.firstNotNullOfOrNull { it.sessionId },
+                    blockId = primary.blockId ?: sorted.firstNotNullOfOrNull { it.blockId },
+                    cycleId = primary.cycleId ?: sorted.firstNotNullOfOrNull { it.cycleId }
+                )
+                if (merged != primary) {
+                    repMaxDao.update(merged)
+                }
+                sorted.drop(1).forEach { dup ->
+                    repMaxDao.delete(dup)
+                }
+            }
+        }
+    }
+
+    private suspend fun upsertRepMaxInternal(repMax: RepMax): Long {
+        val targetWeight = normalizeWeightValue(repMax.weight)
+        val existing = repMaxDao.getAllOnce()
+            .filter {
+                it.exerciseId == repMax.exerciseId &&
+                    it.reps == repMax.reps &&
+                    normalizeWeightValue(it.weight) == targetWeight &&
+                    it.date == repMax.date
+            }
+            .minByOrNull { it.id }
+
+        if (existing != null) {
+            val updated = existing.copy(
+                sessionId = existing.sessionId ?: repMax.sessionId,
+                blockId = existing.blockId ?: repMax.blockId,
+                cycleId = existing.cycleId ?: repMax.cycleId
+            )
+            if (updated != existing) {
+                repMaxDao.update(updated)
+            }
+            return existing.id
+        }
+        return repMaxDao.insert(repMax)
     }
 
     suspend fun deleteRoutine(routine: Routine) = routineDao.delete(routine)
@@ -268,7 +640,7 @@ class Repository(
                     )
                 }
                 item.newRepMax?.let {
-                    repMaxDao.insert(
+                    upsertRepMaxInternal(
                         it.copy(
                             id = 0,
                             sessionId = sessionId,
@@ -303,7 +675,7 @@ class Repository(
                     )
                 }
                 item.newRepMax?.let {
-                    repMaxDao.insert(
+                    upsertRepMaxInternal(
                         it.copy(
                             id = 0,
                             sessionId = session.id,
@@ -322,7 +694,9 @@ class Repository(
     fun repMaxesForExercise(exerciseId: Long): Flow<List<RepMax>> =
         repMaxDao.observeForExercise(exerciseId)
 
-    suspend fun addRepMax(repMax: RepMax): Long = repMaxDao.insert(repMax)
+    suspend fun addRepMax(repMax: RepMax): Long = withDatabaseTransaction {
+        upsertRepMaxInternal(repMax)
+    }
 
     suspend fun deleteRepMax(repMax: RepMax) = repMaxDao.delete(repMax)
 
@@ -332,15 +706,17 @@ class Repository(
         weight: Double,
         date: LocalDate,
         cycleId: Long?
-    ): Long = repMaxDao.insert(
-        RepMax(
-            exerciseId = exerciseId,
-            reps = reps,
-            weight = weight,
-            date = date,
-            cycleId = cycleId
+    ): Long = withDatabaseTransaction {
+        upsertRepMaxInternal(
+            RepMax(
+                exerciseId = exerciseId,
+                reps = reps,
+                weight = weight,
+                date = date,
+                cycleId = cycleId
+            )
         )
-    )
+    }
 
     suspend fun getBestRepMaxWeight(exerciseId: Long, reps: Int): Double? =
         repMaxDao.bestWeight(exerciseId, reps)
@@ -1270,4 +1646,3 @@ class Repository(
         }
     }
 }
-

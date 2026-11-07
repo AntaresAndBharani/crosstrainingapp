@@ -5,6 +5,7 @@ import com.fractanomics.crosstraining.data.Repository
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Cycle
+import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
@@ -13,6 +14,7 @@ import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.RoutineBlock
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
+import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.data.model.UserRole
 import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
@@ -25,9 +27,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.LocalDate
 
 data class AuthUser(
@@ -48,6 +54,8 @@ object UserCloudSyncManager {
 
     private val _syncState = MutableStateFlow(SyncStatus.IDLE)
     val syncState: StateFlow<SyncStatus> = _syncState
+
+    private val syncMutex = Mutex()
 
     val currentEnv: String
         get() = runCatching { BuildConfig.APP_ENV }.getOrDefault("snapshot")
@@ -475,11 +483,20 @@ object UserCloudSyncManager {
         }
     }
 
+    private fun normalizeWeight(value: Double): BigDecimal =
+        BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP)
+
     suspend fun uploadUserData(repo: Repository): Result<Unit> {
         val testHandler = uploadUserDataHandler
         if (testHandler != null) {
             return testHandler(repo)
         }
+        return syncMutex.withLock {
+            uploadUserDataInternal(repo)
+        }
+    }
+
+    private suspend fun uploadUserDataInternal(repo: Repository): Result<Unit> {
         return runCatching {
             _syncState.value = SyncStatus.SYNCING
 
@@ -489,11 +506,15 @@ object UserCloudSyncManager {
                 val uid = currentUserId
                 if (uid.isBlank()) error(CloudSyncErrorMapper.GUEST_AUTH_PROMPT)
 
-                // 1. Explicit synchronous pre-flight step
-                repo.cleanupDuplicateRoutines()
+                // 1. Explicit synchronous pre-flight deduplication across all tables
+                repo.cleanupDuplicateData()
                 val ninetyDaysAgo = System.currentTimeMillis() - 90L * 24 * 60 * 60 * 1000L
                 repo.purgeOldWeightTombstones(ninetyDaysAgo)
                 repo.purgeOldDailyLogTombstones(ninetyDaysAgo)
+
+                val allExercises = repo.getAllExercisesOnce().distinctBy { it.name.trim().lowercase() }
+                val exercisesById = allExercises.associateBy { it.id }
+                val cyclesById = repo.exportSnapshot().cycles.associateBy { it.id }
 
                 val doc = if (documentWriterForTesting != null) null else userDoc(uid)
                 val collectionErrors = mutableMapOf<String, Throwable>()
@@ -502,8 +523,7 @@ object UserCloudSyncManager {
                 supervisorScope {
                     val taskExercises = async {
                         runCatching {
-                            val exercises = repo.getAllExercisesOnce()
-                            val exPayload = exercises.map { ex ->
+                            val exPayload = allExercises.map { ex ->
                                 mapOf(
                                     "id" to ex.id,
                                     "name" to ex.name,
@@ -517,25 +537,34 @@ object UserCloudSyncManager {
                                 collectionName = "exercises",
                                 docRef = doc?.collection("data")?.document("exercises"),
                                 payload = exPayload,
-                                isLocallyEmpty = exercises.isEmpty()
+                                isLocallyEmpty = allExercises.isEmpty()
                             )
                         }
                     }
 
                     val taskRoutines = async {
                         runCatching {
-                            val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce().distinctBy { it.routine.name.trim().lowercase() }
+                            val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce()
+                                .distinctBy { it.routine.name.trim().lowercase() }
                             val routinesPayload = routinesWithBlocks.map { rwb ->
+                                val mainExName = rwb.routine.mainExerciseId?.let { exercisesById[it]?.name }
+                                val routineMap = mutableMapOf<String, Any?>(
+                                    "id" to rwb.routine.id,
+                                    "name" to rwb.routine.name,
+                                    "description" to rwb.routine.description,
+                                    "mainExerciseId" to rwb.routine.mainExerciseId,
+                                    "defaultFormat" to rwb.routine.defaultFormat
+                                )
+                                if (mainExName != null) {
+                                    routineMap["mainExerciseName"] = mainExName
+                                }
                                 mapOf(
-                                    "routine" to mapOf(
-                                        "id" to rwb.routine.id,
-                                        "name" to rwb.routine.name,
-                                        "description" to rwb.routine.description,
-                                        "mainExerciseId" to rwb.routine.mainExerciseId,
-                                        "defaultFormat" to rwb.routine.defaultFormat
-                                    ),
+                                    "routine" to routineMap,
                                     "blocks" to rwb.blocks.map { b ->
-                                        mapOf(
+                                        val exerciseNamesCsv = b.exerciseIdsCsv.split(",")
+                                            .mapNotNull { it.trim().toLongOrNull()?.let { id -> exercisesById[id]?.name } }
+                                            .joinToString(",")
+                                        val blockMap = mutableMapOf<String, Any?>(
                                             "id" to b.id,
                                             "routineId" to b.routineId,
                                             "position" to b.position,
@@ -549,6 +578,10 @@ object UserCloudSyncManager {
                                             "section" to b.section,
                                             "subBlock" to b.subBlock
                                         )
+                                        if (exerciseNamesCsv.isNotEmpty()) {
+                                            blockMap["exerciseNamesCsv"] = exerciseNamesCsv
+                                        }
+                                        blockMap
                                     }
                                 )
                             }
@@ -564,36 +597,53 @@ object UserCloudSyncManager {
                     val taskSessions = async {
                         runCatching {
                             val sessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
+                                .distinctBy { Triple(it.session.cycleId, it.session.date, it.session.title.trim().lowercase()) }
                             val sessionsPayload = sessionsWithBlocks.map { swb ->
+                                val cycleName = cyclesById[swb.session.cycleId]?.name
+                                val sessionMap = mutableMapOf<String, Any?>(
+                                    "id" to swb.session.id,
+                                    "cycleId" to swb.session.cycleId,
+                                    "date" to swb.session.date.toString(),
+                                    "title" to swb.session.title,
+                                    "notes" to swb.session.notes
+                                )
+                                if (cycleName != null) {
+                                    sessionMap["cycleName"] = cycleName
+                                }
                                 mapOf(
-                                    "session" to mapOf(
-                                        "id" to swb.session.id,
-                                        "cycleId" to swb.session.cycleId,
-                                        "date" to swb.session.date.toString(),
-                                        "title" to swb.session.title,
-                                        "notes" to swb.session.notes
-                                    ),
+                                    "session" to sessionMap,
                                     "blocks" to swb.blocks.map { sb ->
+                                        val mainExName = sb.block.mainExerciseId?.let { exercisesById[it]?.name }
+                                        val exerciseNamesCsv = sb.block.exerciseIdsCsv.split(",")
+                                            .mapNotNull { it.trim().toLongOrNull()?.let { id -> exercisesById[id]?.name } }
+                                            .joinToString(",")
+                                        val blockMap = mutableMapOf<String, Any?>(
+                                            "id" to sb.block.id,
+                                            "sessionId" to sb.block.sessionId,
+                                            "position" to sb.block.position,
+                                            "name" to sb.block.name,
+                                            "kind" to sb.block.kind.name,
+                                            "format" to sb.block.format,
+                                            "scheme" to sb.block.scheme,
+                                            "mainExerciseId" to sb.block.mainExerciseId,
+                                            "routineId" to sb.block.routineId,
+                                            "description" to sb.block.description,
+                                            "resultText" to sb.block.resultText,
+                                            "resultValue" to sb.block.resultValue,
+                                            "notes" to sb.block.notes,
+                                            "section" to sb.block.section,
+                                            "exerciseIdsCsv" to sb.block.exerciseIdsCsv,
+                                            "subBlock" to sb.block.subBlock,
+                                            "isCompleted" to sb.block.isCompleted
+                                        )
+                                        if (mainExName != null) {
+                                            blockMap["mainExerciseName"] = mainExName
+                                        }
+                                        if (exerciseNamesCsv.isNotEmpty()) {
+                                            blockMap["exerciseNamesCsv"] = exerciseNamesCsv
+                                        }
                                         mapOf(
-                                            "block" to mapOf(
-                                                "id" to sb.block.id,
-                                                "sessionId" to sb.block.sessionId,
-                                                "position" to sb.block.position,
-                                                "name" to sb.block.name,
-                                                "kind" to sb.block.kind.name,
-                                                "format" to sb.block.format,
-                                                "scheme" to sb.block.scheme,
-                                                "mainExerciseId" to sb.block.mainExerciseId,
-                                                "routineId" to sb.block.routineId,
-                                                "description" to sb.block.description,
-                                                "resultText" to sb.block.resultText,
-                                                "resultValue" to sb.block.resultValue,
-                                                "notes" to sb.block.notes,
-                                                "section" to sb.block.section,
-                                                "exerciseIdsCsv" to sb.block.exerciseIdsCsv,
-                                                "subBlock" to sb.block.subBlock,
-                                                "isCompleted" to sb.block.isCompleted
-                                            ),
+                                            "block" to blockMap,
                                             "sets" to sb.sets.map { st ->
                                                 mapOf(
                                                     "id" to st.id,
@@ -624,8 +674,11 @@ object UserCloudSyncManager {
                     val taskGoals = async {
                         runCatching {
                             val cycleGoals = repo.snapshotCycleGoals()
+                                .distinctBy { listOf(it.cycleId, it.exerciseId, it.goalMetric.name, it.targetReps) }
                             val goalsPayload = cycleGoals.map { cg ->
-                                mapOf(
+                                val exName = exercisesById[cg.exerciseId]?.name
+                                val cycName = cyclesById[cg.cycleId]?.name
+                                val goalMap = mutableMapOf<String, Any?>(
                                     "id" to cg.id,
                                     "cycleId" to cg.cycleId,
                                     "exerciseId" to cg.exerciseId,
@@ -634,6 +687,13 @@ object UserCloudSyncManager {
                                     "targetWeight" to cg.targetWeight,
                                     "notes" to cg.notes
                                 )
+                                if (exName != null) {
+                                    goalMap["exerciseName"] = exName
+                                }
+                                if (cycName != null) {
+                                    goalMap["cycleName"] = cycName
+                                }
+                                goalMap
                             }
                             uploadCollectionWithGuard(
                                 collectionName = "cycle_goals",
@@ -647,8 +707,11 @@ object UserCloudSyncManager {
                     val taskRepMaxes = async {
                         runCatching {
                             val repMaxes = repo.exportSnapshot().repMaxes
+                                .distinctBy { listOf(it.exerciseId, it.reps, normalizeWeight(it.weight), it.date) }
                             val repMaxesPayload = repMaxes.map { rm ->
-                                mapOf(
+                                val exName = exercisesById[rm.exerciseId]?.name
+                                val cycName = rm.cycleId?.let { cyclesById[it]?.name }
+                                val rmMap = mutableMapOf<String, Any?>(
                                     "id" to rm.id,
                                     "exerciseId" to rm.exerciseId,
                                     "reps" to rm.reps,
@@ -656,6 +719,13 @@ object UserCloudSyncManager {
                                     "date" to rm.date.toString(),
                                     "cycleId" to rm.cycleId
                                 )
+                                if (exName != null) {
+                                    rmMap["exerciseName"] = exName
+                                }
+                                if (cycName != null) {
+                                    rmMap["cycleName"] = cycName
+                                }
+                                rmMap
                             }
                             uploadCollectionWithGuard(
                                 collectionName = "rep_maxes",
@@ -669,6 +739,7 @@ object UserCloudSyncManager {
                     val taskWeightEntries = async {
                         runCatching {
                             val weightEntries = repo.getAllWeightEntriesIncludingTombstones()
+                                .distinctBy { it.date }
                             val weightPayload = weightEntries.map { we ->
                                 mapOf(
                                     "date" to we.date.toEpochDay(),
@@ -692,6 +763,7 @@ object UserCloudSyncManager {
                     val taskDailyLogs = async {
                         runCatching {
                             val dailyLogs = repo.getAllDailyLogsIncludingTombstones()
+                                .distinctBy { it.date }
                             val dailyLogsPayload = dailyLogs.map { dl ->
                                 mapOf(
                                     "date" to dl.date.toEpochDay(),
@@ -767,6 +839,15 @@ object UserCloudSyncManager {
         if (testHandler != null) {
             return testHandler(repo)
         }
+        return syncMutex.withLock {
+            downloadUserDataInternal(repo, importUnmarkedRemoteRecords)
+        }
+    }
+
+    private suspend fun downloadUserDataInternal(
+        repo: Repository,
+        importUnmarkedRemoteRecords: Boolean
+    ): Result<Unit> {
         return runCatching {
             _syncState.value = SyncStatus.SYNCING
 
@@ -775,6 +856,9 @@ object UserCloudSyncManager {
                 ensureAuthenticated()
                 val uid = currentUserId
                 if (uid.isBlank()) error(CloudSyncErrorMapper.GUEST_AUTH_PROMPT)
+
+                // Clean any existing local duplicate rows before reconciling remote data
+                repo.cleanupDuplicateData()
 
                 suspend fun fetchCollection(targetUid: String, collectionName: String): List<Map<String, Any>> {
                     val testReader = documentReaderForTesting
@@ -883,26 +967,68 @@ object UserCloudSyncManager {
                         val ids = namesCsv.split(",")
                             .mapNotNull { n -> n.trim().takeIf { it.isNotEmpty() } }
                             .map { name -> repo.getOrCreateExercise(name).id }
+                            .distinct()
                         if (ids.isNotEmpty()) return ids.joinToString(",")
                     }
                     if (!idsCsv.isNullOrBlank()) {
                         return idsCsv.split(",")
                             .mapNotNull { s -> s.trim().toLongOrNull() }
                             .map { id -> remoteExerciseIdToLocalId[id] ?: id }
+                            .distinct()
                             .joinToString(",")
                     }
                     return ""
                 }
 
-                // 2. Download Routines
+                suspend fun resolveLocalCycleId(rawCycleId: Long?, rawCycleName: String?): Long? {
+                    val localCycles = repo.exportSnapshot().cycles
+                    if (localCycles.isEmpty()) {
+                        if (!rawCycleName.isNullOrBlank()) {
+                            return repo.saveCycle(
+                                Cycle(name = rawCycleName.trim(), startDate = LocalDate.now(), isActive = true)
+                            )
+                        }
+                        return rawCycleId
+                    }
+                    if (!rawCycleName.isNullOrBlank()) {
+                        localCycles.find { it.name.trim().equals(rawCycleName.trim(), ignoreCase = true) }?.let {
+                            return it.id
+                        }
+                    }
+                    if (rawCycleId != null && localCycles.any { it.id == rawCycleId }) {
+                        return rawCycleId
+                    }
+                    return (localCycles.find { it.isActive } ?: localCycles.first()).id
+                }
+
+                // 2. Download Routines (deduplicated by normalized routine name)
                 if (routList.isNotEmpty()) {
+                    val deduplicatedRoutines = LinkedHashMap<String, Map<String, Any>>()
                     routList.forEach { rwbMap ->
                         @Suppress("UNCHECKED_CAST")
                         val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
-                        // saveRoutineWithBlocks upserts by name, so an unstamped (stale) remote copy would
-                        // overwrite newer local edits or resurrect a locally deleted routine.
                         if (!shouldImport(rMap)) return@forEach
-                        val name = rMap["name"] as? String ?: return@forEach
+                        val name = (rMap["name"] as? String)?.trim() ?: return@forEach
+                        if (name.isEmpty()) return@forEach
+                        val key = name.lowercase()
+                        val existing = deduplicatedRoutines[key]
+                        if (existing == null) {
+                            deduplicatedRoutines[key] = rwbMap
+                        } else {
+                            @Suppress("UNCHECKED_CAST")
+                            val prevRMap = existing["routine"] as? Map<String, Any>
+                            val prevTs = (prevRMap?.get("updatedAtMillis") as? Number)?.toLong() ?: 0L
+                            val newTs = (rMap["updatedAtMillis"] as? Number)?.toLong() ?: 0L
+                            if (newTs >= prevTs) {
+                                deduplicatedRoutines[key] = rwbMap
+                            }
+                        }
+                    }
+
+                    deduplicatedRoutines.values.forEach { rwbMap ->
+                        @Suppress("UNCHECKED_CAST")
+                        val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
+                        val name = (rMap["name"] as? String)?.trim() ?: return@forEach
                         val description = rMap["description"] as? String ?: ""
                         val defaultFormat = rMap["defaultFormat"] as? String ?: ""
                         val mainExId = resolveLocalExerciseId(
@@ -940,12 +1066,26 @@ object UserCloudSyncManager {
                     repo.cleanupDuplicateRoutines()
                 }
 
-                // 3. Download Cycle Goals (Upsert in place when matching goal exists)
+                // 3. Download Cycle Goals (Deduplicate incoming & upsert in place by natural key)
                 if (goalsList.isNotEmpty()) {
-                    val existingGoals = repo.snapshotCycleGoals().toMutableList()
+                    data class IncomingGoalKey(
+                        val cycleId: Long,
+                        val exerciseId: Long,
+                        val goalMetric: MetricType,
+                        val targetReps: Int
+                    )
+                    data class IncomingGoalCandidate(
+                        val goal: CycleGoal,
+                        val updatedAtMillis: Long
+                    )
+
+                    val deduplicatedIncomingGoals = LinkedHashMap<IncomingGoalKey, IncomingGoalCandidate>()
                     goalsList.forEach { map ->
                         if (!shouldImport(map)) return@forEach
-                        val cycleId = (map["cycleId"] as? Number)?.toLong() ?: return@forEach
+                        val rawCycleId = (map["cycleId"] as? Number)?.toLong()
+                        val rawCycleName = map["cycleName"] as? String
+                        if (rawCycleId == null && rawCycleName.isNullOrBlank()) return@forEach
+                        val cycleId = resolveLocalCycleId(rawCycleId, rawCycleName) ?: return@forEach
                         val exerciseId = resolveLocalExerciseId(
                             (map["exerciseId"] as? Number)?.toLong(),
                             map["exerciseName"] as? String
@@ -954,12 +1094,12 @@ object UserCloudSyncManager {
                         val startWeight = (map["startWeight"] as? Number)?.toDouble() ?: 0.0
                         val targetWeight = (map["targetWeight"] as? Number)?.toDouble() ?: 0.0
                         val notes = map["notes"] as? String ?: ""
+                        val goalMetric = CycleGoal.parseMetadata(notes).first
+                        val updatedAtMillis = (map["updatedAtMillis"] as? Number)?.toLong() ?: 0L
 
-                        val existing = existingGoals.find {
-                            it.cycleId == cycleId && it.exerciseId == exerciseId && it.targetReps == targetReps
-                        }
-                        val goalToSave = com.fractanomics.crosstraining.data.model.CycleGoal(
-                            id = existing?.id ?: 0L,
+                        val key = IncomingGoalKey(cycleId, exerciseId, goalMetric, targetReps)
+                        val candidateGoal = CycleGoal(
+                            id = 0L,
                             cycleId = cycleId,
                             exerciseId = exerciseId,
                             targetReps = targetReps,
@@ -967,29 +1107,81 @@ object UserCloudSyncManager {
                             targetWeight = targetWeight,
                             notes = notes
                         )
+                        val existingCandidate = deduplicatedIncomingGoals[key]
+                        if (existingCandidate == null) {
+                            deduplicatedIncomingGoals[key] = IncomingGoalCandidate(candidateGoal, updatedAtMillis)
+                        } else if (updatedAtMillis >= existingCandidate.updatedAtMillis) {
+                            val mergedGoal = candidateGoal.copy(
+                                startWeight = if (candidateGoal.startWeight > 0.0) candidateGoal.startWeight else existingCandidate.goal.startWeight,
+                                targetWeight = if (candidateGoal.targetWeight > 0.0) candidateGoal.targetWeight else existingCandidate.goal.targetWeight,
+                                notes = candidateGoal.notes.ifBlank { existingCandidate.goal.notes }
+                            )
+                            deduplicatedIncomingGoals[key] = IncomingGoalCandidate(mergedGoal, updatedAtMillis)
+                        }
+                    }
+
+                    val existingGoals = repo.snapshotCycleGoals().toMutableList()
+                    deduplicatedIncomingGoals.values.forEach { candidate ->
+                        val incoming = candidate.goal
+                        val existingIndex = existingGoals.indexOfFirst {
+                            it.cycleId == incoming.cycleId &&
+                                it.exerciseId == incoming.exerciseId &&
+                                it.goalMetric == incoming.goalMetric &&
+                                it.targetReps == incoming.targetReps
+                        }
+                        val existing = if (existingIndex >= 0) existingGoals[existingIndex] else null
+                        val goalToSave = incoming.copy(id = existing?.id ?: 0L)
                         val savedId = repo.saveCycleGoal(goalToSave)
-                        if (existing == null) {
-                            existingGoals.add(goalToSave.copy(id = savedId))
+                        val savedGoal = goalToSave.copy(id = savedId)
+                        if (existingIndex >= 0) {
+                            existingGoals[existingIndex] = savedGoal
+                        } else {
+                            existingGoals.add(savedGoal)
                         }
                     }
                 }
 
-                // 4. Download Sessions & Logs (Workouts — Upsert when updatedAtMillis is present)
+                // 4. Download Sessions & Logs (Workouts — Deduplicate incoming & upsert in place)
                 if (sessList.isNotEmpty()) {
-                    val existingSessions = repo.getAllSessionsWithBlocksOnce()
+                    val deduplicatedSessions = LinkedHashMap<Pair<LocalDate, String>, Map<String, Any>>()
                     sessList.forEach { swbMap ->
+                        @Suppress("UNCHECKED_CAST")
+                        val sMap = swbMap["session"] as? Map<String, Any> ?: return@forEach
+                        val dateStr = sMap["date"] as? String ?: return@forEach
+                        val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
+                        val title = (sMap["title"] as? String) ?: ""
+                        val key = Pair(date, title.trim().lowercase())
+                        val existing = deduplicatedSessions[key]
+                        if (existing == null) {
+                            deduplicatedSessions[key] = swbMap
+                        } else {
+                            @Suppress("UNCHECKED_CAST")
+                            val prevSMap = existing["session"] as? Map<String, Any>
+                            val prevTs = (prevSMap?.get("updatedAtMillis") as? Number)?.toLong() ?: 0L
+                            val newTs = (sMap["updatedAtMillis"] as? Number)?.toLong() ?: 0L
+                            if (newTs >= prevTs) {
+                                deduplicatedSessions[key] = swbMap
+                            }
+                        }
+                    }
+
+                    val existingSessions = repo.getAllSessionsWithBlocksOnce().toMutableList()
+                    deduplicatedSessions.values.forEach { swbMap ->
                         @Suppress("UNCHECKED_CAST")
                         val sMap = swbMap["session"] as? Map<String, Any> ?: return@forEach
                         val dateStr = sMap["date"] as? String ?: return@forEach
                         val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
                         val title = sMap["title"] as? String ?: ""
                         val notes = sMap["notes"] as? String ?: ""
-                        val cycleId = (sMap["cycleId"] as? Number)?.toLong() ?: 0L
+                        val rawCycleId = (sMap["cycleId"] as? Number)?.toLong()
+                        val rawCycleName = sMap["cycleName"] as? String
+                        val cycleId = resolveLocalCycleId(rawCycleId, rawCycleName) ?: (rawCycleId ?: 0L)
                         val hasRemoteUpdateTimestamp = sMap["updatedAtMillis"] != null
 
-                        val existingSession = existingSessions.find {
-                            it.session.date == date && it.session.title.equals(title, ignoreCase = true)
+                        val existingIndex = existingSessions.indexOfFirst {
+                            it.session.date == date && it.session.title.trim().equals(title.trim(), ignoreCase = true)
                         }
+                        val existingSession = if (existingIndex >= 0) existingSessions[existingIndex] else null
                         // Do not resurrect a session the user deleted locally since the last upload.
                         if (existingSession == null && !shouldImport(sMap)) return@forEach
                         if (existingSession == null || hasRemoteUpdateTimestamp) {
@@ -1050,23 +1242,22 @@ object UserCloudSyncManager {
                                 com.fractanomics.crosstraining.data.BlockInsert(block = block, sets = sets)
                             }
                             if (existingSession == null) {
-                                repo.saveSession(
-                                    Session(id = 0, cycleId = cycleId, date = date, title = title, notes = notes),
-                                    blockInserts
-                                )
+                                val newSession = Session(id = 0, cycleId = cycleId, date = date, title = title, notes = notes)
+                                val savedId = repo.saveSession(newSession, blockInserts)
+                                repo.sessionById(savedId)?.let { existingSessions.add(it) }
+                                    ?: existingSessions.add(SessionWithBlocks(newSession.copy(id = savedId), emptyList()))
                             } else {
-                                repo.updateSession(
-                                    existingSession.session.copy(cycleId = cycleId, title = title, notes = notes),
-                                    blockInserts
-                                )
+                                val updatedSession = existingSession.session.copy(cycleId = cycleId, title = title, notes = notes)
+                                repo.updateSession(updatedSession, blockInserts)
+                                repo.sessionById(updatedSession.id)?.let { existingSessions[existingIndex] = it }
                             }
                         }
                     }
                 }
 
-                // 5. Download Rep Maxes (PR History)
+                // 5. Download Rep Maxes (PR History — Deduplicate incoming & check live mutable list)
                 if (rmList.isNotEmpty()) {
-                    val existingRms = repo.exportSnapshot().repMaxes
+                    val existingRms = repo.exportSnapshot().repMaxes.toMutableList()
                     rmList.forEach { map ->
                         if (!shouldImport(map)) return@forEach
                         val exerciseId = resolveLocalExerciseId(
@@ -1077,13 +1268,30 @@ object UserCloudSyncManager {
                         val weight = (map["weight"] as? Number)?.toDouble() ?: return@forEach
                         val dateStr = map["date"] as? String ?: return@forEach
                         val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
-                        val cycleId = (map["cycleId"] as? Number)?.toLong()
+                        val cycleId = resolveLocalCycleId(
+                            (map["cycleId"] as? Number)?.toLong(),
+                            map["cycleName"] as? String
+                        )
+                        val normWeight = normalizeWeight(weight)
 
                         val exists = existingRms.any {
-                            it.exerciseId == exerciseId && it.reps == reps && it.weight == weight && it.date == date
+                            it.exerciseId == exerciseId &&
+                                it.reps == reps &&
+                                normalizeWeight(it.weight) == normWeight &&
+                                it.date == date
                         }
                         if (!exists) {
-                            repo.recordRepMax(exerciseId, reps, weight, date, cycleId)
+                            val savedId = repo.recordRepMax(exerciseId, reps, weight, date, cycleId)
+                            existingRms.add(
+                                RepMax(
+                                    id = savedId,
+                                    exerciseId = exerciseId,
+                                    reps = reps,
+                                    weight = weight,
+                                    date = date,
+                                    cycleId = cycleId
+                                )
+                            )
                         }
                     }
                 }
@@ -1093,8 +1301,7 @@ object UserCloudSyncManager {
                     val localWeightEntries = repo.getAllWeightEntriesIncludingTombstones()
                     val localByDate = localWeightEntries.associateBy { it.date }
 
-                    val mergedWinningEntries = mutableListOf<com.fractanomics.crosstraining.data.model.WeightEntry>()
-
+                    val remoteWinningByDate = LinkedHashMap<LocalDate, com.fractanomics.crosstraining.data.model.WeightEntry>()
                     weightList.forEach { map ->
                         val rawDate = map["date"] ?: return@forEach
                         val date = when (rawDate) {
@@ -1106,33 +1313,30 @@ object UserCloudSyncManager {
                         val notes = map["notes"] as? String ?: ""
                         val updatedAtMillis = (map["updatedAtMillis"] as? Number)?.toLong() ?: 0L
                         val deletedAtMillis = (map["deletedAtMillis"] as? Number)?.toLong()
+                        val candidate = com.fractanomics.crosstraining.data.model.WeightEntry(
+                            date = date,
+                            weightKg = weightKg,
+                            notes = notes,
+                            updatedAtMillis = updatedAtMillis,
+                            deletedAtMillis = deletedAtMillis
+                        )
+                        val prev = remoteWinningByDate[date]
+                        if (prev == null || maxOf(updatedAtMillis, deletedAtMillis ?: 0L) >= maxOf(prev.updatedAtMillis, prev.deletedAtMillis ?: 0L)) {
+                            remoteWinningByDate[date] = candidate
+                        }
+                    }
 
-                        val remoteEffectiveTs = maxOf(updatedAtMillis, deletedAtMillis ?: 0L)
-                        val localEntry = localByDate[date]
-
+                    val mergedWinningEntries = mutableListOf<com.fractanomics.crosstraining.data.model.WeightEntry>()
+                    remoteWinningByDate.values.forEach { remoteEntry ->
+                        val remoteEffectiveTs = maxOf(remoteEntry.updatedAtMillis, remoteEntry.deletedAtMillis ?: 0L)
+                        val localEntry = localByDate[remoteEntry.date]
                         if (localEntry != null) {
                             val localEffectiveTs = maxOf(localEntry.updatedAtMillis, localEntry.deletedAtMillis ?: 0L)
                             if (remoteEffectiveTs >= localEffectiveTs) {
-                                mergedWinningEntries.add(
-                                    com.fractanomics.crosstraining.data.model.WeightEntry(
-                                        date = date,
-                                        weightKg = weightKg,
-                                        notes = notes,
-                                        updatedAtMillis = updatedAtMillis,
-                                        deletedAtMillis = deletedAtMillis
-                                    )
-                                )
+                                mergedWinningEntries.add(remoteEntry)
                             }
                         } else {
-                            mergedWinningEntries.add(
-                                com.fractanomics.crosstraining.data.model.WeightEntry(
-                                    date = date,
-                                    weightKg = weightKg,
-                                    notes = notes,
-                                    updatedAtMillis = updatedAtMillis,
-                                    deletedAtMillis = deletedAtMillis
-                                )
-                            )
+                            mergedWinningEntries.add(remoteEntry)
                         }
                     }
 
@@ -1147,8 +1351,7 @@ object UserCloudSyncManager {
                     val localDailyLogs = repo.getAllDailyLogsIncludingTombstones()
                     val localByDate = localDailyLogs.associateBy { it.date }
 
-                    val mergedWinningEntries = mutableListOf<com.fractanomics.crosstraining.data.model.DailyLog>()
-
+                    val remoteWinningByDate = LinkedHashMap<LocalDate, com.fractanomics.crosstraining.data.model.DailyLog>()
                     dailyLogsList.forEach { map ->
                         val rawDate = map["date"] ?: return@forEach
                         val date = when (rawDate) {
@@ -1174,42 +1377,35 @@ object UserCloudSyncManager {
                         val updatedAtMillis = (map["updatedAtMillis"] as? Number)?.toLong() ?: 0L
                         val deletedAtMillis = (map["deletedAtMillis"] as? Number)?.toLong()
 
-                        val remoteEffectiveTs = maxOf(updatedAtMillis, deletedAtMillis ?: 0L)
-                        val localEntry = localByDate[date]
+                        val candidate = com.fractanomics.crosstraining.data.model.DailyLog(
+                            date = date,
+                            fastCompleted = fastCompleted,
+                            isRestDay = isRestDay,
+                            caloriesKcal = caloriesKcal,
+                            proteinGrams = proteinGrams,
+                            carbsGrams = carbsGrams,
+                            fatGrams = fatGrams,
+                            notes = notes,
+                            updatedAtMillis = updatedAtMillis,
+                            deletedAtMillis = deletedAtMillis
+                        )
+                        val prev = remoteWinningByDate[date]
+                        if (prev == null || maxOf(updatedAtMillis, deletedAtMillis ?: 0L) >= maxOf(prev.updatedAtMillis, prev.deletedAtMillis ?: 0L)) {
+                            remoteWinningByDate[date] = candidate
+                        }
+                    }
 
+                    val mergedWinningEntries = mutableListOf<com.fractanomics.crosstraining.data.model.DailyLog>()
+                    remoteWinningByDate.values.forEach { remoteEntry ->
+                        val remoteEffectiveTs = maxOf(remoteEntry.updatedAtMillis, remoteEntry.deletedAtMillis ?: 0L)
+                        val localEntry = localByDate[remoteEntry.date]
                         if (localEntry != null) {
                             val localEffectiveTs = maxOf(localEntry.updatedAtMillis, localEntry.deletedAtMillis ?: 0L)
                             if (remoteEffectiveTs >= localEffectiveTs) {
-                                mergedWinningEntries.add(
-                                    com.fractanomics.crosstraining.data.model.DailyLog(
-                                        date = date,
-                                        fastCompleted = fastCompleted,
-                                        isRestDay = isRestDay,
-                                        caloriesKcal = caloriesKcal,
-                                        proteinGrams = proteinGrams,
-                                        carbsGrams = carbsGrams,
-                                        fatGrams = fatGrams,
-                                        notes = notes,
-                                        updatedAtMillis = updatedAtMillis,
-                                        deletedAtMillis = deletedAtMillis
-                                    )
-                                )
+                                mergedWinningEntries.add(remoteEntry)
                             }
                         } else {
-                            mergedWinningEntries.add(
-                                com.fractanomics.crosstraining.data.model.DailyLog(
-                                    date = date,
-                                    fastCompleted = fastCompleted,
-                                    isRestDay = isRestDay,
-                                    caloriesKcal = caloriesKcal,
-                                    proteinGrams = proteinGrams,
-                                    carbsGrams = carbsGrams,
-                                    fatGrams = fatGrams,
-                                    notes = notes,
-                                    updatedAtMillis = updatedAtMillis,
-                                    deletedAtMillis = deletedAtMillis
-                                )
-                            )
+                            mergedWinningEntries.add(remoteEntry)
                         }
                     }
 
@@ -1218,9 +1414,12 @@ object UserCloudSyncManager {
                     }
                 }
 
+                // Final pass to guarantee zero duplicates after download reconciliation
+                repo.cleanupDuplicateData()
+
                 // If migrated from legacy path, re-upload to users/{newUid}
                 if (isMigratedFromLegacy) {
-                    uploadUserData(repo)
+                    uploadUserDataInternal(repo).getOrThrow()
                 }
             }
 
@@ -1235,6 +1434,12 @@ object UserCloudSyncManager {
         if (testHandler != null) {
             return testHandler(repo)
         }
+        return syncMutex.withLock {
+            recoverAllCloudRoutinesInternal(repo)
+        }
+    }
+
+    private suspend fun recoverAllCloudRoutinesInternal(repo: Repository): Result<Int> {
         return runCatching {
             withTimeout(15000L) {
                 val uid = currentUserId
@@ -1300,10 +1505,10 @@ object UserCloudSyncManager {
                     repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
                     count++
                 }
-                repo.cleanupDuplicateRoutines()
+                repo.cleanupDuplicateData()
 
                 if (migratedFromLegacy && count > 0) {
-                    uploadUserData(repo)
+                    uploadUserDataInternal(repo).getOrThrow()
                 }
 
                 count
