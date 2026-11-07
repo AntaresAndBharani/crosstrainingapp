@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.SessionBlock
 
@@ -11,6 +12,9 @@ import com.fractanomics.crosstraining.data.model.SessionBlock
 interface BlockDao {
     @Insert
     suspend fun insertBlock(block: SessionBlock): Long
+
+    @Update
+    suspend fun updateBlock(block: SessionBlock)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertBlocks(blocks: List<SessionBlock>)

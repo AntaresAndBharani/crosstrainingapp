@@ -569,6 +569,10 @@ private class FakeTestAppDatabase : AppDatabase() {
             return nextId
         }
         override suspend fun insertBlocks(blocks: List<SessionBlock>) { blocks.forEach { insertBlock(it) } }
+        override suspend fun updateBlock(block: SessionBlock) {
+            val idx = blocksStorage.indexOfFirst { it.id == block.id }
+            if (idx >= 0) blocksStorage[idx] = block
+        }
         override suspend fun insertSets(sets: List<BlockSet>) {
             if (simulateSetInsertFailure) throw IllegalStateException("Simulated failure")
             sets.forEach { insertSet(it) }
@@ -657,6 +661,7 @@ private class FakeTestAppDatabase : AppDatabase() {
     private val repMaxDaoImpl = object : RepMaxDao {
         override suspend fun insert(repMax: RepMax): Long = 1L
         override suspend fun insertAll(repMaxes: List<RepMax>) {}
+        override suspend fun update(repMax: RepMax) {}
         override suspend fun delete(repMax: RepMax) {}
         override fun observeAll(): Flow<List<RepMax>> = flowOf(repMaxesStorage)
         override fun observeForExercise(exerciseId: Long): Flow<List<RepMax>> = flowOf(emptyList())
