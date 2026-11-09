@@ -43,7 +43,7 @@ data class Cycle(
         get() = parseSubcycleMetadata(goal).first != null
 
     /**
-     * Active [WeightSubcycleType] for this cycle (`WEIGHT_LOSS`, `RECOMPOSITION`, or `WEIGHT_GAIN`).
+     * Active [WeightSubcycleType] for this cycle (`FAT_LOSS`, `RECOMPOSITION`, or `MUSCLE_GAIN`).
      * Uses the explicitly saved metadata header when present; otherwise infers a sensible default
      * from [startingWeightKg], [targetWeightKg], and [type].
      */
@@ -102,7 +102,7 @@ data class Cycle(
 
     companion object {
         private val SUBCYCLE_METADATA_REGEX =
-            Regex("""^\[subcycle=(WEIGHT_LOSS|RECOMPOSITION|WEIGHT_GAIN)\]\s*""", RegexOption.IGNORE_CASE)
+            Regex("""^\[subcycle=(FAT_LOSS|WEIGHT_LOSS|RECOMPOSITION|MUSCLE_GAIN|WEIGHT_GAIN)\]\s*""", RegexOption.IGNORE_CASE)
 
         fun inferDefaultSubcycleType(
             type: CycleType,
@@ -111,13 +111,13 @@ data class Cycle(
         ): WeightSubcycleType {
             if (startingWeightKg != null && targetWeightKg != null && startingWeightKg > 0.0 && targetWeightKg > 0.0) {
                 return when {
-                    targetWeightKg < startingWeightKg -> WeightSubcycleType.WEIGHT_LOSS
-                    targetWeightKg > startingWeightKg -> WeightSubcycleType.WEIGHT_GAIN
+                    targetWeightKg < startingWeightKg -> WeightSubcycleType.FAT_LOSS
+                    targetWeightKg > startingWeightKg -> WeightSubcycleType.MUSCLE_GAIN
                     else -> WeightSubcycleType.RECOMPOSITION
                 }
             }
             return if (type == CycleType.FAT_LOSS_BODYBUILDING) {
-                WeightSubcycleType.WEIGHT_LOSS
+                WeightSubcycleType.FAT_LOSS
             } else {
                 WeightSubcycleType.RECOMPOSITION
             }
@@ -133,8 +133,8 @@ data class Cycle(
         fun parseSubcycleMetadata(rawGoal: String): Pair<WeightSubcycleType?, String> {
             val match = SUBCYCLE_METADATA_REGEX.find(rawGoal)
                 ?: return Pair(null, rawGoal)
-            val token = match.groupValues[1].uppercase()
-            val parsed = runCatching { WeightSubcycleType.valueOf(token) }.getOrNull()
+            val token = match.groupValues[1]
+            val parsed = WeightSubcycleType.fromToken(token)
             val stripped = rawGoal.substring(match.range.last + 1).trim()
             return Pair(parsed, stripped)
         }

@@ -60,9 +60,9 @@ enum class CycleType {
 /**
  * Active body-composition velocity regime (Subcycle Type) applicable to any training cycle.
  *
- * - [WEIGHT_LOSS]: Target weekly momentum corridor `-1.50%` to `-0.50%/wk`.
- * - [RECOMPOSITION]: Target weekly momentum corridor `-0.50%` to `+0.25%/wk`.
- * - [WEIGHT_GAIN]: Target weekly momentum corridor `+0.25%` to `+1.50%/wk`.
+ * - [FAT_LOSS]: Target weekly momentum corridor `-1.00%` to `-0.25%/wk`.
+ * - [RECOMPOSITION]: Target weekly momentum corridor `-0.25%` to `+0.25%/wk`.
+ * - [MUSCLE_GAIN]: Target weekly momentum corridor `+0.25%` to `+0.75%/wk`.
  */
 enum class WeightSubcycleType(
     val label: String,
@@ -70,24 +70,36 @@ enum class WeightSubcycleType(
     val maxWeeklyPct: Double,
     val description: String
 ) {
-    WEIGHT_LOSS(
-        label = "Weight Loss",
-        minWeeklyPct = -1.50,
-        maxWeeklyPct = -0.50,
+    FAT_LOSS(
+        label = "Fat Loss",
+        minWeeklyPct = -1.00,
+        maxWeeklyPct = -0.25,
         description = "Controlled caloric deficit for sustainable fat loss while preserving lean tissue."
     ),
     RECOMPOSITION(
         label = "Recomposition",
-        minWeeklyPct = -0.50,
+        minWeeklyPct = -0.25,
         maxWeeklyPct = 0.25,
         description = "Near-maintenance velocity for simultaneous fat loss and lean muscle retention/gain."
     ),
-    WEIGHT_GAIN(
-        label = "Weight Gain",
+    MUSCLE_GAIN(
+        label = "Muscle Gain",
         minWeeklyPct = 0.25,
-        maxWeeklyPct = 1.50,
+        maxWeeklyPct = 0.75,
         description = "Controlled lean mass accrual with bounded weekly surplus."
-    )
+    );
+
+    companion object {
+        val WEIGHT_LOSS: WeightSubcycleType = FAT_LOSS
+        val WEIGHT_GAIN: WeightSubcycleType = MUSCLE_GAIN
+
+        fun fromToken(token: String): WeightSubcycleType? = when (token.trim().uppercase()) {
+            "FAT_LOSS", "WEIGHT_LOSS" -> FAT_LOSS
+            "RECOMPOSITION" -> RECOMPOSITION
+            "MUSCLE_GAIN", "WEIGHT_GAIN" -> MUSCLE_GAIN
+            else -> null
+        }
+    }
 }
 
 /**

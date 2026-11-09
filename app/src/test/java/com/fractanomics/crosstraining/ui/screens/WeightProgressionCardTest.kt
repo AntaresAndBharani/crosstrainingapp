@@ -14,9 +14,11 @@ import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.WeightEntry
 import com.fractanomics.crosstraining.data.model.WeightSubcycleType
+import androidx.compose.ui.graphics.Color
 import com.fractanomics.crosstraining.data.analytics.CorridorComplianceStatus
 import com.fractanomics.crosstraining.data.analytics.CycleMomentumState
 import com.fractanomics.crosstraining.data.analytics.HorizonMomentumRow
+import com.fractanomics.crosstraining.data.analytics.MomentumSeverity
 import com.fractanomics.crosstraining.data.analytics.MomentumZone
 import com.fractanomics.crosstraining.ui.formatShort
 import org.junit.Assert.assertEquals
@@ -1521,8 +1523,8 @@ class WeightProgressionCardTest {
 
         // Pill text & accessibility contentDescription
         assertEquals("Recomposition ▾", resolveSubcycleSelectorPillText(WeightSubcycleType.RECOMPOSITION))
-        assertEquals("Weight Loss ▾", resolveSubcycleSelectorPillText(WeightSubcycleType.WEIGHT_LOSS))
-        assertEquals("Weight Gain ▾", resolveSubcycleSelectorPillText(WeightSubcycleType.WEIGHT_GAIN))
+        assertEquals("Fat Loss ▾", resolveSubcycleSelectorPillText(WeightSubcycleType.FAT_LOSS))
+        assertEquals("Muscle Gain ▾", resolveSubcycleSelectorPillText(WeightSubcycleType.MUSCLE_GAIN))
         assertEquals(
             "Current subcycle type: Recomposition. Double tap to change subcycle type.",
             resolveSubcycleSelectorContentDescription(WeightSubcycleType.RECOMPOSITION)
@@ -1535,26 +1537,29 @@ class WeightProgressionCardTest {
             effectiveWindowDays = 28,
             currentWeightKg = 78.0,
             currentWeightInUnit = 78.0,
-            anchorWeightKg = 78.3,
-            weeklyPaceKg = -0.30,
-            weeklyPaceInUnit = -0.30,
-            weeklyMomentumPct = -0.3831,
+            anchorWeightKg = 78.15,
+            weeklyPaceKg = -0.15,
+            weeklyPaceInUnit = -0.15,
+            weeklyMomentumPct = -0.1919,
             zone = MomentumZone.RECOMPOSITION,
             complianceStatus = CorridorComplianceStatus.ON_TARGET,
-            statusLabel = "On Target (Optimal)",
-            gaugePosition = 0.33f
+            severity = MomentumSeverity.OPTIMAL_GREEN,
+            statusLabel = "Optimal",
+            diagnosticMessage = null,
+            gaugePosition = 0.5145f
         )
         assertEquals("✦ Weekly Body Weight: 78.0 kg", resolveWeeklyBodyWeightTitle(compositeRow, "kg"))
         assertEquals(
-            "Pace: -0.30 kg/wk · Momentum: -0.38%/wk",
+            "Pace: -0.15 kg/wk · Momentum: -0.19%/wk",
             resolveWeeklyBodyWeightVelocitySummary(compositeRow, "kg", calibrationDay = 8)
         )
+        assertNull(resolveCompositeDiagnosticSubtitle(compositeRow))
         assertEquals(
-            "✦ Weekly Body Weight: 78.0 kg, Pace: -0.30 kg/wk · Momentum: -0.38%/wk, On Target (Optimal)",
+            "✦ Weekly Body Weight: 78.0 kg, Pace: -0.15 kg/wk · Momentum: -0.19%/wk, Optimal",
             resolveHorizonMomentumContentDescription(compositeRow, "kg", calibrationDay = 8)
         )
 
-        // Horizon row resolver (calibrated vs calibrating)
+        // Horizon row resolver (calibrated vs calibrating) - clean telemetry without per-row diagnostic badge
         val row7d = HorizonMomentumRow(
             windowDays = 7,
             isPrimaryComposite = false,
@@ -1565,14 +1570,20 @@ class WeightProgressionCardTest {
             weeklyPaceKg = -0.49,
             weeklyPaceInUnit = -0.49,
             weeklyMomentumPct = -0.6259,
-            zone = MomentumZone.WEIGHT_LOSS,
-            complianceStatus = CorridorComplianceStatus.BELOW_CORRIDOR,
-            statusLabel = "Slight Deficit Slip",
-            gaugePosition = 0.21f
+            zone = MomentumZone.FAT_LOSS,
+            complianceStatus = CorridorComplianceStatus.WARNING_FAT_LOSS_PHASE,
+            severity = MomentumSeverity.WARNING_AMBER,
+            statusLabel = "Warning: Fat loss phase",
+            diagnosticMessage = "Pace is below -0.25%/wk. Warning: You are currently in a fat loss phase.",
+            gaugePosition = 0.262f
         )
         assertEquals(
             "7D Avg: 77.8 kg (-0.49 kg/wk · -0.63%/wk)",
             resolveHorizonMomentumLeftLabel(row7d, "kg", calibrationDay = 8)
+        )
+        assertEquals(
+            "7D Avg: 77.8 kg (-0.49 kg/wk · -0.63%/wk)",
+            resolveHorizonMomentumContentDescription(row7d, "kg", calibrationDay = 8)
         )
 
         val calibratingRow = row7d.copy(
@@ -1581,11 +1592,69 @@ class WeightProgressionCardTest {
             weeklyMomentumPct = null,
             zone = MomentumZone.CALIBRATING,
             complianceStatus = CorridorComplianceStatus.CALIBRATING,
-            statusLabel = "Calibrating (Day 4/8)"
+            severity = MomentumSeverity.NEUTRAL,
+            statusLabel = "Calibrating (Day 4/8)",
+            diagnosticMessage = "Collecting initial 8-day baseline to calculate weekly momentum."
         )
         assertEquals(
             "7D Avg: 77.8 kg (Calibrating Day 4/8)",
             resolveHorizonMomentumLeftLabel(calibratingRow, "kg", calibrationDay = 4)
+        )
+    }
+
+    @Test
+    fun feature017_specWeightCard02_and_subtypeSheet02_resolversAndSemantics() {
+        // Semantic badge colors (Light & Dark)
+        assertEquals(
+            Color(0xFFE3F5EC) to Color(0xFF0B6E3F),
+            resolveMomentumBadgeColors(MomentumSeverity.OPTIMAL_GREEN, isDarkTheme = false)
+        )
+        assertEquals(
+            Color(0xFF133826) to Color(0xFF2ECC71),
+            resolveMomentumBadgeColors(MomentumSeverity.OPTIMAL_GREEN, isDarkTheme = true)
+        )
+        assertEquals(
+            Color(0xFFFEF3C7) to Color(0xFFD97706),
+            resolveMomentumBadgeColors(MomentumSeverity.WARNING_AMBER, isDarkTheme = false)
+        )
+        assertEquals(
+            Color(0xFF3B2A14) to Color(0xFFFBBF24),
+            resolveMomentumBadgeColors(MomentumSeverity.WARNING_AMBER, isDarkTheme = true)
+        )
+        assertEquals(
+            Color(0xFFFEE2E2) to Color(0xFFDC2626),
+            resolveMomentumBadgeColors(MomentumSeverity.CRITICAL_RED, isDarkTheme = false)
+        )
+        assertEquals(
+            Color(0xFF3B1818) to Color(0xFFF87171),
+            resolveMomentumBadgeColors(MomentumSeverity.CRITICAL_RED, isDarkTheme = true)
+        )
+
+        // Composite row with warning helper subtitle
+        val warningComposite = HorizonMomentumRow(
+            windowDays = 0,
+            isPrimaryComposite = true,
+            effectiveWindowDays = 28,
+            currentWeightKg = 80.0,
+            currentWeightInUnit = 80.0,
+            anchorWeightKg = 80.4,
+            weeklyPaceKg = -0.40,
+            weeklyPaceInUnit = -0.40,
+            weeklyMomentumPct = -0.4975,
+            zone = MomentumZone.FAT_LOSS,
+            complianceStatus = CorridorComplianceStatus.WARNING_FAT_LOSS_PHASE,
+            severity = MomentumSeverity.WARNING_AMBER,
+            statusLabel = "Warning: Fat loss phase",
+            diagnosticMessage = "Pace is below -0.25%/wk. Warning: You are currently in a fat loss phase.",
+            gaugePosition = 0.30f
+        )
+        assertEquals(
+            "↳ Pace is below -0.25%/wk. Warning: You are currently in a fat loss phase.",
+            resolveCompositeDiagnosticSubtitle(warningComposite)
+        )
+        assertEquals(
+            "✦ Weekly Body Weight: 80.0 kg, Pace: -0.40 kg/wk · Momentum: -0.50%/wk, Warning: Fat loss phase, Pace is below -0.25%/wk. Warning: You are currently in a fat loss phase.",
+            resolveHorizonMomentumContentDescription(warningComposite, "kg", calibrationDay = 10)
         )
     }
 }

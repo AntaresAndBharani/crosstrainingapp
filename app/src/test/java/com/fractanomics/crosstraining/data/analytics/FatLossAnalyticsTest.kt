@@ -4677,7 +4677,7 @@ class FatLossAnalyticsTest {
         assertEquals(CorridorComplianceStatus.CALIBRATING, calibratingState.weeklyBodyWeightRow.complianceStatus)
         assertEquals("Calibrating (Day 5/8)", calibratingState.weeklyBodyWeightRow.statusLabel)
 
-        // 2. Calibrated on Day 8 with Friday 80.0 -> Friday 76.5 (-3.5 kg over 7 days -> Possible Muscle Loss < -1.50%)
+        // 2. Calibrated on Day 8 with Friday 80.0 -> Friday 76.5 (-3.5 kg over 7 days -> Possible muscle loss < -1.00%)
         val day8 = start.plusDays(7)
         val steepEntries = listOf(
             WeightEntry(date = start, weightKg = 80.0, updatedAtMillis = 1L),
@@ -4686,19 +4686,22 @@ class FatLossAnalyticsTest {
         val steepState = FatLossAnalytics.computeCycleMomentumState(steepEntries, strengthCycle, day8) as CycleMomentumState.Active
         assertFalse(steepState.isCalibrating)
         assertNotNull(steepState.weeklyBodyWeightRow.weeklyMomentumPct)
-        assertTrue(steepState.weeklyBodyWeightRow.weeklyMomentumPct!! < -1.50)
+        assertTrue(steepState.weeklyBodyWeightRow.weeklyMomentumPct!! < -1.00)
         assertEquals(MomentumZone.POSSIBLE_MUSCLE_LOSS, steepState.weeklyBodyWeightRow.zone)
         assertEquals(CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS, steepState.weeklyBodyWeightRow.complianceStatus)
-        assertEquals("Possible Muscle Loss", steepState.weeklyBodyWeightRow.statusLabel)
+        assertEquals(MomentumSeverity.CRITICAL_RED, steepState.weeklyBodyWeightRow.severity)
+        assertEquals("Possible muscle loss", steepState.weeklyBodyWeightRow.statusLabel)
+        assertEquals("Losing faster than -1.00%/wk. High risk of lean muscle loss.", steepState.weeklyBodyWeightRow.diagnosticMessage)
 
-        // 3. Compounded finish weight projections for all 3 subcycle types (Weight Loss, Recomposition, Weight Gain)
+        // 3. Compounded finish weight projections for all 3 subcycle types (Fat Loss, Recomposition, Muscle Gain)
         assertEquals(3, steepState.allSubcyclePreviews.size)
         val bwWeekly = steepState.weeklyBodyWeightRow.currentWeightKg
         val weeksLeft = steepState.weeksRemaining
         val recompPreview = steepState.activeProjection
         assertEquals(WeightSubcycleType.RECOMPOSITION, recompPreview.subcycleType)
-        assertEquals(bwWeekly * Math.pow(1.0 - 0.005, weeksLeft), recompPreview.projectedMinWeightKg, 1e-4)
+        assertEquals(bwWeekly * Math.pow(1.0 - 0.0025, weeksLeft), recompPreview.projectedMinWeightKg, 1e-4)
         assertEquals(bwWeekly * Math.pow(1.0 + 0.0025, weeksLeft), recompPreview.projectedMaxWeightKg, 1e-4)
+        assertTrue(steepState.subtypeTargetHeaderText.startsWith("Optimal Range: -0.25% to +0.25%/wk"))
     }
 
     @Test
@@ -4735,48 +4738,193 @@ class FatLossAnalyticsTest {
     fun `feature 016 - corridor gauge position and compliance labels across subcycle types`() {
         val recomp = WeightSubcycleType.RECOMPOSITION
         assertEquals(0.5f, FatLossAnalytics.computeCorridorGaugePosition(null, recomp), 1e-6f)
-        assertEquals(0.25f, FatLossAnalytics.computeCorridorGaugePosition(recomp.minWeeklyPct, recomp), 1e-6f)
-        assertEquals(0.75f, FatLossAnalytics.computeCorridorGaugePosition(recomp.maxWeeklyPct, recomp), 1e-6f)
+        assertEquals(0.15f, FatLossAnalytics.computeCorridorGaugePosition(-1.00, recomp), 1e-6f)
+        assertEquals(0.375f, FatLossAnalytics.computeCorridorGaugePosition(recomp.minWeeklyPct, recomp), 1e-6f)
+        assertEquals(0.50f, FatLossAnalytics.computeCorridorGaugePosition(0.0, recomp), 1e-6f)
+        assertEquals(0.625f, FatLossAnalytics.computeCorridorGaugePosition(recomp.maxWeeklyPct, recomp), 1e-6f)
+        assertEquals(0.85f, FatLossAnalytics.computeCorridorGaugePosition(0.75, recomp), 1e-6f)
         assertEquals(0.0f, FatLossAnalytics.computeCorridorGaugePosition(-5.0, recomp), 1e-6f)
         assertEquals(1.0f, FatLossAnalytics.computeCorridorGaugePosition(5.0, recomp), 1e-6f)
-        assertTrue(FatLossAnalytics.computeCorridorGaugePosition(-0.75, recomp) < 0.25f)
-        assertTrue(FatLossAnalytics.computeCorridorGaugePosition(0.5, recomp) > 0.75f)
+        assertTrue(FatLossAnalytics.computeCorridorGaugePosition(-0.50, recomp) < 0.375f)
+        assertTrue(FatLossAnalytics.computeCorridorGaugePosition(0.50, recomp) > 0.625f)
 
         assertEquals(
             CorridorComplianceStatus.CALIBRATING to "Calibrating (Day 3/8)",
             FatLossAnalytics.classifyCorridorCompliance(null, recomp, calibrationDay = 3)
         )
         assertEquals(
-            CorridorComplianceStatus.BELOW_CORRIDOR to "Slight Deficit Slip",
-            FatLossAnalytics.classifyCorridorCompliance(-0.75, recomp)
+            CorridorComplianceStatus.WARNING_FAT_LOSS_PHASE to "Warning: Fat loss phase",
+            FatLossAnalytics.classifyCorridorCompliance(-0.50, recomp)
         )
         assertEquals(
-            CorridorComplianceStatus.ABOVE_CORRIDOR to "Slight Surplus",
-            FatLossAnalytics.classifyCorridorCompliance(0.5, recomp)
+            CorridorComplianceStatus.WARNING_MUSCLE_GAIN_PHASE to "Warning: Muscle gain phase",
+            FatLossAnalytics.classifyCorridorCompliance(0.50, recomp)
         )
         assertEquals(
-            CorridorComplianceStatus.BELOW_CORRIDOR to "Below Target Corridor",
-            FatLossAnalytics.classifyCorridorCompliance(0.0, WeightSubcycleType.WEIGHT_GAIN)
+            CorridorComplianceStatus.OUT_OF_MUSCLE_GAIN_RANGE to "Out of muscle gain range",
+            FatLossAnalytics.classifyCorridorCompliance(0.0, WeightSubcycleType.MUSCLE_GAIN)
         )
         assertEquals(
-            CorridorComplianceStatus.ABOVE_CORRIDOR to "Above Corridor",
-            FatLossAnalytics.classifyCorridorCompliance(0.0, WeightSubcycleType.WEIGHT_LOSS)
+            CorridorComplianceStatus.OUT_OF_FAT_LOSS_RANGE to "Out of fat loss range",
+            FatLossAnalytics.classifyCorridorCompliance(0.0, WeightSubcycleType.FAT_LOSS)
         )
         assertEquals(
-            CorridorComplianceStatus.ON_TARGET to "On Target (Optimal)",
-            FatLossAnalytics.classifyCorridorCompliance(-1.0, WeightSubcycleType.WEIGHT_LOSS)
+            CorridorComplianceStatus.ON_TARGET to "Optimal",
+            FatLossAnalytics.classifyCorridorCompliance(-1.0, WeightSubcycleType.FAT_LOSS)
         )
         assertEquals(
-            CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS to "Possible Muscle Loss",
-            FatLossAnalytics.classifyCorridorCompliance(-1.6, WeightSubcycleType.WEIGHT_LOSS)
+            CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS to "Possible muscle loss",
+            FatLossAnalytics.classifyCorridorCompliance(-1.01, WeightSubcycleType.FAT_LOSS)
         )
         assertEquals(
-            CorridorComplianceStatus.EXCESSIVE_WEIGHT_GAIN to "Excessive Weight Gain",
-            FatLossAnalytics.classifyCorridorCompliance(1.6, WeightSubcycleType.WEIGHT_GAIN)
+            CorridorComplianceStatus.SUBOPTIMAL_MUSCLE_GAIN to "Suboptimal muscle gain",
+            FatLossAnalytics.classifyCorridorCompliance(0.76, WeightSubcycleType.MUSCLE_GAIN)
         )
         assertEquals(MomentumZone.CALIBRATING, FatLossAnalytics.classifyMomentumZone(null))
+        assertEquals(MomentumZone.POSSIBLE_MUSCLE_LOSS, FatLossAnalytics.classifyMomentumZone(-1.01))
+        assertEquals(MomentumZone.FAT_LOSS, FatLossAnalytics.classifyMomentumZone(-1.00))
+        assertEquals(MomentumZone.RECOMPOSITION, FatLossAnalytics.classifyMomentumZone(-0.25))
         assertEquals(MomentumZone.RECOMPOSITION, FatLossAnalytics.classifyMomentumZone(0.25))
-        assertEquals(MomentumZone.WEIGHT_GAIN, FatLossAnalytics.classifyMomentumZone(1.5))
-        assertEquals(MomentumZone.EXCESSIVE_WEIGHT_GAIN, FatLossAnalytics.classifyMomentumZone(1.51))
+        assertEquals(MomentumZone.MUSCLE_GAIN, FatLossAnalytics.classifyMomentumZone(0.26))
+        assertEquals(MomentumZone.MUSCLE_GAIN, FatLossAnalytics.classifyMomentumZone(0.75))
+        assertEquals(MomentumZone.SUBOPTIMAL_MUSCLE_GAIN, FatLossAnalytics.classifyMomentumZone(0.76))
+    }
+
+    @Test
+    fun `feature 017 - strict mathematical inequality matrix and 5-zone velocity spectrum across Fat Loss, Recomposition, and Muscle Gain`() {
+        // 1. FAT_LOSS strict boundaries
+        val fatLossTooFast = FatLossAnalytics.evaluateCorridorDiagnostic(-1.01, WeightSubcycleType.FAT_LOSS)
+        assertEquals(CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS, fatLossTooFast.status)
+        assertEquals(MomentumSeverity.CRITICAL_RED, fatLossTooFast.severity)
+        assertEquals("Possible muscle loss", fatLossTooFast.badgeLabel)
+        assertEquals("Losing faster than -1.00%/wk. High risk of lean muscle loss.", fatLossTooFast.diagnosticMessage)
+
+        val fatLossLowerInclusive = FatLossAnalytics.evaluateCorridorDiagnostic(-1.00, WeightSubcycleType.FAT_LOSS)
+        assertEquals(CorridorComplianceStatus.ON_TARGET, fatLossLowerInclusive.status)
+        assertEquals(MomentumSeverity.OPTIMAL_GREEN, fatLossLowerInclusive.severity)
+        assertEquals("Optimal", fatLossLowerInclusive.badgeLabel)
+        assertNull(fatLossLowerInclusive.diagnosticMessage)
+
+        val fatLossUpperInclusive = FatLossAnalytics.evaluateCorridorDiagnostic(-0.25, WeightSubcycleType.FAT_LOSS)
+        assertEquals(CorridorComplianceStatus.ON_TARGET, fatLossUpperInclusive.status)
+        assertEquals(MomentumSeverity.OPTIMAL_GREEN, fatLossUpperInclusive.severity)
+        assertEquals("Optimal", fatLossUpperInclusive.badgeLabel)
+        assertNull(fatLossUpperInclusive.diagnosticMessage)
+
+        val fatLossSlowPace = FatLossAnalytics.evaluateCorridorDiagnostic(-0.15, WeightSubcycleType.FAT_LOSS)
+        assertEquals(CorridorComplianceStatus.SLOW_FAT_LOSS_PACE, fatLossSlowPace.status)
+        assertEquals(MomentumSeverity.WARNING_AMBER, fatLossSlowPace.severity)
+        assertEquals("Slow fat loss pace", fatLossSlowPace.badgeLabel)
+        assertEquals("Deficit is below -0.25%/wk. Increase deficit slightly to hit target range.", fatLossSlowPace.diagnosticMessage)
+
+        val fatLossZero = FatLossAnalytics.evaluateCorridorDiagnostic(0.00, WeightSubcycleType.FAT_LOSS)
+        assertEquals(CorridorComplianceStatus.OUT_OF_FAT_LOSS_RANGE, fatLossZero.status)
+        assertEquals(MomentumSeverity.CRITICAL_RED, fatLossZero.severity)
+        assertEquals("Out of fat loss range", fatLossZero.badgeLabel)
+        assertEquals("Weight is stable or increasing. You are outside a caloric deficit.", fatLossZero.diagnosticMessage)
+
+        val fatLossUpperGlobal = FatLossAnalytics.evaluateCorridorDiagnostic(0.75, WeightSubcycleType.FAT_LOSS)
+        assertEquals(CorridorComplianceStatus.OUT_OF_FAT_LOSS_RANGE, fatLossUpperGlobal.status)
+        assertEquals(MomentumSeverity.CRITICAL_RED, fatLossUpperGlobal.severity)
+
+        val fatLossExcessiveGain = FatLossAnalytics.evaluateCorridorDiagnostic(0.76, WeightSubcycleType.FAT_LOSS)
+        assertEquals(CorridorComplianceStatus.SUBOPTIMAL_MUSCLE_GAIN, fatLossExcessiveGain.status)
+        assertEquals(MomentumSeverity.CRITICAL_RED, fatLossExcessiveGain.severity)
+        assertEquals("Suboptimal muscle gain", fatLossExcessiveGain.badgeLabel)
+        assertEquals("Gaining faster than +0.75%/wk. Surplus exceeds optimal muscle synthesis rate.", fatLossExcessiveGain.diagnosticMessage)
+
+        // 2. RECOMPOSITION strict boundaries
+        val recompTooFastLoss = FatLossAnalytics.evaluateCorridorDiagnostic(-1.01, WeightSubcycleType.RECOMPOSITION)
+        assertEquals(CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS, recompTooFastLoss.status)
+
+        val recompFatLossSlipLower = FatLossAnalytics.evaluateCorridorDiagnostic(-1.00, WeightSubcycleType.RECOMPOSITION)
+        assertEquals(CorridorComplianceStatus.WARNING_FAT_LOSS_PHASE, recompFatLossSlipLower.status)
+        assertEquals(MomentumSeverity.WARNING_AMBER, recompFatLossSlipLower.severity)
+        assertEquals("Warning: Fat loss phase", recompFatLossSlipLower.badgeLabel)
+        assertEquals("Pace is below -0.25%/wk. Warning: You are currently in a fat loss phase.", recompFatLossSlipLower.diagnosticMessage)
+
+        val recompLowerInclusive = FatLossAnalytics.evaluateCorridorDiagnostic(-0.25, WeightSubcycleType.RECOMPOSITION)
+        assertEquals(CorridorComplianceStatus.ON_TARGET, recompLowerInclusive.status)
+        assertEquals(MomentumSeverity.OPTIMAL_GREEN, recompLowerInclusive.severity)
+        assertEquals("Optimal", recompLowerInclusive.badgeLabel)
+        assertNull(recompLowerInclusive.diagnosticMessage)
+
+        val recompUpperInclusive = FatLossAnalytics.evaluateCorridorDiagnostic(0.25, WeightSubcycleType.RECOMPOSITION)
+        assertEquals(CorridorComplianceStatus.ON_TARGET, recompUpperInclusive.status)
+        assertNull(recompUpperInclusive.diagnosticMessage)
+
+        val recompMuscleGainSlip = FatLossAnalytics.evaluateCorridorDiagnostic(0.50, WeightSubcycleType.RECOMPOSITION)
+        assertEquals(CorridorComplianceStatus.WARNING_MUSCLE_GAIN_PHASE, recompMuscleGainSlip.status)
+        assertEquals(MomentumSeverity.WARNING_AMBER, recompMuscleGainSlip.severity)
+        assertEquals("Warning: Muscle gain phase", recompMuscleGainSlip.badgeLabel)
+        assertEquals("Pace exceeds +0.25%/wk. Warning: You are currently in a muscle gain phase.", recompMuscleGainSlip.diagnosticMessage)
+
+        val recompMuscleGainSlipUpper = FatLossAnalytics.evaluateCorridorDiagnostic(0.75, WeightSubcycleType.RECOMPOSITION)
+        assertEquals(CorridorComplianceStatus.WARNING_MUSCLE_GAIN_PHASE, recompMuscleGainSlipUpper.status)
+
+        val recompSuboptimalGain = FatLossAnalytics.evaluateCorridorDiagnostic(0.76, WeightSubcycleType.RECOMPOSITION)
+        assertEquals(CorridorComplianceStatus.SUBOPTIMAL_MUSCLE_GAIN, recompSuboptimalGain.status)
+
+        // 3. MUSCLE_GAIN strict boundaries
+        val muscleGainTooFastLoss = FatLossAnalytics.evaluateCorridorDiagnostic(-1.01, WeightSubcycleType.MUSCLE_GAIN)
+        assertEquals(CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS, muscleGainTooFastLoss.status)
+
+        val muscleGainOutLower = FatLossAnalytics.evaluateCorridorDiagnostic(-1.00, WeightSubcycleType.MUSCLE_GAIN)
+        assertEquals(CorridorComplianceStatus.OUT_OF_MUSCLE_GAIN_RANGE, muscleGainOutLower.status)
+        assertEquals(MomentumSeverity.CRITICAL_RED, muscleGainOutLower.severity)
+        assertEquals("Out of muscle gain range", muscleGainOutLower.badgeLabel)
+        assertEquals("Weight is stable or dropping. Caloric surplus required for muscle gain.", muscleGainOutLower.diagnosticMessage)
+
+        val muscleGainOutZero = FatLossAnalytics.evaluateCorridorDiagnostic(0.00, WeightSubcycleType.MUSCLE_GAIN)
+        assertEquals(CorridorComplianceStatus.OUT_OF_MUSCLE_GAIN_RANGE, muscleGainOutZero.status)
+        assertEquals(MomentumSeverity.CRITICAL_RED, muscleGainOutZero.severity)
+
+        val muscleGainSlowPace = FatLossAnalytics.evaluateCorridorDiagnostic(0.15, WeightSubcycleType.MUSCLE_GAIN)
+        assertEquals(CorridorComplianceStatus.SLOW_MUSCLE_GAIN_PACE, muscleGainSlowPace.status)
+        assertEquals(MomentumSeverity.WARNING_AMBER, muscleGainSlowPace.severity)
+        assertEquals("Slow muscle gain pace", muscleGainSlowPace.badgeLabel)
+        assertEquals("Surplus is below +0.25%/wk. Increase intake slightly to optimize growth.", muscleGainSlowPace.diagnosticMessage)
+
+        val muscleGainLowerInclusive = FatLossAnalytics.evaluateCorridorDiagnostic(0.25, WeightSubcycleType.MUSCLE_GAIN)
+        assertEquals(CorridorComplianceStatus.ON_TARGET, muscleGainLowerInclusive.status)
+        assertEquals(MomentumSeverity.OPTIMAL_GREEN, muscleGainLowerInclusive.severity)
+        assertEquals("Optimal", muscleGainLowerInclusive.badgeLabel)
+        assertNull(muscleGainLowerInclusive.diagnosticMessage)
+
+        val muscleGainUpperInclusive = FatLossAnalytics.evaluateCorridorDiagnostic(0.75, WeightSubcycleType.MUSCLE_GAIN)
+        assertEquals(CorridorComplianceStatus.ON_TARGET, muscleGainUpperInclusive.status)
+        assertNull(muscleGainUpperInclusive.diagnosticMessage)
+
+        val muscleGainSuboptimal = FatLossAnalytics.evaluateCorridorDiagnostic(0.76, WeightSubcycleType.MUSCLE_GAIN)
+        assertEquals(CorridorComplianceStatus.SUBOPTIMAL_MUSCLE_GAIN, muscleGainSuboptimal.status)
+        assertEquals(MomentumSeverity.CRITICAL_RED, muscleGainSuboptimal.severity)
+        assertEquals("Suboptimal muscle gain", muscleGainSuboptimal.badgeLabel)
+
+        // 4. Classification uses the displayed 2-decimal momentum (rendered as %.2f%%/wk), so a reading
+        //    shown as "-0.25%/wk" or "-1.00%/wk" never contradicts its badge (MCP server parity).
+        assertEquals("-0.25%", FatLossAnalytics.formatSignedPercentage(-0.2549))
+        assertEquals(
+            CorridorComplianceStatus.ON_TARGET,
+            FatLossAnalytics.evaluateCorridorDiagnostic(-0.2549, WeightSubcycleType.RECOMPOSITION).status
+        )
+        assertEquals(MomentumZone.RECOMPOSITION, FatLossAnalytics.classifyMomentumZone(-0.2549))
+        assertEquals(
+            CorridorComplianceStatus.ON_TARGET,
+            FatLossAnalytics.evaluateCorridorDiagnostic(-1.004, WeightSubcycleType.FAT_LOSS).status
+        )
+        assertEquals(MomentumZone.FAT_LOSS, FatLossAnalytics.classifyMomentumZone(-1.004))
+        assertEquals(
+            CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS,
+            FatLossAnalytics.evaluateCorridorDiagnostic(-1.006, WeightSubcycleType.FAT_LOSS).status
+        )
+        assertEquals(
+            CorridorComplianceStatus.ON_TARGET,
+            FatLossAnalytics.evaluateCorridorDiagnostic(0.7549, WeightSubcycleType.MUSCLE_GAIN).status
+        )
+        assertEquals(MomentumZone.MUSCLE_GAIN, FatLossAnalytics.classifyMomentumZone(0.7549))
+        assertEquals(
+            CorridorComplianceStatus.OUT_OF_MUSCLE_GAIN_RANGE,
+            FatLossAnalytics.evaluateCorridorDiagnostic(0.0049, WeightSubcycleType.MUSCLE_GAIN).status
+        )
     }
 }
