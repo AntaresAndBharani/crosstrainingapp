@@ -32,6 +32,20 @@ import com.fractanomics.crosstraining.data.analytics.TargetRowState
 import com.fractanomics.crosstraining.data.analytics.SameDayWeightTrioState
 import com.fractanomics.crosstraining.data.analytics.ColumnState
 import com.fractanomics.crosstraining.data.analytics.PaceTargetStatus
+import com.fractanomics.crosstraining.data.analytics.CorridorComplianceStatus
+import com.fractanomics.crosstraining.data.analytics.CycleMomentumState
+import com.fractanomics.crosstraining.data.analytics.DailyWeightPoint
+import com.fractanomics.crosstraining.data.analytics.HorizonMomentumRow
+import com.fractanomics.crosstraining.data.analytics.MomentumZone
+import com.fractanomics.crosstraining.data.analytics.SubcyclePreviewProjection
+import com.fractanomics.crosstraining.data.model.WeightMeasureSource
+import com.fractanomics.crosstraining.data.model.WeightSubcycleType
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.RadioButton
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontStyle
 import java.time.format.DateTimeFormatter
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyRow
@@ -282,6 +296,18 @@ fun ProgressScreen(
                             weightEntries = weightEntries,
                             weightUnit = weightUnit,
                             onSelectCycle = { selectedCycleGoalCycle = it },
+                            onUpdateSubcycleType = { cycle, subcycleType ->
+                                viewModel.updateCycleSubcycleType(cycle, subcycleType)
+                                if (selectedCycleGoalCycle?.id == cycle.id) {
+                                    selectedCycleGoalCycle = cycle.withSubcycleType(subcycleType)
+                                }
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        message = "Subcycle updated to ${subcycleType.label}. Target corridor refreshed.",
+                                        duration = SnackbarDuration.Short
+                                    )
+                                }
+                            },
                             onLogWeight = {
                                 editingWeightEntry = null
                                 showWeightSheet = true
@@ -305,6 +331,18 @@ fun ProgressScreen(
                             weightUnit = weightUnit,
                             onToggleWeightUnit = { viewModel.setWeightUnit(it) },
                             onSelectCycle = { selectedFatLossCycle = it },
+                            onUpdateSubcycleType = { cycle, subcycleType ->
+                                viewModel.updateCycleSubcycleType(cycle, subcycleType)
+                                if (selectedFatLossCycle?.id == cycle.id) {
+                                    selectedFatLossCycle = cycle.withSubcycleType(subcycleType)
+                                }
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        message = "Subcycle updated to ${subcycleType.label}. Target corridor refreshed.",
+                                        duration = SnackbarDuration.Short
+                                    )
+                                }
+                            },
                             onLogWeight = {
                                 editingWeightEntry = null
                                 showWeightSheet = true
@@ -366,6 +404,33 @@ fun ProgressScreen(
     if (showWeightSheet) {
         val activeSorted = weightEntries.filter { it.deletedAtMillis == null }.sortedBy { it.date }
         val latest = activeSorted.lastOrNull()
+        // A tapped THEORETICAL day has no persisted entry: hide Delete so Undo cannot promote the
+        // interpolated value to a REAL weigh-in.
+        val editingEntryDate = editingWeightEntry?.date
+        val canDeleteEditingEntry = editingEntryDate == null || activeSorted.any { it.date == editingEntryDate }
+        val onDeleteWeightEntry: (LocalDate) -> Unit = { date ->
+            val targetEntry = editingWeightEntry ?: activeSorted.find { it.date == date }
+            viewModel.deleteWeightEntry(date)
+            coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
+                showWeightSheet = false
+            }
+            if (targetEntry != null) {
+                coroutineScope.launch {
+                    val result = snackbarHostState.showSnackbar(
+                        message = "Weight entry deleted",
+                        actionLabel = "Undo",
+                        duration = SnackbarDuration.Short
+                    )
+                    if (result == SnackbarResult.ActionPerformed) {
+                        viewModel.undoDeleteWeightEntry(
+                            date = targetEntry.date,
+                            weightKg = targetEntry.weightKg,
+                            notes = targetEntry.notes
+                        )
+                    }
+                }
+            }
+        }
 
         WeightEntryBottomSheet(
             sheetState = sheetState,
@@ -379,29 +444,7 @@ fun ProgressScreen(
                     showWeightSheet = false
                 }
             },
-            onDelete = { date ->
-                val targetEntry = editingWeightEntry ?: activeSorted.find { it.date == date }
-                viewModel.deleteWeightEntry(date)
-                coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
-                    showWeightSheet = false
-                }
-                if (targetEntry != null) {
-                    coroutineScope.launch {
-                        val result = snackbarHostState.showSnackbar(
-                            message = "Weight entry deleted",
-                            actionLabel = "Undo",
-                            duration = SnackbarDuration.Short
-                        )
-                        if (result == SnackbarResult.ActionPerformed) {
-                            viewModel.undoDeleteWeightEntry(
-                                date = targetEntry.date,
-                                weightKg = targetEntry.weightKg,
-                                notes = targetEntry.notes
-                            )
-                        }
-                    }
-                }
-            }
+            onDelete = if (canDeleteEditingEntry) onDeleteWeightEntry else null
         )
     }
 
@@ -452,7 +495,8 @@ private fun FatLossProgress(
     onSelectCycle: (Cycle) -> Unit,
     onLogWeight: () -> Unit,
     onSaveDailyLog: (DailyLog) -> Unit,
-    onOpenCheckInSheet: () -> Unit
+    onOpenCheckInSheet: () -> Unit,
+    onUpdateSubcycleType: (Cycle, WeightSubcycleType) -> Unit = { _, _ -> }
 ) {
     Dropdown(
         label = "Training cycle",
@@ -493,7 +537,7 @@ private fun FatLossProgress(
 
             val typeBadge = if (isFatLossCycle) "Fat Loss & Bodybuilding" else "Strength & Weightlifting"
             Text(
-                text = "Cycle Type: $typeBadge",
+                text = "Cycle Type: $typeBadge · Subcycle: ${currentCycle.subcycleType.label}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -975,23 +1019,71 @@ private fun WeightOverviewContent(
 
     // Weight History List (Chronological descending)
     SectionCard(title = "Weight History") {
-        val descending = remember(activeEntries) { activeEntries.sortedByDescending { it.date } }
+        var includeTheoretical by rememberSaveable { mutableStateOf(true) }
+        val dailyTimeline = remember(activeEntries) {
+            WeightAnalytics.buildDailyInterpolatedTimeline(activeEntries)
+        }
+        val theoreticalDates = remember(dailyTimeline) {
+            dailyTimeline.filter { it.source == WeightMeasureSource.THEORETICAL }.map { it.date }.toSet()
+        }
+        val mergedEntries = remember(activeEntries, dailyTimeline, includeTheoretical) {
+            if (includeTheoretical) {
+                // Preserve the persisted REAL rows (id, notes, timestamps) and only synthesize THEORETICAL rows.
+                val realByDate = activeEntries
+                    .groupBy { it.date }
+                    .mapValues { (_, sameDay) -> sameDay.maxBy { it.updatedAtMillis } }
+                dailyTimeline.map { pt ->
+                    realByDate[pt.date]?.takeIf { pt.source == WeightMeasureSource.REAL }
+                        ?: WeightEntry(
+                            date = pt.date,
+                            weightKg = pt.weightKg,
+                            notes = "Theoretical (Interpolated) · Tap to log real weight",
+                            updatedAtMillis = 0L
+                        )
+                }
+            } else {
+                activeEntries
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (includeTheoretical) "Daily timeline (Real + Theoretical)" else "Real weigh-ins only",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp)
+            )
+            FilterChip(
+                selected = includeTheoretical,
+                onClick = { includeTheoretical = !includeTheoretical },
+                label = { Text("Show Theoretical", maxLines = 1) }
+            )
+        }
+        val descending = remember(mergedEntries) { mergedEntries.sortedByDescending { it.date } }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             descending.forEach { entry ->
+                val isTheoretical = entry.date in theoreticalDates
                 val displayWeight = if (isImperial) WeightAnalytics.kgToLbs(entry.weightKg) else entry.weightKg
                 val weightStr = String.format(java.util.Locale.getDefault(), "%.1f", displayWeight)
 
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onEditEntry(entry) }
+                        .clickable {
+                            onEditEntry(if (isTheoretical) entry.copy(notes = "") else entry)
+                        }
                         .padding(vertical = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = entry.date.formatLong(),
+                            text = "${entry.date.formatLong()} · ${if (isTheoretical) WeightMeasureSource.THEORETICAL.label else WeightMeasureSource.REAL.label}",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -1014,15 +1106,18 @@ private fun WeightOverviewContent(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        IconButton(
-                            onClick = { onDeleteEntry(entry) },
-                            modifier = Modifier.padding(start = 4.dp)
-                        ) {
-                            Icon(
-                                Icons.Filled.Delete,
-                                contentDescription = "Delete entry",
-                                tint = MaterialTheme.colorScheme.error
-                            )
+                        // THEORETICAL rows are derived (not persisted), so they cannot be deleted.
+                        if (!isTheoretical) {
+                            IconButton(
+                                onClick = { onDeleteEntry(entry) },
+                                modifier = Modifier.padding(start = 4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "Delete entry",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
                         }
                     }
                 }
@@ -1041,12 +1136,14 @@ fun WeightProgressionCard(
     weightUnit: String,
     onLogWeight: () -> Unit,
     modifier: Modifier = Modifier,
-    today: LocalDate = LocalDate.now()
+    today: LocalDate = LocalDate.now(),
+    onUpdateSubcycleType: (WeightSubcycleType) -> Unit = {}
 ) {
-    if (cycle.type != CycleType.FAT_LOSS_BODYBUILDING) return
+    // Universal cycle support: WeightProgressionCard renders across all training cycle types
 
     val activeEntries = remember(weightEntries, cycle.startDate, cycle.endDate, today) {
         FatLossAnalytics.getActiveWeightEntries(weightEntries, cycle.startDate, today)
+            .ifEmpty { FatLossAnalytics.getAllHistoricalWeightEntries(weightEntries, today) }
     }
 
     if (activeEntries.isEmpty()) {
@@ -1141,6 +1238,9 @@ fun WeightProgressionCard(
     val multiHorizonForecast = remember(weightEntries, cycle, today, weightUnit) {
         FatLossAnalytics.computeMultiHorizonForecast(weightEntries, cycle, today, weightUnit = weightUnit)
     }
+    val cycleMomentumState = remember(weightEntries, cycle, today, weightUnit) {
+        FatLossAnalytics.computeCycleMomentumState(weightEntries, cycle, today, weightUnit = weightUnit)
+    }
     val requiredPace = remember(weightEntries, cycle, today, weightUnit) {
         FatLossAnalytics.computeRequiredPaceToEndDate(weightEntries, cycle, today, weightUnit)
     }
@@ -1186,7 +1286,9 @@ fun WeightProgressionCard(
         pace28 = pace28,
         paceComparison21d = paceComparison21d,
         paceComparison28d = paceComparison28d,
-        multiHorizonForecast = multiHorizonForecast
+        multiHorizonForecast = multiHorizonForecast,
+        cycleMomentumState = cycleMomentumState,
+        onUpdateSubcycleType = onUpdateSubcycleType
     )
 }
 
@@ -1968,6 +2070,8 @@ fun WeightProgressionHeroCard(
     loggedDaysCount14d: Int = 0,
     sameDayTrio: SameDayWeightTrioState? = null,
     requiredPace: RequiredPaceResult? = null,
+    cycleMomentumState: CycleMomentumState? = null,
+    onUpdateSubcycleType: (WeightSubcycleType) -> Unit = {},
     pace21: PaceRateResult? = null,
     pace28: PaceRateResult? = null,
     paceComparison21d: PaceComparisonResult? = null,
@@ -2265,14 +2369,16 @@ fun WeightProgressionHeroCard(
             }
 
             // 3. Goal Arrival Estimations / Forecast Banner (placed after Daily Weigh-In and before Pace & Linear Targets)
-            if (multiHorizonForecast != null || forecast != null) {
+            if (cycleMomentumState is CycleMomentumState.Active || multiHorizonForecast != null || forecast != null) {
                 ForecastBanner(
                     forecast = forecast,
                     pace14 = pace14,
                     pace7 = pace7,
                     weightUnit = weightUnit,
                     requiredPace = requiredPace,
-                    multiHorizonForecast = multiHorizonForecast
+                    multiHorizonForecast = multiHorizonForecast,
+                    cycleMomentumState = cycleMomentumState,
+                    onUpdateSubcycleType = onUpdateSubcycleType
                 )
             }
 
@@ -2489,9 +2595,19 @@ internal fun ForecastBanner(
     pace7: PaceRateResult? = null,
     weightUnit: String = "kg",
     requiredPace: RequiredPaceResult? = null,
+    cycleMomentumState: CycleMomentumState? = null,
+    onUpdateSubcycleType: (WeightSubcycleType) -> Unit = {},
     modifier: Modifier = Modifier,
     multiHorizonForecast: MultiHorizonForecastState? = null
 ) {
+    if (cycleMomentumState is CycleMomentumState.Active) {
+        CycleMomentumEstimationsCard(
+            state = cycleMomentumState,
+            onUpdateSubcycleType = onUpdateSubcycleType,
+            modifier = modifier
+        )
+        return
+    }
     if (multiHorizonForecast != null) {
         MultiHorizonGoalEstimationsBanner(
             state = multiHorizonForecast,
@@ -2914,6 +3030,446 @@ private fun HorizonEstimationRowItem(
 
 // --- Cycle Goals View --------------------------------------------------------
 
+internal const val WEEKLY_BODY_WEIGHT_ROW_TITLE = "Weekly Body Weight"
+internal const val SELECT_SUBCYCLE_TYPE_SHEET_TITLE = "Select Subcycle Type"
+internal const val SELECT_SUBCYCLE_TYPE_SHEET_SUBTITLE = "Changes target velocity corridors and projected finish goal."
+internal const val APPLY_SUBCYCLE_TYPE_BUTTON_LABEL = "Apply Subcycle Type"
+
+internal fun resolveSubcycleSelectorPillText(subcycleType: WeightSubcycleType): String =
+    "${subcycleType.label} ▾"
+
+internal fun resolveSubcycleSelectorContentDescription(subcycleType: WeightSubcycleType): String =
+    "Current subcycle type: ${subcycleType.label}. Double tap to change subcycle type."
+
+internal fun resolveSubcyclePillColors(
+    subcycleType: WeightSubcycleType,
+    isDarkTheme: Boolean
+): Pair<Color, Color> = when (subcycleType) {
+    WeightSubcycleType.WEIGHT_LOSS -> if (isDarkTheme) {
+        Color(0xFF172A45) to Color(0xFF63B3ED)
+    } else {
+        Color(0xFFEBF3FA) to Color(0xFF2B6CB0)
+    }
+    WeightSubcycleType.RECOMPOSITION -> if (isDarkTheme) {
+        Color(0xFF133826) to Color(0xFF2ECC71)
+    } else {
+        Color(0xFFE3F5EC) to Color(0xFF0B6E3F)
+    }
+    WeightSubcycleType.WEIGHT_GAIN -> if (isDarkTheme) {
+        Color(0xFF2E1647) to Color(0xFFC084FC)
+    } else {
+        Color(0xFFF3E8FF) to Color(0xFF6B21A8)
+    }
+}
+
+internal fun resolveMomentumComplianceColor(
+    status: CorridorComplianceStatus,
+    isDarkTheme: Boolean
+): Color = when (status) {
+    CorridorComplianceStatus.ON_TARGET -> if (isDarkTheme) Color(0xFF2ECC71) else Color(0xFF0B6E3F)
+    CorridorComplianceStatus.BELOW_CORRIDOR,
+    CorridorComplianceStatus.ABOVE_CORRIDOR -> if (isDarkTheme) Color(0xFFF59E0B) else Color(0xFFD97706)
+    CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS,
+    CorridorComplianceStatus.EXCESSIVE_WEIGHT_GAIN -> if (isDarkTheme) Color(0xFFEF4444) else Color(0xFFDC2626)
+    CorridorComplianceStatus.CALIBRATING -> if (isDarkTheme) Color(0xFF94A3B8) else Color(0xFF64748B)
+}
+
+internal fun resolveWeeklyBodyWeightTitle(
+    row: HorizonMomentumRow,
+    weightUnit: String
+): String = String.format(
+    Locale.US,
+    "✦ %s: %.1f %s",
+    WEEKLY_BODY_WEIGHT_ROW_TITLE,
+    FatLossAnalytics.round1(row.currentWeightInUnit),
+    weightUnit
+)
+
+internal fun resolveWeeklyBodyWeightVelocitySummary(
+    row: HorizonMomentumRow,
+    weightUnit: String,
+    calibrationDay: Int = 1
+): String {
+    val pace = row.weeklyPaceInUnit
+    val mom = row.weeklyMomentumPct
+    if (pace == null || mom == null) {
+        return "Calibrating (Day ${calibrationDay.coerceIn(1, 8)}/8)"
+    }
+    val paceStr = FatLossAnalytics.formatSignedTwoDecimals(pace)
+    val momStr = FatLossAnalytics.formatSignedPercentage(mom)
+    return "Pace: $paceStr $weightUnit/wk · Momentum: $momStr/wk"
+}
+
+internal fun resolveHorizonMomentumLeftLabel(
+    row: HorizonMomentumRow,
+    weightUnit: String,
+    calibrationDay: Int = 1
+): String {
+    val weightStr = String.format(Locale.US, "%.1f %s", FatLossAnalytics.round1(row.currentWeightInUnit), weightUnit)
+    val pace = row.weeklyPaceInUnit
+    val mom = row.weeklyMomentumPct
+    if (pace == null || mom == null) {
+        return "${row.windowDays}D Avg: $weightStr (Calibrating Day ${calibrationDay.coerceIn(1, 8)}/8)"
+    }
+    val paceStr = FatLossAnalytics.formatSignedTwoDecimals(pace)
+    val momStr = FatLossAnalytics.formatSignedPercentage(mom)
+    return "${row.windowDays}D Avg: $weightStr ($paceStr $weightUnit/wk · $momStr/wk)"
+}
+
+internal fun resolveHorizonMomentumContentDescription(
+    row: HorizonMomentumRow,
+    weightUnit: String,
+    calibrationDay: Int = 1
+): String = if (row.isPrimaryComposite) {
+    "${resolveWeeklyBodyWeightTitle(row, weightUnit)}, ${resolveWeeklyBodyWeightVelocitySummary(row, weightUnit, calibrationDay)}, ${row.statusLabel}"
+} else {
+    "${resolveHorizonMomentumLeftLabel(row, weightUnit, calibrationDay)}, ${row.statusLabel}"
+}
+
+@Composable
+internal fun CorridorRangeGauge(
+    gaugePosition: Float,
+    statusColor: Color,
+    isCalibrating: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val clampedPos = gaugePosition.coerceIn(0.02f, 0.98f)
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        // 3-Zone Corridor Track: [0..25% Below | 25..75% Optimal Target Corridor | 75..100% Above]
+        Row(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
+            Spacer(modifier = Modifier.weight(0.25f))
+            Box(
+                modifier = Modifier
+                    .weight(0.50f)
+                    .fillMaxHeight()
+                    .background(statusColor.copy(alpha = 0.22f))
+            )
+            Spacer(modifier = Modifier.weight(0.25f))
+        }
+        if (!isCalibrating) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(clampedPos)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(statusColor)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+internal fun CycleMomentumEstimationsCard(
+    state: CycleMomentumState.Active,
+    onUpdateSubcycleType: (WeightSubcycleType) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var showSubcycleSheet by rememberSaveable { mutableStateOf(false) }
+    val isDark = isSystemInDarkTheme()
+    val haptic = LocalHapticFeedback.current
+    val (pillFill, pillText) = resolveSubcyclePillColors(state.subcycleType, isDark)
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Superheader Row: GOAL ARRIVAL ESTIMATIONS + Interactive [Subtype ▾] Pill
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = GOAL_ARRIVAL_ESTIMATIONS_HEADER,
+                    style = MaterialTheme.typography.labelSmall,
+                    letterSpacing = 1.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = pillFill,
+                    border = BorderStroke(1.dp, pillText.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            showSubcycleSheet = true
+                        }
+                        .semantics {
+                            contentDescription = resolveSubcycleSelectorContentDescription(state.subcycleType)
+                        }
+                ) {
+                    Text(
+                        text = resolveSubcycleSelectorPillText(state.subcycleType),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = pillText,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            // 3-Line Context Header
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = state.cycleTimelineHeaderText,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = state.subtypeTargetHeaderText,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = state.projectedFinishHeaderText,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = pillText
+                )
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+            // Primary Composite Row: ✦ Weekly Body Weight (3:4:2:1)
+            val primaryRow = state.weeklyBodyWeightRow
+            val primaryColor = resolveMomentumComplianceColor(primaryRow.complianceStatus, isDark)
+            val primaryDesc = resolveHorizonMomentumContentDescription(primaryRow, state.weightUnit, state.calibrationDay)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics(mergeDescendants = true) { contentDescription = primaryDesc },
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = resolveWeeklyBodyWeightTitle(primaryRow, state.weightUnit),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = primaryRow.statusLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = primaryColor
+                    )
+                }
+                Text(
+                    text = resolveWeeklyBodyWeightVelocitySummary(primaryRow, state.weightUnit, state.calibrationDay),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                CorridorRangeGauge(
+                    gaugePosition = primaryRow.gaugePosition,
+                    statusColor = primaryColor,
+                    isCalibrating = state.isCalibrating,
+                    modifier = Modifier.height(8.dp)
+                )
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+            // 4 Multi-Horizon Rows (7D, 14D, 21D, 28D)
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                state.horizonRows.forEach { row ->
+                    val rowColor = resolveMomentumComplianceColor(row.complianceStatus, isDark)
+                    val rowDesc = resolveHorizonMomentumContentDescription(row, state.weightUnit, state.calibrationDay)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics(mergeDescendants = true) { contentDescription = rowDesc },
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = resolveHorizonMomentumLeftLabel(row, state.weightUnit, state.calibrationDay),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = row.statusLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = rowColor
+                            )
+                        }
+                        CorridorRangeGauge(
+                            gaugePosition = row.gaugePosition,
+                            statusColor = rowColor,
+                            isCalibrating = state.isCalibrating,
+                            modifier = Modifier.height(6.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showSubcycleSheet) {
+        SubcycleTypePickerBottomSheet(
+            currentSubcycleType = state.subcycleType,
+            finishDate = state.finishDate,
+            previews = state.allSubcyclePreviews,
+            onDismiss = { showSubcycleSheet = false },
+            onApply = { selectedType ->
+                showSubcycleSheet = false
+                onUpdateSubcycleType(selectedType)
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SubcycleTypePickerBottomSheet(
+    currentSubcycleType: WeightSubcycleType,
+    finishDate: LocalDate,
+    previews: List<SubcyclePreviewProjection>,
+    onDismiss: () -> Unit,
+    onApply: (WeightSubcycleType) -> Unit
+) {
+    var selectedType by rememberSaveable(currentSubcycleType) { mutableStateOf(currentSubcycleType) }
+    val isDark = isSystemInDarkTheme()
+    val finishDateStr = finishDate.formatShort()
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = SELECT_SUBCYCLE_TYPE_SHEET_TITLE,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = SELECT_SUBCYCLE_TYPE_SHEET_SUBTITLE,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            WeightSubcycleType.entries.forEach { candidateType ->
+                val isSelected = selectedType == candidateType
+                val preview = previews.firstOrNull { it.subcycleType == candidateType }
+                val (badgeFill, badgeText) = resolveSubcyclePillColors(candidateType, isDark)
+                val corridorLabel = "${FatLossAnalytics.formatSignedPercentage(candidateType.minWeeklyPct)} to ${FatLossAnalytics.formatSignedPercentage(candidateType.maxWeeklyPct)}/wk"
+
+                OutlinedCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { selectedType = candidateType },
+                    border = BorderStroke(
+                        width = if (isSelected) 2.dp else 1.dp,
+                        color = if (isSelected) badgeText else MaterialTheme.colorScheme.outlineVariant
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = { selectedType = candidateType }
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = candidateType.label,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = badgeFill
+                                ) {
+                                    Text(
+                                        text = corridorLabel,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = badgeText
+                                    )
+                                }
+                            }
+                            Text(
+                                text = candidateType.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (preview != null) {
+                                Text(
+                                    text = "Projected Finish ($finishDateStr): ${preview.projectedFinishRangeText}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = badgeText
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+            Button(
+                onClick = { onApply(selectedType) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(APPLY_SUBCYCLE_TYPE_BUTTON_LABEL, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
 internal data class EvaluatedCycleGoalProgress(
     val baselineStartWeight: Double,
     val currentBest: Double,
@@ -3027,7 +3583,8 @@ private fun CycleGoalsProgress(
     weightEntries: List<WeightEntry> = emptyList(),
     weightUnit: String = "kg",
     onSelectCycle: (Cycle) -> Unit,
-    onLogWeight: () -> Unit = {}
+    onLogWeight: () -> Unit = {},
+    onUpdateSubcycleType: (Cycle, WeightSubcycleType) -> Unit = { _, _ -> }
 ) {
     Dropdown(
         label = "Training cycle",
@@ -3039,12 +3596,14 @@ private fun CycleGoalsProgress(
 
     if (currentCycle == null) return
 
-    if (currentCycle.type == CycleType.FAT_LOSS_BODYBUILDING) {
+    // Universal cycle support: WeightProgressionCard renders for both Strength & Fat Loss cycles
+    run {
         WeightProgressionCard(
             cycle = currentCycle,
             weightEntries = weightEntries,
             weightUnit = weightUnit,
-            onLogWeight = onLogWeight
+            onLogWeight = onLogWeight,
+            onUpdateSubcycleType = { onUpdateSubcycleType(currentCycle, it) }
         )
     }
 

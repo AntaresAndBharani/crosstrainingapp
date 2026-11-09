@@ -11,6 +11,9 @@ import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.data.model.WeightEntry
+import com.fractanomics.crosstraining.data.model.WeightMeasureSource
+import com.fractanomics.crosstraining.data.model.WeightSubcycleType
+import kotlin.math.pow
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.DayOfWeek
@@ -615,6 +618,129 @@ data class SameDayWeightTrioState(
 
 typealias DayOverDayDelta = FatLossAnalytics.DayOverDayDelta
 typealias PaceComparisonResult = FatLossAnalytics.PaceComparisonResult
+
+/**
+ * Single calendar day point on the continuous daily body weight timeline.
+ *
+ * @property date Calendar date of the observation or interpolation.
+ * @property weightKg Scalar weight in kilograms.
+ * @property source [WeightMeasureSource.REAL] if directly logged in `weight_entries`, or [WeightMeasureSource.THEORETICAL] if linearly interpolated.
+ * @property notes User notes for real entries or `"Interpolated"` for theoretical entries.
+ */
+data class DailyWeightPoint(
+    val date: LocalDate,
+    val weightKg: Double,
+    val source: WeightMeasureSource,
+    val notes: String = if (source == WeightMeasureSource.THEORETICAL) "Interpolated" else ""
+)
+
+/**
+ * Daily multi-horizon moving average snapshot and 3:4:2:1 Weekly Body Weight composite.
+ */
+data class DailyHorizonSnapshot(
+    val date: LocalDate,
+    val dayIndex: Int,
+    val dailyWeightKg: Double,
+    val source: WeightMeasureSource,
+    val avg7dKg: Double,
+    val avg14dKg: Double,
+    val avg21dKg: Double,
+    val avg28dKg: Double,
+    val weeklyBodyWeightKg: Double
+)
+
+/**
+ * Universal physiological classification of weekly body weight momentum (%/wk).
+ */
+enum class MomentumZone(val label: String) {
+    CALIBRATING("Calibrating"),
+    POSSIBLE_MUSCLE_LOSS("Possible Muscle Loss"),
+    WEIGHT_LOSS("Weight Loss"),
+    RECOMPOSITION("Recomposition"),
+    WEIGHT_GAIN("Controlled Lean Gain"),
+    EXCESSIVE_WEIGHT_GAIN("Excessive Weight Gain")
+}
+
+/**
+ * Compliance of a weekly momentum reading against the active [WeightSubcycleType] target corridor.
+ */
+enum class CorridorComplianceStatus(val defaultLabel: String) {
+    CALIBRATING("Calibrating"),
+    ON_TARGET("On Target (Optimal)"),
+    POSSIBLE_MUSCLE_LOSS("Possible Muscle Loss"),
+    EXCESSIVE_WEIGHT_GAIN("Excessive Weight Gain"),
+    BELOW_CORRIDOR("Slight Deficit Slip"),
+    ABOVE_CORRIDOR("Above Corridor")
+}
+
+/**
+ * Presentation & domain row for either the primary 3:4:2:1 Weekly Body Weight composite
+ * ([isPrimaryComposite] == true, [windowDays] == 0) or an individual horizon ([windowDays] in {7, 14, 21, 28}).
+ */
+data class HorizonMomentumRow(
+    val windowDays: Int,
+    val isPrimaryComposite: Boolean,
+    val effectiveWindowDays: Int,
+    val currentWeightKg: Double,
+    val currentWeightInUnit: Double,
+    val anchorWeightKg: Double?,
+    val weeklyPaceKg: Double?,
+    val weeklyPaceInUnit: Double?,
+    val weeklyMomentumPct: Double?,
+    val zone: MomentumZone,
+    val complianceStatus: CorridorComplianceStatus,
+    val statusLabel: String,
+    val gaugePosition: Float
+)
+
+/**
+ * Live target corridor and finish-weight window projection for a [WeightSubcycleType] option.
+ */
+data class SubcyclePreviewProjection(
+    val subcycleType: WeightSubcycleType,
+    val minWeeklyPct: Double,
+    val maxWeeklyPct: Double,
+    val minWeeklyRateKg: Double,
+    val maxWeeklyRateKg: Double,
+    val minWeeklyRateInUnit: Double,
+    val maxWeeklyRateInUnit: Double,
+    val projectedMinWeightKg: Double,
+    val projectedMaxWeightKg: Double,
+    val projectedMinWeightInUnit: Double,
+    val projectedMaxWeightInUnit: Double,
+    val corridorDisplayText: String,
+    val projectedFinishRangeText: String
+)
+
+/**
+ * Top-level state for `SPEC-WEIGHT-CARD-01` (Goal Arrival Estimations) and `SPEC-WEIGHT-SUBTYPE-SHEET-01`.
+ */
+sealed class CycleMomentumState {
+    object Empty : CycleMomentumState()
+
+    data class Active(
+        val cycleName: String,
+        val subcycleType: WeightSubcycleType,
+        val weightUnit: String,
+        val referenceDate: LocalDate,
+        val finishDate: LocalDate,
+        val isOpenEndedCycle: Boolean,
+        val daysRemaining: Long,
+        val weeksRemaining: Double,
+        val isCycleComplete: Boolean,
+        val isFinalWeek: Boolean,
+        val totalTimelineDays: Int,
+        val isCalibrating: Boolean,
+        val calibrationDay: Int,
+        val weeklyBodyWeightRow: HorizonMomentumRow,
+        val horizonRows: List<HorizonMomentumRow>,
+        val activeProjection: SubcyclePreviewProjection,
+        val allSubcyclePreviews: List<SubcyclePreviewProjection>,
+        val cycleTimelineHeaderText: String,
+        val subtypeTargetHeaderText: String,
+        val projectedFinishHeaderText: String
+    ) : CycleMomentumState()
+}
 
 /**
  * Pure Kotlin domain analytics engine for Fat Loss & Bodybuilding cycles.
@@ -3243,6 +3369,452 @@ object FatLossAnalytics {
         val deltaDisplay = computeSameDayDisplayDelta(currentWeightKg, priorWeightKg, weightUnit)
             ?: return NO_DATA_PLACEHOLDER
         return formatSameDayDisplayDelta(deltaDisplay, weightUnit)
+    }
+
+    // =========================================================================
+    // 7. Universal Cycle Weight Tracking & Multi-Horizon Momentum Engine
+    // =========================================================================
+
+    const val WEEKLY_BW_WEIGHT_7D = 3.0
+    const val WEEKLY_BW_WEIGHT_14D = 4.0
+    const val WEEKLY_BW_WEIGHT_21D = 2.0
+    const val WEEKLY_BW_WEIGHT_28D = 1.0
+    const val WEEKLY_BW_WEIGHT_SUM = 10.0
+    const val CALIBRATION_REQUIRED_DAYS = 8
+    const val DEFAULT_OPEN_CYCLE_WEEKS = 8L
+
+    /**
+     * Constructs a continuous daily body weight timeline from active [WeightEntry] records.
+     *
+     * Rules:
+     * 1. Soft-deleted entries ([WeightEntry.deletedAtMillis] != null) are excluded.
+     * 2. If [referenceDate] is provided, entries after [referenceDate] are excluded.
+     * 3. Multiple entries on the same calendar date are deduplicated by latest [WeightEntry.updatedAtMillis].
+     * 4. Every calendar day with an explicit log is tagged [WeightMeasureSource.REAL].
+     * 5. Any unlogged gap between consecutive [WeightMeasureSource.REAL] entries E_a and E_b
+     *    (where Δt = DAYS.between(E_a.date, E_b.date) > 1) is filled with [WeightMeasureSource.THEORETICAL]
+     *    points using exact linear interpolation:
+     *      W(E_a.date + k) = E_a.weightKg + k * (E_b.weightKg - E_a.weightKg) / Δt   for k in 1 until Δt
+     * 6. If [referenceDate] is after the latest [WeightMeasureSource.REAL] entry date, trailing unlogged
+     *    days up to [referenceDate] hold the latest real weight as [WeightMeasureSource.THEORETICAL]
+     *    until a newer real entry is logged.
+     */
+    fun interpolateDailyWeightTimeline(
+        entries: List<WeightEntry>,
+        referenceDate: LocalDate? = null
+    ): List<DailyWeightPoint> {
+        val filtered = entries
+            .filter { it.deletedAtMillis == null && (referenceDate == null || !it.date.isAfter(referenceDate)) }
+            .groupBy { it.date }
+            .mapValues { (_, sameDayEntries) ->
+                sameDayEntries.maxByOrNull { it.updatedAtMillis } ?: sameDayEntries.last()
+            }
+            .values
+            .sortedBy { it.date }
+
+        if (filtered.isEmpty()) return emptyList()
+
+        val timeline = ArrayList<DailyWeightPoint>()
+        for (i in filtered.indices) {
+            val current = filtered[i]
+            timeline.add(
+                DailyWeightPoint(
+                    date = current.date,
+                    weightKg = current.weightKg,
+                    source = WeightMeasureSource.REAL,
+                    notes = current.notes
+                )
+            )
+            if (i < filtered.size - 1) {
+                val next = filtered[i + 1]
+                val deltaDays = ChronoUnit.DAYS.between(current.date, next.date).toInt()
+                if (deltaDays > 1) {
+                    val dailyStep = (next.weightKg - current.weightKg) / deltaDays.toDouble()
+                    for (k in 1 until deltaDays) {
+                        timeline.add(
+                            DailyWeightPoint(
+                                date = current.date.plusDays(k.toLong()),
+                                weightKg = current.weightKg + k.toDouble() * dailyStep,
+                                source = WeightMeasureSource.THEORETICAL,
+                                notes = "Interpolated"
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        val lastReal = filtered.last()
+        if (referenceDate != null && referenceDate.isAfter(lastReal.date)) {
+            val trailingDays = ChronoUnit.DAYS.between(lastReal.date, referenceDate).toInt()
+            for (k in 1..trailingDays) {
+                timeline.add(
+                    DailyWeightPoint(
+                        date = lastReal.date.plusDays(k.toLong()),
+                        weightKg = lastReal.weightKg,
+                        source = WeightMeasureSource.THEORETICAL,
+                        notes = "Interpolated"
+                    )
+                )
+            }
+        }
+
+        return timeline
+    }
+
+    /**
+     * Evaluates 7D, 14D, 21D, and 28D moving averages and the 3:4:2:1 Weekly Body Weight composite
+     * for every day in a continuous [timeline].
+     *
+     * Cold Start & Historical Lookback Invariant:
+     * - On day index K >= 1 (1-based from the start of [timeline]), each horizon N in {7, 14, 21, 28}
+     *   averages the last min(K, N) daily points ending at index K.
+     * - Consequently, on Day 1 all four horizons equal W(1); on Days 1..7 all four equal the cumulative
+     *   mean of Days 1..K; on Day 8 the 7D average rolls onto Days 2..8 while 14D/21D/28D average Days 1..8,
+     *   and so on until Day 28+.
+     * - Weekly Body Weight composite:
+     *     BW_weekly(t) = (3 * Avg_7D(t) + 4 * Avg_14D(t) + 2 * Avg_21D(t) + 1 * Avg_28D(t)) / 10.0
+     */
+    fun computeDailyHorizonSnapshots(
+        timeline: List<DailyWeightPoint>
+    ): List<DailyHorizonSnapshot> {
+        if (timeline.isEmpty()) return emptyList()
+
+        val prefixSums = DoubleArray(timeline.size + 1)
+        for (i in timeline.indices) {
+            prefixSums[i + 1] = prefixSums[i] + timeline[i].weightKg
+        }
+
+        fun windowAverage(endIdxInclusive: Int, maxWindowDays: Int): Double {
+            val k = endIdxInclusive + 1
+            val windowLen = kotlin.math.min(k, maxWindowDays)
+            val startIdxInclusive = endIdxInclusive - windowLen + 1
+            val sum = prefixSums[endIdxInclusive + 1] - prefixSums[startIdxInclusive]
+            return sum / windowLen.toDouble()
+        }
+
+        return timeline.mapIndexed { idx, point ->
+            val k = idx + 1
+            val avg7 = windowAverage(idx, 7)
+            val avg14 = windowAverage(idx, 14)
+            val avg21 = windowAverage(idx, 21)
+            val avg28 = windowAverage(idx, 28)
+            val weeklyBw = (
+                WEEKLY_BW_WEIGHT_7D * avg7 +
+                    WEEKLY_BW_WEIGHT_14D * avg14 +
+                    WEEKLY_BW_WEIGHT_21D * avg21 +
+                    WEEKLY_BW_WEIGHT_28D * avg28
+                ) / WEEKLY_BW_WEIGHT_SUM
+
+            DailyHorizonSnapshot(
+                date = point.date,
+                dayIndex = k,
+                dailyWeightKg = point.weightKg,
+                source = point.source,
+                avg7dKg = avg7,
+                avg14dKg = avg14,
+                avg21dKg = avg21,
+                avg28dKg = avg28,
+                weeklyBodyWeightKg = weeklyBw
+            )
+        }
+    }
+
+    /**
+     * Classifies a weekly momentum percentage into its universal physiological [MomentumZone].
+     */
+    fun classifyMomentumZone(momentumPct: Double?): MomentumZone {
+        if (momentumPct == null) return MomentumZone.CALIBRATING
+        return when {
+            momentumPct < -1.50 -> MomentumZone.POSSIBLE_MUSCLE_LOSS
+            momentumPct < -0.50 -> MomentumZone.WEIGHT_LOSS
+            momentumPct <= 0.25 -> MomentumZone.RECOMPOSITION
+            momentumPct <= 1.50 -> MomentumZone.WEIGHT_GAIN
+            else -> MomentumZone.EXCESSIVE_WEIGHT_GAIN
+        }
+    }
+
+    /**
+     * Evaluates corridor compliance status and user-facing diagnostic label for a weekly momentum percentage
+     * relative to the active [subcycleType] target corridor.
+     */
+    fun classifyCorridorCompliance(
+        momentumPct: Double?,
+        subcycleType: WeightSubcycleType,
+        calibrationDay: Int = 1
+    ): Pair<CorridorComplianceStatus, String> {
+        if (momentumPct == null) {
+            val clampedDay = calibrationDay.coerceIn(1, CALIBRATION_REQUIRED_DAYS)
+            return CorridorComplianceStatus.CALIBRATING to "Calibrating (Day $clampedDay/$CALIBRATION_REQUIRED_DAYS)"
+        }
+        return when {
+            momentumPct < -1.50 ->
+                CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS to MomentumZone.POSSIBLE_MUSCLE_LOSS.label
+            momentumPct > 1.50 ->
+                CorridorComplianceStatus.EXCESSIVE_WEIGHT_GAIN to MomentumZone.EXCESSIVE_WEIGHT_GAIN.label
+            momentumPct >= subcycleType.minWeeklyPct && momentumPct <= subcycleType.maxWeeklyPct ->
+                CorridorComplianceStatus.ON_TARGET to CorridorComplianceStatus.ON_TARGET.defaultLabel
+            momentumPct < subcycleType.minWeeklyPct -> {
+                val label = if (subcycleType == WeightSubcycleType.RECOMPOSITION) {
+                    "Slight Deficit Slip"
+                } else {
+                    "Below Target Corridor"
+                }
+                CorridorComplianceStatus.BELOW_CORRIDOR to label
+            }
+            else -> {
+                val label = if (subcycleType == WeightSubcycleType.WEIGHT_LOSS) {
+                    "Above Corridor"
+                } else {
+                    "Slight Surplus"
+                }
+                CorridorComplianceStatus.ABOVE_CORRIDOR to label
+            }
+        }
+    }
+
+    /**
+     * Maps a weekly momentum percentage onto the 3-zone Corridor Range Gauge in [0.0f, 1.0f]:
+     * - Zone 1 [0.00f, 0.25f): Below target corridor (< Min%)
+     * - Zone 2 [0.25f, 0.75f]: Optimal target corridor [Min%, Max%]
+     * - Zone 3 (0.75f, 1.00f]: Above target corridor (> Max%)
+     */
+    fun computeCorridorGaugePosition(
+        momentumPct: Double?,
+        subcycleType: WeightSubcycleType
+    ): Float {
+        if (momentumPct == null) return 0.5f
+        val minPct = subcycleType.minWeeklyPct
+        val maxPct = subcycleType.maxWeeklyPct
+        val span = (maxPct - minPct).coerceAtLeast(0.01)
+
+        return when {
+            momentumPct < minPct -> {
+                val ratio = ((momentumPct - (minPct - 1.50)) / 1.50).toFloat().coerceIn(0.0f, 1.0f)
+                (ratio * 0.249f).coerceIn(0.0f, 0.249f)
+            }
+            momentumPct > maxPct -> {
+                val ratio = ((momentumPct - maxPct) / 1.50).toFloat().coerceIn(0.0f, 1.0f)
+                (0.751f + ratio * 0.249f).coerceIn(0.751f, 1.0f)
+            }
+            else -> {
+                val ratio = ((momentumPct - minPct) / span).toFloat().coerceIn(0.0f, 1.0f)
+                (0.25f + ratio * 0.50f).coerceIn(0.25f, 0.75f)
+            }
+        }
+    }
+
+    /**
+     * Computes the compounded finish weight projection and corridor summary for a given [subcycleType].
+     *
+     * Formula:
+     *   BW_target_min = BW_weekly * (1 + Min% / 100)^W_left
+     *   BW_target_max = BW_weekly * (1 + Max% / 100)^W_left
+     */
+    fun computeSubcyclePreviewProjection(
+        weeklyBodyWeightKg: Double,
+        subcycleType: WeightSubcycleType,
+        weeksRemaining: Double,
+        weightUnit: String = "kg"
+    ): SubcyclePreviewProjection {
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val unitLabel = if (isImperial) "lbs" else "kg"
+        val effectiveWeeks = weeksRemaining.coerceAtLeast(0.0)
+
+        val minPct = subcycleType.minWeeklyPct
+        val maxPct = subcycleType.maxWeeklyPct
+
+        val minWeeklyRateKg = weeklyBodyWeightKg * (minPct / 100.0)
+        val maxWeeklyRateKg = weeklyBodyWeightKg * (maxPct / 100.0)
+        val minWeeklyRateInUnit = if (isImperial) WeightAnalytics.kgToLbs(minWeeklyRateKg) else minWeeklyRateKg
+        val maxWeeklyRateInUnit = if (isImperial) WeightAnalytics.kgToLbs(maxWeeklyRateKg) else maxWeeklyRateKg
+
+        val projectedMinKg = weeklyBodyWeightKg * (1.0 + minPct / 100.0).pow(effectiveWeeks)
+        val projectedMaxKg = weeklyBodyWeightKg * (1.0 + maxPct / 100.0).pow(effectiveWeeks)
+        val projectedMinInUnit = if (isImperial) WeightAnalytics.kgToLbs(projectedMinKg) else projectedMinKg
+        val projectedMaxInUnit = if (isImperial) WeightAnalytics.kgToLbs(projectedMaxKg) else projectedMaxKg
+
+        val minPctStr = formatSignedPercentage(minPct)
+        val maxPctStr = formatSignedPercentage(maxPct)
+        val minRateStr = formatSignedTwoDecimals(minWeeklyRateInUnit)
+        val maxRateStr = formatSignedTwoDecimals(maxWeeklyRateInUnit)
+
+        val corridorDisplayText = "$minPctStr to $maxPctStr/wk ($minRateStr to $maxRateStr $unitLabel/wk)"
+        val projectedFinishRangeText = String.format(
+            Locale.US,
+            "%.1f %s – %.1f %s",
+            round1(projectedMinInUnit),
+            unitLabel,
+            round1(projectedMaxInUnit),
+            unitLabel
+        )
+
+        return SubcyclePreviewProjection(
+            subcycleType = subcycleType,
+            minWeeklyPct = minPct,
+            maxWeeklyPct = maxPct,
+            minWeeklyRateKg = minWeeklyRateKg,
+            maxWeeklyRateKg = maxWeeklyRateKg,
+            minWeeklyRateInUnit = minWeeklyRateInUnit,
+            maxWeeklyRateInUnit = maxWeeklyRateInUnit,
+            projectedMinWeightKg = projectedMinKg,
+            projectedMaxWeightKg = projectedMaxKg,
+            projectedMinWeightInUnit = projectedMinInUnit,
+            projectedMaxWeightInUnit = projectedMaxInUnit,
+            corridorDisplayText = corridorDisplayText,
+            projectedFinishRangeText = projectedFinishRangeText
+        )
+    }
+
+    internal fun formatSignedPercentage(pct: Double): String =
+        if (pct > 0.0) String.format(Locale.US, "+%.2f%%", pct)
+        else String.format(Locale.US, "%.2f%%", pct)
+
+    internal fun formatSignedTwoDecimals(value: Double): String =
+        if (value > 0.0) String.format(Locale.US, "+%.2f", value)
+        else String.format(Locale.US, "%.2f", value)
+
+    /**
+     * Computes the complete [CycleMomentumState] for any training cycle (`STRENGTH_WEIGHTLIFTING` or
+     * `FAT_LOSS_BODYBUILDING`), evaluating:
+     * - Linearly interpolated daily weight timeline (incorporating pre-cycle history when present)
+     * - 7D, 14D, 21D, and 28D moving averages with cumulative cold-start behavior
+     * - 3:4:2:1 Weekly Body Weight composite
+     * - 8-day calibration gate, weekly pace, weekly momentum %, diagnostic zone, and corridor gauge
+     * - Dynamic compounded finish weight window and live previews for all 3 [WeightSubcycleType] options
+     */
+    fun computeCycleMomentumState(
+        entries: List<WeightEntry>,
+        cycle: Cycle,
+        today: LocalDate = LocalDate.now(),
+        weightUnit: String = "kg"
+    ): CycleMomentumState {
+        val timeline = interpolateDailyWeightTimeline(entries, referenceDate = today)
+        if (timeline.isEmpty()) return CycleMomentumState.Empty
+
+        val snapshots = computeDailyHorizonSnapshots(timeline)
+        val latest = snapshots.last()
+        val totalDays = snapshots.size
+        val isCalibrating = totalDays < CALIBRATION_REQUIRED_DAYS
+        val calibrationDay = kotlin.math.min(totalDays, CALIBRATION_REQUIRED_DAYS)
+        val anchorSnapshot = if (!isCalibrating) snapshots[snapshots.size - 1 - 7] else null
+
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val unitLabel = if (isImperial) "lbs" else "kg"
+        fun toUnit(kg: Double): Double = if (isImperial) WeightAnalytics.kgToLbs(kg) else kg
+
+        val subcycleType = cycle.subcycleType
+        val isOpenEnded = cycle.endDate == null
+        val finishDate = cycle.endDate ?: cycle.startDate.plusWeeks(DEFAULT_OPEN_CYCLE_WEEKS)
+        val daysRemaining = ChronoUnit.DAYS.between(today, finishDate)
+        val weeksRemaining = (daysRemaining.toDouble() / 7.0).coerceAtLeast(0.0)
+        val isCycleComplete = daysRemaining <= 0L
+        val isFinalWeek = daysRemaining in 1L..6L
+
+        fun buildMomentumRow(
+            windowDays: Int,
+            isPrimaryComposite: Boolean,
+            currentKg: Double,
+            anchorKg: Double?
+        ): HorizonMomentumRow {
+            val effectiveWindow = if (isPrimaryComposite) {
+                kotlin.math.min(totalDays, 28)
+            } else {
+                kotlin.math.min(totalDays, windowDays)
+            }
+            val paceKg = if (anchorKg != null && anchorKg > 0.0) currentKg - anchorKg else null
+            val paceInUnit = paceKg?.let { toUnit(it) }
+            val momentumPct = if (anchorKg != null && anchorKg > 0.0) {
+                ((currentKg - anchorKg) / anchorKg) * 100.0
+            } else {
+                null
+            }
+            val zone = classifyMomentumZone(momentumPct)
+            val (compliance, statusLabel) = classifyCorridorCompliance(
+                momentumPct = momentumPct,
+                subcycleType = subcycleType,
+                calibrationDay = calibrationDay
+            )
+            val gaugePos = computeCorridorGaugePosition(momentumPct, subcycleType)
+
+            return HorizonMomentumRow(
+                windowDays = windowDays,
+                isPrimaryComposite = isPrimaryComposite,
+                effectiveWindowDays = effectiveWindow,
+                currentWeightKg = currentKg,
+                currentWeightInUnit = toUnit(currentKg),
+                anchorWeightKg = anchorKg,
+                weeklyPaceKg = paceKg,
+                weeklyPaceInUnit = paceInUnit,
+                weeklyMomentumPct = momentumPct,
+                zone = zone,
+                complianceStatus = compliance,
+                statusLabel = statusLabel,
+                gaugePosition = gaugePos
+            )
+        }
+
+        val weeklyBodyWeightRow = buildMomentumRow(
+            windowDays = 0,
+            isPrimaryComposite = true,
+            currentKg = latest.weeklyBodyWeightKg,
+            anchorKg = anchorSnapshot?.weeklyBodyWeightKg
+        )
+
+        val horizonRows = listOf(
+            buildMomentumRow(7, false, latest.avg7dKg, anchorSnapshot?.avg7dKg),
+            buildMomentumRow(14, false, latest.avg14dKg, anchorSnapshot?.avg14dKg),
+            buildMomentumRow(21, false, latest.avg21dKg, anchorSnapshot?.avg21dKg),
+            buildMomentumRow(28, false, latest.avg28dKg, anchorSnapshot?.avg28dKg)
+        )
+
+        val allPreviews = WeightSubcycleType.entries.map { candidateType ->
+            computeSubcyclePreviewProjection(
+                weeklyBodyWeightKg = latest.weeklyBodyWeightKg,
+                subcycleType = candidateType,
+                weeksRemaining = weeksRemaining,
+                weightUnit = unitLabel
+            )
+        }
+        val activeProjection = allPreviews.first { it.subcycleType == subcycleType }
+
+        val finishDateStr = finishDate.format(shortDateFormatter)
+        val cycleDisplayName = cycle.name.ifBlank { subcycleType.label }
+        val timelineCountdownPart = when {
+            isCycleComplete -> "Cycle Complete · Ended $finishDateStr"
+            isFinalWeek -> "Final Week · Ends in $daysRemaining ${if (daysRemaining == 1L) "day" else "days"}"
+            else -> String.format(Locale.US, "%.1fw left · Ends %s", round1(weeksRemaining), finishDateStr)
+        }
+        val cycleTimelineHeaderText = "Current Cycle: $cycleDisplayName ($timelineCountdownPart)"
+        val subtypeTargetHeaderText = "Subtype Target: ${activeProjection.corridorDisplayText}"
+        val projectedFinishHeaderText = if (isCalibrating) {
+            "Projected Finish Weight: ${activeProjection.projectedFinishRangeText} (Calibrating Day $calibrationDay/$CALIBRATION_REQUIRED_DAYS)"
+        } else {
+            "Projected Finish Weight: ${activeProjection.projectedFinishRangeText}"
+        }
+
+        return CycleMomentumState.Active(
+            cycleName = cycleDisplayName,
+            subcycleType = subcycleType,
+            weightUnit = unitLabel,
+            referenceDate = today,
+            finishDate = finishDate,
+            isOpenEndedCycle = isOpenEnded,
+            daysRemaining = daysRemaining,
+            weeksRemaining = weeksRemaining,
+            isCycleComplete = isCycleComplete,
+            isFinalWeek = isFinalWeek,
+            totalTimelineDays = totalDays,
+            isCalibrating = isCalibrating,
+            calibrationDay = calibrationDay,
+            weeklyBodyWeightRow = weeklyBodyWeightRow,
+            horizonRows = horizonRows,
+            activeProjection = activeProjection,
+            allSubcyclePreviews = allPreviews,
+            cycleTimelineHeaderText = cycleTimelineHeaderText,
+            subtypeTargetHeaderText = subtypeTargetHeaderText,
+            projectedFinishHeaderText = projectedFinishHeaderText
+        )
     }
 }
 

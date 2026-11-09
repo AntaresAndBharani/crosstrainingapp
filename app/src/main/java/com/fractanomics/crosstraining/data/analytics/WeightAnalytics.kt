@@ -221,4 +221,18 @@ object WeightAnalytics {
 
         return result
     }
+
+    /**
+     * Builds the continuous daily body weight timeline with [com.fractanomics.crosstraining.data.model.WeightMeasureSource.REAL]
+     * and linearly interpolated [com.fractanomics.crosstraining.data.model.WeightMeasureSource.THEORETICAL] points.
+     */
+    fun buildDailyInterpolatedTimeline(
+        entries: List<WeightEntry>,
+        referenceDate: LocalDate? = null
+    ): List<DailyWeightPoint> {
+        return FatLossAnalytics.interpolateDailyWeightTimeline(
+            entries = entries,
+            referenceDate = referenceDate
+        )
+    }
 }

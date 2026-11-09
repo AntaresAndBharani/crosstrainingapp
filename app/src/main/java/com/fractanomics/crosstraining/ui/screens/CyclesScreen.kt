@@ -87,6 +87,7 @@ import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.WeightEntry
+import com.fractanomics.crosstraining.data.model.WeightSubcycleType
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.components.DateField
 import com.fractanomics.crosstraining.ui.components.EmptyState
@@ -263,6 +264,24 @@ private fun CycleCard(
             }
             Text(range, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Text(
+                        "Subcycle: ${cycle.subcycleType.label}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
             if (cycle.type == CycleType.FAT_LOSS_BODYBUILDING) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -322,9 +341,9 @@ private fun CycleCard(
                 }
             }
 
-            if (cycle.goal.isNotBlank()) {
+            if (cycle.cleanGoal.isNotBlank()) {
                 Text(
-                    "Focus: ${cycle.goal}",
+                    "Focus: ${cycle.cleanGoal}",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium
                 )
@@ -397,6 +416,25 @@ object FatLossValidation {
     fun isTargetWeightInvalid(startWeight: Double?, targetWeight: Double?): Boolean {
         if (startWeight == null || targetWeight == null) return false
         return targetWeight >= startWeight
+    }
+
+    /**
+     * Validates optional starting & target body weight against the selected [WeightSubcycleType].
+     * - [WeightSubcycleType.WEIGHT_LOSS]: target must be strictly less than start.
+     * - [WeightSubcycleType.WEIGHT_GAIN]: target must be strictly greater than start.
+     * - [WeightSubcycleType.RECOMPOSITION]: any positive target weight is valid.
+     */
+    fun isTargetWeightInvalidForSubcycle(
+        startWeight: Double?,
+        targetWeight: Double?,
+        subcycleType: WeightSubcycleType
+    ): Boolean {
+        if (startWeight == null || targetWeight == null) return false
+        return when (subcycleType) {
+            WeightSubcycleType.WEIGHT_LOSS -> targetWeight >= startWeight
+            WeightSubcycleType.WEIGHT_GAIN -> targetWeight <= startWeight
+            WeightSubcycleType.RECOMPOSITION -> false
+        }
     }
 }
 
@@ -1202,7 +1240,15 @@ fun CycleEditorDialog(
     onFetchBestMetricValue: (suspend (exerciseId: Long, metric: MetricType, reps: Int) -> Double?)? = null
 ) {
     var name by remember { mutableStateOf(original?.name ?: "") }
-    var goal by remember { mutableStateOf(original?.goal ?: "") }
+    var goal by remember { mutableStateOf(original?.cleanGoal ?: "") }
+    var subcycleType by remember {
+        mutableStateOf(
+            original?.subcycleType
+                ?: Cycle.inferDefaultSubcycleType(CycleType.STRENGTH_WEIGHTLIFTING, null, null)
+        )
+    }
+    // New cycles follow the cycle-type default until the athlete explicitly picks a subcycle regime.
+    var isSubcycleManuallySelected by remember { mutableStateOf(original != null) }
     var startDate by remember { mutableStateOf(original?.startDate ?: LocalDate.now()) }
     var endDate by remember { mutableStateOf(original?.endDate) }
     var makeActive by remember { mutableStateOf(original?.isActive ?: (original == null)) }
@@ -1232,6 +1278,12 @@ fun CycleEditorDialog(
             onFetchBestMetricValue != null -> onFetchBestMetricValue(exerciseId, metric, reps)
             metric == MetricType.WEIGHT && onFetchBestRm != null -> onFetchBestRm(exerciseId, reps)
             else -> null
+        }
+    }
+
+    LaunchedEffect(cycleType) {
+        if (!isSubcycleManuallySelected) {
+            subcycleType = Cycle.inferDefaultSubcycleType(cycleType, null, null)
         }
     }
 
@@ -1300,8 +1352,8 @@ fun CycleEditorDialog(
 
     val startVal = startingWeightStr.replace(',', '.').toDoubleOrNull()
     val targetVal = targetWeightStr.replace(',', '.').toDoubleOrNull()
-    val isTargetInvalid = cycleType == CycleType.FAT_LOSS_BODYBUILDING &&
-        FatLossValidation.isTargetWeightInvalid(startVal, targetVal)
+    val isTargetInvalid =
+        FatLossValidation.isTargetWeightInvalidForSubcycle(startVal, targetVal, subcycleType)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1345,77 +1397,106 @@ fun CycleEditorDialog(
                     }
                 }
 
-                // If FAT_LOSS_BODYBUILDING: Render Body Weight Goals and Fast/Rest Day Selectors
-                if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
-                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    "Body Weight Goals (Fat Loss)",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.tertiary
-                                )
-                                if (isBaselineAutoDerived && startVal != null) {
-                                    Surface(
-                                        shape = RoundedCornerShape(4.dp),
-                                        color = MaterialTheme.colorScheme.tertiaryContainer
-                                    ) {
-                                        Text(
-                                            "Auto-Derived Baseline",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
+                // All cycle types: Weight Subcycle Regime selector and Body Weight Goals
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Weight Subcycle Regime", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        WeightSubcycleType.entries.forEach { option ->
+                            FilterChip(
+                                selected = subcycleType == option,
+                                onClick = {
+                                    subcycleType = option
+                                    isSubcycleManuallySelected = true
+                                },
+                                label = {
+                                    Text(
+                                        option.label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedTextField(
-                                    value = startingWeightStr,
-                                    onValueChange = { input ->
-                                        val sanitized = FatLossValidation.sanitizeInlineWeightInput(input)
-                                        startingWeightStr = sanitized
-                                        isStartManuallyEdited = true
-                                        isBaselineAutoDerived = false
-                                    },
-                                    label = { Text("Starting (kg)") },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-
-                                OutlinedTextField(
-                                    value = targetWeightStr,
-                                    onValueChange = { input ->
-                                        val sanitized = FatLossValidation.sanitizeInlineWeightInput(input)
-                                        targetWeightStr = sanitized
-                                    },
-                                    label = { Text("Target (kg)") },
-                                    singleLine = true,
-                                    isError = isTargetInvalid,
-                                    supportingText = if (isTargetInvalid) {
-                                        { Text("Target weight must be less than starting weight (${startVal?.trimmed()} kg)") }
-                                    } else null,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
+                            )
                         }
                     }
+                }
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Body Weight Goals",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.tertiary
+                            )
+                            if (isBaselineAutoDerived && startVal != null) {
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = MaterialTheme.colorScheme.tertiaryContainer
+                                ) {
+                                    Text(
+                                        "Auto-Derived Baseline",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
 
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = startingWeightStr,
+                                onValueChange = { input ->
+                                    val sanitized = FatLossValidation.sanitizeInlineWeightInput(input)
+                                    startingWeightStr = sanitized
+                                    isStartManuallyEdited = true
+                                    isBaselineAutoDerived = false
+                                },
+                                label = { Text("Starting (kg)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+
+                            OutlinedTextField(
+                                value = targetWeightStr,
+                                onValueChange = { input ->
+                                    val sanitized = FatLossValidation.sanitizeInlineWeightInput(input)
+                                    targetWeightStr = sanitized
+                                },
+                                label = { Text("Target (kg)") },
+                                singleLine = true,
+                                isError = isTargetInvalid,
+                                supportingText = if (isTargetInvalid) {
+                                    {
+                                        val relation = if (subcycleType == WeightSubcycleType.WEIGHT_GAIN) "greater" else "less"
+                                        Text("Target weight must be $relation than starting weight (${startVal?.trimmed()} kg) for ${subcycleType.label}")
+                                    }
+                                } else null,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+
+                // If FAT_LOSS_BODYBUILDING: Render Fast/Rest Day Selectors
+                if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
                     val daysOfWeek = listOf(
                         DayOfWeek.MONDAY,
                         DayOfWeek.TUESDAY,
@@ -1898,23 +1979,15 @@ fun CycleEditorDialog(
             TextButton(
                 enabled = name.isNotBlank() && !isTargetInvalid,
                 onClick = {
-                    val finalStartWeight = if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
-                        startingWeightStr.replace(',', '.').toDoubleOrNull()
-                    } else null
-
-                    val finalTargetWeight = if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
-                        targetWeightStr.replace(',', '.').toDoubleOrNull()
-                    } else null
-
-                    val finalIsAutoDerived = if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
-                        isBaselineAutoDerived && finalStartWeight != null
-                    } else false
+                    val finalStartWeight = startingWeightStr.replace(',', '.').toDoubleOrNull()
+                    val finalTargetWeight = targetWeightStr.replace(',', '.').toDoubleOrNull()
+                    val finalIsAutoDerived = isBaselineAutoDerived && finalStartWeight != null
 
                     val finalCycle = (original ?: Cycle(name = "", startDate = startDate)).copy(
                         name = name.trim(),
                         startDate = startDate,
                         endDate = endDate,
-                        goal = goal.trim(),
+                        goal = Cycle.encodeSubcycleMetadata(goal.trim(), subcycleType),
                         type = cycleType,
                         fastDaysOfWeek = fastDaysOfWeek,
                         restDaysOfWeek = restDaysOfWeek,

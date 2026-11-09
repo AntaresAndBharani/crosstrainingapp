@@ -13,6 +13,8 @@ import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.data.model.WeightEntry
+import com.fractanomics.crosstraining.data.model.WeightMeasureSource
+import com.fractanomics.crosstraining.data.model.WeightSubcycleType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -4540,5 +4542,241 @@ class FatLossAnalyticsTest {
             HorizonRowState.Stalled(windowDays = 0, paceDisplay2 = "-0.09 lbs/wk", averageWeightDisplay = "165.6 lbs"),
             deadbandState.weightedAverageRow.state
         )
+    }
+
+    // =========================================================================
+    // Feature 016: Universal Cycle Weight Tracking & Multi-Horizon Momentum Engine
+    // =========================================================================
+
+    @Test
+    fun `feature 016 - interpolateDailyWeightTimeline - Friday 80kg to Friday 76_5kg linear interpolation and edit-delete reactivity`() {
+        val fri1 = LocalDate.of(2026, 10, 2) // Friday Day 1
+        val fri2 = LocalDate.of(2026, 10, 9) // Friday Day 8 (+7d)
+        val initialEntries = listOf(
+            WeightEntry(date = fri1, weightKg = 80.0, updatedAtMillis = 1L),
+            WeightEntry(date = fri2, weightKg = 76.5, updatedAtMillis = 2L)
+        )
+
+        val timeline = FatLossAnalytics.interpolateDailyWeightTimeline(initialEntries, referenceDate = fri2)
+        assertEquals(8, timeline.size)
+
+        // Day 1 (Fri): 80.0 REAL
+        assertEquals(fri1, timeline[0].date)
+        assertEquals(80.0, timeline[0].weightKg, 1e-6)
+        assertEquals(WeightMeasureSource.REAL, timeline[0].source)
+
+        // Days 2..7 (Sat..Thu): 79.5, 79.0, 78.5, 78.0, 77.5, 77.0 THEORETICAL (-0.5 kg/day)
+        val expectedTheoretical = listOf(79.5, 79.0, 78.5, 78.0, 77.5, 77.0)
+        for (i in expectedTheoretical.indices) {
+            val point = timeline[i + 1]
+            assertEquals(fri1.plusDays((i + 1).toLong()), point.date)
+            assertEquals(expectedTheoretical[i], point.weightKg, 1e-6)
+            assertEquals(WeightMeasureSource.THEORETICAL, point.source)
+        }
+
+        // Day 8 (Fri): 76.5 REAL
+        assertEquals(fri2, timeline[7].date)
+        assertEquals(76.5, timeline[7].weightKg, 1e-6)
+        assertEquals(WeightMeasureSource.REAL, timeline[7].source)
+
+        // Now athlete logs/edits Tuesday (Day 5, +4d) as REAL 77.8 kg
+        val tue = fri1.plusDays(4)
+        val withTuesdayReal = initialEntries + WeightEntry(date = tue, weightKg = 77.8, updatedAtMillis = 3L)
+        val timelineWithTue = FatLossAnalytics.interpolateDailyWeightTimeline(withTuesdayReal, referenceDate = fri2)
+        assertEquals(8, timelineWithTue.size)
+        assertEquals(WeightMeasureSource.REAL, timelineWithTue[4].source)
+        assertEquals(77.8, timelineWithTue[4].weightKg, 1e-6)
+        // Segment 1 (Fri 80.0 -> Tue 77.8 over 4 days = -0.55/day): Sat=79.45, Sun=78.90, Mon=78.35
+        assertEquals(79.45, timelineWithTue[1].weightKg, 1e-6)
+        assertEquals(78.90, timelineWithTue[2].weightKg, 1e-6)
+        assertEquals(78.35, timelineWithTue[3].weightKg, 1e-6)
+        // Segment 2 (Tue 77.8 -> Fri 76.5 over 3 days = -0.4333.../day): Wed=77.3666..., Thu=76.9333...
+        assertEquals(77.8 + (76.5 - 77.8) / 3.0, timelineWithTue[5].weightKg, 1e-6)
+        assertEquals(77.8 + 2.0 * (76.5 - 77.8) / 3.0, timelineWithTue[6].weightKg, 1e-6)
+
+        // Now athlete soft-deletes Tuesday -> reverts immediately to -0.5 kg/day across all 6 intermediate days
+        val withTuesdayDeleted = initialEntries + WeightEntry(
+            date = tue,
+            weightKg = 77.8,
+            updatedAtMillis = 4L,
+            deletedAtMillis = 100L
+        )
+        val timelineReverted = FatLossAnalytics.interpolateDailyWeightTimeline(withTuesdayDeleted, referenceDate = fri2)
+        for (i in expectedTheoretical.indices) {
+            assertEquals(expectedTheoretical[i], timelineReverted[i + 1].weightKg, 1e-6)
+            assertEquals(WeightMeasureSource.THEORETICAL, timelineReverted[i + 1].source)
+        }
+    }
+
+    @Test
+    fun `feature 016 - computeDailyHorizonSnapshots - cold start cumulative expansion days 1 to 28 and 3_4_2_1 composite`() {
+        val start = LocalDate.of(2026, 10, 1)
+        val entries = (0 until 28).map { d ->
+            WeightEntry(date = start.plusDays(d.toLong()), weightKg = 80.0 - d * 0.1, updatedAtMillis = (d + 1).toLong())
+        }
+        val timeline = FatLossAnalytics.interpolateDailyWeightTimeline(entries)
+        val snapshots = FatLossAnalytics.computeDailyHorizonSnapshots(timeline)
+        assertEquals(28, snapshots.size)
+
+        // Day 1 (idx 0): 7D = 14D = 21D = 28D = WeeklyBW = 80.0
+        val s1 = snapshots[0]
+        assertEquals(80.0, s1.avg7dKg, 1e-6)
+        assertEquals(80.0, s1.avg14dKg, 1e-6)
+        assertEquals(80.0, s1.avg21dKg, 1e-6)
+        assertEquals(80.0, s1.avg28dKg, 1e-6)
+        assertEquals(80.0, s1.weeklyBodyWeightKg, 1e-6)
+
+        // Day 7 (idx 6): all 4 horizons average Days 1..7 (80.0..79.4 -> mean 79.7)
+        val s7 = snapshots[6]
+        assertEquals(79.7, s7.avg7dKg, 1e-6)
+        assertEquals(79.7, s7.avg14dKg, 1e-6)
+        assertEquals(79.7, s7.avg21dKg, 1e-6)
+        assertEquals(79.7, s7.avg28dKg, 1e-6)
+        assertEquals(79.7, s7.weeklyBodyWeightKg, 1e-6)
+
+        // Day 8 (idx 7): 7D averages Days 2..8 (79.9..79.3 -> mean 79.6), while 14D/21D/28D average Days 1..8 (mean 79.65)
+        val s8 = snapshots[7]
+        assertEquals(79.6, s8.avg7dKg, 1e-6)
+        assertEquals(79.65, s8.avg14dKg, 1e-6)
+        assertEquals(79.65, s8.avg21dKg, 1e-6)
+        assertEquals(79.65, s8.avg28dKg, 1e-6)
+        val expectedBwDay8 = (3.0 * 79.6 + 4.0 * 79.65 + 2.0 * 79.65 + 1.0 * 79.65) / 10.0
+        assertEquals(expectedBwDay8, s8.weeklyBodyWeightKg, 1e-6)
+
+        // Day 15 (idx 14): 7D averages Days 9..15, 14D averages Days 2..15, 21D & 28D average Days 1..15
+        val s15 = snapshots[14]
+        assertEquals(78.9, s15.avg7dKg, 1e-6)
+        assertEquals(79.25, s15.avg14dKg, 1e-6)
+        assertEquals(79.3, s15.avg21dKg, 1e-6)
+        assertEquals(79.3, s15.avg28dKg, 1e-6)
+    }
+
+    @Test
+    fun `feature 016 - computeCycleMomentumState - calibration gate, diagnostic zones, compounded finish projection, and strength cycle support`() {
+        val start = LocalDate.of(2026, 10, 1)
+        val finish = start.plusWeeks(8)
+        val strengthCycle = Cycle(
+            id = 1601L,
+            name = "Strength Recomp",
+            startDate = start,
+            endDate = finish,
+            type = CycleType.STRENGTH_WEIGHTLIFTING,
+            subcycleType = WeightSubcycleType.RECOMPOSITION
+        )
+
+        // 1. Calibration gate on Day 5 (< 8 days)
+        val day5 = start.plusDays(4)
+        val entries5 = listOf(
+            WeightEntry(date = start, weightKg = 80.0, updatedAtMillis = 1L),
+            WeightEntry(date = day5, weightKg = 79.6, updatedAtMillis = 2L)
+        )
+        val calibratingState = FatLossAnalytics.computeCycleMomentumState(entries5, strengthCycle, day5) as CycleMomentumState.Active
+        assertTrue(calibratingState.isCalibrating)
+        assertEquals(5, calibratingState.calibrationDay)
+        assertNull(calibratingState.weeklyBodyWeightRow.weeklyMomentumPct)
+        assertEquals(CorridorComplianceStatus.CALIBRATING, calibratingState.weeklyBodyWeightRow.complianceStatus)
+        assertEquals("Calibrating (Day 5/8)", calibratingState.weeklyBodyWeightRow.statusLabel)
+
+        // 2. Calibrated on Day 8 with Friday 80.0 -> Friday 76.5 (-3.5 kg over 7 days -> Possible Muscle Loss < -1.50%)
+        val day8 = start.plusDays(7)
+        val steepEntries = listOf(
+            WeightEntry(date = start, weightKg = 80.0, updatedAtMillis = 1L),
+            WeightEntry(date = day8, weightKg = 76.5, updatedAtMillis = 2L)
+        )
+        val steepState = FatLossAnalytics.computeCycleMomentumState(steepEntries, strengthCycle, day8) as CycleMomentumState.Active
+        assertFalse(steepState.isCalibrating)
+        assertNotNull(steepState.weeklyBodyWeightRow.weeklyMomentumPct)
+        assertTrue(steepState.weeklyBodyWeightRow.weeklyMomentumPct!! < -1.50)
+        assertEquals(MomentumZone.POSSIBLE_MUSCLE_LOSS, steepState.weeklyBodyWeightRow.zone)
+        assertEquals(CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS, steepState.weeklyBodyWeightRow.complianceStatus)
+        assertEquals("Possible Muscle Loss", steepState.weeklyBodyWeightRow.statusLabel)
+
+        // 3. Compounded finish weight projections for all 3 subcycle types (Weight Loss, Recomposition, Weight Gain)
+        assertEquals(3, steepState.allSubcyclePreviews.size)
+        val bwWeekly = steepState.weeklyBodyWeightRow.currentWeightKg
+        val weeksLeft = steepState.weeksRemaining
+        val recompPreview = steepState.activeProjection
+        assertEquals(WeightSubcycleType.RECOMPOSITION, recompPreview.subcycleType)
+        assertEquals(bwWeekly * Math.pow(1.0 - 0.005, weeksLeft), recompPreview.projectedMinWeightKg, 1e-4)
+        assertEquals(bwWeekly * Math.pow(1.0 + 0.0025, weeksLeft), recompPreview.projectedMaxWeightKg, 1e-4)
+    }
+
+    @Test
+    fun `feature 016 - interpolateDailyWeightTimeline - same-day dedupe, future exclusion and trailing hold to referenceDate`() {
+        val d1 = LocalDate.of(2026, 10, 1)
+        val d3 = d1.plusDays(2)
+        val reference = d1.plusDays(4)
+        val entries = listOf(
+            WeightEntry(date = d1, weightKg = 81.0, updatedAtMillis = 1L),
+            WeightEntry(date = d1, weightKg = 80.0, updatedAtMillis = 5L), // latest same-day edit wins
+            WeightEntry(date = d3, weightKg = 79.0, updatedAtMillis = 6L),
+            WeightEntry(date = reference.plusDays(1), weightKg = 70.0, updatedAtMillis = 7L), // after referenceDate
+            WeightEntry(date = d1.plusDays(1), weightKg = 60.0, updatedAtMillis = 8L, deletedAtMillis = 9L) // tombstoned
+        )
+
+        val timeline = FatLossAnalytics.interpolateDailyWeightTimeline(entries, referenceDate = reference)
+
+        assertEquals(5, timeline.size)
+        assertEquals(80.0, timeline[0].weightKg, 1e-9)
+        assertEquals(WeightMeasureSource.REAL, timeline[0].source)
+        assertEquals(79.5, timeline[1].weightKg, 1e-9)
+        assertEquals(WeightMeasureSource.THEORETICAL, timeline[1].source)
+        assertEquals(79.0, timeline[2].weightKg, 1e-9)
+        assertEquals(WeightMeasureSource.REAL, timeline[2].source)
+        // Trailing unlogged days hold the latest REAL weight as THEORETICAL up to referenceDate
+        assertEquals(listOf(79.0, 79.0), timeline.drop(3).map { it.weightKg })
+        assertTrue(timeline.drop(3).all { it.source == WeightMeasureSource.THEORETICAL })
+        assertEquals(reference, timeline.last().date)
+
+        assertTrue(FatLossAnalytics.interpolateDailyWeightTimeline(emptyList(), referenceDate = reference).isEmpty())
+    }
+
+    @Test
+    fun `feature 016 - corridor gauge position and compliance labels across subcycle types`() {
+        val recomp = WeightSubcycleType.RECOMPOSITION
+        assertEquals(0.5f, FatLossAnalytics.computeCorridorGaugePosition(null, recomp), 1e-6f)
+        assertEquals(0.25f, FatLossAnalytics.computeCorridorGaugePosition(recomp.minWeeklyPct, recomp), 1e-6f)
+        assertEquals(0.75f, FatLossAnalytics.computeCorridorGaugePosition(recomp.maxWeeklyPct, recomp), 1e-6f)
+        assertEquals(0.0f, FatLossAnalytics.computeCorridorGaugePosition(-5.0, recomp), 1e-6f)
+        assertEquals(1.0f, FatLossAnalytics.computeCorridorGaugePosition(5.0, recomp), 1e-6f)
+        assertTrue(FatLossAnalytics.computeCorridorGaugePosition(-0.75, recomp) < 0.25f)
+        assertTrue(FatLossAnalytics.computeCorridorGaugePosition(0.5, recomp) > 0.75f)
+
+        assertEquals(
+            CorridorComplianceStatus.CALIBRATING to "Calibrating (Day 3/8)",
+            FatLossAnalytics.classifyCorridorCompliance(null, recomp, calibrationDay = 3)
+        )
+        assertEquals(
+            CorridorComplianceStatus.BELOW_CORRIDOR to "Slight Deficit Slip",
+            FatLossAnalytics.classifyCorridorCompliance(-0.75, recomp)
+        )
+        assertEquals(
+            CorridorComplianceStatus.ABOVE_CORRIDOR to "Slight Surplus",
+            FatLossAnalytics.classifyCorridorCompliance(0.5, recomp)
+        )
+        assertEquals(
+            CorridorComplianceStatus.BELOW_CORRIDOR to "Below Target Corridor",
+            FatLossAnalytics.classifyCorridorCompliance(0.0, WeightSubcycleType.WEIGHT_GAIN)
+        )
+        assertEquals(
+            CorridorComplianceStatus.ABOVE_CORRIDOR to "Above Corridor",
+            FatLossAnalytics.classifyCorridorCompliance(0.0, WeightSubcycleType.WEIGHT_LOSS)
+        )
+        assertEquals(
+            CorridorComplianceStatus.ON_TARGET to "On Target (Optimal)",
+            FatLossAnalytics.classifyCorridorCompliance(-1.0, WeightSubcycleType.WEIGHT_LOSS)
+        )
+        assertEquals(
+            CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS to "Possible Muscle Loss",
+            FatLossAnalytics.classifyCorridorCompliance(-1.6, WeightSubcycleType.WEIGHT_LOSS)
+        )
+        assertEquals(
+            CorridorComplianceStatus.EXCESSIVE_WEIGHT_GAIN to "Excessive Weight Gain",
+            FatLossAnalytics.classifyCorridorCompliance(1.6, WeightSubcycleType.WEIGHT_GAIN)
+        )
+        assertEquals(MomentumZone.CALIBRATING, FatLossAnalytics.classifyMomentumZone(null))
+        assertEquals(MomentumZone.RECOMPOSITION, FatLossAnalytics.classifyMomentumZone(0.25))
+        assertEquals(MomentumZone.WEIGHT_GAIN, FatLossAnalytics.classifyMomentumZone(1.5))
+        assertEquals(MomentumZone.EXCESSIVE_WEIGHT_GAIN, FatLossAnalytics.classifyMomentumZone(1.51))
     }
 }

@@ -13,6 +13,11 @@ import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.WeightEntry
+import com.fractanomics.crosstraining.data.model.WeightSubcycleType
+import com.fractanomics.crosstraining.data.analytics.CorridorComplianceStatus
+import com.fractanomics.crosstraining.data.analytics.CycleMomentumState
+import com.fractanomics.crosstraining.data.analytics.HorizonMomentumRow
+import com.fractanomics.crosstraining.data.analytics.MomentumZone
 import com.fractanomics.crosstraining.ui.formatShort
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -1505,6 +1510,82 @@ class WeightProgressionCardTest {
         assertEquals(
             "7-day horizon (7D (-0.49 kg/wk · 81.5 kg)): 6.3 wks · 15 Dec 2026, On time (-1.8w)",
             resolveHorizonRowContentDescription(row7dWithWeight)
+        )
+    }
+
+    @Test
+    fun feature016_specWeightCard01_and_subtypeSheet01_resolversAndSemantics() {
+        assertEquals("Weekly Body Weight", WEEKLY_BODY_WEIGHT_ROW_TITLE)
+        assertEquals("Select Subcycle Type", SELECT_SUBCYCLE_TYPE_SHEET_TITLE)
+        assertEquals("Apply Subcycle Type", APPLY_SUBCYCLE_TYPE_BUTTON_LABEL)
+
+        // Pill text & accessibility contentDescription
+        assertEquals("Recomposition ▾", resolveSubcycleSelectorPillText(WeightSubcycleType.RECOMPOSITION))
+        assertEquals("Weight Loss ▾", resolveSubcycleSelectorPillText(WeightSubcycleType.WEIGHT_LOSS))
+        assertEquals("Weight Gain ▾", resolveSubcycleSelectorPillText(WeightSubcycleType.WEIGHT_GAIN))
+        assertEquals(
+            "Current subcycle type: Recomposition. Double tap to change subcycle type.",
+            resolveSubcycleSelectorContentDescription(WeightSubcycleType.RECOMPOSITION)
+        )
+
+        // Primary Weekly Body Weight composite row resolvers
+        val compositeRow = HorizonMomentumRow(
+            windowDays = 0,
+            isPrimaryComposite = true,
+            effectiveWindowDays = 28,
+            currentWeightKg = 78.0,
+            currentWeightInUnit = 78.0,
+            anchorWeightKg = 78.3,
+            weeklyPaceKg = -0.30,
+            weeklyPaceInUnit = -0.30,
+            weeklyMomentumPct = -0.3831,
+            zone = MomentumZone.RECOMPOSITION,
+            complianceStatus = CorridorComplianceStatus.ON_TARGET,
+            statusLabel = "On Target (Optimal)",
+            gaugePosition = 0.33f
+        )
+        assertEquals("✦ Weekly Body Weight: 78.0 kg", resolveWeeklyBodyWeightTitle(compositeRow, "kg"))
+        assertEquals(
+            "Pace: -0.30 kg/wk · Momentum: -0.38%/wk",
+            resolveWeeklyBodyWeightVelocitySummary(compositeRow, "kg", calibrationDay = 8)
+        )
+        assertEquals(
+            "✦ Weekly Body Weight: 78.0 kg, Pace: -0.30 kg/wk · Momentum: -0.38%/wk, On Target (Optimal)",
+            resolveHorizonMomentumContentDescription(compositeRow, "kg", calibrationDay = 8)
+        )
+
+        // Horizon row resolver (calibrated vs calibrating)
+        val row7d = HorizonMomentumRow(
+            windowDays = 7,
+            isPrimaryComposite = false,
+            effectiveWindowDays = 7,
+            currentWeightKg = 77.8,
+            currentWeightInUnit = 77.8,
+            anchorWeightKg = 78.29,
+            weeklyPaceKg = -0.49,
+            weeklyPaceInUnit = -0.49,
+            weeklyMomentumPct = -0.6259,
+            zone = MomentumZone.WEIGHT_LOSS,
+            complianceStatus = CorridorComplianceStatus.BELOW_CORRIDOR,
+            statusLabel = "Slight Deficit Slip",
+            gaugePosition = 0.21f
+        )
+        assertEquals(
+            "7D Avg: 77.8 kg (-0.49 kg/wk · -0.63%/wk)",
+            resolveHorizonMomentumLeftLabel(row7d, "kg", calibrationDay = 8)
+        )
+
+        val calibratingRow = row7d.copy(
+            weeklyPaceKg = null,
+            weeklyPaceInUnit = null,
+            weeklyMomentumPct = null,
+            zone = MomentumZone.CALIBRATING,
+            complianceStatus = CorridorComplianceStatus.CALIBRATING,
+            statusLabel = "Calibrating (Day 4/8)"
+        )
+        assertEquals(
+            "7D Avg: 77.8 kg (Calibrating Day 4/8)",
+            resolveHorizonMomentumLeftLabel(calibratingRow, "kg", calibrationDay = 4)
         )
     }
 }
