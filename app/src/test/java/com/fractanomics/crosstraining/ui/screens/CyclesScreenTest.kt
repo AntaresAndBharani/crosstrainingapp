@@ -1290,9 +1290,5 @@ class CyclesScreenTest {
         assertTrue(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 78.0, WeightSubcycleType.WEIGHT_GAIN))
         assertFalse(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 82.0, WeightSubcycleType.WEIGHT_GAIN))
         assertFalse(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 80.0, WeightSubcycleType.RECOMPOSITION))
-        // Closed by existing trailing parenthesis and braces below:
-        //         )
-        //     }
-        // }
     }
 }

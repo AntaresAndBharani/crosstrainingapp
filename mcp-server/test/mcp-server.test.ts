@@ -519,6 +519,20 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     assert.equal(momentumPayload.horizons["14d"].avg_kg, 78.25);
     assert.ok(momentumPayload.weekly_body_weight_composite.current_kg > 0);
     assert.ok(momentumPayload.projected_finish_weight.min_kg < momentumPayload.projected_finish_weight.max_kg);
+
+    // asOfDate before the latest weigh-in excludes later entries (Android referenceDate parity)
+    const asOfResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "tools/call",
+      params: {
+        name: "get_weight_momentum_analytics",
+        arguments: { asOfDate: "2026-11-02", includeDailyTimeline: true },
+      },
+    });
+    const asOfPayload = JSON.parse(asOfResp.result.content[0].text);
+    assert.equal(asOfPayload.daily_timeline[asOfPayload.daily_timeline.length - 1].date, "2026-11-02");
+    assert.ok(asOfPayload.daily_timeline.every((pt: { date: string }) => pt.date <= "2026-11-02"));
   });
 
   it("triggers billing kill-switch when costAmount >= budgetAmount", async () => {

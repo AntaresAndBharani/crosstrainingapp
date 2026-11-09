@@ -233,7 +233,7 @@ export const GetWeightMomentumAnalyticsInputSchema = {
   cycleName: z.string().max(200).optional().describe("Optional cycle name (defaults to 'Active Cycle')"),
   cycleStartDate: isoDateSchema().optional().describe("Optional cycle start date in YYYY-MM-DD"),
   cycleFinishDate: isoDateSchema().optional().describe("Optional cycle finish date in YYYY-MM-DD"),
-  asOfDate: isoDateSchema().optional().describe("Optional evaluation anchor date in YYYY-MM-DD"),
+  asOfDate: isoDateSchema().optional().describe("Optional evaluation anchor date in YYYY-MM-DD (weigh-ins after it are ignored; defaults to the latest weigh-in date)"),
   includeDailyTimeline: z.boolean().optional().describe("Whether to include the interpolated daily REAL/THEORETICAL timeline in the response"),
 };
 
@@ -309,7 +309,9 @@ export function computeWeightMomentumAnalytics(
   const validMap = new Map<string, number>();
   for (const e of entries) {
     const resolvedDate = typeof e.isoDate === "string" ? e.isoDate : String(e.date ?? "");
-    if (!e.isDeleted && e.weightKg > 0 && isValidIsoDate(resolvedDate)) {
+    // Parity with Android interpolateDailyWeightTimeline(referenceDate): weigh-ins after asOfDate are excluded.
+    const isAfterAsOf = options.asOfDate !== undefined && resolvedDate > options.asOfDate;
+    if (!e.isDeleted && !isAfterAsOf && e.weightKg > 0 && isValidIsoDate(resolvedDate)) {
       validMap.set(resolvedDate, e.weightKg);
     }
   }
@@ -319,8 +321,7 @@ export function computeWeightMomentumAnalytics(
 
   const firstRealDate = realPoints[0]?.date ?? options.asOfDate ?? new Date().toISOString().slice(0, 10);
   const lastRealDate = realPoints[realPoints.length - 1]?.date ?? firstRealDate;
-  const effectiveAsOf =
-    options.asOfDate && options.asOfDate > lastRealDate ? options.asOfDate : lastRealDate;
+  const effectiveAsOf = options.asOfDate ?? lastRealDate;
 
   const dailyPoints: DailyInterpolatedWeightPoint[] = [];
   if (realPoints.length > 0) {
@@ -388,7 +389,8 @@ export function computeWeightMomentumAnalytics(
   const calibrationComplete = totalTimelineDays >= 8;
 
   const startDate = options.cycleStartDate ?? firstRealDate;
-  const finishDate = options.cycleFinishDate ?? addDaysIso(effectiveAsOf, 56);
+  // Parity with Android: open-ended cycles default to cycle start + 8 weeks.
+  const finishDate = options.cycleFinishDate ?? addDaysIso(options.cycleStartDate ?? effectiveAsOf, 56);
   const daysRemaining = Math.max(0, diffDaysIso(effectiveAsOf, finishDate));
   const weeksRemaining = roundTo(daysRemaining / 7, 2);
 

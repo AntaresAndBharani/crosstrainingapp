@@ -1581,15 +1581,11 @@ class WeightProgressionCardTest {
             weeklyMomentumPct = null,
             zone = MomentumZone.CALIBRATING,
             complianceStatus = CorridorComplianceStatus.CALIBRATING,
-            statusLabel = "Calibrating (Day 4/8"
+            statusLabel = "Calibrating (Day 4/8)"
         )
         assertEquals(
-            "7D Avg: 77.8 kg (Calibrating Day 4/8",
-            resolveHorizonMomentumLeftLabel(calibratingRow, "kg", calibrationDay = 4).removeSuffix(")")
-        // Closed by existing trailing parenthesis and braces below:
-        //         )
-        //     }
-        // }
+            "7D Avg: 77.8 kg (Calibrating Day 4/8)",
+            resolveHorizonMomentumLeftLabel(calibratingRow, "kg", calibrationDay = 4)
         )
     }
 }

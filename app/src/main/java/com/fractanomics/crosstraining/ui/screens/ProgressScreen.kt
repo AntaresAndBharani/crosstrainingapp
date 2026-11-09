@@ -404,6 +404,33 @@ fun ProgressScreen(
     if (showWeightSheet) {
         val activeSorted = weightEntries.filter { it.deletedAtMillis == null }.sortedBy { it.date }
         val latest = activeSorted.lastOrNull()
+        // A tapped THEORETICAL day has no persisted entry: hide Delete so Undo cannot promote the
+        // interpolated value to a REAL weigh-in.
+        val editingEntryDate = editingWeightEntry?.date
+        val canDeleteEditingEntry = editingEntryDate == null || activeSorted.any { it.date == editingEntryDate }
+        val onDeleteWeightEntry: (LocalDate) -> Unit = { date ->
+            val targetEntry = editingWeightEntry ?: activeSorted.find { it.date == date }
+            viewModel.deleteWeightEntry(date)
+            coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
+                showWeightSheet = false
+            }
+            if (targetEntry != null) {
+                coroutineScope.launch {
+                    val result = snackbarHostState.showSnackbar(
+                        message = "Weight entry deleted",
+                        actionLabel = "Undo",
+                        duration = SnackbarDuration.Short
+                    )
+                    if (result == SnackbarResult.ActionPerformed) {
+                        viewModel.undoDeleteWeightEntry(
+                            date = targetEntry.date,
+                            weightKg = targetEntry.weightKg,
+                            notes = targetEntry.notes
+                        )
+                    }
+                }
+            }
+        }
 
         WeightEntryBottomSheet(
             sheetState = sheetState,
@@ -417,29 +444,7 @@ fun ProgressScreen(
                     showWeightSheet = false
                 }
             },
-            onDelete = { date ->
-                val targetEntry = editingWeightEntry ?: activeSorted.find { it.date == date }
-                viewModel.deleteWeightEntry(date)
-                coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
-                    showWeightSheet = false
-                }
-                if (targetEntry != null) {
-                    coroutineScope.launch {
-                        val result = snackbarHostState.showSnackbar(
-                            message = "Weight entry deleted",
-                            actionLabel = "Undo",
-                            duration = SnackbarDuration.Short
-                        )
-                        if (result == SnackbarResult.ActionPerformed) {
-                            viewModel.undoDeleteWeightEntry(
-                                date = targetEntry.date,
-                                weightKg = targetEntry.weightKg,
-                                notes = targetEntry.notes
-                            )
-                        }
-                    }
-                }
-            }
+            onDelete = if (canDeleteEditingEntry) onDeleteWeightEntry else null
         )
     }
 
@@ -1023,17 +1028,17 @@ private fun WeightOverviewContent(
         }
         val mergedEntries = remember(activeEntries, dailyTimeline, includeTheoretical) {
             if (includeTheoretical) {
+                // Preserve the persisted REAL rows (id, notes, timestamps) and only synthesize THEORETICAL rows.
+                val realByDate = activeEntries
+                    .groupBy { it.date }
+                    .mapValues { (_, sameDay) -> sameDay.maxBy { it.updatedAtMillis } }
                 dailyTimeline.map { pt ->
-                    WeightEntry(
-                        date = pt.date,
-                        weightKg = pt.weightKg,
-                        notes = if (pt.source == WeightMeasureSource.THEORETICAL) {
-                            "Theoretical (Interpolated) · Tap to log real weight"
-                        } else {
-                            pt.notes
-                        },
-                        updatedAtMillis = if (pt.source == WeightMeasureSource.THEORETICAL) -1L else 1L
-                    )
+                    realByDate[pt.date]?.takeIf { pt.source == WeightMeasureSource.REAL }
+                        ?: WeightEntry(
+                            date = pt.date,
+                            weightKg = pt.weightKg,
+                            notes = "Theoretical (Interpolated) · Tap to log real weight"
+                        )
                 }
             } else {
                 activeEntries
@@ -1049,17 +1054,19 @@ private fun WeightOverviewContent(
             Text(
                 text = if (includeTheoretical) "Daily timeline (Real + Theoretical)" else "Real weigh-ins only",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp)
             )
             FilterChip(
                 selected = includeTheoretical,
                 onClick = { includeTheoretical = !includeTheoretical },
-                label = { Text("Include Theoretical") }
+                label = { Text("Show Theoretical", maxLines = 1) }
             )
         }
         val descending = remember(mergedEntries) { mergedEntries.sortedByDescending { it.date } }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             descending.forEach { entry ->
+                val isTheoretical = entry.date in theoreticalDates
                 val displayWeight = if (isImperial) WeightAnalytics.kgToLbs(entry.weightKg) else entry.weightKg
                 val weightStr = String.format(java.util.Locale.getDefault(), "%.1f", displayWeight)
 
@@ -1067,15 +1074,15 @@ private fun WeightOverviewContent(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            onEditEntry(if (entry.date in theoreticalDates) entry.copy(notes = "") else entry)
+                            onEditEntry(if (isTheoretical) entry.copy(notes = "") else entry)
                         }
                         .padding(vertical = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (entry.date in theoreticalDates) "${entry.date.formatLong()} · Theoretical" else "${entry.date.formatLong()} · Real",
+                            text = "${entry.date.formatLong()} · ${if (isTheoretical) WeightMeasureSource.THEORETICAL.label else WeightMeasureSource.REAL.label}",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -1098,15 +1105,18 @@ private fun WeightOverviewContent(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        IconButton(
-                            onClick = { if (entry.date !in theoreticalDates) onDeleteEntry(entry) },
-                            modifier = Modifier.padding(start = 4.dp)
-                        ) {
-                            Icon(
-                                Icons.Filled.Delete,
-                                contentDescription = "Delete entry",
-                                tint = MaterialTheme.colorScheme.error
-                            )
+                        // THEORETICAL rows are derived (not persisted), so they cannot be deleted.
+                        if (!isTheoretical) {
+                            IconButton(
+                                onClick = { onDeleteEntry(entry) },
+                                modifier = Modifier.padding(start = 4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "Delete entry",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
                         }
                     }
                 }
@@ -2366,8 +2376,8 @@ fun WeightProgressionHeroCard(
                     weightUnit = weightUnit,
                     requiredPace = requiredPace,
                     multiHorizonForecast = multiHorizonForecast,
-        cycleMomentumState = cycleMomentumState,
-        onUpdateSubcycleType = onUpdateSubcycleType
+                    cycleMomentumState = cycleMomentumState,
+                    onUpdateSubcycleType = onUpdateSubcycleType
                 )
             }
 
@@ -2685,8 +2695,6 @@ internal fun ForecastBanner(
 internal fun MultiHorizonGoalEstimationsBanner(
     state: MultiHorizonForecastState,
     requiredPace: RequiredPaceResult? = null,
-    cycleMomentumState: CycleMomentumState? = null,
-    onUpdateSubcycleType: (WeightSubcycleType) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     when (state) {

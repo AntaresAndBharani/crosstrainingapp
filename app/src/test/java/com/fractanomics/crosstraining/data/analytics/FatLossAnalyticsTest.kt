@@ -4698,11 +4698,85 @@ class FatLossAnalyticsTest {
         val recompPreview = steepState.activeProjection
         assertEquals(WeightSubcycleType.RECOMPOSITION, recompPreview.subcycleType)
         assertEquals(bwWeekly * Math.pow(1.0 - 0.005, weeksLeft), recompPreview.projectedMinWeightKg, 1e-4)
-        assertEquals(bwWeekly * Math.pow(1.0 + 0.0025, weeksLeft), recompPreview.projectedMaxWeightKg, 1e-4
-        // Closed by existing trailing parenthesis and braces below:
-        //         )
-        //     }
-        // }
+        assertEquals(bwWeekly * Math.pow(1.0 + 0.0025, weeksLeft), recompPreview.projectedMaxWeightKg, 1e-4)
+    }
+
+    @Test
+    fun `feature 016 - interpolateDailyWeightTimeline - same-day dedupe, future exclusion and trailing hold to referenceDate`() {
+        val d1 = LocalDate.of(2026, 10, 1)
+        val d3 = d1.plusDays(2)
+        val reference = d1.plusDays(4)
+        val entries = listOf(
+            WeightEntry(date = d1, weightKg = 81.0, updatedAtMillis = 1L),
+            WeightEntry(date = d1, weightKg = 80.0, updatedAtMillis = 5L), // latest same-day edit wins
+            WeightEntry(date = d3, weightKg = 79.0, updatedAtMillis = 6L),
+            WeightEntry(date = reference.plusDays(1), weightKg = 70.0, updatedAtMillis = 7L), // after referenceDate
+            WeightEntry(date = d1.plusDays(1), weightKg = 60.0, updatedAtMillis = 8L, deletedAtMillis = 9L) // tombstoned
         )
+
+        val timeline = FatLossAnalytics.interpolateDailyWeightTimeline(entries, referenceDate = reference)
+
+        assertEquals(5, timeline.size)
+        assertEquals(80.0, timeline[0].weightKg, 1e-9)
+        assertEquals(WeightMeasureSource.REAL, timeline[0].source)
+        assertEquals(79.5, timeline[1].weightKg, 1e-9)
+        assertEquals(WeightMeasureSource.THEORETICAL, timeline[1].source)
+        assertEquals(79.0, timeline[2].weightKg, 1e-9)
+        assertEquals(WeightMeasureSource.REAL, timeline[2].source)
+        // Trailing unlogged days hold the latest REAL weight as THEORETICAL up to referenceDate
+        assertEquals(listOf(79.0, 79.0), timeline.drop(3).map { it.weightKg })
+        assertTrue(timeline.drop(3).all { it.source == WeightMeasureSource.THEORETICAL })
+        assertEquals(reference, timeline.last().date)
+
+        assertTrue(FatLossAnalytics.interpolateDailyWeightTimeline(emptyList(), referenceDate = reference).isEmpty())
+    }
+
+    @Test
+    fun `feature 016 - corridor gauge position and compliance labels across subcycle types`() {
+        val recomp = WeightSubcycleType.RECOMPOSITION
+        assertEquals(0.5f, FatLossAnalytics.computeCorridorGaugePosition(null, recomp), 1e-6f)
+        assertEquals(0.25f, FatLossAnalytics.computeCorridorGaugePosition(recomp.minWeeklyPct, recomp), 1e-6f)
+        assertEquals(0.75f, FatLossAnalytics.computeCorridorGaugePosition(recomp.maxWeeklyPct, recomp), 1e-6f)
+        assertEquals(0.0f, FatLossAnalytics.computeCorridorGaugePosition(-5.0, recomp), 1e-6f)
+        assertEquals(1.0f, FatLossAnalytics.computeCorridorGaugePosition(5.0, recomp), 1e-6f)
+        assertTrue(FatLossAnalytics.computeCorridorGaugePosition(-0.75, recomp) < 0.25f)
+        assertTrue(FatLossAnalytics.computeCorridorGaugePosition(0.5, recomp) > 0.75f)
+
+        assertEquals(
+            CorridorComplianceStatus.CALIBRATING to "Calibrating (Day 3/8)",
+            FatLossAnalytics.classifyCorridorCompliance(null, recomp, calibrationDay = 3)
+        )
+        assertEquals(
+            CorridorComplianceStatus.BELOW_CORRIDOR to "Slight Deficit Slip",
+            FatLossAnalytics.classifyCorridorCompliance(-0.75, recomp)
+        )
+        assertEquals(
+            CorridorComplianceStatus.ABOVE_CORRIDOR to "Slight Surplus",
+            FatLossAnalytics.classifyCorridorCompliance(0.5, recomp)
+        )
+        assertEquals(
+            CorridorComplianceStatus.BELOW_CORRIDOR to "Below Target Corridor",
+            FatLossAnalytics.classifyCorridorCompliance(0.0, WeightSubcycleType.WEIGHT_GAIN)
+        )
+        assertEquals(
+            CorridorComplianceStatus.ABOVE_CORRIDOR to "Above Corridor",
+            FatLossAnalytics.classifyCorridorCompliance(0.0, WeightSubcycleType.WEIGHT_LOSS)
+        )
+        assertEquals(
+            CorridorComplianceStatus.ON_TARGET to "On Target (Optimal)",
+            FatLossAnalytics.classifyCorridorCompliance(-1.0, WeightSubcycleType.WEIGHT_LOSS)
+        )
+        assertEquals(
+            CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS to "Possible Muscle Loss",
+            FatLossAnalytics.classifyCorridorCompliance(-1.6, WeightSubcycleType.WEIGHT_LOSS)
+        )
+        assertEquals(
+            CorridorComplianceStatus.EXCESSIVE_WEIGHT_GAIN to "Excessive Weight Gain",
+            FatLossAnalytics.classifyCorridorCompliance(1.6, WeightSubcycleType.WEIGHT_GAIN)
+        )
+        assertEquals(MomentumZone.CALIBRATING, FatLossAnalytics.classifyMomentumZone(null))
+        assertEquals(MomentumZone.RECOMPOSITION, FatLossAnalytics.classifyMomentumZone(0.25))
+        assertEquals(MomentumZone.WEIGHT_GAIN, FatLossAnalytics.classifyMomentumZone(1.5))
+        assertEquals(MomentumZone.EXCESSIVE_WEIGHT_GAIN, FatLossAnalytics.classifyMomentumZone(1.51))
     }
 }
