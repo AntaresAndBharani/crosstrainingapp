@@ -1258,9 +1258,35 @@ class CyclesScreenTest {
         assertEquals("[subcycle=RECOMPOSITION] Olympic lifting focus", cycle.goal)
 
         // 2. Switching subcycleType via withSubcycleType updates subcycleType and keeps cleanGoal intact
-        val switchedToGain = cycle.withSubcycleType(WeightSubcycleType.WEIGHT_GAIN)
-        assertEquals(WeightSubcycleType.WEIGHT_GAIN, switchedToGain.subcycleType)
+        val switchedToGain = cycle.withSubcycleType(WeightSubcycleType.MUSCLE_GAIN)
+        assertEquals(WeightSubcycleType.MUSCLE_GAIN, switchedToGain.subcycleType)
         assertEquals("Olympic lifting focus", switchedToGain.cleanGoal)
+        assertEquals("[subcycle=MUSCLE_GAIN] Olympic lifting focus", switchedToGain.goal)
+
+        val switchedToFatLoss = cycle.withSubcycleType(WeightSubcycleType.FAT_LOSS)
+        assertEquals(WeightSubcycleType.FAT_LOSS, switchedToFatLoss.subcycleType)
+        assertEquals("[subcycle=FAT_LOSS] Olympic lifting focus", switchedToFatLoss.goal)
+
+        // 2b. Backward-compatible parsing of legacy [subcycle=WEIGHT_LOSS] and [subcycle=WEIGHT_GAIN] headers
+        val legacyEncodedLoss = Cycle(
+            id = 10L,
+            name = "Legacy Header Cut",
+            startDate = start,
+            goal = "[subcycle=WEIGHT_LOSS] Cut notes"
+        )
+        assertTrue(legacyEncodedLoss.hasExplicitSubcycleType)
+        assertEquals(WeightSubcycleType.FAT_LOSS, legacyEncodedLoss.subcycleType)
+        assertEquals("Cut notes", legacyEncodedLoss.cleanGoal)
+
+        val legacyEncodedGain = Cycle(
+            id = 11L,
+            name = "Legacy Header Bulk",
+            startDate = start,
+            goal = "[subcycle=WEIGHT_GAIN] Bulk notes"
+        )
+        assertTrue(legacyEncodedGain.hasExplicitSubcycleType)
+        assertEquals(WeightSubcycleType.MUSCLE_GAIN, legacyEncodedGain.subcycleType)
+        assertEquals("Bulk notes", legacyEncodedGain.cleanGoal)
 
         // 3. Default inference when no explicit [subcycle=...] tag is present
         val legacyLoss = Cycle(
@@ -1272,7 +1298,7 @@ class CyclesScreenTest {
             targetWeightKg = 76.0
         )
         assertFalse(legacyLoss.hasExplicitSubcycleType)
-        assertEquals(WeightSubcycleType.WEIGHT_LOSS, legacyLoss.subcycleType)
+        assertEquals(WeightSubcycleType.FAT_LOSS, legacyLoss.subcycleType)
 
         val legacyGain = Cycle(
             id = 3L,
@@ -1282,13 +1308,24 @@ class CyclesScreenTest {
             startingWeightKg = 76.0,
             targetWeightKg = 80.0
         )
-        assertEquals(WeightSubcycleType.WEIGHT_GAIN, legacyGain.subcycleType)
+        assertEquals(WeightSubcycleType.MUSCLE_GAIN, legacyGain.subcycleType)
 
         // 4. Target weight validation per subcycle type
-        assertTrue(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 82.0, WeightSubcycleType.WEIGHT_LOSS))
-        assertFalse(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 76.0, WeightSubcycleType.WEIGHT_LOSS))
-        assertTrue(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 78.0, WeightSubcycleType.WEIGHT_GAIN))
-        assertFalse(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 82.0, WeightSubcycleType.WEIGHT_GAIN))
+        assertTrue(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 82.0, WeightSubcycleType.FAT_LOSS))
+        assertFalse(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 76.0, WeightSubcycleType.FAT_LOSS))
+        assertTrue(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 78.0, WeightSubcycleType.MUSCLE_GAIN))
+        assertFalse(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 82.0, WeightSubcycleType.MUSCLE_GAIN))
         assertFalse(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 80.0, WeightSubcycleType.RECOMPOSITION))
+
+        // 5. Verify tightened physiological velocity corridors (SPEC-WEIGHT-SUBTYPE-SHEET-02)
+        assertEquals("Fat Loss", WeightSubcycleType.FAT_LOSS.label)
+        assertEquals(-1.00, WeightSubcycleType.FAT_LOSS.minWeeklyPct, 1e-6)
+        assertEquals(-0.25, WeightSubcycleType.FAT_LOSS.maxWeeklyPct, 1e-6)
+        assertEquals("Recomposition", WeightSubcycleType.RECOMPOSITION.label)
+        assertEquals(-0.25, WeightSubcycleType.RECOMPOSITION.minWeeklyPct, 1e-6)
+        assertEquals(0.25, WeightSubcycleType.RECOMPOSITION.maxWeeklyPct, 1e-6)
+        assertEquals("Muscle Gain", WeightSubcycleType.MUSCLE_GAIN.label)
+        assertEquals(0.25, WeightSubcycleType.MUSCLE_GAIN.minWeeklyPct, 1e-6)
+        assertEquals(0.75, WeightSubcycleType.MUSCLE_GAIN.maxWeeklyPct, 1e-6)
     }
 }

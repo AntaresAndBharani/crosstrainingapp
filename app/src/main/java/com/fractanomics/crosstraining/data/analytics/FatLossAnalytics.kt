@@ -650,28 +650,109 @@ data class DailyHorizonSnapshot(
 )
 
 /**
- * Universal physiological classification of weekly body weight momentum (%/wk).
+ * Universal 5-zone physiological classification of weekly body weight momentum (%/wk).
  */
 enum class MomentumZone(val label: String) {
     CALIBRATING("Calibrating"),
-    POSSIBLE_MUSCLE_LOSS("Possible Muscle Loss"),
-    WEIGHT_LOSS("Weight Loss"),
+    POSSIBLE_MUSCLE_LOSS("Possible muscle loss"),
+    FAT_LOSS("Fat Loss"),
     RECOMPOSITION("Recomposition"),
-    WEIGHT_GAIN("Controlled Lean Gain"),
-    EXCESSIVE_WEIGHT_GAIN("Excessive Weight Gain")
+    MUSCLE_GAIN("Muscle Gain"),
+    SUBOPTIMAL_MUSCLE_GAIN("Suboptimal muscle gain");
+
+    companion object {
+        val WEIGHT_LOSS: MomentumZone = FAT_LOSS
+        val WEIGHT_GAIN: MomentumZone = MUSCLE_GAIN
+        val EXCESSIVE_WEIGHT_GAIN: MomentumZone = SUBOPTIMAL_MUSCLE_GAIN
+    }
 }
 
 /**
- * Compliance of a weekly momentum reading against the active [WeightSubcycleType] target corridor.
+ * Semantic severity tier for weekly body weight momentum diagnostics (`SPEC-WEIGHT-CARD-02`).
  */
-enum class CorridorComplianceStatus(val defaultLabel: String) {
-    CALIBRATING("Calibrating"),
-    ON_TARGET("On Target (Optimal)"),
-    POSSIBLE_MUSCLE_LOSS("Possible Muscle Loss"),
-    EXCESSIVE_WEIGHT_GAIN("Excessive Weight Gain"),
-    BELOW_CORRIDOR("Slight Deficit Slip"),
-    ABOVE_CORRIDOR("Above Corridor")
+enum class MomentumSeverity {
+    OPTIMAL_GREEN,
+    WARNING_AMBER,
+    CRITICAL_RED,
+    NEUTRAL
 }
+
+/**
+ * Compliance and diagnostic classification of a weekly momentum reading against the active
+ * [WeightSubcycleType] target corridor (`SPEC-WEIGHT-CARD-02`).
+ */
+enum class CorridorComplianceStatus(
+    val defaultLabel: String,
+    val severity: MomentumSeverity,
+    val defaultDiagnosticMessage: String?
+) {
+    CALIBRATING(
+        defaultLabel = "Calibrating",
+        severity = MomentumSeverity.NEUTRAL,
+        defaultDiagnosticMessage = "Collecting initial 8-day baseline to calculate weekly momentum."
+    ),
+    ON_TARGET(
+        defaultLabel = "Optimal",
+        severity = MomentumSeverity.OPTIMAL_GREEN,
+        defaultDiagnosticMessage = null
+    ),
+    POSSIBLE_MUSCLE_LOSS(
+        defaultLabel = "Possible muscle loss",
+        severity = MomentumSeverity.CRITICAL_RED,
+        defaultDiagnosticMessage = "Losing faster than -1.00%/wk. High risk of lean muscle loss."
+    ),
+    SUBOPTIMAL_MUSCLE_GAIN(
+        defaultLabel = "Suboptimal muscle gain",
+        severity = MomentumSeverity.CRITICAL_RED,
+        defaultDiagnosticMessage = "Gaining faster than +0.75%/wk. Surplus exceeds optimal muscle synthesis rate."
+    ),
+    WARNING_FAT_LOSS_PHASE(
+        defaultLabel = "Warning: Fat loss phase",
+        severity = MomentumSeverity.WARNING_AMBER,
+        defaultDiagnosticMessage = "Pace is below -0.25%/wk. Warning: You are currently in a fat loss phase."
+    ),
+    WARNING_MUSCLE_GAIN_PHASE(
+        defaultLabel = "Warning: Muscle gain phase",
+        severity = MomentumSeverity.WARNING_AMBER,
+        defaultDiagnosticMessage = "Pace exceeds +0.25%/wk. Warning: You are currently in a muscle gain phase."
+    ),
+    SLOW_FAT_LOSS_PACE(
+        defaultLabel = "Slow fat loss pace",
+        severity = MomentumSeverity.WARNING_AMBER,
+        defaultDiagnosticMessage = "Deficit is below -0.25%/wk. Increase deficit slightly to hit target range."
+    ),
+    OUT_OF_FAT_LOSS_RANGE(
+        defaultLabel = "Out of fat loss range",
+        severity = MomentumSeverity.CRITICAL_RED,
+        defaultDiagnosticMessage = "Weight is stable or increasing. You are outside a caloric deficit."
+    ),
+    SLOW_MUSCLE_GAIN_PACE(
+        defaultLabel = "Slow muscle gain pace",
+        severity = MomentumSeverity.WARNING_AMBER,
+        defaultDiagnosticMessage = "Surplus is below +0.25%/wk. Increase intake slightly to optimize growth."
+    ),
+    OUT_OF_MUSCLE_GAIN_RANGE(
+        defaultLabel = "Out of muscle gain range",
+        severity = MomentumSeverity.CRITICAL_RED,
+        defaultDiagnosticMessage = "Weight is stable or dropping. Caloric surplus required for muscle gain."
+    );
+
+    companion object {
+        val EXCESSIVE_WEIGHT_GAIN: CorridorComplianceStatus = SUBOPTIMAL_MUSCLE_GAIN
+        val BELOW_CORRIDOR: CorridorComplianceStatus = WARNING_FAT_LOSS_PHASE
+        val ABOVE_CORRIDOR: CorridorComplianceStatus = WARNING_MUSCLE_GAIN_PHASE
+    }
+}
+
+/**
+ * Full diagnostic evaluation result for the Weekly Body Weight composite (`SPEC-WEIGHT-CARD-02`).
+ */
+data class CorridorDiagnosticResult(
+    val status: CorridorComplianceStatus,
+    val severity: MomentumSeverity,
+    val badgeLabel: String,
+    val diagnosticMessage: String?
+)
 
 /**
  * Presentation & domain row for either the primary 3:4:2:1 Weekly Body Weight composite
@@ -690,7 +771,9 @@ data class HorizonMomentumRow(
     val zone: MomentumZone,
     val complianceStatus: CorridorComplianceStatus,
     val statusLabel: String,
-    val gaugePosition: Float
+    val gaugePosition: Float,
+    val severity: MomentumSeverity = complianceStatus.severity,
+    val diagnosticMessage: String? = complianceStatus.defaultDiagnosticMessage
 )
 
 /**
@@ -3520,86 +3603,142 @@ object FatLossAnalytics {
         }
     }
 
+    const val GLOBAL_MUSCLE_LOSS_FLOOR_PCT = -1.00
+    const val GLOBAL_SUBOPTIMAL_GAIN_CEILING_PCT = 0.75
+
     /**
-     * Classifies a weekly momentum percentage into its universal physiological [MomentumZone].
+     * Classifies a weekly momentum percentage into its universal 5-zone physiological [MomentumZone]:
+     * - `< -1.00%` -> [MomentumZone.POSSIBLE_MUSCLE_LOSS]
+     * - `[-1.00%, -0.25%)` -> [MomentumZone.FAT_LOSS]
+     * - `[-0.25%, +0.25%]` -> [MomentumZone.RECOMPOSITION]
+     * - `(+0.25%, +0.75%]` -> [MomentumZone.MUSCLE_GAIN]
+     * - `> +0.75%` -> [MomentumZone.SUBOPTIMAL_MUSCLE_GAIN]
      */
     fun classifyMomentumZone(momentumPct: Double?): MomentumZone {
         if (momentumPct == null) return MomentumZone.CALIBRATING
         return when {
-            momentumPct < -1.50 -> MomentumZone.POSSIBLE_MUSCLE_LOSS
-            momentumPct < -0.50 -> MomentumZone.WEIGHT_LOSS
+            momentumPct < GLOBAL_MUSCLE_LOSS_FLOOR_PCT -> MomentumZone.POSSIBLE_MUSCLE_LOSS
+            momentumPct < -0.25 -> MomentumZone.FAT_LOSS
             momentumPct <= 0.25 -> MomentumZone.RECOMPOSITION
-            momentumPct <= 1.50 -> MomentumZone.WEIGHT_GAIN
-            else -> MomentumZone.EXCESSIVE_WEIGHT_GAIN
+            momentumPct <= GLOBAL_SUBOPTIMAL_GAIN_CEILING_PCT -> MomentumZone.MUSCLE_GAIN
+            else -> MomentumZone.SUBOPTIMAL_MUSCLE_GAIN
         }
     }
 
     /**
-     * Evaluates corridor compliance status and user-facing diagnostic label for a weekly momentum percentage
-     * relative to the active [subcycleType] target corridor.
+     * Evaluates the full [CorridorDiagnosticResult] (status, semantic severity, badge label, and
+     * inline coaching helper message) for a weekly momentum percentage relative to [subcycleType]
+     * using the strict mathematical inequality rules of `SPEC-WEIGHT-CARD-02`.
+     */
+    fun evaluateCorridorDiagnostic(
+        momentumPct: Double?,
+        subcycleType: WeightSubcycleType,
+        calibrationDay: Int = 1
+    ): CorridorDiagnosticResult {
+        if (momentumPct == null) {
+            val clampedDay = calibrationDay.coerceIn(1, CALIBRATION_REQUIRED_DAYS)
+            val status = CorridorComplianceStatus.CALIBRATING
+            return CorridorDiagnosticResult(
+                status = status,
+                severity = status.severity,
+                badgeLabel = "Calibrating (Day $clampedDay/$CALIBRATION_REQUIRED_DAYS)",
+                diagnosticMessage = status.defaultDiagnosticMessage
+            )
+        }
+
+        // 1. Global Universal Safety Bounds (evaluated first across all subcycles)
+        if (momentumPct < GLOBAL_MUSCLE_LOSS_FLOOR_PCT) {
+            val status = CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS
+            return CorridorDiagnosticResult(
+                status = status,
+                severity = status.severity,
+                badgeLabel = status.defaultLabel,
+                diagnosticMessage = status.defaultDiagnosticMessage
+            )
+        }
+        if (momentumPct > GLOBAL_SUBOPTIMAL_GAIN_CEILING_PCT) {
+            val status = CorridorComplianceStatus.SUBOPTIMAL_MUSCLE_GAIN
+            return CorridorDiagnosticResult(
+                status = status,
+                severity = status.severity,
+                badgeLabel = status.defaultLabel,
+                diagnosticMessage = status.defaultDiagnosticMessage
+            )
+        }
+
+        // 2. Subcycle-Specific Strict Inequality Rules (-1.00% <= Mom <= +0.75%)
+        val status = when (subcycleType) {
+            WeightSubcycleType.FAT_LOSS -> when {
+                momentumPct <= -0.25 -> CorridorComplianceStatus.ON_TARGET
+                momentumPct < 0.00 -> CorridorComplianceStatus.SLOW_FAT_LOSS_PACE
+                else -> CorridorComplianceStatus.OUT_OF_FAT_LOSS_RANGE
+            }
+            WeightSubcycleType.RECOMPOSITION -> when {
+                momentumPct < -0.25 -> CorridorComplianceStatus.WARNING_FAT_LOSS_PHASE
+                momentumPct <= 0.25 -> CorridorComplianceStatus.ON_TARGET
+                else -> CorridorComplianceStatus.WARNING_MUSCLE_GAIN_PHASE
+            }
+            WeightSubcycleType.MUSCLE_GAIN -> when {
+                momentumPct <= 0.00 -> CorridorComplianceStatus.OUT_OF_MUSCLE_GAIN_RANGE
+                momentumPct < 0.25 -> CorridorComplianceStatus.SLOW_MUSCLE_GAIN_PACE
+                else -> CorridorComplianceStatus.ON_TARGET
+            }
+        }
+
+        return CorridorDiagnosticResult(
+            status = status,
+            severity = status.severity,
+            badgeLabel = status.defaultLabel,
+            diagnosticMessage = status.defaultDiagnosticMessage
+        )
+    }
+
+    /**
+     * Evaluates corridor compliance status and user-facing diagnostic badge label for a weekly momentum
+     * percentage relative to the active [subcycleType] target corridor.
      */
     fun classifyCorridorCompliance(
         momentumPct: Double?,
         subcycleType: WeightSubcycleType,
         calibrationDay: Int = 1
     ): Pair<CorridorComplianceStatus, String> {
-        if (momentumPct == null) {
-            val clampedDay = calibrationDay.coerceIn(1, CALIBRATION_REQUIRED_DAYS)
-            return CorridorComplianceStatus.CALIBRATING to "Calibrating (Day $clampedDay/$CALIBRATION_REQUIRED_DAYS)"
-        }
-        return when {
-            momentumPct < -1.50 ->
-                CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS to MomentumZone.POSSIBLE_MUSCLE_LOSS.label
-            momentumPct > 1.50 ->
-                CorridorComplianceStatus.EXCESSIVE_WEIGHT_GAIN to MomentumZone.EXCESSIVE_WEIGHT_GAIN.label
-            momentumPct >= subcycleType.minWeeklyPct && momentumPct <= subcycleType.maxWeeklyPct ->
-                CorridorComplianceStatus.ON_TARGET to CorridorComplianceStatus.ON_TARGET.defaultLabel
-            momentumPct < subcycleType.minWeeklyPct -> {
-                val label = if (subcycleType == WeightSubcycleType.RECOMPOSITION) {
-                    "Slight Deficit Slip"
-                } else {
-                    "Below Target Corridor"
-                }
-                CorridorComplianceStatus.BELOW_CORRIDOR to label
-            }
-            else -> {
-                val label = if (subcycleType == WeightSubcycleType.WEIGHT_LOSS) {
-                    "Above Corridor"
-                } else {
-                    "Slight Surplus"
-                }
-                CorridorComplianceStatus.ABOVE_CORRIDOR to label
-            }
-        }
+        val diagnostic = evaluateCorridorDiagnostic(momentumPct, subcycleType, calibrationDay)
+        return diagnostic.status to diagnostic.badgeLabel
     }
 
     /**
-     * Maps a weekly momentum percentage onto the 3-zone Corridor Range Gauge in [0.0f, 1.0f]:
-     * - Zone 1 [0.00f, 0.25f): Below target corridor (< Min%)
-     * - Zone 2 [0.25f, 0.75f]: Optimal target corridor [Min%, Max%]
-     * - Zone 3 (0.75f, 1.00f]: Above target corridor (> Max%)
+     * Maps a weekly momentum percentage onto the 5-Segment Corridor Gauge in [0.0f, 1.0f] (`SPEC-WEIGHT-CARD-02`):
+     * - Zone 1 `< -1.00%`: `[0.00f, 0.15f)` (15% width — Possible muscle loss zone)
+     * - Zone 2 `-1.00% to -0.25%`: `[0.15f, 0.375f)` (22.5% width — Fat Loss zone)
+     * - Zone 3 `-0.25% to +0.25%`: `[0.375f, 0.625f]` (25% width — Recomposition zone)
+     * - Zone 4 `+0.25% to +0.75%`: `(0.625f, 0.85f]` (22.5% width — Muscle Gain zone)
+     * - Zone 5 `> +0.75%`: `(0.85f, 1.00f]` (15% width — Suboptimal muscle gain zone)
      */
     fun computeCorridorGaugePosition(
         momentumPct: Double?,
-        subcycleType: WeightSubcycleType
+        @Suppress("UNUSED_PARAMETER") subcycleType: WeightSubcycleType = WeightSubcycleType.RECOMPOSITION
     ): Float {
-        if (momentumPct == null) return 0.5f
-        val minPct = subcycleType.minWeeklyPct
-        val maxPct = subcycleType.maxWeeklyPct
-        val span = (maxPct - minPct).coerceAtLeast(0.01)
-
+        if (momentumPct == null) return 0.50f
         return when {
-            momentumPct < minPct -> {
-                val ratio = ((momentumPct - (minPct - 1.50)) / 1.50).toFloat().coerceIn(0.0f, 1.0f)
-                (ratio * 0.249f).coerceIn(0.0f, 0.249f)
+            momentumPct < -1.00 -> {
+                val ratio = ((momentumPct - (-2.00)) / 1.00).toFloat().coerceIn(0.0f, 1.0f)
+                (ratio * 0.149f).coerceIn(0.0f, 0.149f)
             }
-            momentumPct > maxPct -> {
-                val ratio = ((momentumPct - maxPct) / 1.50).toFloat().coerceIn(0.0f, 1.0f)
-                (0.751f + ratio * 0.249f).coerceIn(0.751f, 1.0f)
+            momentumPct < -0.25 -> {
+                val ratio = ((momentumPct - (-1.00)) / 0.75).toFloat().coerceIn(0.0f, 1.0f)
+                (0.15f + ratio * 0.225f).coerceIn(0.15f, 0.375f)
+            }
+            momentumPct <= 0.25 -> {
+                val ratio = ((momentumPct - (-0.25)) / 0.50).toFloat().coerceIn(0.0f, 1.0f)
+                (0.375f + ratio * 0.25f).coerceIn(0.375f, 0.625f)
+            }
+            momentumPct <= 0.75 -> {
+                val ratio = ((momentumPct - 0.25) / 0.50).toFloat().coerceIn(0.0f, 1.0f)
+                (0.625f + ratio * 0.225f).coerceIn(0.625f, 0.85f)
             }
             else -> {
-                val ratio = ((momentumPct - minPct) / span).toFloat().coerceIn(0.0f, 1.0f)
-                (0.25f + ratio * 0.50f).coerceIn(0.25f, 0.75f)
+                val ratio = ((momentumPct - 0.75) / 1.00).toFloat().coerceIn(0.0f, 1.0f)
+                (0.851f + ratio * 0.149f).coerceIn(0.851f, 1.0f)
             }
         }
     }
@@ -3730,7 +3869,7 @@ object FatLossAnalytics {
                 null
             }
             val zone = classifyMomentumZone(momentumPct)
-            val (compliance, statusLabel) = classifyCorridorCompliance(
+            val diagnostic = evaluateCorridorDiagnostic(
                 momentumPct = momentumPct,
                 subcycleType = subcycleType,
                 calibrationDay = calibrationDay
@@ -3748,9 +3887,11 @@ object FatLossAnalytics {
                 weeklyPaceInUnit = paceInUnit,
                 weeklyMomentumPct = momentumPct,
                 zone = zone,
-                complianceStatus = compliance,
-                statusLabel = statusLabel,
-                gaugePosition = gaugePos
+                complianceStatus = diagnostic.status,
+                statusLabel = diagnostic.badgeLabel,
+                gaugePosition = gaugePos,
+                severity = diagnostic.severity,
+                diagnosticMessage = diagnostic.diagnosticMessage
             )
         }
 
@@ -3786,7 +3927,7 @@ object FatLossAnalytics {
             else -> String.format(Locale.US, "%.1fw left · Ends %s", round1(weeksRemaining), finishDateStr)
         }
         val cycleTimelineHeaderText = "Current Cycle: $cycleDisplayName ($timelineCountdownPart)"
-        val subtypeTargetHeaderText = "Subtype Target: ${activeProjection.corridorDisplayText}"
+        val subtypeTargetHeaderText = "Optimal Range: ${activeProjection.corridorDisplayText}"
         val projectedFinishHeaderText = if (isCalibrating) {
             "Projected Finish Weight: ${activeProjection.projectedFinishRangeText} (Calibrating Day $calibrationDay/$CALIBRATION_REQUIRED_DAYS)"
         } else {

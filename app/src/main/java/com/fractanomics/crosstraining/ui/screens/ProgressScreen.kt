@@ -36,6 +36,7 @@ import com.fractanomics.crosstraining.data.analytics.CorridorComplianceStatus
 import com.fractanomics.crosstraining.data.analytics.CycleMomentumState
 import com.fractanomics.crosstraining.data.analytics.DailyWeightPoint
 import com.fractanomics.crosstraining.data.analytics.HorizonMomentumRow
+import com.fractanomics.crosstraining.data.analytics.MomentumSeverity
 import com.fractanomics.crosstraining.data.analytics.MomentumZone
 import com.fractanomics.crosstraining.data.analytics.SubcyclePreviewProjection
 import com.fractanomics.crosstraining.data.model.WeightMeasureSource
@@ -3045,7 +3046,7 @@ internal fun resolveSubcyclePillColors(
     subcycleType: WeightSubcycleType,
     isDarkTheme: Boolean
 ): Pair<Color, Color> = when (subcycleType) {
-    WeightSubcycleType.WEIGHT_LOSS -> if (isDarkTheme) {
+    WeightSubcycleType.FAT_LOSS -> if (isDarkTheme) {
         Color(0xFF172A45) to Color(0xFF63B3ED)
     } else {
         Color(0xFFEBF3FA) to Color(0xFF2B6CB0)
@@ -3055,24 +3056,47 @@ internal fun resolveSubcyclePillColors(
     } else {
         Color(0xFFE3F5EC) to Color(0xFF0B6E3F)
     }
-    WeightSubcycleType.WEIGHT_GAIN -> if (isDarkTheme) {
+    WeightSubcycleType.MUSCLE_GAIN -> if (isDarkTheme) {
         Color(0xFF2E1647) to Color(0xFFC084FC)
     } else {
         Color(0xFFF3E8FF) to Color(0xFF6B21A8)
     }
 }
 
+internal fun resolveMomentumBadgeColors(
+    severity: MomentumSeverity,
+    isDarkTheme: Boolean
+): Pair<Color, Color> = when (severity) {
+    MomentumSeverity.OPTIMAL_GREEN -> if (isDarkTheme) {
+        Color(0xFF133826) to Color(0xFF2ECC71)
+    } else {
+        Color(0xFFE3F5EC) to Color(0xFF0B6E3F)
+    }
+    MomentumSeverity.WARNING_AMBER -> if (isDarkTheme) {
+        Color(0xFF3B2A14) to Color(0xFFFBBF24)
+    } else {
+        Color(0xFFFEF3C7) to Color(0xFFD97706)
+    }
+    MomentumSeverity.CRITICAL_RED -> if (isDarkTheme) {
+        Color(0xFF3B1818) to Color(0xFFF87171)
+    } else {
+        Color(0xFFFEE2E2) to Color(0xFFDC2626)
+    }
+    MomentumSeverity.NEUTRAL -> if (isDarkTheme) {
+        Color(0xFF1E293B) to Color(0xFF94A3B8)
+    } else {
+        Color(0xFFF1F5F9) to Color(0xFF64748B)
+    }
+}
+
 internal fun resolveMomentumComplianceColor(
     status: CorridorComplianceStatus,
     isDarkTheme: Boolean
-): Color = when (status) {
-    CorridorComplianceStatus.ON_TARGET -> if (isDarkTheme) Color(0xFF2ECC71) else Color(0xFF0B6E3F)
-    CorridorComplianceStatus.BELOW_CORRIDOR,
-    CorridorComplianceStatus.ABOVE_CORRIDOR -> if (isDarkTheme) Color(0xFFF59E0B) else Color(0xFFD97706)
-    CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS,
-    CorridorComplianceStatus.EXCESSIVE_WEIGHT_GAIN -> if (isDarkTheme) Color(0xFFEF4444) else Color(0xFFDC2626)
-    CorridorComplianceStatus.CALIBRATING -> if (isDarkTheme) Color(0xFF94A3B8) else Color(0xFF64748B)
-}
+): Color = resolveMomentumBadgeColors(status.severity, isDarkTheme).second
+
+internal fun resolveCompositeDiagnosticSubtitle(
+    row: HorizonMomentumRow
+): String? = row.diagnosticMessage?.let { "↳ $it" }
 
 internal fun resolveWeeklyBodyWeightTitle(
     row: HorizonMomentumRow,
@@ -3121,9 +3145,11 @@ internal fun resolveHorizonMomentumContentDescription(
     weightUnit: String,
     calibrationDay: Int = 1
 ): String = if (row.isPrimaryComposite) {
-    "${resolveWeeklyBodyWeightTitle(row, weightUnit)}, ${resolveWeeklyBodyWeightVelocitySummary(row, weightUnit, calibrationDay)}, ${row.statusLabel}"
+    val base = "${resolveWeeklyBodyWeightTitle(row, weightUnit)}, ${resolveWeeklyBodyWeightVelocitySummary(row, weightUnit, calibrationDay)}, ${row.statusLabel}"
+    val helper = row.diagnosticMessage
+    if (helper.isNullOrBlank()) base else "$base, $helper"
 } else {
-    "${resolveHorizonMomentumLeftLabel(row, weightUnit, calibrationDay)}, ${row.statusLabel}"
+    resolveHorizonMomentumLeftLabel(row, weightUnit, calibrationDay)
 }
 
 @Composable
@@ -3131,25 +3157,47 @@ internal fun CorridorRangeGauge(
     gaugePosition: Float,
     statusColor: Color,
     isCalibrating: Boolean,
+    subcycleType: WeightSubcycleType = WeightSubcycleType.RECOMPOSITION,
     modifier: Modifier = Modifier
 ) {
     val clampedPos = gaugePosition.coerceIn(0.02f, 0.98f)
+    val activeZoneHighlight = statusColor.copy(alpha = 0.22f)
     Box(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(4.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
-        // 3-Zone Corridor Track: [0..25% Below | 25..75% Optimal Target Corridor | 75..100% Above]
+        // 5-Segment Corridor Track: [15% < -1.00% | 22.5% Fat Loss | 25% Recomposition | 22.5% Muscle Gain | 15% > +0.75%]
         Row(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
-            Spacer(modifier = Modifier.weight(0.25f))
             Box(
                 modifier = Modifier
-                    .weight(0.50f)
+                    .weight(0.15f)
                     .fillMaxHeight()
-                    .background(statusColor.copy(alpha = 0.22f))
             )
-            Spacer(modifier = Modifier.weight(0.25f))
+            Box(
+                modifier = Modifier
+                    .weight(0.225f)
+                    .fillMaxHeight()
+                    .background(if (subcycleType == WeightSubcycleType.FAT_LOSS) activeZoneHighlight else Color.Transparent)
+            )
+            Box(
+                modifier = Modifier
+                    .weight(0.25f)
+                    .fillMaxHeight()
+                    .background(if (subcycleType == WeightSubcycleType.RECOMPOSITION) activeZoneHighlight else Color.Transparent)
+            )
+            Box(
+                modifier = Modifier
+                    .weight(0.225f)
+                    .fillMaxHeight()
+                    .background(if (subcycleType == WeightSubcycleType.MUSCLE_GAIN) activeZoneHighlight else Color.Transparent)
+            )
+            Box(
+                modifier = Modifier
+                    .weight(0.15f)
+                    .fillMaxHeight()
+            )
         }
         if (!isCalibrating) {
             Box(
@@ -3220,7 +3268,8 @@ internal fun CycleMomentumEstimationsCard(
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = pillText,
-                        maxLines = 1
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -3254,8 +3303,9 @@ internal fun CycleMomentumEstimationsCard(
 
             // Primary Composite Row: ✦ Weekly Body Weight (3:4:2:1)
             val primaryRow = state.weeklyBodyWeightRow
-            val primaryColor = resolveMomentumComplianceColor(primaryRow.complianceStatus, isDark)
+            val (badgeFill, badgeText) = resolveMomentumBadgeColors(primaryRow.severity, isDark)
             val primaryDesc = resolveHorizonMomentumContentDescription(primaryRow, state.weightUnit, state.calibrationDay)
+            val diagnosticSubtitle = resolveCompositeDiagnosticSubtitle(primaryRow)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3273,68 +3323,61 @@ internal fun CycleMomentumEstimationsCard(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Text(
-                        text = primaryRow.statusLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = primaryColor
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = badgeFill
+                    ) {
+                        Text(
+                            text = primaryRow.statusLabel,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = badgeText,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
                 }
                 Text(
                     text = resolveWeeklyBodyWeightVelocitySummary(primaryRow, state.weightUnit, state.calibrationDay),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 CorridorRangeGauge(
                     gaugePosition = primaryRow.gaugePosition,
-                    statusColor = primaryColor,
+                    statusColor = badgeText,
                     isCalibrating = state.isCalibrating,
+                    subcycleType = state.subcycleType,
                     modifier = Modifier.height(8.dp)
                 )
+                if (diagnosticSubtitle != null) {
+                    Text(
+                        text = diagnosticSubtitle,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp, fontStyle = FontStyle.Italic),
+                        color = badgeText
+                    )
+                }
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
-            // 4 Multi-Horizon Rows (7D, 14D, 21D, 28D)
+            // 4 Multi-Horizon Rows (7D, 14D, 21D, 28D) - Clean Telemetry without per-row diagnostic badges
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 state.horizonRows.forEach { row ->
-                    val rowColor = resolveMomentumComplianceColor(row.complianceStatus, isDark)
                     val rowDesc = resolveHorizonMomentumContentDescription(row, state.weightUnit, state.calibrationDay)
-                    Column(
+                    Text(
+                        text = resolveHorizonMomentumLeftLabel(row, state.weightUnit, state.calibrationDay),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .semantics(mergeDescendants = true) { contentDescription = rowDesc },
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = resolveHorizonMomentumLeftLabel(row, state.weightUnit, state.calibrationDay),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = row.statusLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = rowColor
-                            )
-                        }
-                        CorridorRangeGauge(
-                            gaugePosition = row.gaugePosition,
-                            statusColor = rowColor,
-                            isCalibrating = state.isCalibrating,
-                            modifier = Modifier.height(6.dp)
-                        )
-                    }
+                            .semantics { contentDescription = rowDesc },
+                        style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
             }
         }
@@ -3366,6 +3409,7 @@ fun SubcycleTypePickerBottomSheet(
     var selectedType by rememberSaveable(currentSubcycleType) { mutableStateOf(currentSubcycleType) }
     val isDark = isSystemInDarkTheme()
     val finishDateStr = finishDate.formatShort()
+    val isHighFontScale = LocalDensity.current.fontScale >= 1.5f
 
     ModalBottomSheet(
         onDismissRequest = onDismiss
@@ -3418,27 +3462,66 @@ fun SubcycleTypePickerBottomSheet(
                             modifier = Modifier.weight(1f),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = candidateType.label,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Surface(
-                                    shape = RoundedCornerShape(999.dp),
-                                    color = badgeFill
+                            if (isHighFontScale) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Text(
-                                        text = corridorLabel,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = badgeText
+                                        text = candidateType.label,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
                                     )
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = badgeFill
+                                    ) {
+                                        Text(
+                                            text = corridorLabel,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 12.sp,
+                                                fontFeatureSettings = "tnum"
+                                            ),
+                                            fontWeight = FontWeight.Bold,
+                                            color = badgeText,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = candidateType.label,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = badgeFill
+                                    ) {
+                                        Text(
+                                            text = corridorLabel,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 12.sp,
+                                                fontFeatureSettings = "tnum"
+                                            ),
+                                            fontWeight = FontWeight.Bold,
+                                            color = badgeText,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
                                 }
                             }
                             Text(
@@ -3452,6 +3535,13 @@ fun SubcycleTypePickerBottomSheet(
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = badgeText
+                                )
+                            } else {
+                                Text(
+                                    text = "Projected Finish: Log first weigh-in to calculate range",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }

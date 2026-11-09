@@ -216,17 +216,38 @@ export const UpsertDailyLogInputSchema = {
 };
 
 export const WeightSubcycleTypeValues = [
-  "WEIGHT_LOSS",
+  "FAT_LOSS",
   "RECOMPOSITION",
+  "MUSCLE_GAIN",
+  "WEIGHT_LOSS",
   "WEIGHT_GAIN",
 ] as const;
 
 export type WeightSubcycleType = (typeof WeightSubcycleTypeValues)[number];
+export type CanonicalWeightSubcycleType = "FAT_LOSS" | "RECOMPOSITION" | "MUSCLE_GAIN";
+
+export function normalizeWeightSubcycleType(
+  subcycleType?: WeightSubcycleType
+): CanonicalWeightSubcycleType {
+  switch (subcycleType) {
+    case "FAT_LOSS":
+    case "WEIGHT_LOSS":
+      return "FAT_LOSS";
+    case "MUSCLE_GAIN":
+    case "WEIGHT_GAIN":
+      return "MUSCLE_GAIN";
+    case "RECOMPOSITION":
+    default:
+      return "RECOMPOSITION";
+  }
+}
 
 const weightSubcycleTypeSchema = () =>
   z
     .enum(WeightSubcycleTypeValues)
-    .describe("Active subcycle regime: WEIGHT_LOSS (-1.50% to -0.50%/wk), RECOMPOSITION (-0.50% to +0.25%/wk), or WEIGHT_GAIN (+0.25% to +1.50%/wk)");
+    .describe(
+      "Active subcycle regime: FAT_LOSS (-1.00% to -0.25%/wk), RECOMPOSITION (-0.25% to +0.25%/wk), or MUSCLE_GAIN (+0.25% to +0.75%/wk). Legacy aliases WEIGHT_LOSS and WEIGHT_GAIN are also accepted."
+    );
 
 export const GetWeightMomentumAnalyticsInputSchema = {
   subcycleType: weightSubcycleTypeSchema().optional().describe("Subcycle regime (defaults to RECOMPOSITION)"),
@@ -244,10 +265,13 @@ export interface DailyInterpolatedWeightPoint {
   dayIndexFromFirstReal: number;
 }
 
-const SUBCYCLE_CORRIDORS: Record<WeightSubcycleType, { minPct: number; maxPct: number }> = {
-  WEIGHT_LOSS: { minPct: -1.5, maxPct: -0.5 },
-  RECOMPOSITION: { minPct: -0.5, maxPct: 0.25 },
-  WEIGHT_GAIN: { minPct: 0.25, maxPct: 1.5 },
+const SUBCYCLE_CORRIDORS: Record<
+  CanonicalWeightSubcycleType,
+  { minPct: number; maxPct: number; label: string }
+> = {
+  FAT_LOSS: { minPct: -1.0, maxPct: -0.25, label: "Fat Loss" },
+  RECOMPOSITION: { minPct: -0.25, maxPct: 0.25, label: "Recomposition" },
+  MUSCLE_GAIN: { minPct: 0.25, maxPct: 0.75, label: "Muscle Gain" },
 };
 
 function addDaysIso(isoDate: string, days: number): string {
@@ -267,24 +291,127 @@ function roundTo(val: number, decimals: number): number {
 }
 
 function classifyZone(momentumPct: number): string {
-  if (momentumPct < -1.5) return "POSSIBLE_MUSCLE_LOSS";
-  if (momentumPct < -0.5) return "WEIGHT_LOSS";
+  if (momentumPct < -1.0) return "POSSIBLE_MUSCLE_LOSS";
+  if (momentumPct < -0.25) return "FAT_LOSS";
   if (momentumPct <= 0.25) return "RECOMPOSITION";
-  if (momentumPct <= 1.5) return "WEIGHT_GAIN";
-  return "EXCESSIVE_WEIGHT_GAIN";
+  if (momentumPct <= 0.75) return "MUSCLE_GAIN";
+  return "SUBOPTIMAL_MUSCLE_GAIN";
+}
+
+function evaluateMomentumDiagnostic(
+  momentumPct: number | null,
+  subcycleType: CanonicalWeightSubcycleType,
+  calibrationDay: number = 1
+): {
+  status: string;
+  severity: "OPTIMAL_GREEN" | "WARNING_AMBER" | "CRITICAL_RED" | "NEUTRAL";
+  badge: string;
+  message: string | null;
+} {
+  if (momentumPct === null) {
+    const clampedDay = Math.min(Math.max(calibrationDay, 1), 8);
+    return {
+      status: "CALIBRATING",
+      severity: "NEUTRAL",
+      badge: `Calibrating (Day ${clampedDay}/8)`,
+      message: "Collecting initial 8-day baseline to calculate weekly momentum.",
+    };
+  }
+  if (momentumPct < -1.0) {
+    return {
+      status: "POSSIBLE_MUSCLE_LOSS",
+      severity: "CRITICAL_RED",
+      badge: "Possible muscle loss",
+      message: "Losing faster than -1.00%/wk. High risk of lean muscle loss.",
+    };
+  }
+  if (momentumPct > 0.75) {
+    return {
+      status: "SUBOPTIMAL_MUSCLE_GAIN",
+      severity: "CRITICAL_RED",
+      badge: "Suboptimal muscle gain",
+      message: "Gaining faster than +0.75%/wk. Surplus exceeds optimal muscle synthesis rate.",
+    };
+  }
+  switch (subcycleType) {
+    case "FAT_LOSS":
+      if (momentumPct <= -0.25) {
+        return {
+          status: "ON_TARGET",
+          severity: "OPTIMAL_GREEN",
+          badge: "Optimal",
+          message: null,
+        };
+      }
+      if (momentumPct < 0.0) {
+        return {
+          status: "SLOW_FAT_LOSS_PACE",
+          severity: "WARNING_AMBER",
+          badge: "Slow fat loss pace",
+          message: "Deficit is below -0.25%/wk. Increase deficit slightly to hit target range.",
+        };
+      }
+      return {
+        status: "OUT_OF_FAT_LOSS_RANGE",
+        severity: "CRITICAL_RED",
+        badge: "Out of fat loss range",
+        message: "Weight is stable or increasing. You are outside a caloric deficit.",
+      };
+    case "RECOMPOSITION":
+      if (momentumPct < -0.25) {
+        return {
+          status: "WARNING_FAT_LOSS_PHASE",
+          severity: "WARNING_AMBER",
+          badge: "Warning: Fat loss phase",
+          message: "Pace is below -0.25%/wk. Warning: You are currently in a fat loss phase.",
+        };
+      }
+      if (momentumPct <= 0.25) {
+        return {
+          status: "ON_TARGET",
+          severity: "OPTIMAL_GREEN",
+          badge: "Optimal",
+          message: null,
+        };
+      }
+      return {
+        status: "WARNING_MUSCLE_GAIN_PHASE",
+        severity: "WARNING_AMBER",
+        badge: "Warning: Muscle gain phase",
+        message: "Pace exceeds +0.25%/wk. Warning: You are currently in a muscle gain phase.",
+      };
+    case "MUSCLE_GAIN":
+      if (momentumPct <= 0.0) {
+        return {
+          status: "OUT_OF_MUSCLE_GAIN_RANGE",
+          severity: "CRITICAL_RED",
+          badge: "Out of muscle gain range",
+          message: "Weight is stable or dropping. Caloric surplus required for muscle gain.",
+        };
+      }
+      if (momentumPct < 0.25) {
+        return {
+          status: "SLOW_MUSCLE_GAIN_PACE",
+          severity: "WARNING_AMBER",
+          badge: "Slow muscle gain pace",
+          message: "Surplus is below +0.25%/wk. Increase intake slightly to optimize growth.",
+        };
+      }
+      return {
+        status: "ON_TARGET",
+        severity: "OPTIMAL_GREEN",
+        badge: "Optimal",
+        message: null,
+      };
+  }
 }
 
 function classifyStatus(
   momentumPct: number | null,
-  subcycleType: WeightSubcycleType
+  subcycleType: CanonicalWeightSubcycleType,
+  calibrationDay: number = 1
 ): string {
-  if (momentumPct === null) return "CALIBRATING";
-  if (momentumPct < -1.5) return "POSSIBLE_MUSCLE_LOSS";
-  if (momentumPct > 1.5) return "EXCESSIVE_WEIGHT_GAIN";
-  const corridor = SUBCYCLE_CORRIDORS[subcycleType];
-  if (momentumPct < corridor.minPct) return "BELOW_CORRIDOR";
-  if (momentumPct > corridor.maxPct) return "ABOVE_CORRIDOR";
-  return "ON_TARGET";
+  return evaluateMomentumDiagnostic(momentumPct, subcycleType, calibrationDay).status;
 }
 
 /**
@@ -302,7 +429,7 @@ export function computeWeightMomentumAnalytics(
     includeDailyTimeline?: boolean;
   } = {}
 ) {
-  const subcycleType: WeightSubcycleType = options.subcycleType ?? "RECOMPOSITION";
+  const subcycleType: CanonicalWeightSubcycleType = normalizeWeightSubcycleType(options.subcycleType);
   const cycleName = options.cycleName ?? "Active Cycle";
   const corridor = SUBCYCLE_CORRIDORS[subcycleType];
 
@@ -441,14 +568,21 @@ export function computeWeightMomentumAnalytics(
       avg_kg: roundTo(currVal, 2),
       rate_kg_wk: rate,
       momentum_pct_wk: pct,
-      status: classifyStatus(pct, subcycleType),
+      status: classifyStatus(pct, subcycleType, calibrationDay),
     };
   }
+
+  const compositeDiagnostic = evaluateMomentumDiagnostic(
+    compositeMomentumPct,
+    subcycleType,
+    calibrationDay
+  );
 
   return {
     cycle_metadata: {
       cycle_name: cycleName,
       subcycle_type: subcycleType,
+      subcycle_label: corridor.label,
       start_date: startDate,
       finish_date: finishDate,
       weeks_remaining: weeksRemaining,
@@ -462,6 +596,10 @@ export function computeWeightMomentumAnalytics(
       min_weekly_kg: minWeeklyKg,
       max_weekly_kg: maxWeeklyKg,
     },
+    global_safety_bounds: {
+      possible_muscle_loss_below_pct: -1.0,
+      suboptimal_muscle_gain_above_pct: 0.75,
+    },
     projected_finish_weight: {
       min_kg: projectedMinKg,
       max_kg: projectedMaxKg,
@@ -472,7 +610,11 @@ export function computeWeightMomentumAnalytics(
       previous_week_kg: prevCompositeKg,
       weekly_rate_kg: compositeRateKg,
       weekly_momentum_pct: compositeMomentumPct,
-      status: classifyStatus(compositeMomentumPct, subcycleType),
+      status: compositeDiagnostic.status,
+      diagnostic_code: compositeDiagnostic.status,
+      severity: compositeDiagnostic.severity,
+      diagnostic_badge: compositeDiagnostic.badge,
+      diagnostic_message: compositeDiagnostic.message,
       zone: compositeMomentumPct !== null ? classifyZone(compositeMomentumPct) : null,
     },
     horizons: {

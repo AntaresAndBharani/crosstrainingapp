@@ -420,8 +420,8 @@ object FatLossValidation {
 
     /**
      * Validates optional starting & target body weight against the selected [WeightSubcycleType].
-     * - [WeightSubcycleType.WEIGHT_LOSS]: target must be strictly less than start.
-     * - [WeightSubcycleType.WEIGHT_GAIN]: target must be strictly greater than start.
+     * - [WeightSubcycleType.FAT_LOSS]: target must be strictly less than start.
+     * - [WeightSubcycleType.MUSCLE_GAIN]: target must be strictly greater than start.
      * - [WeightSubcycleType.RECOMPOSITION]: any positive target weight is valid.
      */
     fun isTargetWeightInvalidForSubcycle(
@@ -431,8 +431,8 @@ object FatLossValidation {
     ): Boolean {
         if (startWeight == null || targetWeight == null) return false
         return when (subcycleType) {
-            WeightSubcycleType.WEIGHT_LOSS -> targetWeight >= startWeight
-            WeightSubcycleType.WEIGHT_GAIN -> targetWeight <= startWeight
+            WeightSubcycleType.FAT_LOSS -> targetWeight >= startWeight
+            WeightSubcycleType.MUSCLE_GAIN -> targetWeight <= startWeight
             WeightSubcycleType.RECOMPOSITION -> false
         }
     }
@@ -1485,7 +1485,7 @@ fun CycleEditorDialog(
                                 isError = isTargetInvalid,
                                 supportingText = if (isTargetInvalid) {
                                     {
-                                        val relation = if (subcycleType == WeightSubcycleType.WEIGHT_GAIN) "greater" else "less"
+                                        val relation = if (subcycleType == WeightSubcycleType.MUSCLE_GAIN) "greater" else "less"
                                         Text("Target weight must be $relation than starting weight (${startVal?.trimmed()} kg) for ${subcycleType.label}")
                                     }
                                 } else null,

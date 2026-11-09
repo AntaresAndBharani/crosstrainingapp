@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import type { Server } from "node:http";
 import { after, before, describe, it } from "node:test";
 import { createMcpExpressApp } from "../src/index.js";
+import { computeWeightMomentumAnalytics } from "../src/schemas.js";
 import { InMemoryBackingStore } from "../src/store.js";
 import { evaluateBudgetNotification } from "../billing-killswitch/index.js";
 
@@ -503,11 +504,14 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     });
     const momentumPayload = JSON.parse(momentumResp.result.content[0].text);
     assert.equal(momentumPayload.cycle_metadata.cycle_name, "Autumn Cut");
-    assert.equal(momentumPayload.cycle_metadata.subcycle_type, "WEIGHT_LOSS");
+    assert.equal(momentumPayload.cycle_metadata.subcycle_type, "FAT_LOSS");
+    assert.equal(momentumPayload.cycle_metadata.subcycle_label, "Fat Loss");
     assert.equal(momentumPayload.cycle_metadata.calibration_complete, true);
     assert.equal(momentumPayload.cycle_metadata.total_timeline_days, 8);
-    assert.equal(momentumPayload.target_corridor.min_weekly_pct, -1.5);
-    assert.equal(momentumPayload.target_corridor.max_weekly_pct, -0.5);
+    assert.equal(momentumPayload.target_corridor.min_weekly_pct, -1.0);
+    assert.equal(momentumPayload.target_corridor.max_weekly_pct, -0.25);
+    assert.equal(momentumPayload.global_safety_bounds.possible_muscle_loss_below_pct, -1.0);
+    assert.equal(momentumPayload.global_safety_bounds.suboptimal_muscle_gain_above_pct, 0.75);
     assert.equal(momentumPayload.daily_timeline.length, 8);
     assert.equal(momentumPayload.daily_timeline[0].source, "REAL");
     assert.equal(momentumPayload.daily_timeline[0].weight_kg, 80.0);
@@ -518,6 +522,13 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     assert.equal(momentumPayload.horizons["7d"].avg_kg, 78.0);
     assert.equal(momentumPayload.horizons["14d"].avg_kg, 78.25);
     assert.ok(momentumPayload.weekly_body_weight_composite.current_kg > 0);
+    assert.equal(momentumPayload.weekly_body_weight_composite.diagnostic_code, "POSSIBLE_MUSCLE_LOSS");
+    assert.equal(momentumPayload.weekly_body_weight_composite.severity, "CRITICAL_RED");
+    assert.equal(momentumPayload.weekly_body_weight_composite.diagnostic_badge, "Possible muscle loss");
+    assert.equal(
+      momentumPayload.weekly_body_weight_composite.diagnostic_message,
+      "Losing faster than -1.00%/wk. High risk of lean muscle loss."
+    );
     assert.ok(momentumPayload.projected_finish_weight.min_kg < momentumPayload.projected_finish_weight.max_kg);
 
     // asOfDate before the latest weigh-in excludes later entries (Android referenceDate parity)
@@ -533,6 +544,37 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     const asOfPayload = JSON.parse(asOfResp.result.content[0].text);
     assert.equal(asOfPayload.daily_timeline[asOfPayload.daily_timeline.length - 1].date, "2026-11-02");
     assert.ok(asOfPayload.daily_timeline.every((pt: { date: string }) => pt.date <= "2026-11-02"));
+
+    // Verify SPEC-WEIGHT-CARD-02 strict inequality corridors across FAT_LOSS, RECOMPOSITION, MUSCLE_GAIN
+    const recompSlip = computeWeightMomentumAnalytics(
+      [
+        { isoDate: "2026-10-01", weightKg: 80.0 },
+        { isoDate: "2026-10-08", weightKg: 79.3 },
+      ],
+      { subcycleType: "RECOMPOSITION" }
+    );
+    assert.equal(recompSlip.cycle_metadata.subcycle_type, "RECOMPOSITION");
+    assert.equal(recompSlip.target_corridor.min_weekly_pct, -0.25);
+    assert.equal(recompSlip.target_corridor.max_weekly_pct, 0.25);
+    assert.equal(recompSlip.weekly_body_weight_composite.diagnostic_code, "WARNING_FAT_LOSS_PHASE");
+    assert.equal(recompSlip.weekly_body_weight_composite.severity, "WARNING_AMBER");
+    assert.equal(recompSlip.weekly_body_weight_composite.diagnostic_badge, "Warning: Fat loss phase");
+
+    const muscleGainOptimal = computeWeightMomentumAnalytics(
+      [
+        { isoDate: "2026-10-01", weightKg: 80.0 },
+        { isoDate: "2026-10-08", weightKg: 80.7 },
+      ],
+      { subcycleType: "MUSCLE_GAIN" }
+    );
+    assert.equal(muscleGainOptimal.cycle_metadata.subcycle_type, "MUSCLE_GAIN");
+    assert.equal(muscleGainOptimal.cycle_metadata.subcycle_label, "Muscle Gain");
+    assert.equal(muscleGainOptimal.target_corridor.min_weekly_pct, 0.25);
+    assert.equal(muscleGainOptimal.target_corridor.max_weekly_pct, 0.75);
+    assert.equal(muscleGainOptimal.weekly_body_weight_composite.diagnostic_code, "ON_TARGET");
+    assert.equal(muscleGainOptimal.weekly_body_weight_composite.severity, "OPTIMAL_GREEN");
+    assert.equal(muscleGainOptimal.weekly_body_weight_composite.diagnostic_badge, "Optimal");
+    assert.equal(muscleGainOptimal.weekly_body_weight_composite.diagnostic_message, null);
   });
 
   it("triggers billing kill-switch when costAmount >= budgetAmount", async () => {
