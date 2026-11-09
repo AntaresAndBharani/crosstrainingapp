@@ -1037,7 +1037,8 @@ private fun WeightOverviewContent(
                         ?: WeightEntry(
                             date = pt.date,
                             weightKg = pt.weightKg,
-                            notes = "Theoretical (Interpolated) · Tap to log real weight"
+                            notes = "Theoretical (Interpolated) · Tap to log real weight",
+                            updatedAtMillis = 0L
                         )
                 }
             } else {
