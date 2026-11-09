@@ -354,6 +354,14 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         data.setUserRole(role)
     }
 
+    fun updateCycleSubcycleType(
+        cycle: Cycle,
+        subcycleType: com.fractanomics.crosstraining.data.model.WeightSubcycleType
+    ) = viewModelScope.launch {
+        repo.saveCycle(cycle.withSubcycleType(subcycleType))
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
     // --- Cycles ---------------------------------------------------------------
     fun saveCycle(cycle: Cycle, makeActive: Boolean = false) = viewModelScope.launch {
         val id = repo.saveCycle(cycle)

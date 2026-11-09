@@ -87,6 +87,7 @@ import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.WeightEntry
+import com.fractanomics.crosstraining.data.model.WeightSubcycleType
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.components.DateField
 import com.fractanomics.crosstraining.ui.components.EmptyState
@@ -263,6 +264,24 @@ private fun CycleCard(
             }
             Text(range, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Text(
+                        "Subcycle: ${cycle.subcycleType.label}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
             if (cycle.type == CycleType.FAT_LOSS_BODYBUILDING) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -322,9 +341,9 @@ private fun CycleCard(
                 }
             }
 
-            if (cycle.goal.isNotBlank()) {
+            if (cycle.cleanGoal.isNotBlank()) {
                 Text(
-                    "Focus: ${cycle.goal}",
+                    "Focus: ${cycle.cleanGoal}",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium
                 )
@@ -397,6 +416,25 @@ object FatLossValidation {
     fun isTargetWeightInvalid(startWeight: Double?, targetWeight: Double?): Boolean {
         if (startWeight == null || targetWeight == null) return false
         return targetWeight >= startWeight
+    }
+
+    /**
+     * Validates optional starting & target body weight against the selected [WeightSubcycleType].
+     * - [WeightSubcycleType.WEIGHT_LOSS]: target must be strictly less than start.
+     * - [WeightSubcycleType.WEIGHT_GAIN]: target must be strictly greater than start.
+     * - [WeightSubcycleType.RECOMPOSITION]: any positive target weight is valid.
+     */
+    fun isTargetWeightInvalidForSubcycle(
+        startWeight: Double?,
+        targetWeight: Double?,
+        subcycleType: WeightSubcycleType
+    ): Boolean {
+        if (startWeight == null || targetWeight == null) return false
+        return when (subcycleType) {
+            WeightSubcycleType.WEIGHT_LOSS -> targetWeight >= startWeight
+            WeightSubcycleType.WEIGHT_GAIN -> targetWeight <= startWeight
+            WeightSubcycleType.RECOMPOSITION -> false
+        }
     }
 }
 
@@ -1202,7 +1240,13 @@ fun CycleEditorDialog(
     onFetchBestMetricValue: (suspend (exerciseId: Long, metric: MetricType, reps: Int) -> Double?)? = null
 ) {
     var name by remember { mutableStateOf(original?.name ?: "") }
-    var goal by remember { mutableStateOf(original?.goal ?: "") }
+    var goal by remember { mutableStateOf(original?.cleanGoal ?: "") }
+    var subcycleType by remember {
+        mutableStateOf(
+            original?.subcycleType
+                ?: if (original?.type == CycleType.FAT_LOSS_BODYBUILDING) WeightSubcycleType.WEIGHT_LOSS else WeightSubcycleType.RECOMPOSITION
+        )
+    }
     var startDate by remember { mutableStateOf(original?.startDate ?: LocalDate.now()) }
     var endDate by remember { mutableStateOf(original?.endDate) }
     var makeActive by remember { mutableStateOf(original?.isActive ?: (original == null)) }
@@ -1300,8 +1344,8 @@ fun CycleEditorDialog(
 
     val startVal = startingWeightStr.replace(',', '.').toDoubleOrNull()
     val targetVal = targetWeightStr.replace(',', '.').toDoubleOrNull()
-    val isTargetInvalid = cycleType == CycleType.FAT_LOSS_BODYBUILDING &&
-        FatLossValidation.isTargetWeightInvalid(startVal, targetVal)
+    val isTargetInvalid = true &&
+        FatLossValidation.isTargetWeightInvalidForSubcycle(startVal, targetVal, subcycleType)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1346,7 +1390,23 @@ fun CycleEditorDialog(
                 }
 
                 // If FAT_LOSS_BODYBUILDING: Render Body Weight Goals and Fast/Rest Day Selectors
-                if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Weight Subcycle Regime", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        WeightSubcycleType.entries.forEach { option ->
+                            FilterChip(
+                                selected = subcycleType == option,
+                                onClick = { subcycleType = option },
+                                label = { Text(option.label, style = MaterialTheme.typography.labelSmall, maxLines = 1) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+                run {
                     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
                         Column(
                             modifier = Modifier
@@ -1416,6 +1476,8 @@ fun CycleEditorDialog(
                         }
                     }
 
+                }
+                if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
                     val daysOfWeek = listOf(
                         DayOfWeek.MONDAY,
                         DayOfWeek.TUESDAY,
@@ -1898,15 +1960,15 @@ fun CycleEditorDialog(
             TextButton(
                 enabled = name.isNotBlank() && !isTargetInvalid,
                 onClick = {
-                    val finalStartWeight = if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
+                    val finalStartWeight = if (true) {
                         startingWeightStr.replace(',', '.').toDoubleOrNull()
                     } else null
 
-                    val finalTargetWeight = if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
+                    val finalTargetWeight = if (true) {
                         targetWeightStr.replace(',', '.').toDoubleOrNull()
                     } else null
 
-                    val finalIsAutoDerived = if (cycleType == CycleType.FAT_LOSS_BODYBUILDING) {
+                    val finalIsAutoDerived = if (true) {
                         isBaselineAutoDerived && finalStartWeight != null
                     } else false
 
@@ -1914,7 +1976,7 @@ fun CycleEditorDialog(
                         name = name.trim(),
                         startDate = startDate,
                         endDate = endDate,
-                        goal = goal.trim(),
+                        goal = Cycle.encodeSubcycleMetadata(goal.trim(), subcycleType),
                         type = cycleType,
                         fastDaysOfWeek = fastDaysOfWeek,
                         restDaysOfWeek = restDaysOfWeek,

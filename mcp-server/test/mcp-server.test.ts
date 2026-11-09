@@ -459,6 +459,66 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     const logPayload = JSON.parse(logResp.result.content[0].text);
     assert.equal(logPayload.dailyLog.fastCompleted, true);
     assert.equal(logPayload.dailyLog.proteinGrams, 185);
+
+    // 5. Verify get_weight_momentum_analytics (linear interpolation + 3:4:2:1 composite)
+    await callMcp({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "tools/call",
+      params: {
+        name: "upsert_weight_entry",
+        arguments: {
+          date: "2026-10-30",
+          weightKg: 80.0,
+        },
+      },
+    });
+    await callMcp({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: {
+        name: "upsert_weight_entry",
+        arguments: {
+          date: "2026-11-06",
+          weightKg: 76.5,
+        },
+      },
+    });
+
+    const momentumResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "tools/call",
+      params: {
+        name: "get_weight_momentum_analytics",
+        arguments: {
+          subcycleType: "WEIGHT_LOSS",
+          cycleName: "Autumn Cut",
+          cycleStartDate: "2026-10-30",
+          cycleFinishDate: "2026-12-25",
+          includeDailyTimeline: true,
+        },
+      },
+    });
+    const momentumPayload = JSON.parse(momentumResp.result.content[0].text);
+    assert.equal(momentumPayload.cycle_metadata.cycle_name, "Autumn Cut");
+    assert.equal(momentumPayload.cycle_metadata.subcycle_type, "WEIGHT_LOSS");
+    assert.equal(momentumPayload.cycle_metadata.calibration_complete, true);
+    assert.equal(momentumPayload.cycle_metadata.total_timeline_days, 8);
+    assert.equal(momentumPayload.target_corridor.min_weekly_pct, -1.5);
+    assert.equal(momentumPayload.target_corridor.max_weekly_pct, -0.5);
+    assert.equal(momentumPayload.daily_timeline.length, 8);
+    assert.equal(momentumPayload.daily_timeline[0].source, "REAL");
+    assert.equal(momentumPayload.daily_timeline[0].weight_kg, 80.0);
+    assert.equal(momentumPayload.daily_timeline[1].source, "THEORETICAL");
+    assert.equal(momentumPayload.daily_timeline[1].weight_kg, 79.5);
+    assert.equal(momentumPayload.daily_timeline[7].source, "REAL");
+    assert.equal(momentumPayload.daily_timeline[7].weight_kg, 76.5);
+    assert.equal(momentumPayload.horizons["7d"].avg_kg, 78.0);
+    assert.equal(momentumPayload.horizons["14d"].avg_kg, 78.25);
+    assert.ok(momentumPayload.weekly_body_weight_composite.current_kg > 0);
+    assert.ok(momentumPayload.projected_finish_weight.min_kg < momentumPayload.projected_finish_weight.max_kg);
   });
 
   it("triggers billing kill-switch when costAmount >= budgetAmount", async () => {

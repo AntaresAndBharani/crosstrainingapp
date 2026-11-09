@@ -215,6 +215,283 @@ export const UpsertDailyLogInputSchema = {
   notes: z.string().max(1000).optional().describe("Nutrition, recovery, or sleep notes"),
 };
 
+export const WeightSubcycleTypeValues = [
+  "WEIGHT_LOSS",
+  "RECOMPOSITION",
+  "WEIGHT_GAIN",
+] as const;
+
+export type WeightSubcycleType = (typeof WeightSubcycleTypeValues)[number];
+
+const weightSubcycleTypeSchema = () =>
+  z
+    .enum(WeightSubcycleTypeValues)
+    .describe("Active subcycle regime: WEIGHT_LOSS (-1.50% to -0.50%/wk), RECOMPOSITION (-0.50% to +0.25%/wk), or WEIGHT_GAIN (+0.25% to +1.50%/wk)");
+
+export const GetWeightMomentumAnalyticsInputSchema = {
+  subcycleType: weightSubcycleTypeSchema().optional().describe("Subcycle regime (defaults to RECOMPOSITION)"),
+  cycleName: z.string().max(200).optional().describe("Optional cycle name (defaults to 'Active Cycle')"),
+  cycleStartDate: isoDateSchema().optional().describe("Optional cycle start date in YYYY-MM-DD"),
+  cycleFinishDate: isoDateSchema().optional().describe("Optional cycle finish date in YYYY-MM-DD"),
+  asOfDate: isoDateSchema().optional().describe("Optional evaluation anchor date in YYYY-MM-DD"),
+  includeDailyTimeline: z.boolean().optional().describe("Whether to include the interpolated daily REAL/THEORETICAL timeline in the response"),
+};
+
+export interface DailyInterpolatedWeightPoint {
+  date: string;
+  weightKg: number;
+  source: "REAL" | "THEORETICAL";
+  dayIndexFromFirstReal: number;
+}
+
+const SUBCYCLE_CORRIDORS: Record<WeightSubcycleType, { minPct: number; maxPct: number }> = {
+  WEIGHT_LOSS: { minPct: -1.5, maxPct: -0.5 },
+  RECOMPOSITION: { minPct: -0.5, maxPct: 0.25 },
+  WEIGHT_GAIN: { minPct: 0.25, maxPct: 1.5 },
+};
+
+function addDaysIso(isoDate: string, days: number): string {
+  const ms = Date.parse(`${isoDate}T00:00:00Z`) + days * 86_400_000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function diffDaysIso(fromIso: string, toIso: string): number {
+  const fromMs = Date.parse(`${fromIso}T00:00:00Z`);
+  const toMs = Date.parse(`${toIso}T00:00:00Z`);
+  return Math.round((toMs - fromMs) / 86_400_000);
+}
+
+function roundTo(val: number, decimals: number): number {
+  const factor = Math.pow(10, decimals);
+  return Math.round(val * factor) / factor;
+}
+
+function classifyZone(momentumPct: number): string {
+  if (momentumPct < -1.5) return "POSSIBLE_MUSCLE_LOSS";
+  if (momentumPct < -0.5) return "WEIGHT_LOSS";
+  if (momentumPct <= 0.25) return "RECOMPOSITION";
+  if (momentumPct <= 1.5) return "WEIGHT_GAIN";
+  return "EXCESSIVE_WEIGHT_GAIN";
+}
+
+function classifyStatus(
+  momentumPct: number | null,
+  subcycleType: WeightSubcycleType
+): string {
+  if (momentumPct === null) return "CALIBRATING";
+  if (momentumPct < -1.5) return "POSSIBLE_MUSCLE_LOSS";
+  if (momentumPct > 1.5) return "EXCESSIVE_WEIGHT_GAIN";
+  const corridor = SUBCYCLE_CORRIDORS[subcycleType];
+  if (momentumPct < corridor.minPct) return "BELOW_CORRIDOR";
+  if (momentumPct > corridor.maxPct) return "ABOVE_CORRIDOR";
+  return "ON_TARGET";
+}
+
+/**
+ * Pure deterministic multi-horizon (7D/14D/21D/28D) and 3:4:2:1 Weekly Body Weight momentum
+ * analytics engine matching Android FatLossAnalytics.computeCycleMomentumState().
+ */
+export function computeWeightMomentumAnalytics(
+  entries: Array<{ date?: string | number; isoDate?: string; weightKg: number; isDeleted?: boolean }>,
+  options: {
+    subcycleType?: WeightSubcycleType;
+    cycleName?: string;
+    cycleStartDate?: string;
+    cycleFinishDate?: string;
+    asOfDate?: string;
+    includeDailyTimeline?: boolean;
+  } = {}
+) {
+  const subcycleType: WeightSubcycleType = options.subcycleType ?? "RECOMPOSITION";
+  const cycleName = options.cycleName ?? "Active Cycle";
+  const corridor = SUBCYCLE_CORRIDORS[subcycleType];
+
+  const validMap = new Map<string, number>();
+  for (const e of entries) {
+    const resolvedDate = typeof e.isoDate === "string" ? e.isoDate : String(e.date ?? "");
+    if (!e.isDeleted && e.weightKg > 0 && isValidIsoDate(resolvedDate)) {
+      validMap.set(resolvedDate, e.weightKg);
+    }
+  }
+  const realPoints = Array.from(validMap.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, weightKg]) => ({ date, weightKg }));
+
+  const firstRealDate = realPoints[0]?.date ?? options.asOfDate ?? new Date().toISOString().slice(0, 10);
+  const lastRealDate = realPoints[realPoints.length - 1]?.date ?? firstRealDate;
+  const effectiveAsOf =
+    options.asOfDate && options.asOfDate > lastRealDate ? options.asOfDate : lastRealDate;
+
+  const dailyPoints: DailyInterpolatedWeightPoint[] = [];
+  if (realPoints.length > 0) {
+    let dayIndex = 1;
+    for (let i = 0; i < realPoints.length; i++) {
+      const a = realPoints[i];
+      dailyPoints.push({
+        date: a.date,
+        weightKg: a.weightKg,
+        source: "REAL",
+        dayIndexFromFirstReal: dayIndex++,
+      });
+      if (i < realPoints.length - 1) {
+        const b = realPoints[i + 1];
+        const deltaT = diffDaysIso(a.date, b.date);
+        for (let k = 1; k < deltaT; k++) {
+          const interpWeight = a.weightKg + (k * (b.weightKg - a.weightKg)) / deltaT;
+          dailyPoints.push({
+            date: addDaysIso(a.date, k),
+            weightKg: interpWeight,
+            source: "THEORETICAL",
+            dayIndexFromFirstReal: dayIndex++,
+          });
+        }
+      }
+    }
+    const lastReal = realPoints[realPoints.length - 1];
+    const trailingDays = diffDaysIso(lastReal.date, effectiveAsOf);
+    for (let k = 1; k <= trailingDays; k++) {
+      dailyPoints.push({
+        date: addDaysIso(lastReal.date, k),
+        weightKg: lastReal.weightKg,
+        source: "THEORETICAL",
+        dayIndexFromFirstReal: dayIndex++,
+      });
+    }
+  }
+
+  const snapshots = dailyPoints.map((pt, idx) => {
+    const windowAvg = (n: number) => {
+      const count = Math.min(idx + 1, n);
+      let sum = 0;
+      for (let j = idx - count + 1; j <= idx; j++) {
+        sum += dailyPoints[j].weightKg;
+      }
+      return sum / count;
+    };
+    const avg7d = windowAvg(7);
+    const avg14d = windowAvg(14);
+    const avg21d = windowAvg(21);
+    const avg28d = windowAvg(28);
+    const weeklyComposite = (3 * avg7d + 4 * avg14d + 2 * avg21d + 1 * avg28d) / 10;
+    return {
+      ...pt,
+      avg7d,
+      avg14d,
+      avg21d,
+      avg28d,
+      weeklyComposite,
+    };
+  });
+
+  const totalTimelineDays = snapshots.length;
+  const calibrationDay = Math.min(totalTimelineDays, 8);
+  const calibrationComplete = totalTimelineDays >= 8;
+
+  const startDate = options.cycleStartDate ?? firstRealDate;
+  const finishDate = options.cycleFinishDate ?? addDaysIso(effectiveAsOf, 56);
+  const daysRemaining = Math.max(0, diffDaysIso(effectiveAsOf, finishDate));
+  const weeksRemaining = roundTo(daysRemaining / 7, 2);
+
+  const latest = snapshots[snapshots.length - 1];
+  const prev7 = snapshots.length >= 8 ? snapshots[snapshots.length - 8] : undefined;
+
+  const currentCompositeKg = latest ? roundTo(latest.weeklyComposite, 2) : null;
+  const prevCompositeKg = prev7 ? roundTo(prev7.weeklyComposite, 2) : null;
+  const compositeRateKg =
+    latest && prev7 ? roundTo(latest.weeklyComposite - prev7.weeklyComposite, 2) : null;
+  const compositeMomentumPct =
+    latest && prev7 && prev7.weeklyComposite > 0
+      ? roundTo(((latest.weeklyComposite - prev7.weeklyComposite) / prev7.weeklyComposite) * 100, 2)
+      : null;
+
+  const minWeeklyKg =
+    latest ? roundTo(latest.weeklyComposite * (corridor.minPct / 100), 2) : null;
+  const maxWeeklyKg =
+    latest ? roundTo(latest.weeklyComposite * (corridor.maxPct / 100), 2) : null;
+
+  const projectedMinKg =
+    latest
+      ? roundTo(latest.weeklyComposite * Math.pow(1 + corridor.minPct / 100, daysRemaining / 7), 1)
+      : null;
+  const projectedMaxKg =
+    latest
+      ? roundTo(latest.weeklyComposite * Math.pow(1 + corridor.maxPct / 100, daysRemaining / 7), 1)
+      : null;
+
+  function buildHorizon(
+    currVal: number | undefined,
+    prevVal: number | undefined
+  ) {
+    if (currVal === undefined) {
+      return {
+        avg_kg: null,
+        rate_kg_wk: null,
+        momentum_pct_wk: null,
+        status: "CALIBRATING",
+      };
+    }
+    const rate = prevVal !== undefined ? roundTo(currVal - prevVal, 2) : null;
+    const pct =
+      prevVal !== undefined && prevVal > 0
+        ? roundTo(((currVal - prevVal) / prevVal) * 100, 2)
+        : null;
+    return {
+      avg_kg: roundTo(currVal, 2),
+      rate_kg_wk: rate,
+      momentum_pct_wk: pct,
+      status: classifyStatus(pct, subcycleType),
+    };
+  }
+
+  return {
+    cycle_metadata: {
+      cycle_name: cycleName,
+      subcycle_type: subcycleType,
+      start_date: startDate,
+      finish_date: finishDate,
+      weeks_remaining: weeksRemaining,
+      calibration_complete: calibrationComplete,
+      calibration_day: calibrationDay,
+      total_timeline_days: totalTimelineDays,
+    },
+    target_corridor: {
+      min_weekly_pct: corridor.minPct,
+      max_weekly_pct: corridor.maxPct,
+      min_weekly_kg: minWeeklyKg,
+      max_weekly_kg: maxWeeklyKg,
+    },
+    projected_finish_weight: {
+      min_kg: projectedMinKg,
+      max_kg: projectedMaxKg,
+    },
+    weekly_body_weight_composite: {
+      formula_weights: { "7d": 3, "14d": 4, "21d": 2, "28d": 1 },
+      current_kg: currentCompositeKg,
+      previous_week_kg: prevCompositeKg,
+      weekly_rate_kg: compositeRateKg,
+      weekly_momentum_pct: compositeMomentumPct,
+      status: classifyStatus(compositeMomentumPct, subcycleType),
+      zone: compositeMomentumPct !== null ? classifyZone(compositeMomentumPct) : null,
+    },
+    horizons: {
+      "7d": buildHorizon(latest?.avg7d, prev7?.avg7d),
+      "14d": buildHorizon(latest?.avg14d, prev7?.avg14d),
+      "21d": buildHorizon(latest?.avg21d, prev7?.avg21d),
+      "28d": buildHorizon(latest?.avg28d, prev7?.avg28d),
+    },
+    ...(options.includeDailyTimeline
+      ? {
+          daily_timeline: dailyPoints.map((pt) => ({
+            date: pt.date,
+            weight_kg: roundTo(pt.weightKg, 2),
+            source: pt.source,
+            day_index: pt.dayIndexFromFirstReal,
+          })),
+        }
+      : {}),
+  };
+}
+
 export const ListDateRangeInputSchema = {
   startDate: isoDateSchema().optional().describe("Start date filter (YYYY-MM-DD, inclusive)"),
   endDate: isoDateSchema().optional().describe("End date filter (YYYY-MM-DD, inclusive)"),

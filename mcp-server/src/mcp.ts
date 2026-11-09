@@ -5,6 +5,8 @@ import {
   DeleteRoutineInputSchema,
   DeleteSessionInputSchema,
   DeleteWeightEntryInputSchema,
+  GetWeightMomentumAnalyticsInputSchema,
+  computeWeightMomentumAnalytics,
   ListDateRangeInputSchema,
   ListSessionsInputSchema,
   RecordRepMaxInputSchema,
@@ -205,6 +207,25 @@ export function createCrossTrainingMcpServer(
 
   // ==========================================================================
   // 6. Body Weight Tracking
+  // ==========================================================================
+
+  server.tool(
+    "get_weight_momentum_analytics",
+    "Compute multi-horizon (7D/14D/21D/28D) moving averages, 3:4:2:1 Weekly Body Weight composite, weekly momentum %, subcycle corridor status, and projected finish weight window",
+    GetWeightMomentumAnalyticsInputSchema,
+    async (args) => {
+      const entries = await domain.listWeightEntries(getUserContext(), {});
+      const analytics = computeWeightMomentumAnalytics(entries, {
+        subcycleType: args.subcycleType,
+        cycleName: args.cycleName,
+        cycleStartDate: args.cycleStartDate,
+        cycleFinishDate: args.cycleFinishDate,
+        asOfDate: args.asOfDate,
+        includeDailyTimeline: args.includeDailyTimeline,
+      });
+      return jsonResult(analytics);
+    }
+  );
   // ==========================================================================
 
   server.tool(

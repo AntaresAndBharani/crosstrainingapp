@@ -6,6 +6,7 @@ import com.fractanomics.crosstraining.data.model.BlockWithSets
 import com.fractanomics.crosstraining.data.model.Cycle
 import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.CycleType
+import com.fractanomics.crosstraining.data.model.WeightSubcycleType
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
@@ -1236,5 +1237,62 @@ class CyclesScreenTest {
             topPaddingPx = 24
         )
         assertEquals(576, offsetWhenTallerThanViewport)
+    }
+
+    @Test
+    fun feature016_cycleSubcycleMetadataEncodingDecodingAndValidation() {
+        val start = LocalDate.of(2026, 10, 1)
+
+        // 1. Explicit subcycleType in secondary constructor encodes [subcycle=...] and preserves cleanGoal
+        val cycle = Cycle(
+            id = 1L,
+            name = "Strength Recomp",
+            startDate = start,
+            goal = "Olympic lifting focus",
+            type = CycleType.STRENGTH_WEIGHTLIFTING,
+            subcycleType = WeightSubcycleType.RECOMPOSITION
+        )
+        assertTrue(cycle.hasExplicitSubcycleType)
+        assertEquals(WeightSubcycleType.RECOMPOSITION, cycle.subcycleType)
+        assertEquals("Olympic lifting focus", cycle.cleanGoal)
+        assertEquals("[subcycle=RECOMPOSITION] Olympic lifting focus", cycle.goal)
+
+        // 2. Switching subcycleType via withSubcycleType updates subcycleType and keeps cleanGoal intact
+        val switchedToGain = cycle.withSubcycleType(WeightSubcycleType.WEIGHT_GAIN)
+        assertEquals(WeightSubcycleType.WEIGHT_GAIN, switchedToGain.subcycleType)
+        assertEquals("Olympic lifting focus", switchedToGain.cleanGoal)
+
+        // 3. Default inference when no explicit [subcycle=...] tag is present
+        val legacyLoss = Cycle(
+            id = 2L,
+            name = "Legacy Cut",
+            startDate = start,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            startingWeightKg = 82.0,
+            targetWeightKg = 76.0
+        )
+        assertFalse(legacyLoss.hasExplicitSubcycleType)
+        assertEquals(WeightSubcycleType.WEIGHT_LOSS, legacyLoss.subcycleType)
+
+        val legacyGain = Cycle(
+            id = 3L,
+            name = "Legacy Bulk",
+            startDate = start,
+            type = CycleType.STRENGTH_WEIGHTLIFTING,
+            startingWeightKg = 76.0,
+            targetWeightKg = 80.0
+        )
+        assertEquals(WeightSubcycleType.WEIGHT_GAIN, legacyGain.subcycleType)
+
+        // 4. Target weight validation per subcycle type
+        assertTrue(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 82.0, WeightSubcycleType.WEIGHT_LOSS))
+        assertFalse(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 76.0, WeightSubcycleType.WEIGHT_LOSS))
+        assertTrue(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 78.0, WeightSubcycleType.WEIGHT_GAIN))
+        assertFalse(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 82.0, WeightSubcycleType.WEIGHT_GAIN))
+        assertFalse(FatLossValidation.isTargetWeightInvalidForSubcycle(80.0, 80.0, WeightSubcycleType.RECOMPOSITION))
+        // Closed by existing trailing parenthesis and braces below:
+        //         )
+        //     }
+        // }
     }
 }
