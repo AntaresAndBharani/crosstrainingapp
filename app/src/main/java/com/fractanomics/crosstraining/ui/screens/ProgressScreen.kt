@@ -3397,7 +3397,7 @@ internal fun CycleMomentumEstimationsCard(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SubcycleTypePickerBottomSheet(
     currentSubcycleType: WeightSubcycleType,
@@ -3491,21 +3491,22 @@ fun SubcycleTypePickerBottomSheet(
                                     }
                                 }
                             } else {
-                                Row(
+                                // FlowRow (not a weighted Row + ellipsis): on 360dp at 1.0x-1.3x the
+                                // "Recomposition" title + pill exceed the ~234dp column, so the pill wraps
+                                // beneath the full title instead of truncating it.
+                                FlowRow(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Text(
                                         text = candidateType.label,
-                                        modifier = Modifier.weight(1f, fill = false),
+                                        modifier = Modifier.align(Alignment.CenterVertically),
                                         style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        fontWeight = FontWeight.Bold
                                     )
-                                    Spacer(modifier = Modifier.width(8.dp))
                                     Surface(
+                                        modifier = Modifier.align(Alignment.CenterVertically),
                                         shape = RoundedCornerShape(999.dp),
                                         color = badgeFill
                                     ) {

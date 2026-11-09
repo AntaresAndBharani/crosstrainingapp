@@ -3607,6 +3607,14 @@ object FatLossAnalytics {
     const val GLOBAL_SUBOPTIMAL_GAIN_CEILING_PCT = 0.75
 
     /**
+     * Rounds a weekly momentum percentage to the displayed 2-decimal precision (`%.2f%%/wk`) before
+     * zone/diagnostic classification, so a reading rendered as `-0.25%/wk` can never be flagged as
+     * outside a `-0.25%` corridor bound (and matches the MCP server, which classifies the rounded value).
+     */
+    internal fun displayedMomentumPct(momentumPct: Double): Double =
+        if (momentumPct.isFinite()) round2(momentumPct) else momentumPct
+
+    /**
      * Classifies a weekly momentum percentage into its universal 5-zone physiological [MomentumZone]:
      * - `< -1.00%` -> [MomentumZone.POSSIBLE_MUSCLE_LOSS]
      * - `[-1.00%, -0.25%)` -> [MomentumZone.FAT_LOSS]
@@ -3616,11 +3624,12 @@ object FatLossAnalytics {
      */
     fun classifyMomentumZone(momentumPct: Double?): MomentumZone {
         if (momentumPct == null) return MomentumZone.CALIBRATING
+        val pct = displayedMomentumPct(momentumPct)
         return when {
-            momentumPct < GLOBAL_MUSCLE_LOSS_FLOOR_PCT -> MomentumZone.POSSIBLE_MUSCLE_LOSS
-            momentumPct < -0.25 -> MomentumZone.FAT_LOSS
-            momentumPct <= 0.25 -> MomentumZone.RECOMPOSITION
-            momentumPct <= GLOBAL_SUBOPTIMAL_GAIN_CEILING_PCT -> MomentumZone.MUSCLE_GAIN
+            pct < GLOBAL_MUSCLE_LOSS_FLOOR_PCT -> MomentumZone.POSSIBLE_MUSCLE_LOSS
+            pct < -0.25 -> MomentumZone.FAT_LOSS
+            pct <= 0.25 -> MomentumZone.RECOMPOSITION
+            pct <= GLOBAL_SUBOPTIMAL_GAIN_CEILING_PCT -> MomentumZone.MUSCLE_GAIN
             else -> MomentumZone.SUBOPTIMAL_MUSCLE_GAIN
         }
     }
@@ -3646,8 +3655,11 @@ object FatLossAnalytics {
             )
         }
 
+        // Classify on the displayed 2-decimal value so the badge always agrees with the rendered %/wk.
+        val pct = displayedMomentumPct(momentumPct)
+
         // 1. Global Universal Safety Bounds (evaluated first across all subcycles)
-        if (momentumPct < GLOBAL_MUSCLE_LOSS_FLOOR_PCT) {
+        if (pct < GLOBAL_MUSCLE_LOSS_FLOOR_PCT) {
             val status = CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS
             return CorridorDiagnosticResult(
                 status = status,
@@ -3656,7 +3668,7 @@ object FatLossAnalytics {
                 diagnosticMessage = status.defaultDiagnosticMessage
             )
         }
-        if (momentumPct > GLOBAL_SUBOPTIMAL_GAIN_CEILING_PCT) {
+        if (pct > GLOBAL_SUBOPTIMAL_GAIN_CEILING_PCT) {
             val status = CorridorComplianceStatus.SUBOPTIMAL_MUSCLE_GAIN
             return CorridorDiagnosticResult(
                 status = status,
@@ -3669,18 +3681,18 @@ object FatLossAnalytics {
         // 2. Subcycle-Specific Strict Inequality Rules (-1.00% <= Mom <= +0.75%)
         val status = when (subcycleType) {
             WeightSubcycleType.FAT_LOSS -> when {
-                momentumPct <= -0.25 -> CorridorComplianceStatus.ON_TARGET
-                momentumPct < 0.00 -> CorridorComplianceStatus.SLOW_FAT_LOSS_PACE
+                pct <= -0.25 -> CorridorComplianceStatus.ON_TARGET
+                pct < 0.00 -> CorridorComplianceStatus.SLOW_FAT_LOSS_PACE
                 else -> CorridorComplianceStatus.OUT_OF_FAT_LOSS_RANGE
             }
             WeightSubcycleType.RECOMPOSITION -> when {
-                momentumPct < -0.25 -> CorridorComplianceStatus.WARNING_FAT_LOSS_PHASE
-                momentumPct <= 0.25 -> CorridorComplianceStatus.ON_TARGET
+                pct < -0.25 -> CorridorComplianceStatus.WARNING_FAT_LOSS_PHASE
+                pct <= 0.25 -> CorridorComplianceStatus.ON_TARGET
                 else -> CorridorComplianceStatus.WARNING_MUSCLE_GAIN_PHASE
             }
             WeightSubcycleType.MUSCLE_GAIN -> when {
-                momentumPct <= 0.00 -> CorridorComplianceStatus.OUT_OF_MUSCLE_GAIN_RANGE
-                momentumPct < 0.25 -> CorridorComplianceStatus.SLOW_MUSCLE_GAIN_PACE
+                pct <= 0.00 -> CorridorComplianceStatus.OUT_OF_MUSCLE_GAIN_RANGE
+                pct < 0.25 -> CorridorComplianceStatus.SLOW_MUSCLE_GAIN_PACE
                 else -> CorridorComplianceStatus.ON_TARGET
             }
         }

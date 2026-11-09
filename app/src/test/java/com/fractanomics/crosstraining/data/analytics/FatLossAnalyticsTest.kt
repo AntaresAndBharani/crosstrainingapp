@@ -4899,5 +4899,32 @@ class FatLossAnalyticsTest {
         assertEquals(CorridorComplianceStatus.SUBOPTIMAL_MUSCLE_GAIN, muscleGainSuboptimal.status)
         assertEquals(MomentumSeverity.CRITICAL_RED, muscleGainSuboptimal.severity)
         assertEquals("Suboptimal muscle gain", muscleGainSuboptimal.badgeLabel)
+
+        // 4. Classification uses the displayed 2-decimal momentum (rendered as %.2f%%/wk), so a reading
+        //    shown as "-0.25%/wk" or "-1.00%/wk" never contradicts its badge (MCP server parity).
+        assertEquals("-0.25%", FatLossAnalytics.formatSignedPercentage(-0.2549))
+        assertEquals(
+            CorridorComplianceStatus.ON_TARGET,
+            FatLossAnalytics.evaluateCorridorDiagnostic(-0.2549, WeightSubcycleType.RECOMPOSITION).status
+        )
+        assertEquals(MomentumZone.RECOMPOSITION, FatLossAnalytics.classifyMomentumZone(-0.2549))
+        assertEquals(
+            CorridorComplianceStatus.ON_TARGET,
+            FatLossAnalytics.evaluateCorridorDiagnostic(-1.004, WeightSubcycleType.FAT_LOSS).status
+        )
+        assertEquals(MomentumZone.FAT_LOSS, FatLossAnalytics.classifyMomentumZone(-1.004))
+        assertEquals(
+            CorridorComplianceStatus.POSSIBLE_MUSCLE_LOSS,
+            FatLossAnalytics.evaluateCorridorDiagnostic(-1.006, WeightSubcycleType.FAT_LOSS).status
+        )
+        assertEquals(
+            CorridorComplianceStatus.ON_TARGET,
+            FatLossAnalytics.evaluateCorridorDiagnostic(0.7549, WeightSubcycleType.MUSCLE_GAIN).status
+        )
+        assertEquals(MomentumZone.MUSCLE_GAIN, FatLossAnalytics.classifyMomentumZone(0.7549))
+        assertEquals(
+            CorridorComplianceStatus.OUT_OF_MUSCLE_GAIN_RANGE,
+            FatLossAnalytics.evaluateCorridorDiagnostic(0.0049, WeightSubcycleType.MUSCLE_GAIN).status
+        )
     }
 }
