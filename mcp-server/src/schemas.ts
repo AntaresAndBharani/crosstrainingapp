@@ -89,6 +89,26 @@ export const IsoDateSchema = isoDateSchema();
 // Tool Input Schemas (Gemini / Claude / ChatGPT Compatible — Zero $ref, Zero exclusiveMinimum)
 // ============================================================================
 
+export const ListExercisesInputSchema = {
+  category: exerciseCategorySchema()
+    .optional()
+    .describe("Optional movement category filter (BARBELL, GYMNASTICS, MACHINE, ACCESSORY, OTHER)"),
+  search: z
+    .string()
+    .max(200)
+    .optional()
+    .describe("Optional case-insensitive substring filter on exercise name"),
+};
+
+const makeExerciseUpsertItemSchema = () =>
+  z.object({
+    name: z.string().min(1).max(200).describe("Canonical exercise name, e.g. 'Back Squat' or 'Snatch'"),
+    category: exerciseCategorySchema().optional().describe("Movement category (defaults to BARBELL)"),
+    metricType: metricTypeSchema().optional().describe("Primary metric type (defaults to WEIGHT)"),
+    unit: z.string().max(20).optional().describe("Display unit, e.g. 'kg', 'cal', 'm', 'sec', 'reps'"),
+    tracksRepMax: z.boolean().optional().describe("Whether this movement tracks 1RM/3RM/5RM personal records"),
+  });
+
 export const UpsertExerciseInputSchema = {
   name: z.string().min(1).max(200).describe("Canonical exercise name, e.g. 'Back Squat' or 'Snatch'"),
   category: exerciseCategorySchema().optional().describe("Movement category (defaults to BARBELL)"),
@@ -97,69 +117,95 @@ export const UpsertExerciseInputSchema = {
   tracksRepMax: z.boolean().optional().describe("Whether this movement tracks 1RM/3RM/5RM personal records"),
 };
 
-export const RoutineBlockInputSchema = z.object({
-  name: z.string().min(1).max(300).describe("Block title, e.g. 'Snatch Waves' or 'Conditioning AMRAP'"),
-  kind: blockKindSchema().optional().describe("Block type (defaults to WEIGHTLIFTING)"),
-  format: z.string().max(200).optional().describe("Format string, e.g. 'E2MOM', 'AMRAP 12', '4 Sets'"),
-  setsCount: z.number().int().min(1).max(100).optional().describe("Number of sets in this block"),
-  targetRepsScheme: z.string().max(200).optional().describe("Target rep scheme, e.g. '5-5-3-3-1' or '10'"),
-  exerciseNames: z.array(z.string()).optional().describe("List of exercise names used in this block"),
-  notes: z.string().max(2000).optional().describe("Coaching cues, percentages, or rest instructions"),
-  section: z.string().max(100).optional().describe("Optional workout section header"),
-  subBlock: z.string().max(100).optional().describe("Optional sub-block label (e.g. 'A1', 'B')"),
-});
+export const BatchUpsertExercisesInputSchema = {
+  exercises: z
+    .array(makeExerciseUpsertItemSchema())
+    .min(1)
+    .max(100)
+    .describe("List of exercises to create or update in one atomic batch"),
+};
+
+const makeRoutineBlockInputSchema = () =>
+  z.object({
+    name: z.string().min(1).max(300).describe("Block title, e.g. 'Snatch Waves' or 'Conditioning AMRAP'"),
+    kind: blockKindSchema().optional().describe("Block type (defaults to WEIGHTLIFTING)"),
+    format: z.string().max(200).optional().describe("Format string, e.g. 'E2MOM', 'AMRAP 12', '4 Sets'"),
+    setsCount: z.number().int().min(1).max(100).optional().describe("Number of sets in this block"),
+    targetRepsScheme: z.string().max(200).optional().describe("Target rep scheme, e.g. '5-5-3-3-1' or '10'"),
+    exerciseNames: z.array(z.string()).optional().describe("List of exercise names used in this block"),
+    notes: z.string().max(2000).optional().describe("Coaching cues, percentages, or rest instructions"),
+    section: z.string().max(100).optional().describe("Optional workout section header"),
+    subBlock: z.string().max(100).optional().describe("Optional sub-block label (e.g. 'A1', 'B')"),
+  });
+
+export const RoutineBlockInputSchema = makeRoutineBlockInputSchema();
 
 export const UpsertRoutineInputSchema = {
   name: z.string().min(1).max(300).describe("Unique routine template name"),
   description: z.string().max(2000).optional().describe("Overall routine overview or stimulus notes"),
   defaultFormat: z.string().max(200).optional().describe("Default workout format, e.g. 'Strength + Metcon'"),
   mainExerciseName: z.string().max(200).optional().describe("Optional primary exercise name for this routine"),
-  blocks: z.array(RoutineBlockInputSchema).describe("Ordered list of blocks in this routine"),
+  blocks: z.array(makeRoutineBlockInputSchema()).describe("Ordered list of blocks in this routine"),
 };
 
 export const DeleteRoutineInputSchema = {
   name: z.string().min(1).max(300).describe("Exact name of the routine template to delete"),
 };
 
-export const SessionSetInputSchema = z.object({
-  reps: z.number().int().min(0).max(10000).describe("Completed or target repetitions"),
-  weight: z.number().min(0).max(2000).optional().describe("Load in kg (0 for bodyweight)"),
-  metricValue: z.number().min(0).max(100000).optional().describe("Secondary metric value (calories, meters, or seconds)"),
-  groupIndex: z.number().int().min(0).max(100).optional().describe("Wave or superset group index (default 0)"),
-  isWarmup: z.boolean().optional().describe("True if this set is a warm-up set"),
-  isFailed: z.boolean().optional().describe("True if the lift/attempt failed"),
-  notes: z.string().max(500).optional().describe("Set-specific notes (e.g. 'RPE 8', 'beltless')"),
-});
+const makeSessionSetInputSchema = () =>
+  z.object({
+    reps: z.number().int().min(0).max(10000).describe("Completed or target repetitions"),
+    weight: z.number().min(0).max(2000).optional().describe("Load in kg (0 for bodyweight)"),
+    metricValue: z.number().min(0).max(100000).optional().describe("Secondary metric value (calories, meters, or seconds)"),
+    groupIndex: z.number().int().min(0).max(100).optional().describe("Wave or superset group index (default 0)"),
+    isWarmup: z.boolean().optional().describe("True if this set is a warm-up set"),
+    isFailed: z.boolean().optional().describe("True if the lift/attempt failed"),
+    notes: z.string().max(500).optional().describe("Set-specific notes (e.g. 'RPE 8', 'beltless')"),
+  });
 
-export const SessionBlockInputSchema = z.object({
-  name: z.string().min(1).max(300).describe("Block title, e.g. 'Back Squat 5x5' or 'Fran'"),
-  kind: blockKindSchema().optional().describe("Block kind (defaults to WEIGHTLIFTING)"),
-  format: z.string().max(200).optional().describe("Format, e.g. 'E3MOM', 'For Time', 'AMRAP 15'"),
-  scheme: z.string().max(200).optional().describe("Rep scheme, e.g. '5-5-5-5-5' or '21-15-9'"),
-  mainExerciseName: z.string().max(200).optional().describe("Primary exercise name tracked in this block"),
-  exerciseNames: z.array(z.string()).optional().describe("Additional exercise names in this block"),
-  description: z.string().max(2000).optional().describe("Block movement description or WOD details"),
-  resultText: z.string().max(200).optional().describe("Formatted WOD score, e.g. '8:45' or '5 rounds + 12 reps'"),
-  resultValue: z.number().optional().describe("Numeric result score for sorting/analytics"),
-  notes: z.string().max(2000).optional().describe("Block coaching or execution notes"),
-  section: z.string().max(100).optional().describe("Optional workout section"),
-  subBlock: z.string().max(100).optional().describe("Optional sub-block code (e.g. 'A', 'B1')"),
-  isCompleted: z.boolean().optional().describe("Whether this block has been completed (defaults to true)"),
-  sets: z.array(SessionSetInputSchema).optional().describe("Ordered list of sets within this block"),
-});
+const makeSessionBlockInputSchema = () =>
+  z.object({
+    name: z.string().min(1).max(300).describe("Block title, e.g. 'Back Squat 5x5' or 'Fran'"),
+    kind: blockKindSchema().optional().describe("Block kind (defaults to WEIGHTLIFTING)"),
+    format: z.string().max(200).optional().describe("Format, e.g. 'E3MOM', 'For Time', 'AMRAP 15'"),
+    scheme: z.string().max(200).optional().describe("Rep scheme, e.g. '5-5-5-5-5' or '21-15-9'"),
+    mainExerciseName: z.string().max(200).optional().describe("Primary exercise name tracked in this block"),
+    exerciseNames: z.array(z.string()).optional().describe("Additional exercise names in this block"),
+    description: z.string().max(2000).optional().describe("Block movement description or WOD details"),
+    resultText: z.string().max(200).optional().describe("Formatted WOD score, e.g. '8:45' or '5 rounds + 12 reps'"),
+    resultValue: z.number().optional().describe("Numeric result score for sorting/analytics"),
+    notes: z.string().max(2000).optional().describe("Block coaching or execution notes"),
+    section: z.string().max(100).optional().describe("Optional workout section"),
+    subBlock: z.string().max(100).optional().describe("Optional sub-block code (e.g. 'A', 'B1')"),
+    isCompleted: z.boolean().optional().describe("Whether this block has been completed (defaults to true)"),
+    sets: z.array(makeSessionSetInputSchema()).optional().describe("Ordered list of sets within this block"),
+  });
+
+export const SessionSetInputSchema = makeSessionSetInputSchema();
+export const SessionBlockInputSchema = makeSessionBlockInputSchema();
 
 export const UpsertSessionInputSchema = {
   date: isoDateSchema().describe("Workout date in YYYY-MM-DD format"),
   title: z.string().min(1).max(300).describe("Session title, e.g. 'Lower Body Strength' or 'Monday Session'"),
   notes: z.string().max(2000).optional().describe("Overall session notes, readiness, or feedback"),
-  cycleId: z.number().int().min(0).optional().describe("Cycle ID (defaults to 1 for active cycle)"),
+  cycleId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional training cycle ID (omit to automatically use the active cycle)"),
   cycleName: z.string().max(200).optional().describe("Optional training cycle name"),
-  blocks: z.array(SessionBlockInputSchema).describe("Ordered blocks and sets for the workout session"),
+  blocks: z.array(makeSessionBlockInputSchema()).describe("Ordered blocks and sets for the workout session"),
 };
 
 export const ListSessionsInputSchema = {
   startDate: isoDateSchema().optional().describe("Optional start date filter (YYYY-MM-DD, inclusive)"),
   endDate: isoDateSchema().optional().describe("Optional end date filter (YYYY-MM-DD, inclusive)"),
+  cycleId: z.number().int().min(1).optional().describe("Optional cycle ID filter"),
+  activeCycleOnly: z
+    .boolean()
+    .optional()
+    .describe("When true, returns only sessions belonging to the user's active cycle"),
   limit: z.number().int().min(1).max(200).optional().describe("Max sessions to return (default 30)"),
 };
 
@@ -168,22 +214,125 @@ export const DeleteSessionInputSchema = {
   title: z.string().min(1).max(300).describe("Exact title of the workout session to delete"),
 };
 
+export const ListCycleGoalsInputSchema = {
+  cycleId: z.number().int().min(1).optional().describe("Optional cycle ID filter"),
+  activeCycleOnly: z
+    .boolean()
+    .optional()
+    .describe("When true, returns only goals belonging to the user's active cycle"),
+};
+
 export const UpsertCycleGoalInputSchema = {
   exerciseName: z.string().min(1).max(200).describe("Target exercise name, e.g. 'Snatch', 'Back Squat', 'Air Bike'"),
   goalMetric: goalMetricSchema().optional().describe("Goal metric: WEIGHT (default), CALORIES, or REPS"),
-  targetReps: z.number().int().min(1).max(100).optional().describe("Rep max target when goalMetric is WEIGHT (e.g. 1 for 1RM, 5 for 5RM)"),
-  timeWindowMinutes: z.number().int().min(1).max(60).optional().describe("Time window in minutes (1, 3, or 5) for CALORIES/REPS goals; omit for Open"),
+  targetReps: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("Rep max target when goalMetric is WEIGHT (e.g. 1 for 1RM, 3 for 3RM, 6 for 6RM)"),
+  previousTargetReps: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      "Optional previous targetReps to atomically replace when converting an exercise goal's RM scheme (e.g. previousTargetReps=2 and targetReps=3 converts 2RM Snatch into 3RM Snatch)"
+    ),
+  timeWindowMinutes: z
+    .number()
+    .int()
+    .min(1)
+    .max(60)
+    .optional()
+    .describe("Time window in minutes (1, 3, or 5) for CALORIES/REPS goals; omit for Open"),
   startWeight: z.number().min(0).max(2000).optional().describe("Starting baseline value (kg, cal, or reps)"),
   targetWeight: z.number().min(0).max(2000).describe("Target goal value (kg, cal, or reps)"),
   notes: z.string().max(1000).optional().describe("Goal notes or progression strategy"),
-  cycleId: z.number().int().min(1).optional().describe("Target cycle ID (defaults to 1)"),
+  cycleId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional target cycle ID (omit to automatically target the active cycle)"),
   cycleName: z.string().max(200).optional().describe("Optional cycle name to associate with this goal"),
 };
 
 export const DeleteCycleGoalInputSchema = {
   exerciseName: z.string().min(1).max(200).describe("Exercise name of the cycle goal to remove"),
-  targetReps: z.number().int().min(0).max(100).optional().describe("Optional targetReps disambiguator"),
-  cycleId: z.number().int().min(1).optional().describe("Cycle ID (defaults to 1)"),
+  targetReps: z.number().int().min(0).max(100).optional().describe("Optional targetReps disambiguator (e.g. 2 for 2RM)"),
+  cycleId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional cycle ID (omit to delete from the active cycle)"),
+};
+
+const makeCycleGoalUpsertItemSchema = () =>
+  z.object({
+    exerciseName: z.string().min(1).max(200).describe("Target exercise name, e.g. 'Snatch', 'Incline Bench Press'"),
+    goalMetric: goalMetricSchema().optional().describe("Goal metric: WEIGHT (default), CALORIES, or REPS"),
+    targetReps: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Rep max target when goalMetric is WEIGHT (e.g. 1 for 1RM, 3 for 3RM, 6 for 6RM)"),
+    previousTargetReps: z
+      .number()
+      .int()
+      .min(0)
+      .max(100)
+      .optional()
+      .describe(
+        "Optional previous targetReps to atomically replace when converting an RM goal (e.g. previousTargetReps=2, targetReps=3 converts 2RM -> 3RM in one step)"
+      ),
+    timeWindowMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(60)
+      .optional()
+      .describe("Time window in minutes for CALORIES/REPS goals; omit for Open"),
+    startWeight: z.number().min(0).max(2000).optional().describe("Starting baseline value (kg, cal, or reps)"),
+    targetWeight: z.number().min(0).max(2000).describe("Target goal value (kg, cal, or reps)"),
+    notes: z.string().max(1000).optional().describe("Optional goal notes or progression strategy"),
+  });
+
+const makeCycleGoalDeleteItemSchema = () =>
+  z.object({
+    exerciseName: z.string().min(1).max(200).describe("Exercise name of the goal to delete"),
+    targetReps: z
+      .number()
+      .int()
+      .min(0)
+      .max(100)
+      .optional()
+      .describe("Optional targetReps disambiguator (omit to delete all goals for that exercise in the target cycle)"),
+  });
+
+export const ManageCycleGoalsInputSchema = {
+  cycleId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional target cycle ID (omit to automatically target the user's active cycle)"),
+  cycleName: z.string().max(200).optional().describe("Optional target cycle name"),
+  upserts: z
+    .array(makeCycleGoalUpsertItemSchema())
+    .max(100)
+    .optional()
+    .describe("Goals to create, update, or RM-convert in one atomic call"),
+  deletes: z
+    .array(makeCycleGoalDeleteItemSchema())
+    .max(100)
+    .optional()
+    .describe("Goals to remove in the same atomic call"),
 };
 
 export const RecordRepMaxInputSchema = {
@@ -191,13 +340,55 @@ export const RecordRepMaxInputSchema = {
   reps: z.number().int().min(1).max(100).describe("Repetition count (e.g. 1 for 1RM, 3 for 3RM, 5 for 5RM)"),
   weight: z.number().min(0.1).max(2000).describe("Weight lifted in kg"),
   date: isoDateSchema().optional().describe("Date achieved in YYYY-MM-DD format (defaults to today)"),
-  cycleId: z.number().int().min(1).optional().describe("Optional training cycle ID"),
+  cycleId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional training cycle ID (omit to associate with the active cycle)"),
+};
+
+const makeRepMaxItemSchema = () =>
+  z.object({
+    exerciseName: z.string().min(1).max(200).describe("Exercise name, e.g. 'Clean & Jerk'"),
+    reps: z.number().int().min(1).max(100).describe("Repetition count (e.g. 1 for 1RM, 3 for 3RM, 5 for 5RM)"),
+    weight: z.number().min(0.1).max(2000).describe("Weight lifted in kg"),
+    date: isoDateSchema().optional().describe("Date achieved in YYYY-MM-DD format (defaults to today)"),
+    cycleId: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Optional training cycle ID (omit to associate with the active cycle)"),
+  });
+
+export const BatchRecordRepMaxesInputSchema = {
+  repMaxes: z
+    .array(makeRepMaxItemSchema())
+    .min(1)
+    .max(100)
+    .describe("Personal records (Rep Maxes) to record in one atomic batch"),
 };
 
 export const UpsertWeightEntryInputSchema = {
   date: isoDateSchema().optional().describe("Date in YYYY-MM-DD format (defaults to today)"),
   weightKg: z.number().min(0.1).max(500).describe("Body weight in kilograms"),
   notes: z.string().max(500).optional().describe("Optional weigh-in notes"),
+};
+
+const makeWeightEntryItemSchema = () =>
+  z.object({
+    date: isoDateSchema().optional().describe("Date in YYYY-MM-DD format (defaults to today)"),
+    weightKg: z.number().min(0.1).max(500).describe("Body weight in kilograms"),
+    notes: z.string().max(500).optional().describe("Optional weigh-in notes"),
+  });
+
+export const BatchUpsertWeightEntriesInputSchema = {
+  entries: z
+    .array(makeWeightEntryItemSchema())
+    .min(1)
+    .max(100)
+    .describe("Body weight entries to log or update in one atomic batch"),
 };
 
 export const DeleteWeightEntryInputSchema = {
@@ -213,6 +404,30 @@ export const UpsertDailyLogInputSchema = {
   carbsGrams: z.number().int().min(0).max(2000).optional().describe("Daily carbohydrate intake in grams"),
   fatGrams: z.number().int().min(0).max(1000).optional().describe("Daily fat intake in grams"),
   notes: z.string().max(1000).optional().describe("Nutrition, recovery, or sleep notes"),
+};
+
+const makeDailyLogItemSchema = () =>
+  z.object({
+    date: isoDateSchema().optional().describe("Date in YYYY-MM-DD format (defaults to today)"),
+    fastCompleted: z.boolean().optional().describe("Whether scheduled intermittent fast was completed"),
+    isRestDay: z.boolean().optional().describe("Whether this day is a rest/recovery day"),
+    caloriesKcal: z.number().int().min(0).max(20000).optional().describe("Total daily energy intake in kcal"),
+    proteinGrams: z.number().int().min(0).max(1000).optional().describe("Daily protein intake in grams"),
+    carbsGrams: z.number().int().min(0).max(2000).optional().describe("Daily carbohydrate intake in grams"),
+    fatGrams: z.number().int().min(0).max(1000).optional().describe("Daily fat intake in grams"),
+    notes: z.string().max(1000).optional().describe("Nutrition, recovery, or sleep notes"),
+  });
+
+export const BatchUpsertDailyLogsInputSchema = {
+  logs: z
+    .array(makeDailyLogItemSchema())
+    .min(1)
+    .max(100)
+    .describe("Daily nutrition/fasting/rest logs to create or update in one atomic batch"),
+};
+
+export const DeleteDailyLogInputSchema = {
+  date: isoDateSchema().describe("Date of the daily log entry to delete (YYYY-MM-DD)"),
 };
 
 export const WeightSubcycleTypeValues = [
@@ -636,10 +851,12 @@ export function computeWeightMomentumAnalytics(
   };
 }
 
-export const ListDateRangeInputSchema = {
+export const makeListDateRangeInputSchema = () => ({
   startDate: isoDateSchema().optional().describe("Start date filter (YYYY-MM-DD, inclusive)"),
   endDate: isoDateSchema().optional().describe("End date filter (YYYY-MM-DD, inclusive)"),
-};
+});
+
+export const ListDateRangeInputSchema = makeListDateRangeInputSchema();
 
 /**
  * Formats adaptive CycleGoal metadata header matching CycleGoal.encodeMetadata() in Android.
@@ -661,4 +878,29 @@ export function encodeCycleGoalMetadata(
       : "OPEN";
   const header = `[metric=${goalMetric},window=${windowToken}]`;
   return stripped.length === 0 ? header : `${header} ${stripped}`;
+}
+
+/**
+ * Parses CycleGoal metadata header matching CycleGoal.parseMetadata() in Android.
+ */
+export function parseCycleGoalMetadata(rawNotes?: string): {
+  goalMetric: "WEIGHT" | "CALORIES" | "REPS";
+  timeWindowMinutes?: number;
+  cleanNotes: string;
+} {
+  const input = rawNotes ?? "";
+  const match = /^\[metric=(WEIGHT|CALORIES|REPS),window=(OPEN|\d+)\]\s*(.*)$/is.exec(input);
+  if (!match) {
+    return { goalMetric: "WEIGHT", cleanNotes: input.trim() };
+  }
+  const rawMetric = match[1].toUpperCase();
+  const goalMetric: "WEIGHT" | "CALORIES" | "REPS" =
+    rawMetric === "CALORIES" ? "CALORIES" : rawMetric === "REPS" ? "REPS" : "WEIGHT";
+  const windowStr = match[2].toUpperCase();
+  const timeWindowMinutes = windowStr === "OPEN" ? undefined : Number(windowStr);
+  return {
+    goalMetric,
+    timeWindowMinutes,
+    cleanNotes: (match[3] ?? "").trim(),
+  };
 }

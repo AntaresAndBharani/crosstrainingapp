@@ -460,7 +460,15 @@ object UserCloudSyncManager {
                 try {
                     val snap = docRef.get().await()
                     val remoteList = snap.get("list") as? List<*>
-                    snap.exists() && !remoteList.isNullOrEmpty()
+                    snap.exists() && remoteList != null && remoteList.any { entry ->
+                        val map = entry as? Map<*, *> ?: return@any true
+                        val routineMap = map["routine"] as? Map<*, *>
+                        val sessionMap = map["session"] as? Map<*, *>
+                        val deletedAt = ((map["deletedAtMillis"] as? Number)
+                            ?: (routineMap?.get("deletedAtMillis") as? Number)
+                            ?: (sessionMap?.get("deletedAtMillis") as? Number))?.toLong() ?: 0L
+                        deletedAt <= 0L
+                    }
                 } catch (e: Exception) {
                     true // Fail-safe: assume populated to protect remote data
                 }
@@ -680,10 +688,12 @@ object UserCloudSyncManager {
                             // day would silently be dropped from the whole-list cloud backup.
                             val sessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
                             val sessionsPayload = sessionsWithBlocks.map { swb ->
-                                val cycleName = cyclesById[swb.session.cycleId]?.name
+                                val cycle = cyclesById[swb.session.cycleId]
+                                val cycleName = cycle?.name
                                 val sessionMap = mutableMapOf<String, Any?>(
                                     "id" to swb.session.id,
                                     "cycleId" to swb.session.cycleId,
+                                    "isActiveCycle" to (cycle?.isActive == true),
                                     "date" to swb.session.date.toString(),
                                     "title" to swb.session.title,
                                     "notes" to swb.session.notes
@@ -758,10 +768,12 @@ object UserCloudSyncManager {
                                 .distinctBy { listOf(it.cycleId, it.exerciseId, it.goalMetric.name, it.targetReps) }
                             val goalsPayload = cycleGoals.map { cg ->
                                 val exName = exercisesById[cg.exerciseId]?.name
-                                val cycName = cyclesById[cg.cycleId]?.name
+                                val cycle = cyclesById[cg.cycleId]
+                                val cycName = cycle?.name
                                 val goalMap = mutableMapOf<String, Any?>(
                                     "id" to cg.id,
                                     "cycleId" to cg.cycleId,
+                                    "isActiveCycle" to (cycle?.isActive == true),
                                     "exerciseId" to cg.exerciseId,
                                     "targetReps" to cg.targetReps,
                                     "startWeight" to cg.startWeight,
@@ -791,7 +803,8 @@ object UserCloudSyncManager {
                                 .distinctBy { listOf(it.exerciseId, it.reps, normalizeWeight(it.weight), it.date) }
                             val repMaxesPayload = repMaxes.map { rm ->
                                 val exName = exercisesById[rm.exerciseId]?.name
-                                val cycName = rm.cycleId?.let { cyclesById[it]?.name }
+                                val cycle = rm.cycleId?.let { cyclesById[it] }
+                                val cycName = cycle?.name
                                 val rmMap = mutableMapOf<String, Any?>(
                                     "id" to rm.id,
                                     "exerciseId" to rm.exerciseId,
@@ -800,6 +813,9 @@ object UserCloudSyncManager {
                                     "date" to rm.date.toString(),
                                     "cycleId" to rm.cycleId
                                 )
+                                if (rm.cycleId != null) {
+                                    rmMap["isActiveCycle"] = (cycle?.isActive == true)
+                                }
                                 if (exName != null) {
                                     rmMap["exerciseName"] = exName
                                 }
@@ -1005,17 +1021,25 @@ object UserCloudSyncManager {
                     }
                 }
 
-                // Pending remote (MCP) edits carry an updatedAtMillis stamp; see KDoc above.
+                // Pending remote (MCP) edits carry an updatedAtMillis or deletedAtMillis stamp; see KDoc above.
                 // A legacy-account migration is always a full import.
                 val importAllRemoteRecords = importUnmarkedRemoteRecords || isMigratedFromLegacy
+                fun isRemoteDeleted(map: Map<String, Any>?): Boolean =
+                    ((map?.get("deletedAtMillis") as? Number)?.toLong() ?: 0L) > 0L
+                fun effectiveRemoteTs(map: Map<String, Any>?): Long =
+                    maxOf(
+                        (map?.get("updatedAtMillis") as? Number)?.toLong() ?: 0L,
+                        (map?.get("deletedAtMillis") as? Number)?.toLong() ?: 0L
+                    )
                 fun shouldImport(map: Map<String, Any>?): Boolean =
-                    importAllRemoteRecords || map?.get("updatedAtMillis") != null
+                    importAllRemoteRecords || map?.get("updatedAtMillis") != null || isRemoteDeleted(map)
 
                 // 1. Download Exercises & Build Remote-to-Local Exercise Mapping
                 val remoteExerciseIdToLocalId = mutableMapOf<Long, Long>()
                 if (exList.isNotEmpty()) {
                     val localExercises = if (importAllRemoteRecords) emptyList() else repo.getAllExercisesOnce()
                     exList.forEach { map ->
+                        if (isRemoteDeleted(map)) return@forEach
                         val name = map["name"] as? String ?: return@forEach
                         val category = runCatching { ExerciseCategory.valueOf(map["category"] as String) }.getOrDefault(ExerciseCategory.BARBELL)
                         val metricType = runCatching { MetricType.valueOf(map["metricType"] as String) }.getOrDefault(MetricType.WEIGHT)
@@ -1087,13 +1111,13 @@ object UserCloudSyncManager {
                     return (localCycles.find { it.isActive } ?: localCycles.first()).id
                 }
 
-                // 2. Download Routines (deduplicated by normalized routine name)
+                // 2. Download Routines (deduplicated by normalized routine name, honoring MCP tombstones)
                 if (routList.isNotEmpty()) {
                     val deduplicatedRoutines = LinkedHashMap<String, Map<String, Any>>()
                     routList.forEach { rwbMap ->
                         @Suppress("UNCHECKED_CAST")
                         val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
-                        if (!shouldImport(rMap)) return@forEach
+                        if (!shouldImport(rMap) && !isRemoteDeleted(rwbMap)) return@forEach
                         val name = (rMap["name"] as? String)?.trim() ?: return@forEach
                         if (name.isEmpty()) return@forEach
                         val key = name.lowercase()
@@ -1103,8 +1127,8 @@ object UserCloudSyncManager {
                         } else {
                             @Suppress("UNCHECKED_CAST")
                             val prevRMap = existing["routine"] as? Map<String, Any>
-                            val prevTs = (prevRMap?.get("updatedAtMillis") as? Number)?.toLong() ?: 0L
-                            val newTs = (rMap["updatedAtMillis"] as? Number)?.toLong() ?: 0L
+                            val prevTs = maxOf(effectiveRemoteTs(prevRMap), effectiveRemoteTs(existing))
+                            val newTs = maxOf(effectiveRemoteTs(rMap), effectiveRemoteTs(rwbMap))
                             if (newTs >= prevTs) {
                                 deduplicatedRoutines[key] = rwbMap
                             }
@@ -1115,6 +1139,12 @@ object UserCloudSyncManager {
                         @Suppress("UNCHECKED_CAST")
                         val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
                         val name = (rMap["name"] as? String)?.trim() ?: return@forEach
+                        if (isRemoteDeleted(rMap) || isRemoteDeleted(rwbMap)) {
+                            repo.getAllRoutinesWithBlocksOnce()
+                                .filter { it.routine.name.trim().equals(name, ignoreCase = true) }
+                                .forEach { repo.deleteRoutine(it.routine) }
+                            return@forEach
+                        }
                         val description = rMap["description"] as? String ?: ""
                         val defaultFormat = rMap["defaultFormat"] as? String ?: ""
                         val mainExId = resolveLocalExerciseId(
@@ -1152,7 +1182,7 @@ object UserCloudSyncManager {
                     repo.cleanupDuplicateRoutines()
                 }
 
-                // 3. Download Cycle Goals (Deduplicate incoming & upsert in place by natural key)
+                // 3. Download Cycle Goals (Deduplicate incoming, apply MCP tombstones & upsert in place by natural key)
                 if (goalsList.isNotEmpty()) {
                     data class IncomingGoalKey(
                         val cycleId: Long,
@@ -1162,26 +1192,50 @@ object UserCloudSyncManager {
                     )
                     data class IncomingGoalCandidate(
                         val goal: CycleGoal,
-                        val updatedAtMillis: Long
+                        val effectiveTs: Long,
+                        val isDeleted: Boolean
                     )
+
+                    // Loaded on first tombstone only; a deleted goal must never create its exercise locally.
+                    var existingLocalExercisesForDeletedGoals: List<Exercise>? = null
+                    suspend fun resolveExistingExerciseIdWithoutCreating(rawId: Long?, rawName: String?): Long? {
+                        val localExercises = existingLocalExercisesForDeletedGoals
+                            ?: repo.getAllExercisesOnce().also { existingLocalExercisesForDeletedGoals = it }
+                        if (!rawName.isNullOrBlank()) {
+                            return localExercises
+                                .firstOrNull { it.name.trim().equals(rawName.trim(), ignoreCase = true) }
+                                ?.id
+                        }
+                        if (rawId != null) {
+                            return remoteExerciseIdToLocalId[rawId] ?: rawId
+                        }
+                        return null
+                    }
 
                     val deduplicatedIncomingGoals = LinkedHashMap<IncomingGoalKey, IncomingGoalCandidate>()
                     goalsList.forEach { map ->
                         if (!shouldImport(map)) return@forEach
+                        val deleted = isRemoteDeleted(map)
                         val rawCycleId = (map["cycleId"] as? Number)?.toLong()
                         val rawCycleName = map["cycleName"] as? String
                         if (rawCycleId == null && rawCycleName.isNullOrBlank()) return@forEach
+                        if (deleted && (cachedLocalCycles ?: repo.getAllCyclesOnce().also { cachedLocalCycles = it }).isEmpty()) {
+                            return@forEach
+                        }
                         val cycleId = resolveLocalCycleId(rawCycleId, rawCycleName) ?: return@forEach
-                        val exerciseId = resolveLocalExerciseId(
-                            (map["exerciseId"] as? Number)?.toLong(),
-                            map["exerciseName"] as? String
-                        ) ?: return@forEach
+                        val rawExId = (map["exerciseId"] as? Number)?.toLong()
+                        val rawExName = map["exerciseName"] as? String
+                        val exerciseId = if (deleted) {
+                            resolveExistingExerciseIdWithoutCreating(rawExId, rawExName)
+                        } else {
+                            resolveLocalExerciseId(rawExId, rawExName)
+                        } ?: return@forEach
                         val targetReps = (map["targetReps"] as? Number)?.toInt() ?: 1
                         val startWeight = (map["startWeight"] as? Number)?.toDouble() ?: 0.0
                         val targetWeight = (map["targetWeight"] as? Number)?.toDouble() ?: 0.0
                         val notes = map["notes"] as? String ?: ""
                         val goalMetric = CycleGoal.parseMetadata(notes).first
-                        val updatedAtMillis = (map["updatedAtMillis"] as? Number)?.toLong() ?: 0L
+                        val effectiveTs = effectiveRemoteTs(map)
 
                         val key = IncomingGoalKey(cycleId, exerciseId, goalMetric, targetReps)
                         val candidateGoal = CycleGoal(
@@ -1195,14 +1249,18 @@ object UserCloudSyncManager {
                         )
                         val existingCandidate = deduplicatedIncomingGoals[key]
                         if (existingCandidate == null) {
-                            deduplicatedIncomingGoals[key] = IncomingGoalCandidate(candidateGoal, updatedAtMillis)
-                        } else if (updatedAtMillis >= existingCandidate.updatedAtMillis) {
-                            val mergedGoal = candidateGoal.copy(
-                                startWeight = if (candidateGoal.startWeight > 0.0) candidateGoal.startWeight else existingCandidate.goal.startWeight,
-                                targetWeight = if (candidateGoal.targetWeight > 0.0) candidateGoal.targetWeight else existingCandidate.goal.targetWeight,
-                                notes = candidateGoal.notes.ifBlank { existingCandidate.goal.notes }
-                            )
-                            deduplicatedIncomingGoals[key] = IncomingGoalCandidate(mergedGoal, updatedAtMillis)
+                            deduplicatedIncomingGoals[key] = IncomingGoalCandidate(candidateGoal, effectiveTs, deleted)
+                        } else if (effectiveTs >= existingCandidate.effectiveTs) {
+                            if (deleted || existingCandidate.isDeleted) {
+                                deduplicatedIncomingGoals[key] = IncomingGoalCandidate(candidateGoal, effectiveTs, deleted)
+                            } else {
+                                val mergedGoal = candidateGoal.copy(
+                                    startWeight = if (candidateGoal.startWeight > 0.0) candidateGoal.startWeight else existingCandidate.goal.startWeight,
+                                    targetWeight = if (candidateGoal.targetWeight > 0.0) candidateGoal.targetWeight else existingCandidate.goal.targetWeight,
+                                    notes = candidateGoal.notes.ifBlank { existingCandidate.goal.notes }
+                                )
+                                deduplicatedIncomingGoals[key] = IncomingGoalCandidate(mergedGoal, effectiveTs, false)
+                            }
                         }
                     }
 
@@ -1216,6 +1274,13 @@ object UserCloudSyncManager {
                                 it.targetReps == incoming.targetReps
                         }
                         val existing = if (existingIndex >= 0) existingGoals[existingIndex] else null
+                        if (candidate.isDeleted) {
+                            if (existing != null) {
+                                repo.deleteCycleGoal(existing)
+                                existingGoals.removeAt(existingIndex)
+                            }
+                            return@forEach
+                        }
                         val goalToSave = incoming.copy(id = existing?.id ?: 0L)
                         val savedId = repo.saveCycleGoal(goalToSave)
                         val savedGoal = goalToSave.copy(id = savedId)
@@ -1227,7 +1292,7 @@ object UserCloudSyncManager {
                     }
                 }
 
-                // 4. Download Sessions & Logs (Workouts — Deduplicate incoming & upsert in place)
+                // 4. Download Sessions & Logs (Workouts — Deduplicate incoming, apply MCP tombstones & upsert in place)
                 if (sessList.isNotEmpty()) {
                     // Incoming natural key = (date, title, block/set content). Exact remote copies collapse,
                     // while distinct same-titled workouts logged on the same day are both preserved.
@@ -1245,8 +1310,8 @@ object UserCloudSyncManager {
                         } else {
                             @Suppress("UNCHECKED_CAST")
                             val prevSMap = existing["session"] as? Map<String, Any>
-                            val prevTs = (prevSMap?.get("updatedAtMillis") as? Number)?.toLong() ?: 0L
-                            val newTs = (sMap["updatedAtMillis"] as? Number)?.toLong() ?: 0L
+                            val prevTs = maxOf(effectiveRemoteTs(prevSMap), effectiveRemoteTs(existing))
+                            val newTs = maxOf(effectiveRemoteTs(sMap), effectiveRemoteTs(swbMap))
                             if (newTs >= prevTs) {
                                 deduplicatedSessions[key] = swbMap
                             }
@@ -1295,7 +1360,8 @@ object UserCloudSyncManager {
                         val notes = sMap["notes"] as? String ?: ""
                         val rawCycleId = (sMap["cycleId"] as? Number)?.toLong()
                         val rawCycleName = sMap["cycleName"] as? String
-                        val hasRemoteUpdateTimestamp = sMap["updatedAtMillis"] != null
+                        val deleted = isRemoteDeleted(sMap) || isRemoteDeleted(swbMap)
+                        val hasRemoteUpdateTimestamp = sMap["updatedAtMillis"] != null || deleted
 
                         val exactLocalId = exactPairByIncomingIndex[incomingIndex]
                         val existingIndex = if (exactLocalId != null) {
@@ -1309,6 +1375,13 @@ object UserCloudSyncManager {
                         }
                         val existingSession = if (existingIndex >= 0) existingSessions[existingIndex] else null
                         existingSession?.let { claimedLocalSessionIds.add(it.session.id) }
+                        if (deleted) {
+                            if (existingSession != null) {
+                                repo.deleteSession(existingSession.session)
+                                existingSessions.removeAt(existingIndex)
+                            }
+                            return@forEachIndexed
+                        }
                         // Do not resurrect a session the user deleted locally since the last upload.
                         if (existingSession == null && !shouldImport(sMap)) return@forEachIndexed
                         // Unchanged (unstamped) sessions that already exist locally need no work at all.
@@ -1613,6 +1686,8 @@ object UserCloudSyncManager {
                 routList.forEach { rwbMap ->
                     @Suppress("UNCHECKED_CAST")
                     val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
+                    if (((rMap["deletedAtMillis"] as? Number)?.toLong() ?: 0L) > 0L) return@forEach
+                    if (((rwbMap["deletedAtMillis"] as? Number)?.toLong() ?: 0L) > 0L) return@forEach
                     val name = rMap["name"] as? String ?: return@forEach
                     val description = rMap["description"] as? String ?: ""
                     val defaultFormat = rMap["defaultFormat"] as? String ?: ""

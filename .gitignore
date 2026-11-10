@@ -57,4 +57,6 @@ __pycache__/
 # Node.js / MCP Server
 node_modules/
 mcp-server/dist/
+mcp-server/coverage/
 .env
+.env.*
