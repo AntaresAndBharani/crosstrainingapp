@@ -31,6 +31,28 @@ jobs:
         shell: pwsh
         run: ./scripts/tests/Invoke-ScriptTests.ps1
 
+  mcp-server-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: mcp-server/package-lock.json
+
+      - name: Install, build, and test MCP server
+        working-directory: mcp-server
+        run: |
+          npm ci
+          npm run build
+          npm test
+
   build:
     runs-on: ubuntu-latest
     steps:

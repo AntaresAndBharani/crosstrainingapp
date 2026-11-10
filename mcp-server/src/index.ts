@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import cors from "cors";
-import express, { type Express, type Request, type Response } from "express";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
@@ -20,7 +20,25 @@ import {
 export interface CreateAppOptions {
   backingStore: RawDocumentBackingStore;
   oauthConfig: OAuthConfig;
+  /** Per-authenticated-user MCP request ceiling per minute (defaults to 180). */
   rateLimitMaxPerMinute?: number;
+  /** Per-IP unauthenticated/proxy request ceiling per minute (defaults to max(rateLimitMaxPerMinute * 3, 300)). */
+  ipRateLimitMaxPerMinute?: number;
+}
+
+/**
+ * Normalizes `Accept` headers on stateless JSON-mode `POST /mcp` requests so MCP clients
+ * that send `Accept: application/json` or wildcard Accept headers (omitting `text/event-stream`)
+ * are not rejected with HTTP 406 by `@modelcontextprotocol/sdk`'s StreamableHTTPServerTransport.
+ */
+function normalizeMcpAcceptHeader(req: Request, _res: Response, next: NextFunction): void {
+  const accept = req.headers.accept ?? "";
+  const hasJson = accept.includes("application/json");
+  const hasSse = accept.includes("text/event-stream");
+  if (!hasJson || !hasSse) {
+    req.headers.accept = "application/json, text/event-stream";
+  }
+  next();
 }
 
 export function createMcpExpressApp(options: CreateAppOptions): Express {
@@ -34,36 +52,74 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
       allowedHeaders: [
         "Content-Type",
         "Authorization",
+        "Accept",
         "Mcp-Session-Id",
+        "Mcp-Protocol-Version",
         "Last-Event-ID",
         "X-App-Env",
       ],
-      exposedHeaders: ["Mcp-Session-Id", "WWW-Authenticate"],
+      exposedHeaders: [
+        "Mcp-Session-Id",
+        "Mcp-Protocol-Version",
+        "WWW-Authenticate",
+        "Retry-After",
+      ],
     })
   );
 
-  // Layer 4 Anti-Bill Protection: In-Memory IP Rate Limiting
-  const limiter = rateLimit({
+  const userMaxPerMin = options.rateLimitMaxPerMinute ?? 180;
+  const ipMaxPerMin =
+    options.ipRateLimitMaxPerMinute ?? Math.max(userMaxPerMin * 3, 300);
+
+  // Layer 4a Anti-Bill Protection: High-ceiling IP guard for unauthenticated endpoints & DDoS safety,
+  // sized so shared cloud AI egress proxies (e.g. Google 66.249.83.*) are not prematurely throttled.
+  const ipLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: options.rateLimitMaxPerMinute ?? 60,
+    max: ipMaxPerMin,
     standardHeaders: true,
     legacyHeaders: false,
-    message: {
-      error: "too_many_requests",
-      error_description: "Rate limit exceeded (max 60 requests/minute).",
+    skip: (req) => req.path === "/health" || req.path === "/healthz",
+    handler: (_req, res) => {
+      res.setHeader("Retry-After", "60");
+      res.status(429).json({
+        error: "too_many_requests",
+        error_description: `IP rate limit exceeded (max ${ipMaxPerMin} requests/minute).`,
+      });
     },
   });
-  app.use(limiter);
+  app.use(ipLimiter);
+
+  // Layer 4b Per-User Quota: Authenticated MCP traffic is isolated per `env:uid` rather than IP.
+  const userLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: userMaxPerMin,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req, res) => {
+      const user = res.locals?.user as UserContext | undefined;
+      if (user?.uid) {
+        return `user:${user.env}:${user.uid}`;
+      }
+      return `ip:${req.ip ?? "unknown"}`;
+    },
+    handler: (_req, res) => {
+      res.setHeader("Retry-After", "60");
+      res.status(429).json({
+        error: "too_many_requests",
+        error_description: `User rate limit exceeded (max ${userMaxPerMin} requests/minute).`,
+      });
+    },
+  });
 
   const domain = new WorkoutDomainService(options.backingStore);
   const oauth = new OAuthServer(options.oauthConfig);
 
-  // Health check endpoint (unauthenticated for Cloud Run startup/liveness probes)
-  app.get("/health", (_req, res) => {
+  // Health check endpoints (unauthenticated for Cloud Run startup/liveness probes)
+  app.get(["/health", "/healthz"], (_req, res) => {
     res.json({
       status: "ok",
       service: "crosstraining-mcp-server",
-      version: "1.0.0",
+      version: "1.1.0",
     });
   });
 
@@ -74,39 +130,52 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
   // Streamable HTTP Transport (/mcp) — Used by Gemini, Claude, and ChatGPT
   // ==========================================================================
 
-  app.post("/mcp", oauth.requireAuth, express.json(), async (req: Request, res: Response) => {
-    const user = res.locals.user as UserContext;
-    try {
-      const server = createCrossTrainingMcpServer(domain, () => user);
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined, // Stateless per-request JSON-RPC mode for Cloud Run scale-to-zero
-        enableJsonResponse: true,
-      });
-      res.on("close", () => {
-        void transport.close();
-        void server.close();
-      });
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-    } catch (err) {
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32603,
-            message: err instanceof Error ? err.message : "Internal MCP error",
-          },
-          id: null,
+  app.post(
+    "/mcp",
+    oauth.requireAuth,
+    userLimiter,
+    normalizeMcpAcceptHeader,
+    express.json({ limit: "1mb" }),
+    async (req: Request, res: Response) => {
+      const user = res.locals.user as UserContext;
+      const protocolVersion = req.headers["mcp-protocol-version"];
+      if (typeof protocolVersion === "string" && protocolVersion.length <= 32) {
+        res.setHeader("Mcp-Protocol-Version", protocolVersion);
+      }
+      try {
+        const server = createCrossTrainingMcpServer(domain, () => user);
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined, // Stateless per-request JSON-RPC mode for Cloud Run scale-to-zero
+          enableJsonResponse: true,
         });
+        res.on("close", () => {
+          void transport.close();
+          void server.close();
+        });
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } catch (err) {
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32603,
+              message: err instanceof Error ? err.message : "Internal MCP error",
+            },
+            id: null,
+          });
+        }
       }
     }
-  });
+  );
 
-  app.head("/mcp", oauth.requireAuth, (_req: Request, res: Response) => {
+  app.head("/mcp", oauth.requireAuth, userLimiter, (_req: Request, res: Response) => {
+    res.setHeader("Allow", "POST, DELETE");
     res.status(200).end();
   });
 
-  app.get("/mcp", oauth.requireAuth, (_req: Request, res: Response) => {
+  app.get("/mcp", oauth.requireAuth, userLimiter, (_req: Request, res: Response) => {
+    res.setHeader("Allow", "POST, DELETE");
     res.status(405).json({
       jsonrpc: "2.0",
       error: {
@@ -117,8 +186,8 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
     });
   });
 
-  app.delete("/mcp", oauth.requireAuth, (_req: Request, res: Response) => {
-    res.status(200).json({ status: "closed" });
+  app.delete("/mcp", oauth.requireAuth, userLimiter, (_req: Request, res: Response) => {
+    res.status(204).end();
   });
 
   // ==========================================================================
@@ -130,7 +199,7 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
     { transport: SSEServerTransport; user: UserContext }
   >();
 
-  app.get("/sse", oauth.requireAuth, async (_req: Request, res: Response) => {
+  app.get("/sse", oauth.requireAuth, userLimiter, async (_req: Request, res: Response) => {
     const user = res.locals.user as UserContext;
     const transport = new SSEServerTransport("/messages", res);
     const server = createCrossTrainingMcpServer(domain, () => user);
@@ -144,21 +213,27 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
     await server.connect(transport);
   });
 
-  app.post("/messages", oauth.requireAuth, express.json(), async (req: Request, res: Response) => {
-    const sessionId = String(req.query.sessionId || "");
-    const entry = sseTransports.get(sessionId);
-    if (!entry) {
-      res.status(404).json({ error: "Unknown SSE sessionId" });
-      return;
+  app.post(
+    "/messages",
+    oauth.requireAuth,
+    userLimiter,
+    express.json({ limit: "1mb" }),
+    async (req: Request, res: Response) => {
+      const sessionId = String(req.query.sessionId || "");
+      const entry = sseTransports.get(sessionId);
+      if (!entry) {
+        res.status(404).json({ error: "Unknown SSE sessionId" });
+        return;
+      }
+      // Bind the SSE session to the user who opened it.
+      const caller = res.locals.user as UserContext;
+      if (caller.uid !== entry.user.uid || caller.env !== entry.user.env) {
+        res.status(403).json({ error: "SSE session belongs to a different user" });
+        return;
+      }
+      await entry.transport.handlePostMessage(req, res, req.body);
     }
-    // Bind the SSE session to the user who opened it.
-    const caller = res.locals.user as UserContext;
-    if (caller.uid !== entry.user.uid || caller.env !== entry.user.env) {
-      res.status(403).json({ error: "SSE session belongs to a different user" });
-      return;
-    }
-    await entry.transport.handlePostMessage(req, res, req.body);
-  });
+  );
 
   return app;
 }
@@ -199,6 +274,7 @@ async function main() {
 
   const app = createMcpExpressApp({
     backingStore,
+    rateLimitMaxPerMinute: Number(process.env.MCP_RATE_LIMIT_PER_MIN || "180"),
     oauthConfig: {
       issuerUrl: process.env.MCP_ISSUER_URL,
       jwtSecret,
@@ -213,16 +289,19 @@ async function main() {
     },
   });
 
-  const port = Number(process.env.PORT || 8080);
-  app.listen(port, () => {
+  const port = Number(process.env.PORT || "8080");
+  app.listen(port, "0.0.0.0", () => {
     console.log(`CrossTraining Remote MCP Server listening on port ${port}`);
   });
 }
 
-const currentFilePath = fileURLToPath(import.meta.url);
-if (process.argv[1] === currentFilePath) {
+const isDirectRun =
+  process.argv[1] !== undefined &&
+  fileURLToPath(import.meta.url) === process.argv[1];
+
+if (isDirectRun) {
   main().catch((err) => {
-    console.error("Fatal startup error:", err);
+    console.error("Fatal MCP server startup error:", err);
     process.exit(1);
   });
 }
