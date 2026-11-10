@@ -210,6 +210,15 @@ export function isDeletedTombstone(deletedAtMillis?: number | null): boolean {
   return typeof deletedAtMillis === "number" && deletedAtMillis > 0;
 }
 
+/**
+ * True when a discovered cycle carries a real synced name (not the empty-account placeholder and not
+ * the `Cycle {id}` fallback), so MCP writes must keep that name instead of a caller-supplied one.
+ */
+function hasKnownCycleName(cycle: CycleSummary): boolean {
+  const hasData = cycle.goalsCount + cycle.sessionsCount + cycle.repMaxesCount > 0;
+  return hasData && cycle.cycleName !== `Cycle ${cycle.cycleId}`;
+}
+
 function defaultUnitForMetric(metricType: string): string {
   switch (metricType) {
     case "CALORIES":
@@ -610,9 +619,12 @@ export class WorkoutDomainService {
 
     if (requestedCycleId !== undefined && requestedCycleId >= 1) {
       const matched = cycles.find((c) => c.cycleId === requestedCycleId);
+      // Prefer the known synced name so an MCP write can never silently rename an existing cycle
+      // (cycles are owned by the Android app; Android resolves name-first on download).
+      const knownName = matched && hasKnownCycleName(matched) ? matched.cycleName : undefined;
       return {
         cycleId: requestedCycleId,
-        cycleName: requestedCycleName?.trim() || matched?.cycleName || `Cycle ${requestedCycleId}`,
+        cycleName: knownName || requestedCycleName?.trim() || `Cycle ${requestedCycleId}`,
         isActive: requestedCycleId === active.cycleId,
       };
     }
@@ -627,9 +639,11 @@ export class WorkoutDomainService {
           isActive: matchedByName.isActive,
         };
       }
+      // Unknown cycle name: target the active cycle. Only adopt the requested name when the account has
+      // no synced cycle data yet (placeholder cycle); otherwise a typo would rename the active cycle.
       return {
         cycleId: active.cycleId,
-        cycleName: requestedCycleName.trim(),
+        cycleName: hasKnownCycleName(active) ? active.cycleName : requestedCycleName.trim(),
         isActive: true,
       };
     }
@@ -1514,6 +1528,7 @@ export class WorkoutDomainService {
       ["exercises", "rep_maxes", "cycle_goals", "sessions"],
       async (tx) => {
         const defaultTargetCycle = await this.resolveTargetCycleInStore(tx, ctx);
+        const explicitCycleCache = new Map<number, typeof defaultTargetCycle>();
         const exerciseMap = await this.resolveExerciseMapInStore(
           tx,
           ctx,
@@ -1548,8 +1563,13 @@ export class WorkoutDomainService {
             continue;
           }
 
-          const resolvedCycleId = input.cycleId ?? defaultTargetCycle.cycleId;
-          const isActive = resolvedCycleId === defaultTargetCycle.cycleId && defaultTargetCycle.isActive;
+          let targetCycle = defaultTargetCycle;
+          if (input.cycleId !== undefined && input.cycleId !== defaultTargetCycle.cycleId) {
+            const cached = explicitCycleCache.get(input.cycleId);
+            targetCycle = cached ?? (await this.resolveTargetCycleInStore(tx, ctx, input.cycleId));
+            explicitCycleCache.set(input.cycleId, targetCycle);
+          }
+          // Every field is always defined: the Firestore Admin SDK rejects `undefined` values on set().
           const created: RepMaxRecord = {
             id: ++maxId,
             exerciseId: ex.id,
@@ -1557,10 +1577,9 @@ export class WorkoutDomainService {
             reps: input.reps,
             weight: input.weight,
             date,
-            cycleId: resolvedCycleId,
-            cycleName:
-              input.cycleId === undefined ? defaultTargetCycle.cycleName : undefined,
-            isActiveCycle: isActive,
+            cycleId: targetCycle.cycleId,
+            cycleName: targetCycle.cycleName,
+            isActiveCycle: targetCycle.isActive,
             updatedAtMillis: now,
           };
           repMaxes.push(created);

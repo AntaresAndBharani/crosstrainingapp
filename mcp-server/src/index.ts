@@ -238,12 +238,20 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
   return app;
 }
 
+/** Parses a positive integer env var, falling back when unset or malformed (avoids a `NaN` rate limit). */
+function parsePositiveIntEnv(raw: string | undefined, fallback: number): number {
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 async function main() {
   const projectId = process.env.FIREBASE_PROJECT_ID || "virgymia-c2cc7";
   if (getApps().length === 0) {
     initializeApp({ projectId });
   }
   const db = getFirestore();
+  // Defense-in-depth: optional record fields left `undefined` must never make a whole-list set() throw.
+  db.settings({ ignoreUndefinedProperties: true });
   const backingStore = new FirestoreBackingStore(db);
 
   // Support local --stdio mode for Antigravity / Claude Code direct workspace mounting
@@ -274,7 +282,7 @@ async function main() {
 
   const app = createMcpExpressApp({
     backingStore,
-    rateLimitMaxPerMinute: Number(process.env.MCP_RATE_LIMIT_PER_MIN || "180"),
+    rateLimitMaxPerMinute: parsePositiveIntEnv(process.env.MCP_RATE_LIMIT_PER_MIN, 180),
     oauthConfig: {
       issuerUrl: process.env.MCP_ISSUER_URL,
       jwtSecret,

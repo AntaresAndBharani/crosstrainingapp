@@ -1196,18 +1196,13 @@ object UserCloudSyncManager {
                         val isDeleted: Boolean
                     )
 
-                    val existingLocalExercisesForDeletedGoals by lazy {
-                        // Lazy snapshot is filled synchronously inside suspend block below if needed
-                        mutableListOf<Exercise>()
-                    }
-                    var loadedExercisesForDeletedGoals = false
+                    // Loaded on first tombstone only; a deleted goal must never create its exercise locally.
+                    var existingLocalExercisesForDeletedGoals: List<Exercise>? = null
                     suspend fun resolveExistingExerciseIdWithoutCreating(rawId: Long?, rawName: String?): Long? {
-                        if (!loadedExercisesForDeletedGoals) {
-                            existingLocalExercisesForDeletedGoals.addAll(repo.getAllExercisesOnce())
-                            loadedExercisesForDeletedGoals = true
-                        }
+                        val localExercises = existingLocalExercisesForDeletedGoals
+                            ?: repo.getAllExercisesOnce().also { existingLocalExercisesForDeletedGoals = it }
                         if (!rawName.isNullOrBlank()) {
-                            return existingLocalExercisesForDeletedGoals
+                            return localExercises
                                 .firstOrNull { it.name.trim().equals(rawName.trim(), ignoreCase = true) }
                                 ?.id
                         }

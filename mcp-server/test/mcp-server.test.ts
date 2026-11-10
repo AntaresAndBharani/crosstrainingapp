@@ -7,8 +7,10 @@ import { computeWeightMomentumAnalytics } from "../src/schemas.js";
 import {
   type CycleGoalRecord,
   InMemoryBackingStore,
+  type RepMaxRecord,
   type RoutineWithBlocksRecord,
   type SessionWithBlocksRecord,
+  WorkoutDomainService,
 } from "../src/store.js";
 import { evaluateBudgetNotification } from "../billing-killswitch/index.js";
 
@@ -1098,5 +1100,53 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     );
     assert.equal(atCap.action, "BILLING_DISABLED");
     assert.equal(disabledProject, "virgymia-c2cc7");
+  });
+
+  it("never writes undefined fields on explicit-cycle rep maxes and never renames a known cycle via cycleName", async () => {
+    const store = new InMemoryBackingStore();
+    const domain = new WorkoutDomainService(store);
+    const ctx = { uid: "cycle-name-guard-uid", env: "production" as const };
+    await store.writeCollection<CycleGoalRecord>(ctx, "cycle_goals", [
+      { id: 1, cycleId: 2, cycleName: "Foundation", isActiveCycle: false, exerciseId: 1, exerciseName: "Snatch", targetReps: 1, startWeight: 60, targetWeight: 70, notes: "" },
+      { id: 2, cycleId: 4, cycleName: "Recomposition", isActiveCycle: true, exerciseId: 1, exerciseName: "Snatch", targetReps: 3, startWeight: 65, targetWeight: 75, notes: "" },
+    ]);
+
+    // Explicit non-active cycleId: Firestore Admin rejects `undefined`, so every field must be defined.
+    const [explicitRm, defaultRm] = await domain.batchRecordRepMaxes(ctx, [
+      { exerciseName: "Snatch", reps: 1, weight: 72, date: "2026-11-01", cycleId: 2 },
+      { exerciseName: "Snatch", reps: 3, weight: 70, date: "2026-11-02" },
+    ]);
+    for (const rm of [explicitRm, defaultRm]) {
+      for (const [key, value] of Object.entries(rm)) {
+        assert.notEqual(value, undefined, `rep max field '${key}' must not be undefined`);
+      }
+    }
+    assert.equal(explicitRm.cycleId, 2);
+    assert.equal(explicitRm.cycleName, "Foundation");
+    assert.equal(explicitRm.isActiveCycle, false);
+    assert.equal(defaultRm.cycleId, 4);
+    assert.equal(defaultRm.cycleName, "Recomposition");
+    assert.equal(defaultRm.isActiveCycle, true);
+    const storedRms = await store.readCollection<RepMaxRecord>(ctx, "rep_maxes");
+    assert.equal(storedRms.length, 2);
+
+    // An unknown cycleName targets the active cycle without renaming it.
+    const res = await domain.manageCycleGoals(ctx, {
+      cycleName: "Recompositon Typo",
+      upserts: [{ exerciseName: "Clean", targetReps: 2, targetWeight: 90 }],
+    });
+    assert.equal(res.cycle.cycleId, 4);
+    assert.equal(res.cycle.cycleName, "Recomposition");
+    const cycles = await domain.listCycles(ctx);
+    assert.equal(cycles.activeCycleId, 4);
+    assert.equal(cycles.activeCycleName, "Recomposition");
+
+    // A mismatched name on an explicit known cycleId also keeps the synced name.
+    const explicit = await domain.manageCycleGoals(ctx, {
+      cycleId: 2,
+      cycleName: "Renamed Foundation",
+      upserts: [{ exerciseName: "Clean", targetReps: 1, targetWeight: 95 }],
+    });
+    assert.equal(explicit.cycle.cycleName, "Foundation");
   });
 });
