@@ -3,7 +3,12 @@ import crypto from "node:crypto";
 import type { Server } from "node:http";
 import { after, before, describe, it } from "node:test";
 import { createMcpExpressApp } from "../src/index.js";
-import { computeWeightMomentumAnalytics } from "../src/schemas.js";
+import {
+  computeWeightMomentumAnalytics,
+  decodeLegacyRoutineSlots,
+  defaultSetsForRoutineFormat,
+  formatRoutineBlockTargetSummary,
+} from "../src/schemas.js";
 import {
   type CycleGoalRecord,
   InMemoryBackingStore,
@@ -1348,5 +1353,40 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     assert.equal(legacyFran.blocks[0].cleanNotes, "Unbroken round 1");
     assert.equal(legacyFran.blocks[0].exercises?.length, 2);
     assert.deepEqual(legacyFran.blocks[0].exercises?.[0]?.perSetValues, [21, 15, 9]);
+  });
+
+  it("keeps Routine Builder v2 codec helpers in parity with Android RoutineTargetCodec", () => {
+    for (const fmt of ["AMRAP", "For Time", "Chipper", "Death by", "Time cap"]) {
+      assert.equal(defaultSetsForRoutineFormat(fmt), 1, `Expected 1 set for ${fmt}`);
+    }
+    assert.equal(defaultSetsForRoutineFormat("Max Effort"), 4);
+    assert.equal(defaultSetsForRoutineFormat("Tabata"), 8);
+    assert.equal(defaultSetsForRoutineFormat("EMOM"), 4);
+
+    assert.equal(
+      formatRoutineBlockTargetSummary(
+        [
+          { metric: "TIME_SECONDS", mode: "FIXED", fixedValue: 120, perSetValues: [120, 120] },
+          { metric: "METERS", mode: "FIXED", fixedValue: 1000, perSetValues: [1000, 1000] },
+          { metric: "REPS", mode: "FIXED", fixedValue: 1, perSetValues: [1, 1] },
+        ],
+        2
+      ),
+      "2m + 1km + 1 rep"
+    );
+
+    assert.deepEqual(decodeLegacyRoutineSlots("5,5,3", 3, ["REPS"])[0].perSetValues, [5, 5, 3]);
+    assert.deepEqual(decodeLegacyRoutineSlots("3-2-1-3-2-1", 4, ["REPS"])[0].perSetValues, [3, 2, 1, 3, 2, 1]);
+    assert.deepEqual(decodeLegacyRoutineSlots("21-15-9", 1, ["REPS"])[0].perSetValues, [21, 15, 9]);
+    assert.deepEqual(decodeLegacyRoutineSlots("5x3", 1, ["REPS"])[0], {
+      metric: "REPS",
+      mode: "FIXED",
+      fixedValue: 3,
+      perSetValues: [3, 3, 3, 3, 3],
+    });
+    const complex = decodeLegacyRoutineSlots("1 / 2", 5, ["REPS", "TIME_SECONDS"]);
+    assert.deepEqual(complex.map((s) => s.fixedValue), [1, 2]);
+    assert.equal(complex[1].metric, "TIME_SECONDS");
+    assert.equal(decodeLegacyRoutineSlots("TRISET_1", 4, ["CALORIES"])[0].fixedValue, 15);
   });
 });

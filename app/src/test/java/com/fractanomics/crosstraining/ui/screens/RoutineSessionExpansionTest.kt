@@ -258,4 +258,46 @@ class RoutineSessionExpansionTest {
         assertEquals(backSquat, legacyBlock.exercise)
         assertEquals(listOf("21", "15", "9"), legacyBlock.sets.map { it.reps })
     }
+
+    @Test
+    fun `Legacy single-exercise blocks keep pre-redesign RepScheme set expansion`() {
+        val rwb = RoutineWithBlocks(
+            routine = Routine(id = 13L, name = "Legacy Strength"),
+            blocks = listOf(
+                RoutineBlock(id = 105L, routineId = 13L, position = 0, name = "Comma", setsCount = 3, targetRepsScheme = "5,5,3", exerciseIdsCsv = "1"),
+                RoutineBlock(id = 106L, routineId = 13L, position = 1, name = "NxM", setsCount = 1, targetRepsScheme = "5x3", exerciseIdsCsv = "1"),
+                RoutineBlock(id = 107L, routineId = 13L, position = 2, name = "Wave", setsCount = 4, targetRepsScheme = "3-2-1-3-2-1", exerciseIdsCsv = "1")
+            )
+        )
+
+        val sessionBlocks = expandRoutineIntoSessionBlocks(rwb, allExercises)
+        assertEquals(3, sessionBlocks.size)
+        assertEquals(listOf("5", "5", "3"), sessionBlocks[0].sets.map { it.reps })
+        assertEquals(listOf("3", "3", "3", "3", "3"), sessionBlocks[1].sets.map { it.reps })
+        assertEquals(listOf("3", "2", "1", "3", "2", "1"), sessionBlocks[2].sets.map { it.reps })
+        assertTrue(sessionBlocks.flatMap { it.sets }.all { it.value.isEmpty() })
+    }
+
+    @Test
+    fun `Non-rep targets on weight-tracked exercises are never logged as weight`() {
+        val notes = RoutineTargetCodec.encodeNotesWithTargets(
+            cleanNotes = "",
+            slots = listOf(
+                RoutineExerciseTargetSpec(ExerciseTargetMetric.METERS, TargetMode.FIXED, 250, listOf(250, 250))
+            ),
+            setsCount = 2
+        )
+        val rwb = RoutineWithBlocks(
+            routine = Routine(id = 14L, name = "Row Intervals"),
+            blocks = listOf(
+                RoutineBlock(id = 108L, routineId = 14L, position = 0, name = "Row", setsCount = 2, exerciseIdsCsv = "1", notes = notes)
+            )
+        )
+
+        val block = expandRoutineIntoSessionBlocks(rwb, allExercises).single()
+        assertEquals(MetricType.WEIGHT, block.exercise?.metricType)
+        assertEquals(listOf("250", "250"), block.sets.map { it.reps })
+        val draft = block.toDraftOrNull()!!
+        assertTrue(draft.sets.all { it.weight == null })
+    }
 }

@@ -313,14 +313,17 @@ object RoutineTargetCodec {
             }
         }
 
-        // Single-exercise (or shared-scheme) hyphenated per-set scheme like "21-15-9" or "3-2-1-3-2-1"
-        if (scheme.contains("-") && !scheme.startsWith("TRISET", ignoreCase = true) &&
+        // Single-exercise (or shared-scheme) per-set scheme like "21-15-9", "3-2-1-3-2-1" or "5,5,3"
+        // (same `-` / `,` separators accepted by the legacy `RepScheme.parse`).
+        if ((scheme.contains("-") || scheme.contains(",")) &&
+            !scheme.startsWith("TRISET", ignoreCase = true) &&
             !scheme.startsWith("SUPERSET", ignoreCase = true) &&
             !scheme.startsWith("BISET", ignoreCase = true)
         ) {
-            val dashValues = scheme.split("-").mapNotNull { it.trim().toIntOrNull()?.coerceAtLeast(0) }
+            val dashValues = scheme.split(Regex("[-,]")).mapNotNull { it.trim().toIntOrNull()?.coerceAtLeast(0) }
             if (dashValues.size > 1 && dashValues.any { it > 0 }) {
-                val effectiveCount = if (setsCount <= 1) dashValues.size else setsCount
+                // Never truncate an explicit legacy sequence (e.g. a 12-set wave stored with setsCount = 4).
+                val effectiveCount = if (setsCount <= 1 || dashValues.size > setsCount) dashValues.size else setsCount
                 return ids.map { exId ->
                     val metric = exercisesById[exId]?.let { ExerciseTargetMetric.fromLibraryMetricType(it.metricType) }
                         ?: ExerciseTargetMetric.REPS
@@ -343,6 +346,9 @@ object RoutineTargetCodec {
             if (xParts.size == 2) {
                 val reps = xParts[1].trim().toIntOrNull()?.takeIf { it > 0 }
                 if (reps != null) {
+                    // "5x3" = 5 sets of 3 reps (matches legacy `RepScheme.parse`).
+                    val schemeSets = xParts[0].trim().toIntOrNull()?.takeIf { it in 1..100 }
+                    val effectiveCount = schemeSets ?: setsCount
                     return ids.map { exId ->
                         val metric = exercisesById[exId]?.let { ExerciseTargetMetric.fromLibraryMetricType(it.metricType) }
                             ?: ExerciseTargetMetric.REPS
@@ -350,7 +356,7 @@ object RoutineTargetCodec {
                             metric = metric,
                             mode = TargetMode.FIXED,
                             fixedValue = reps,
-                            perSetValues = List(setsCount) { reps }
+                            perSetValues = List(effectiveCount) { reps }
                         )
                     }
                 }
@@ -477,7 +483,7 @@ object RoutineTargetCodec {
     }
 
     fun formatValueNumberAndUnit(metric: ExerciseTargetMetric, value: Int): String = when (metric) {
-        ExerciseTargetMetric.REPS -> "$value reps"
+        ExerciseTargetMetric.REPS -> if (value == 1) "1 rep" else "$value reps"
         ExerciseTargetMetric.CALORIES -> "$value cal"
         ExerciseTargetMetric.TIME_SECONDS -> if (value >= 60 && value % 60 == 0) "${value / 60}m" else "${value}s"
         ExerciseTargetMetric.METERS -> if (value >= 1000 && value % 1000 == 0) "${value / 1000}km" else "${value}m"

@@ -166,6 +166,32 @@ class RoutineTargetCodecTest {
     }
 
     @Test
+    fun `legacy comma, NxM and long wave schemes decode without dropping sets`() {
+        // Comma-separated scheme accepted by legacy RepScheme.parse
+        val commaDecoded = RoutineTargetCodec.decodeBlockExercises(
+            RoutineBlock(setsCount = 3, targetRepsScheme = "5,5,3", exerciseIdsCsv = "10"),
+            exercisesById
+        )
+        assertEquals(TargetMode.PER_SET, commaDecoded[0].second.mode)
+        assertEquals(listOf(5, 5, 3), commaDecoded[0].second.perSetValues)
+
+        // 12-set wave stored with a smaller setsCount is never truncated
+        val waveDecoded = RoutineTargetCodec.decodeBlockExercises(
+            RoutineBlock(setsCount = 4, targetRepsScheme = RepScheme.WAVE_321, exerciseIdsCsv = "10"),
+            exercisesById
+        )
+        assertEquals(RepScheme.parse(RepScheme.WAVE_321), waveDecoded[0].second.perSetValues)
+
+        // "5x3" = 5 sets of 3 reps even when setsCount was left at 1
+        val nxmDecoded = RoutineTargetCodec.decodeBlockExercises(
+            RoutineBlock(setsCount = 1, targetRepsScheme = "5x3", exerciseIdsCsv = "10"),
+            exercisesById
+        )
+        assertEquals(3, nxmDecoded[0].second.fixedValue)
+        assertEquals(listOf(3, 3, 3, 3, 3), nxmDecoded[0].second.perSetValues)
+    }
+
+    @Test
     fun `CSV backup round-trips structured rb_v2 routine blocks and repeated sequence IDs losslessly`() {
         val slots = listOf(
             RoutineExerciseTargetSpec(ExerciseTargetMetric.METERS, TargetMode.FIXED, 200, listOf(200, 200, 200)),

@@ -993,7 +993,8 @@ export function parseCycleGoalMetadata(rawNotes?: string): {
 // ============================================================================
 
 const RB_V2_HEADER_LINE_REGEX = /^\[rb_v2=([^\r\n\]]*)\](?:\r?\n)?/i;
-const SINGLE_EFFORT_ROUTINE_FORMATS = new Set(["amrap", "for time", "chipper", "max effort"]);
+// Must match Android `RoutineTargetCodec.SINGLE_EFFORT_FORMATS` exactly.
+const SINGLE_EFFORT_ROUTINE_FORMATS = new Set(["amrap", "for time", "chipper", "death by", "time cap"]);
 
 export function defaultFixedForRoutineMetric(metric: RoutineTargetMetric): number {
   switch (metric) {
@@ -1155,10 +1156,81 @@ function formatRoutineMetricValueAndUnit(metric: RoutineTargetMetric, value: num
     case "CALORIES":
       return `${value} cal`;
     case "TIME_SECONDS":
-      return `${value}s`;
+      // Mirrors Android `RoutineTargetCodec.formatValueNumberAndUnit` ("2m", "45s").
+      return value >= 60 && value % 60 === 0 ? `${value / 60}m` : `${value}s`;
     case "METERS":
-      return `${value}m`;
+      // Mirrors Android `RoutineTargetCodec.formatValueNumberAndUnit` ("1km", "250m").
+      return value >= 1000 && value % 1000 === 0 ? `${value / 1000}km` : `${value}m`;
   }
+}
+
+/**
+ * Legacy (non-`[rb_v2=...]`) `targetRepsScheme` decoding — mirrors Android
+ * `RoutineTargetCodec.decodeLegacyBlockExercises` so `list_routines` reports the same targets the
+ * mobile Routine Builder shows for pre-redesign routines.
+ */
+export function decodeLegacyRoutineSlots(
+  targetRepsScheme: string | undefined,
+  setsCount: number,
+  metrics: RoutineTargetMetric[]
+): RoutineExerciseTargetSlot[] {
+  const scheme = (targetRepsScheme ?? "").trim();
+  const sets = Math.max(1, Math.trunc(setsCount));
+  const toInt = (s: string): number | null => (/^\s*\d+\s*$/.test(s) ? Number.parseInt(s, 10) : null);
+  const fixedSlot = (metric: RoutineTargetMetric, fixed: number, count: number): RoutineExerciseTargetSlot => ({
+    metric,
+    mode: "FIXED",
+    fixedValue: fixed,
+    perSetValues: Array.from({ length: count }, () => fixed),
+  });
+
+  if (metrics.length > 1 && (scheme.includes("+") || scheme.includes("/"))) {
+    const seqParts = scheme
+      .split(/[+/]/)
+      .map(toInt)
+      .filter((n): n is number => n !== null && n > 0);
+    return metrics.map((metric, idx) =>
+      fixedSlot(metric, seqParts[idx] ?? seqParts[seqParts.length - 1] ?? defaultFixedForRoutineMetric(metric), sets)
+    );
+  }
+
+  if ((scheme.includes("-") || scheme.includes(",")) && !/^(TRISET|SUPERSET|BISET)/i.test(scheme)) {
+    const dashValues = scheme
+      .split(/[-,]/)
+      .map(toInt)
+      .filter((n): n is number => n !== null);
+    if (dashValues.length > 1 && dashValues.some((v) => v > 0)) {
+      const effectiveCount = sets <= 1 || dashValues.length > sets ? dashValues.length : sets;
+      return metrics.map((metric) => {
+        const firstPositive = dashValues.find((v) => v > 0) ?? defaultFixedForRoutineMetric(metric);
+        const normalized = resizeRoutinePerSetValues(dashValues, firstPositive, effectiveCount);
+        return {
+          metric,
+          mode: new Set(normalized).size === 1 ? "FIXED" : "PER_SET",
+          fixedValue: firstPositive,
+          perSetValues: normalized,
+        };
+      });
+    }
+  }
+
+  const lower = scheme.toLowerCase();
+  if (lower.includes("x")) {
+    const xParts = lower.split("x");
+    if (xParts.length === 2) {
+      const reps = toInt(xParts[1]);
+      if (reps !== null && reps > 0) {
+        const schemeSets = toInt(xParts[0]);
+        const count = schemeSets !== null && schemeSets >= 1 && schemeSets <= 100 ? schemeSets : sets;
+        return metrics.map((metric) => fixedSlot(metric, reps, count));
+      }
+    }
+  }
+
+  const singleInt = toInt(scheme);
+  return metrics.map((metric) =>
+    fixedSlot(metric, singleInt !== null && singleInt > 0 ? singleInt : defaultFixedForRoutineMetric(metric), sets)
+  );
 }
 
 export function formatRoutineExerciseBadge(

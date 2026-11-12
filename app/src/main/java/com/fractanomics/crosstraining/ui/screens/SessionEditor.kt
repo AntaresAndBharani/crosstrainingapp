@@ -129,6 +129,7 @@ import com.fractanomics.crosstraining.util.ExerciseTargetMetric
 import com.fractanomics.crosstraining.util.RepScheme
 import com.fractanomics.crosstraining.util.RoutineExerciseTargetSpec
 import com.fractanomics.crosstraining.util.RoutineTargetCodec
+import com.fractanomics.crosstraining.util.TargetMode
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
@@ -328,24 +329,27 @@ internal sealed class EditorBlockItem {
 private fun buildSessionSetStatesForTarget(
     spec: RoutineExerciseTargetSpec,
     setsCount: Int,
-    preserveGroupAlways: Boolean
+    preserveGroupAlways: Boolean,
+    exercise: Exercise?
 ): List<SetState> {
     val perRoundValues = spec.effectiveValues(setsCount.coerceAtLeast(1))
     val hasSkippedRound = perRoundValues.any { it <= 0 }
     val includeGroup = preserveGroupAlways || hasSkippedRound
+    // `BlockState.toDraftOrNull()` persists `SetState.value` as `weight` for WEIGHT (or unresolved)
+    // exercises, so a Calories / Time / Meters target must never be written into `value` there
+    // (e.g. "250 m" on a weight-tracked Row would otherwise be logged as a 250 kg set).
+    val valueHoldsMetric = (exercise?.metricType ?: MetricType.WEIGHT) != MetricType.WEIGHT
 
     val activeSets = perRoundValues.mapIndexedNotNull { roundIdx, target ->
         if (target <= 0) return@mapIndexedNotNull null
         val groupLabel = if (includeGroup) (roundIdx + 1).toString() else ""
-        when (spec.metric) {
-            ExerciseTargetMetric.REPS -> SetState(
+        when {
+            spec.metric == ExerciseTargetMetric.REPS || !valueHoldsMetric -> SetState(
                 reps = target.toString(),
                 value = "",
                 group = groupLabel
             )
-            ExerciseTargetMetric.CALORIES,
-            ExerciseTargetMetric.TIME_SECONDS,
-            ExerciseTargetMetric.METERS -> SetState(
+            else -> SetState(
                 reps = "1",
                 value = target.toString(),
                 group = groupLabel
@@ -406,8 +410,9 @@ internal fun expandRoutineIntoSessionBlocks(
                             description = cleanNotes,
                             sets = buildSessionSetStatesForTarget(
                                 spec = spec,
-                                setsCount = blk.setsCount,
-                                preserveGroupAlways = true
+                                setsCount = if (isStructured) blk.setsCount else spec.perSetValues.size,
+                                preserveGroupAlways = true,
+                                exercise = exObj
                             ),
                             section = blk.section,
                             exerciseIdsCsv = exId.toString(),
@@ -419,8 +424,17 @@ internal fun expandRoutineIntoSessionBlocks(
             }
 
             decoded.size == 1 -> {
-                val (exId, spec) = decoded.first()
+                val (exId, decodedSpec) = decoded.first()
                 val exObj = exercisesById[exId]
+                // Legacy (non-`[rb_v2=...]`) blocks keep the exact pre-redesign `RepScheme.parse` set
+                // expansion ("5,5,3", "5x3" with setsCount = 1, 12-set waves stored with setsCount = 4).
+                val legacyReps = if (isStructured) null else RepScheme.parse(blk.targetRepsScheme, blk.setsCount)
+                val spec = if (legacyReps == null) {
+                    decodedSpec
+                } else {
+                    decodedSpec.copy(mode = TargetMode.PER_SET, perSetValues = legacyReps)
+                }
+                val effectiveSets = legacyReps?.size ?: blk.setsCount
                 val schemeLabel = if (isStructured) {
                     RoutineTargetCodec.formatExerciseTargetBadge(spec, blk.setsCount)
                 } else {
@@ -438,8 +452,9 @@ internal fun expandRoutineIntoSessionBlocks(
                         description = cleanNotes,
                         sets = buildSessionSetStatesForTarget(
                             spec = spec,
-                            setsCount = blk.setsCount,
-                            preserveGroupAlways = blk.subBlock.isNotBlank()
+                            setsCount = effectiveSets,
+                            preserveGroupAlways = blk.subBlock.isNotBlank(),
+                            exercise = exObj
                         ),
                         section = blk.section,
                         exerciseIdsCsv = blk.exerciseIdsCsv,

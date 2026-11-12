@@ -3,6 +3,7 @@ import {
   type RoutineExerciseTargetSlot,
   type RoutineTargetMetric,
   type RoutineTargetMode,
+  decodeLegacyRoutineSlots,
   decodeRoutineHeaderSlots,
   defaultFixedForRoutineMetric,
   defaultSetsForRoutineFormat,
@@ -933,63 +934,32 @@ export class WorkoutDomainService {
     const decodedExercises: DecodedRoutineBlockExercise[] = [];
 
     if (count > 0) {
-      const legacyScheme = (blk.targetRepsScheme ?? "").trim();
-      const plusParts =
-        ids.length > 1 && legacyScheme.includes("+")
-          ? legacyScheme
-              .split("+")
-              .map((p) => Number.parseInt(p.trim(), 10))
-              .filter((n) => Number.isFinite(n) && n > 0)
-          : [];
-      const dashParts =
-        legacyScheme.includes("-") && !/^(TRISET|SUPERSET|BISET)/i.test(legacyScheme)
-          ? legacyScheme
-              .split("-")
-              .map((p) => Number.parseInt(p.trim(), 10))
-              .filter((n) => Number.isFinite(n) && n >= 0)
-          : [];
-      const plainInt = Number.parseInt(legacyScheme, 10);
-
+      const slotMetrics: RoutineTargetMetric[] = [];
+      const libExercises: Array<ExerciseRecord | undefined> = [];
       for (let i = 0; i < count; i++) {
         const exId = ids[i] ?? 0;
         const libEx = exId > 0 ? exercisesById.get(exId) : undefined;
-        const name = rawNames[i] ?? libEx?.name ?? `Exercise #${exId}`;
-        const defaultMetric = inferRoutineTargetMetricFromLibraryMetric(libEx?.metricType);
+        libExercises.push(libEx);
+        slotMetrics.push(inferRoutineTargetMetricFromLibraryMetric(libEx?.metricType));
+      }
+      // Mirrors Android `RoutineTargetCodec.decodeBlockExercises`: once a `[rb_v2=...]` header is
+      // present, missing positional slots fall back to the exercise's default metric target rather
+      // than re-parsing the human-readable `targetRepsScheme` summary.
+      const legacySlots =
+        headerSlots === null ? decodeLegacyRoutineSlots(blk.targetRepsScheme, setsCount, slotMetrics) : null;
 
-        let slot: RoutineExerciseTargetSlot;
-        const headerSlot = headerSlots?.[i];
-        if (headerSlot) {
-          slot = headerSlot;
-        } else if (plusParts.length > 0) {
-          const fixed = plusParts[i] ?? plusParts[plusParts.length - 1] ?? defaultFixedForRoutineMetric(defaultMetric);
-          slot = {
+      for (let i = 0; i < count; i++) {
+        const exId = ids[i] ?? 0;
+        const name = rawNames[i] ?? libExercises[i]?.name ?? `Exercise #${exId}`;
+        const defaultMetric = slotMetrics[i];
+        const defaultFixed = defaultFixedForRoutineMetric(defaultMetric);
+        const slot: RoutineExerciseTargetSlot =
+          (headerSlots !== null ? headerSlots[i] : legacySlots?.[i]) ?? {
             metric: defaultMetric,
             mode: "FIXED",
-            fixedValue: fixed,
-            perSetValues: Array.from({ length: setsCount }, () => fixed),
+            fixedValue: defaultFixed,
+            perSetValues: Array.from({ length: setsCount }, () => defaultFixed),
           };
-        } else if (dashParts.length > 1 && dashParts.some((v) => v > 0)) {
-          const firstPos = dashParts.find((v) => v > 0) ?? defaultFixedForRoutineMetric(defaultMetric);
-          const normalized = resizeRoutinePerSetValues(dashParts, firstPos, setsCount);
-          const allSame = new Set(normalized).size === 1;
-          slot = {
-            metric: defaultMetric,
-            mode: allSame ? "FIXED" : "PER_SET",
-            fixedValue: firstPos,
-            perSetValues: normalized,
-          };
-        } else {
-          const fixed =
-            Number.isFinite(plainInt) && plainInt > 0
-              ? plainInt
-              : defaultFixedForRoutineMetric(defaultMetric);
-          slot = {
-            metric: defaultMetric,
-            mode: "FIXED",
-            fixedValue: fixed,
-            perSetValues: Array.from({ length: setsCount }, () => fixed),
-          };
-        }
 
         decodedExercises.push({
           exerciseId: exId,
@@ -998,7 +968,7 @@ export class WorkoutDomainService {
           mode: slot.mode,
           fixedValue: slot.fixedValue,
           perSetValues: slot.perSetValues,
-          summary: formatRoutineExerciseBadge(slot, setsCount),
+          summary: formatRoutineExerciseBadge(slot, Math.max(setsCount, slot.perSetValues.length)),
         });
       }
     }
