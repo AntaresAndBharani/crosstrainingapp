@@ -390,12 +390,34 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     fun deleteExercise(exercise: Exercise) = viewModelScope.launch { repo.deleteExercise(exercise) }
 
     // --- Routines -------------------------------------------------------------
-    fun saveRoutine(routine: Routine) = viewModelScope.launch { repo.saveRoutine(routine) }
+    fun saveRoutine(routine: Routine) = viewModelScope.launch {
+        repo.saveRoutine(routine)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
 
     fun saveRoutineWithBlocks(routine: Routine, blocks: List<RoutineBlock>) =
-        viewModelScope.launch { repo.saveRoutineWithBlocks(routine, blocks) }
+        viewModelScope.launch {
+            repo.saveRoutineWithBlocks(routine, blocks)
+            UserCloudSyncManager.uploadUserData(data.realRepository)
+        }
 
-    fun deleteRoutine(routine: Routine) = viewModelScope.launch { repo.deleteRoutine(routine) }
+    fun deleteRoutine(routine: Routine) = viewModelScope.launch {
+        repo.deleteRoutine(routine)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun getOrCreateExerciseForRoutine(
+        name: String,
+        category: ExerciseCategory = ExerciseCategory.BARBELL,
+        metricType: MetricType = MetricType.REPS,
+        onCreated: (Exercise) -> Unit
+    ) = viewModelScope.launch {
+        val clean = name.trim()
+        if (clean.isNotEmpty()) {
+            val ex = repo.getOrCreateExercise(clean, category, metricType)
+            onCreated(ex)
+        }
+    }
 
     // --- Rep maxes ------------------------------------------------------------
     fun recordRepMax(exerciseId: Long, reps: Int, weight: Double, date: LocalDate, cycleId: Long?) =
@@ -554,9 +576,24 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
             )
 
             val blocks = payload.blocks.mapIndexed { idx, sb ->
+                val headerSlots = com.fractanomics.crosstraining.util.RoutineTargetCodec.decodeHeaderSlots(
+                    sb.notes,
+                    sb.setsCount.coerceAtLeast(1)
+                )
                 val exIds = sb.exerciseNamesCsv.split(",")
                     .mapNotNull { nameStr -> nameStr.trim().takeIf { it.isNotBlank() } }
-                    .map { exName -> repo.getOrCreateExercise(exName).id }
+                    .mapIndexed { slotIdx, exName ->
+                        val slotMetric = headerSlots?.getOrNull(slotIdx)?.metric
+                        if (slotMetric != null) {
+                            repo.getOrCreateExercise(
+                                name = exName,
+                                category = ExerciseCategory.BARBELL,
+                                metricType = slotMetric.toLibraryMetricType()
+                            ).id
+                        } else {
+                            repo.getOrCreateExercise(exName).id
+                        }
+                    }
 
                 RoutineBlock(
                     routineId = 0,

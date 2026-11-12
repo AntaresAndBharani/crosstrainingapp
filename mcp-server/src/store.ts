@@ -1,5 +1,21 @@
 import type { Firestore } from "firebase-admin/firestore";
-import { encodeCycleGoalMetadata, parseCycleGoalMetadata } from "./schemas.js";
+import {
+  type RoutineExerciseTargetSlot,
+  type RoutineTargetMetric,
+  type RoutineTargetMode,
+  decodeRoutineHeaderSlots,
+  defaultFixedForRoutineMetric,
+  defaultSetsForRoutineFormat,
+  encodeCycleGoalMetadata,
+  encodeRoutineBlockTargets,
+  extractCleanRoutineNotes,
+  formatRoutineBlockTargetSummary,
+  formatRoutineExerciseBadge,
+  inferLibraryMetricTypeFromRoutineTarget,
+  inferRoutineTargetMetricFromLibraryMetric,
+  parseCycleGoalMetadata,
+  resizeRoutinePerSetValues,
+} from "./schemas.js";
 
 export type AppEnv = "production" | "snapshot";
 
@@ -29,6 +45,16 @@ export interface ExerciseRecord {
   updatedAtMillis?: number;
 }
 
+export interface DecodedRoutineBlockExercise {
+  exerciseId: number;
+  name: string;
+  metric: RoutineTargetMetric;
+  mode: RoutineTargetMode;
+  fixedValue: number;
+  perSetValues: number[];
+  summary: string;
+}
+
 export interface RoutineBlockRecord {
   id: number;
   routineId: number;
@@ -41,6 +67,8 @@ export interface RoutineBlockRecord {
   exerciseIdsCsv: string;
   exerciseNamesCsv?: string;
   notes: string;
+  cleanNotes?: string;
+  exercises?: DecodedRoutineBlockExercise[];
   section?: string;
   subBlock?: string;
 }
@@ -829,7 +857,12 @@ export class WorkoutDomainService {
   private async resolveExerciseMapInStore(
     tx: RawDocumentBackingStore,
     ctx: UserContext,
-    requests: Array<{ name: string; metricType?: string; tracksRepMax?: boolean }>
+    requests: Array<{
+      name: string;
+      category?: string;
+      metricType?: string;
+      tracksRepMax?: boolean;
+    }>
   ): Promise<Map<string, ExerciseRecord>> {
     const exercises = await tx.readCollection<ExerciseRecord>(ctx, "exercises");
     let mutated = false;
@@ -850,10 +883,16 @@ export class WorkoutDomainService {
       }
       maxId += 1;
       const metricType = req.metricType ?? "WEIGHT";
+      const defaultCat =
+        metricType === "CALORIES" || metricType === "DISTANCE"
+          ? "MACHINE"
+          : metricType === "REPS"
+            ? "GYMNASTICS"
+            : "BARBELL";
       const created: ExerciseRecord = {
         id: maxId,
         name: trimmed,
-        category: "BARBELL",
+        category: req.category ?? defaultCat,
         metricType,
         unit: defaultUnitForMetric(metricType),
         tracksRepMax: req.tracksRepMax ?? metricType === "WEIGHT",
@@ -874,9 +913,117 @@ export class WorkoutDomainService {
   // Routines (Workout Templates)
   // ==========================================================================
 
+  private enrichRoutineBlock(
+    blk: RoutineBlockRecord,
+    exercisesById: Map<number, ExerciseRecord>
+  ): RoutineBlockRecord {
+    const setsCount = Math.max(1, Math.trunc(blk.setsCount || 1));
+    const cleanNotes = extractCleanRoutineNotes(blk.notes);
+    const ids = (blk.exerciseIdsCsv ?? "")
+      .split(",")
+      .map((s) => Number.parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const rawNames = (blk.exerciseNamesCsv ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    const count = Math.max(ids.length, rawNames.length);
+    const headerSlots = decodeRoutineHeaderSlots(blk.notes, setsCount);
+    const decodedExercises: DecodedRoutineBlockExercise[] = [];
+
+    if (count > 0) {
+      const legacyScheme = (blk.targetRepsScheme ?? "").trim();
+      const plusParts =
+        ids.length > 1 && legacyScheme.includes("+")
+          ? legacyScheme
+              .split("+")
+              .map((p) => Number.parseInt(p.trim(), 10))
+              .filter((n) => Number.isFinite(n) && n > 0)
+          : [];
+      const dashParts =
+        legacyScheme.includes("-") && !/^(TRISET|SUPERSET|BISET)/i.test(legacyScheme)
+          ? legacyScheme
+              .split("-")
+              .map((p) => Number.parseInt(p.trim(), 10))
+              .filter((n) => Number.isFinite(n) && n >= 0)
+          : [];
+      const plainInt = Number.parseInt(legacyScheme, 10);
+
+      for (let i = 0; i < count; i++) {
+        const exId = ids[i] ?? 0;
+        const libEx = exId > 0 ? exercisesById.get(exId) : undefined;
+        const name = rawNames[i] ?? libEx?.name ?? `Exercise #${exId}`;
+        const defaultMetric = inferRoutineTargetMetricFromLibraryMetric(libEx?.metricType);
+
+        let slot: RoutineExerciseTargetSlot;
+        const headerSlot = headerSlots?.[i];
+        if (headerSlot) {
+          slot = headerSlot;
+        } else if (plusParts.length > 0) {
+          const fixed = plusParts[i] ?? plusParts[plusParts.length - 1] ?? defaultFixedForRoutineMetric(defaultMetric);
+          slot = {
+            metric: defaultMetric,
+            mode: "FIXED",
+            fixedValue: fixed,
+            perSetValues: Array.from({ length: setsCount }, () => fixed),
+          };
+        } else if (dashParts.length > 1 && dashParts.some((v) => v > 0)) {
+          const firstPos = dashParts.find((v) => v > 0) ?? defaultFixedForRoutineMetric(defaultMetric);
+          const normalized = resizeRoutinePerSetValues(dashParts, firstPos, setsCount);
+          const allSame = new Set(normalized).size === 1;
+          slot = {
+            metric: defaultMetric,
+            mode: allSame ? "FIXED" : "PER_SET",
+            fixedValue: firstPos,
+            perSetValues: normalized,
+          };
+        } else {
+          const fixed =
+            Number.isFinite(plainInt) && plainInt > 0
+              ? plainInt
+              : defaultFixedForRoutineMetric(defaultMetric);
+          slot = {
+            metric: defaultMetric,
+            mode: "FIXED",
+            fixedValue: fixed,
+            perSetValues: Array.from({ length: setsCount }, () => fixed),
+          };
+        }
+
+        decodedExercises.push({
+          exerciseId: exId,
+          name,
+          metric: slot.metric,
+          mode: slot.mode,
+          fixedValue: slot.fixedValue,
+          perSetValues: slot.perSetValues,
+          summary: formatRoutineExerciseBadge(slot, setsCount),
+        });
+      }
+    }
+
+    return {
+      ...blk,
+      cleanNotes,
+      exercises: decodedExercises,
+    };
+  }
+
   async listRoutines(ctx: UserContext): Promise<RoutineWithBlocksRecord[]> {
-    const routines = await this.backing.readCollection<RoutineWithBlocksRecord>(ctx, "routines");
-    return routines.filter((r) => !isDeletedTombstone(r.routine?.deletedAtMillis));
+    const [routines, exercises] = await Promise.all([
+      this.backing.readCollection<RoutineWithBlocksRecord>(ctx, "routines"),
+      this.backing.readCollection<ExerciseRecord>(ctx, "exercises"),
+    ]);
+    const exercisesById = new Map<number, ExerciseRecord>(
+      exercises.map((e) => [Number(e.id), e])
+    );
+    return routines
+      .filter((r) => !isDeletedTombstone(r.routine?.deletedAtMillis))
+      .map((r) => ({
+        ...r,
+        blocks: (r.blocks ?? []).map((blk) => this.enrichRoutineBlock(blk, exercisesById)),
+      }));
   }
 
   async upsertRoutine(
@@ -893,6 +1040,14 @@ export class WorkoutDomainService {
         setsCount?: number;
         targetRepsScheme?: string;
         exerciseNames?: string[];
+        exercises?: Array<{
+          name: string;
+          category?: string;
+          metric?: RoutineTargetMetric;
+          mode?: RoutineTargetMode;
+          fixedValue?: number;
+          perSetValues?: number[];
+        }>;
         notes?: string;
         section?: string;
         subBlock?: string;
@@ -900,14 +1055,36 @@ export class WorkoutDomainService {
     }
   ): Promise<RoutineWithBlocksRecord> {
     return this.runWithUserMutationLock(ctx, ["exercises", "routines"], async (tx) => {
-      const allExerciseReqs: Array<{ name: string }> = [];
-      if (input.mainExerciseName) allExerciseReqs.push({ name: input.mainExerciseName });
+      const allExerciseReqs: Array<{
+        name: string;
+        category?: string;
+        metricType?: string;
+      }> = [];
+      if (input.mainExerciseName) {
+        allExerciseReqs.push({ name: input.mainExerciseName });
+      }
       for (const b of input.blocks) {
-        if (b.exerciseNames) {
-          for (const n of b.exerciseNames) allExerciseReqs.push({ name: n });
+        if (b.exercises && b.exercises.length > 0) {
+          for (const exItem of b.exercises) {
+            allExerciseReqs.push({
+              name: exItem.name,
+              category: exItem.category,
+              metricType: exItem.metric
+                ? inferLibraryMetricTypeFromRoutineTarget(exItem.metric, exItem.category)
+                : undefined,
+            });
+          }
+        } else if (b.exerciseNames) {
+          for (const n of b.exerciseNames) {
+            allExerciseReqs.push({ name: n });
+          }
         }
       }
       const exerciseMap = await this.resolveExerciseMapInStore(tx, ctx, allExerciseReqs);
+      const allExercises = await tx.readCollection<ExerciseRecord>(ctx, "exercises");
+      const exercisesById = new Map<number, ExerciseRecord>(
+        allExercises.map((e) => [Number(e.id), e])
+      );
 
       const routines = await tx.readCollection<RoutineWithBlocksRecord>(ctx, "routines");
       const trimmedName = input.name.trim();
@@ -922,11 +1099,115 @@ export class WorkoutDomainService {
       const routineId =
         existingIdx >= 0 ? routines[existingIdx].routine.id : maxRoutineId + 1;
 
+      const structuredFirstEx =
+        input.blocks
+          .flatMap((b) => b.exercises ?? [])
+          .map((e) => exerciseMap.get(e.name.trim().toLowerCase()))
+          .find((e): e is ExerciseRecord => Boolean(e)) ?? null;
+
       const mainEx = input.mainExerciseName
         ? exerciseMap.get(input.mainExerciseName.trim().toLowerCase()) ?? null
-        : null;
+        : structuredFirstEx;
 
-      const blocks: RoutineBlockRecord[] = input.blocks.map((b, idx) => {
+      const storedBlocks: RoutineBlockRecord[] = input.blocks.map((b, idx) => {
+        const hasStructuredExercises = Array.isArray(b.exercises) && b.exercises.length > 0;
+        const maxPerSetLen = hasStructuredExercises
+          ? Math.max(0, ...b.exercises!.map((e) => e.perSetValues?.length ?? 0))
+          : 0;
+        const resolvedSetsCount =
+          b.setsCount !== undefined
+            ? Math.max(1, Math.trunc(b.setsCount))
+            : maxPerSetLen > 0
+              ? maxPerSetLen
+              : hasStructuredExercises
+                ? defaultSetsForRoutineFormat(b.format)
+                : 1;
+
+        if (hasStructuredExercises) {
+          const exRecords: ExerciseRecord[] = [];
+          const slots: RoutineExerciseTargetSlot[] = [];
+
+          for (const exIn of b.exercises!) {
+            const exRec = exerciseMap.get(exIn.name.trim().toLowerCase());
+            if (!exRec) continue;
+            exRecords.push(exRec);
+
+            const metric: RoutineTargetMetric =
+              exIn.metric ?? inferRoutineTargetMetricFromLibraryMetric(exRec.metricType);
+            const mode: RoutineTargetMode =
+              exIn.mode ??
+              (exIn.perSetValues && exIn.perSetValues.length > 0 ? "PER_SET" : "FIXED");
+
+            if (mode === "FIXED") {
+              const fixedValue =
+                exIn.fixedValue !== undefined
+                  ? Math.trunc(exIn.fixedValue)
+                  : defaultFixedForRoutineMetric(metric);
+              if (fixedValue <= 0) {
+                throw new Error(
+                  `Exercise '${exIn.name.trim()}' in block '${b.name.trim()}' must have fixedValue >= 1 (got ${fixedValue}). Remove the exercise instead of setting all sets to 0.`
+                );
+              }
+              slots.push({
+                metric,
+                mode: "FIXED",
+                fixedValue,
+                perSetValues: Array.from({ length: resolvedSetsCount }, () => fixedValue),
+              });
+            } else {
+              const rawVals = exIn.perSetValues ?? [];
+              const firstPositive =
+                rawVals.find((v) => v > 0) ??
+                (exIn.fixedValue !== undefined && exIn.fixedValue > 0
+                  ? Math.trunc(exIn.fixedValue)
+                  : defaultFixedForRoutineMetric(metric));
+              const perSetValues =
+                rawVals.length > 0
+                  ? resizeRoutinePerSetValues(rawVals, firstPositive, resolvedSetsCount)
+                  : Array.from({ length: resolvedSetsCount }, () =>
+                      exIn.fixedValue !== undefined ? Math.trunc(exIn.fixedValue) : firstPositive
+                    );
+              if (!perSetValues.some((v) => v > 0)) {
+                throw new Error(
+                  `Exercise '${exIn.name.trim()}' in block '${b.name.trim()}' cannot have 0 (Skip) on every set. Set at least 1 active round (>= 1) or remove the exercise.`
+                );
+              }
+              const fixedValue =
+                exIn.fixedValue !== undefined && exIn.fixedValue > 0
+                  ? Math.trunc(exIn.fixedValue)
+                  : perSetValues.find((v) => v > 0) ?? defaultFixedForRoutineMetric(metric);
+              slots.push({
+                metric,
+                mode: "PER_SET",
+                fixedValue,
+                perSetValues,
+              });
+            }
+          }
+
+          const encodedNotes = encodeRoutineBlockTargets(b.notes ?? "", slots, resolvedSetsCount);
+          const computedSummary =
+            b.targetRepsScheme && b.targetRepsScheme.trim().length > 0
+              ? b.targetRepsScheme.trim()
+              : formatRoutineBlockTargetSummary(slots, resolvedSetsCount);
+
+          return {
+            id: idx + 1,
+            routineId,
+            position: idx,
+            name: b.name.trim(),
+            kind: b.kind ?? "WEIGHTLIFTING",
+            format: b.format ?? "",
+            setsCount: resolvedSetsCount,
+            targetRepsScheme: computedSummary,
+            exerciseIdsCsv: exRecords.map((e) => e.id).join(","),
+            exerciseNamesCsv: exRecords.map((e) => e.name).join(","),
+            notes: encodedNotes,
+            section: b.section ?? "",
+            subBlock: b.subBlock ?? "",
+          };
+        }
+
         const exRecords = (b.exerciseNames ?? [])
           .map((n) => exerciseMap.get(n.trim().toLowerCase()))
           .filter((e): e is ExerciseRecord => Boolean(e));
@@ -937,7 +1218,7 @@ export class WorkoutDomainService {
           name: b.name.trim(),
           kind: b.kind ?? "WEIGHTLIFTING",
           format: b.format ?? "",
-          setsCount: b.setsCount ?? 1,
+          setsCount: resolvedSetsCount,
           targetRepsScheme: b.targetRepsScheme ?? "",
           exerciseIdsCsv: exRecords.map((e) => e.id).join(","),
           exerciseNamesCsv: exRecords.map((e) => e.name).join(","),
@@ -947,27 +1228,34 @@ export class WorkoutDomainService {
         };
       });
 
-      const record: RoutineWithBlocksRecord = {
+      const storedRecord: RoutineWithBlocksRecord = {
         routine: {
           id: routineId,
           name: trimmedName,
           description: input.description ?? "",
           mainExerciseId: mainEx ? mainEx.id : null,
           mainExerciseName: mainEx ? mainEx.name : null,
-          defaultFormat: input.defaultFormat ?? "",
+          defaultFormat:
+            input.defaultFormat ??
+            input.blocks.find((b) => (b.format ?? "").trim().length > 0)?.format?.trim() ??
+            "",
           updatedAtMillis: Date.now(),
           deletedAtMillis: null,
         },
-        blocks,
+        blocks: storedBlocks,
       };
 
       if (existingIdx >= 0) {
-        routines[existingIdx] = record;
+        routines[existingIdx] = storedRecord;
       } else {
-        routines.push(record);
+        routines.push(storedRecord);
       }
       await tx.writeCollection(ctx, "routines", routines);
-      return record;
+
+      return {
+        ...storedRecord,
+        blocks: storedBlocks.map((blk) => this.enrichRoutineBlock(blk, exercisesById)),
+      };
     });
   }
 

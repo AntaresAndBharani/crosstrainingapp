@@ -326,15 +326,20 @@ class Repository(
         cleanupDuplicateRepMaxesInternal()
     }
 
-    private fun remapExerciseIdsCsv(csv: String, dupIds: Set<Long>, primaryId: Long): String {
+    private fun remapExerciseIdsCsv(
+        csv: String,
+        dupIds: Set<Long>,
+        primaryId: Long,
+        preserveSequenceDuplicates: Boolean = false
+    ): String {
         if (csv.isBlank()) return csv
-        return csv.split(",")
+        val remapped = csv.split(",")
             .mapNotNull { token -> token.trim().takeIf { it.isNotEmpty() } }
             .map { token ->
                 val id = token.toLongOrNull()
                 if (id != null && id in dupIds) primaryId.toString() else token
             }
-            .distinct()
+        return (if (preserveSequenceDuplicates) remapped else remapped.distinct())
             .joinToString(",")
     }
 
@@ -366,7 +371,13 @@ class Repository(
                 routineDao.getAllWithBlocksOnce().forEach { rwb ->
                     var blocksChanged = false
                     val updatedBlocks = rwb.blocks.map { block ->
-                        val remappedCsv = remapExerciseIdsCsv(block.exerciseIdsCsv, dupIds, primary.id)
+                        val preserveSeq = com.fractanomics.crosstraining.util.RoutineTargetCodec.hasStructuredHeader(block.notes)
+                        val remappedCsv = remapExerciseIdsCsv(
+                            csv = block.exerciseIdsCsv,
+                            dupIds = dupIds,
+                            primaryId = primary.id,
+                            preserveSequenceDuplicates = preserveSeq
+                        )
                         if (remappedCsv != block.exerciseIdsCsv) {
                             blocksChanged = true
                             block.copy(exerciseIdsCsv = remappedCsv)

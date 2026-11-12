@@ -1,10 +1,18 @@
 package com.fractanomics.crosstraining.ui.screens
 
 import com.fractanomics.crosstraining.data.model.BlockKind
+import com.fractanomics.crosstraining.data.model.Exercise
+import com.fractanomics.crosstraining.data.model.ExerciseCategory
+import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.RoutineBlock
 import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
+import com.fractanomics.crosstraining.util.ExerciseTargetMetric
+import com.fractanomics.crosstraining.util.RoutineExerciseTargetSpec
+import com.fractanomics.crosstraining.util.RoutineTargetCodec
+import com.fractanomics.crosstraining.util.TargetMode
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -140,5 +148,80 @@ class LibraryScreenTest {
             assertEquals("Superset", b.kind.shortLabel)
             assertTrue(b.kind.shortLabel.length <= 10)
         }
+    }
+
+    @Test
+    fun `BlockKind GYMNASTICS has concise badge label and shortLabel`() {
+        val gymnastics = BlockKind.GYMNASTICS
+        assertEquals("Gymnastics", gymnastics.label)
+        assertEquals("Gymnastics", gymnastics.shortLabel)
+        assertTrue(gymnastics.shortLabel.length <= 15)
+    }
+
+    @Test
+    fun `Structured rb_v2 routine blocks format clean per-exercise badges and never leak raw header into notes`() {
+        val airBike = Exercise(id = 10L, name = "Air Bike", category = ExerciseCategory.MACHINE, metricType = MetricType.CALORIES)
+        val burpees = Exercise(id = 11L, name = "Burpees", category = ExerciseCategory.GYMNASTICS, metricType = MetricType.REPS)
+        val shuttle = Exercise(id = 12L, name = "Shuttle Run", category = ExerciseCategory.MACHINE, metricType = MetricType.DISTANCE)
+
+        val encodedNotes = RoutineTargetCodec.encodeNotesWithTargets(
+            cleanNotes = "Keep steady nasal breathing on rounds 1-2",
+            slots = listOf(
+                RoutineExerciseTargetSpec(
+                    metric = ExerciseTargetMetric.METERS,
+                    mode = TargetMode.FIXED,
+                    fixedValue = 200,
+                    perSetValues = listOf(200, 200, 200, 200)
+                ),
+                RoutineExerciseTargetSpec(
+                    metric = ExerciseTargetMetric.CALORIES,
+                    mode = TargetMode.PER_SET,
+                    fixedValue = 15,
+                    perSetValues = listOf(15, 15, 12, 0)
+                ),
+                RoutineExerciseTargetSpec(
+                    metric = ExerciseTargetMetric.REPS,
+                    mode = TargetMode.PER_SET,
+                    fixedValue = 10,
+                    perSetValues = listOf(12, 10, 8, 0)
+                ),
+                RoutineExerciseTargetSpec(
+                    metric = ExerciseTargetMetric.METERS,
+                    mode = TargetMode.FIXED,
+                    fixedValue = 100,
+                    perSetValues = listOf(100, 100, 100, 100)
+                )
+            ),
+            setsCount = 4
+        )
+
+        val block = RoutineBlock(
+            id = 50L,
+            routineId = 100L,
+            position = 0,
+            name = "Mixed Conditioning",
+            kind = BlockKind.METCON,
+            format = "E3MOM",
+            setsCount = 4,
+            targetRepsScheme = "200m + 15-15-12-0 cal + 12-10-8-0 reps + 100m",
+            exerciseIdsCsv = "12,10,11,12",
+            notes = encodedNotes
+        )
+
+        assertTrue(RoutineTargetCodec.hasStructuredHeader(block.notes))
+        val cleanNotes = RoutineTargetCodec.extractCleanNotes(block.notes)
+        assertEquals("Keep steady nasal breathing on rounds 1-2", cleanNotes)
+        assertFalse(cleanNotes.contains("[rb_v2="))
+
+        val pills = formatRoutineBlockCardExercises(block, listOf(airBike, burpees, shuttle))
+        assertEquals(
+            listOf(
+                "Shuttle Run · 200m / set",
+                "Air Bike · 15 • 15 • 12 • 0 cal",
+                "Burpees · 12 • 10 • 8 • 0 reps",
+                "Shuttle Run · 100m / set"
+            ),
+            pills
+        )
     }
 }
