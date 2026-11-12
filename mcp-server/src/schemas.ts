@@ -18,6 +18,7 @@ export const MetricTypeValues = [
 
 export const BlockKindValues = [
   "WEIGHTLIFTING",
+  "GYMNASTICS",
   "COMPLEX",
   "SUPERSET",
   "HYPERTROPHY",
@@ -41,6 +42,28 @@ export const GoalMetricValues = [
   "REPS",
 ] as const;
 
+export const RoutineTargetMetricValues = [
+  "REPS",
+  "CALORIES",
+  "TIME_SECONDS",
+  "METERS",
+] as const;
+
+export const RoutineTargetModeValues = [
+  "FIXED",
+  "PER_SET",
+] as const;
+
+export type RoutineTargetMetric = (typeof RoutineTargetMetricValues)[number];
+export type RoutineTargetMode = (typeof RoutineTargetModeValues)[number];
+
+export interface RoutineExerciseTargetSlot {
+  metric: RoutineTargetMetric;
+  mode: RoutineTargetMode;
+  fixedValue: number;
+  perSetValues: number[];
+}
+
 // Always return a fresh Zod schema instance from helper factories so `zod-to-json-schema`
 // never deduplicates shared references into `"$ref": "#/properties/..."` (which Gemini rejects).
 const exerciseCategorySchema = () =>
@@ -62,6 +85,16 @@ const goalMetricSchema = () =>
   z
     .enum(GoalMetricValues)
     .describe("Cycle goal metric: WEIGHT, CALORIES, or REPS");
+
+const routineTargetMetricSchema = () =>
+  z
+    .enum(RoutineTargetMetricValues)
+    .describe("Per-exercise target unit: REPS, CALORIES, TIME_SECONDS, or METERS");
+
+const routineTargetModeSchema = () =>
+  z
+    .enum(RoutineTargetModeValues)
+    .describe("FIXED applies fixedValue to every set; PER_SET uses perSetValues (0 = Skip in that set)");
 
 /** True only for a real calendar date in strict `YYYY-MM-DD` form (rejects `2026-02-30`, `2026-1-5`). */
 export function isValidIsoDate(value: string): boolean {
@@ -125,14 +158,64 @@ export const BatchUpsertExercisesInputSchema = {
     .describe("List of exercises to create or update in one atomic batch"),
 };
 
+const makeRoutineBlockExerciseInputSchema = () =>
+  z.object({
+    name: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe(
+        "Exercise name (may repeat across positions for sequence blocks like Shuttle Run -> Burpees -> Shuttle Run)"
+      ),
+    category: exerciseCategorySchema()
+      .optional()
+      .describe("Optional movement category when auto-creating a new exercise"),
+    metric: routineTargetMetricSchema()
+      .optional()
+      .describe(
+        "Target metric: REPS, CALORIES, TIME_SECONDS, or METERS (auto-inferred from exercise metricType when omitted)"
+      ),
+    mode: routineTargetModeSchema()
+      .optional()
+      .describe("FIXED (same target every set) or PER_SET (per-set array where 0 = Skip set)"),
+    fixedValue: z
+      .number()
+      .int()
+      .min(0)
+      .max(100000)
+      .optional()
+      .describe("Fixed integer target per set when mode is FIXED (must be >= 1)"),
+    perSetValues: z
+      .array(z.number().int().min(0).max(100000))
+      .max(100)
+      .optional()
+      .describe(
+        "Per-set integer targets aligned to block setsCount (0 = Skip in that set; at least one set must be >= 1)"
+      ),
+  });
+
 const makeRoutineBlockInputSchema = () =>
   z.object({
     name: z.string().min(1).max(300).describe("Block title, e.g. 'Snatch Waves' or 'Conditioning AMRAP'"),
     kind: blockKindSchema().optional().describe("Block type (defaults to WEIGHTLIFTING)"),
-    format: z.string().max(200).optional().describe("Format string, e.g. 'E2MOM', 'AMRAP 12', '4 Sets'"),
-    setsCount: z.number().int().min(1).max(100).optional().describe("Number of sets in this block"),
-    targetRepsScheme: z.string().max(200).optional().describe("Target rep scheme, e.g. '5-5-3-3-1' or '10'"),
-    exerciseNames: z.array(z.string()).optional().describe("List of exercise names used in this block"),
+    format: z.string().max(200).optional().describe("Format string, e.g. 'E2MOM', 'AMRAP', 'Sets x Reps'"),
+    setsCount: z.number().int().min(1).max(100).optional().describe("Number of sets/rounds in this block (>= 1)"),
+    targetRepsScheme: z
+      .string()
+      .max(200)
+      .optional()
+      .describe("Legacy/summary target scheme, e.g. '5-5-3-3-1' or '15 cal + 12-10-8-0 reps'"),
+    exerciseNames: z
+      .array(z.string())
+      .optional()
+      .describe("Legacy list of exercise names (prefer structured `exercises` for mixed metrics or per-set/0-skip targets)"),
+    exercises: z
+      .array(makeRoutineBlockExerciseInputSchema())
+      .max(50)
+      .optional()
+      .describe(
+        "Structured per-exercise targets supporting REPS, CALORIES, TIME_SECONDS, METERS, FIXED or PER_SET mode, 0 (Skip) sets, and repeated sequence exercises"
+      ),
     notes: z.string().max(2000).optional().describe("Coaching cues, percentages, or rest instructions"),
     section: z.string().max(100).optional().describe("Optional workout section header"),
     subBlock: z.string().max(100).optional().describe("Optional sub-block label (e.g. 'A1', 'B')"),
@@ -903,4 +986,315 @@ export function parseCycleGoalMetadata(rawNotes?: string): {
     timeWindowMinutes,
     cleanNotes: (match[3] ?? "").trim(),
   };
+}
+
+// ============================================================================
+// Routine Builder v2 (`[rb_v2=...]`) Codec — 100% Parity with Android RoutineTargetCodec.kt
+// ============================================================================
+
+const RB_V2_HEADER_LINE_REGEX = /^\[rb_v2=([^\r\n\]]*)\](?:\r?\n)?/i;
+// Must match Android `RoutineTargetCodec.SINGLE_EFFORT_FORMATS` exactly.
+const SINGLE_EFFORT_ROUTINE_FORMATS = new Set(["amrap", "for time", "chipper", "death by", "time cap"]);
+
+export function defaultFixedForRoutineMetric(metric: RoutineTargetMetric): number {
+  switch (metric) {
+    case "CALORIES":
+      return 15;
+    case "TIME_SECONDS":
+      return 45;
+    case "METERS":
+      return 250;
+    case "REPS":
+    default:
+      return 8;
+  }
+}
+
+export function inferRoutineTargetMetricFromLibraryMetric(metricType?: string): RoutineTargetMetric {
+  switch ((metricType ?? "").toUpperCase()) {
+    case "CALORIES":
+      return "CALORIES";
+    case "TIME":
+      return "TIME_SECONDS";
+    case "DISTANCE":
+      return "METERS";
+    case "WEIGHT":
+    case "REPS":
+    default:
+      return "REPS";
+  }
+}
+
+export function inferLibraryMetricTypeFromRoutineTarget(
+  metric?: RoutineTargetMetric,
+  category?: string
+): string {
+  switch (metric) {
+    case "CALORIES":
+      return "CALORIES";
+    case "TIME_SECONDS":
+      return "TIME";
+    case "METERS":
+      return "DISTANCE";
+    case "REPS":
+    default:
+      return (category ?? "").toUpperCase() === "GYMNASTICS" ? "REPS" : "WEIGHT";
+  }
+}
+
+export function defaultSetsForRoutineFormat(format?: string): number {
+  const normalized = (format ?? "").trim().toLowerCase();
+  if (SINGLE_EFFORT_ROUTINE_FORMATS.has(normalized)) return 1;
+  if (normalized === "tabata") return 8;
+  return 4;
+}
+
+export function resizeRoutinePerSetValues(
+  currentValues: number[],
+  fallbackFixed: number,
+  newSetsCount: number
+): number[] {
+  const targetCount = Math.max(1, Math.trunc(newSetsCount));
+  if (currentValues.length === 0) {
+    const fill = Math.max(0, Math.trunc(fallbackFixed));
+    return Array.from({ length: targetCount }, () => fill);
+  }
+  const clean = currentValues.map((v) => Math.max(0, Math.trunc(v)));
+  if (clean.length === targetCount) return clean;
+  if (targetCount < clean.length) return clean.slice(0, targetCount);
+  const lastVal = clean[clean.length - 1];
+  return [...clean, ...Array.from({ length: targetCount - clean.length }, () => lastVal)];
+}
+
+export function hasStructuredRoutineHeader(notes?: string): boolean {
+  if (!notes) return false;
+  return RB_V2_HEADER_LINE_REGEX.test(notes.trimStart());
+}
+
+export function extractCleanRoutineNotes(notes?: string): string {
+  if (!notes) return "";
+  const withoutV2 = notes.trimStart().replace(RB_V2_HEADER_LINE_REGEX, "");
+  const lines = withoutV2.split(/\r?\n/);
+  const firstLine = (lines[0] ?? "").trim();
+  if (/^Score:\s*(TIME|REPS|CALORIES|DISTANCE|WEIGHT)$/i.test(firstLine)) {
+    return lines.slice(1).join("\n").trim();
+  }
+  return withoutV2.trim();
+}
+
+export function encodeRoutineBlockTargets(
+  cleanNotes: string,
+  slots: RoutineExerciseTargetSlot[],
+  setsCount: number
+): string {
+  const sanitizedNotes = extractCleanRoutineNotes(cleanNotes);
+  if (slots.length === 0) return sanitizedNotes;
+  const normalizedSets = Math.max(1, Math.trunc(setsCount));
+  const encodedSlots = slots
+    .map((slot) => {
+      const cleanFixed = Math.max(0, Math.trunc(slot.fixedValue));
+      const values =
+        slot.mode === "FIXED"
+          ? Array.from({ length: normalizedSets }, () => cleanFixed)
+          : resizeRoutinePerSetValues(slot.perSetValues, cleanFixed, normalizedSets);
+      return `${slot.metric}:${slot.mode}:${cleanFixed}:${values.join(".")}`;
+    })
+    .join(";");
+  const header = `[rb_v2=${encodedSlots}]`;
+  return sanitizedNotes.length === 0 ? header : `${header}\n${sanitizedNotes}`;
+}
+
+export function decodeRoutineHeaderSlots(
+  notes: string | undefined,
+  setsCount: number
+): RoutineExerciseTargetSlot[] | null {
+  if (!notes) return null;
+  const match = RB_V2_HEADER_LINE_REGEX.exec(notes.trimStart());
+  if (!match) return null;
+  const payload = (match[1] ?? "").trim();
+  if (!payload) return [];
+  const normalizedSets = Math.max(1, Math.trunc(setsCount));
+
+  const parsed: RoutineExerciseTargetSlot[] = [];
+  for (const rawSlot of payload.split(";")) {
+    const parts = rawSlot.trim().split(":");
+    if (parts.length < 4) continue;
+    const rawMetric = parts[0].trim().toUpperCase();
+    const metric: RoutineTargetMetric | null =
+      rawMetric === "REPS" ||
+      rawMetric === "CALORIES" ||
+      rawMetric === "TIME_SECONDS" ||
+      rawMetric === "METERS"
+        ? rawMetric
+        : null;
+    const rawMode = parts[1].trim().toUpperCase();
+    const mode: RoutineTargetMode | null =
+      rawMode === "FIXED" || rawMode === "PER_SET" ? rawMode : null;
+    if (!metric || !mode) continue;
+    const parsedFixed = Number.parseInt(parts[2].trim(), 10);
+    const fixedValue = Number.isFinite(parsedFixed)
+      ? Math.max(0, parsedFixed)
+      : defaultFixedForRoutineMetric(metric);
+    const rawValues = parts[3]
+      .split(".")
+      .map((s) => Number.parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n))
+      .map((n) => Math.max(0, n));
+    const perSetValues =
+      mode === "FIXED"
+        ? Array.from({ length: normalizedSets }, () => fixedValue)
+        : resizeRoutinePerSetValues(rawValues, fixedValue, normalizedSets);
+    parsed.push({ metric, mode, fixedValue, perSetValues });
+  }
+  return parsed.length > 0 ? parsed : null;
+}
+
+function formatRoutineMetricValueAndUnit(metric: RoutineTargetMetric, value: number): string {
+  switch (metric) {
+    case "REPS":
+      return `${value} ${value === 1 ? "rep" : "reps"}`;
+    case "CALORIES":
+      return `${value} cal`;
+    case "TIME_SECONDS":
+      // Mirrors Android `RoutineTargetCodec.formatValueNumberAndUnit` ("2m", "45s").
+      return value >= 60 && value % 60 === 0 ? `${value / 60}m` : `${value}s`;
+    case "METERS":
+      // Mirrors Android `RoutineTargetCodec.formatValueNumberAndUnit` ("1km", "250m").
+      return value >= 1000 && value % 1000 === 0 ? `${value / 1000}km` : `${value}m`;
+  }
+}
+
+/**
+ * Legacy (non-`[rb_v2=...]`) `targetRepsScheme` decoding — mirrors Android
+ * `RoutineTargetCodec.decodeLegacyBlockExercises` so `list_routines` reports the same targets the
+ * mobile Routine Builder shows for pre-redesign routines.
+ */
+export function decodeLegacyRoutineSlots(
+  targetRepsScheme: string | undefined,
+  setsCount: number,
+  metrics: RoutineTargetMetric[]
+): RoutineExerciseTargetSlot[] {
+  const scheme = (targetRepsScheme ?? "").trim();
+  const sets = Math.max(1, Math.trunc(setsCount));
+  const toInt = (s: string): number | null => (/^\s*\d+\s*$/.test(s) ? Number.parseInt(s, 10) : null);
+  const fixedSlot = (metric: RoutineTargetMetric, fixed: number, count: number): RoutineExerciseTargetSlot => ({
+    metric,
+    mode: "FIXED",
+    fixedValue: fixed,
+    perSetValues: Array.from({ length: count }, () => fixed),
+  });
+
+  if (metrics.length > 1 && (scheme.includes("+") || scheme.includes("/"))) {
+    const seqParts = scheme
+      .split(/[+/]/)
+      .map(toInt)
+      .filter((n): n is number => n !== null && n > 0);
+    return metrics.map((metric, idx) =>
+      fixedSlot(metric, seqParts[idx] ?? seqParts[seqParts.length - 1] ?? defaultFixedForRoutineMetric(metric), sets)
+    );
+  }
+
+  if ((scheme.includes("-") || scheme.includes(",")) && !/^(TRISET|SUPERSET|BISET)/i.test(scheme)) {
+    const dashValues = scheme
+      .split(/[-,]/)
+      .map(toInt)
+      .filter((n): n is number => n !== null);
+    if (dashValues.length > 1 && dashValues.some((v) => v > 0)) {
+      const effectiveCount = sets <= 1 || dashValues.length > sets ? dashValues.length : sets;
+      return metrics.map((metric) => {
+        const firstPositive = dashValues.find((v) => v > 0) ?? defaultFixedForRoutineMetric(metric);
+        const normalized = resizeRoutinePerSetValues(dashValues, firstPositive, effectiveCount);
+        return {
+          metric,
+          mode: new Set(normalized).size === 1 ? "FIXED" : "PER_SET",
+          fixedValue: firstPositive,
+          perSetValues: normalized,
+        };
+      });
+    }
+  }
+
+  const lower = scheme.toLowerCase();
+  if (lower.includes("x")) {
+    const xParts = lower.split("x");
+    if (xParts.length === 2) {
+      const reps = toInt(xParts[1]);
+      if (reps !== null && reps > 0) {
+        const schemeSets = toInt(xParts[0]);
+        const count = schemeSets !== null && schemeSets >= 1 && schemeSets <= 100 ? schemeSets : sets;
+        return metrics.map((metric) => fixedSlot(metric, reps, count));
+      }
+    }
+  }
+
+  const singleInt = toInt(scheme);
+  return metrics.map((metric) =>
+    fixedSlot(metric, singleInt !== null && singleInt > 0 ? singleInt : defaultFixedForRoutineMetric(metric), sets)
+  );
+}
+
+export function formatRoutineExerciseBadge(
+  slot: RoutineExerciseTargetSlot,
+  setsCount: number
+): string {
+  if (slot.mode === "FIXED") {
+    return `${formatRoutineMetricValueAndUnit(slot.metric, slot.fixedValue)} / set`;
+  }
+  const vals = resizeRoutinePerSetValues(slot.perSetValues, slot.fixedValue, setsCount);
+  const joined = vals.join(" • ");
+  switch (slot.metric) {
+    case "REPS":
+      return `${joined} reps`;
+    case "CALORIES":
+      return `${joined} cal`;
+    case "TIME_SECONDS":
+      return `${joined}s`;
+    case "METERS":
+      return `${joined}m`;
+  }
+}
+
+export function formatRoutineBlockTargetSummary(
+  slots: RoutineExerciseTargetSlot[],
+  setsCount: number
+): string {
+  if (slots.length === 0) return "";
+  if (slots.length === 1) {
+    const single = slots[0];
+    if (single.mode === "FIXED") {
+      return single.metric === "REPS"
+        ? String(single.fixedValue)
+        : formatRoutineMetricValueAndUnit(single.metric, single.fixedValue);
+    }
+    const vals = resizeRoutinePerSetValues(single.perSetValues, single.fixedValue, setsCount).join("-");
+    switch (single.metric) {
+      case "REPS":
+        return vals;
+      case "CALORIES":
+        return `${vals} cal`;
+      case "TIME_SECONDS":
+        return `${vals}s`;
+      case "METERS":
+        return `${vals}m`;
+    }
+  }
+  const raw = slots
+    .map((slot) => {
+      if (slot.mode === "FIXED") {
+        return formatRoutineMetricValueAndUnit(slot.metric, slot.fixedValue);
+      }
+      const vals = resizeRoutinePerSetValues(slot.perSetValues, slot.fixedValue, setsCount).join("-");
+      switch (slot.metric) {
+        case "REPS":
+          return `${vals} reps`;
+        case "CALORIES":
+          return `${vals} cal`;
+        case "TIME_SECONDS":
+          return `${vals}s`;
+        case "METERS":
+          return `${vals}m`;
+      }
+    })
+    .join(" + ");
+  return raw.length <= 190 ? raw : `${raw.slice(0, 187)}...`;
 }

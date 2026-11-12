@@ -198,7 +198,8 @@ export function createCrossTrainingMcpServer(
     "list_routines",
     {
       title: "List Workout Routines",
-      description: "List all saved workout routine templates and their ordered blocks.",
+      description:
+        "List all saved daily workout routine templates and their ordered blocks, enriched with structured per-exercise targets (`metric`, `mode`, `fixedValue`, `perSetValues` with `0` = Skip, `summary`) and `cleanNotes`.",
       inputSchema: {},
       annotations: READ_ONLY_ANNOTATIONS,
     },
@@ -212,7 +213,8 @@ export function createCrossTrainingMcpServer(
     "upsert_routine",
     {
       title: "Upsert Workout Routine",
-      description: "Create or update a workout routine template with ordered blocks.",
+      description:
+        "Create or update a daily workout routine template with ordered blocks. Prefer `blocks[].exercises` to specify mixed metrics (`REPS`, `CALORIES`, `TIME_SECONDS`, `METERS`), `FIXED` or `PER_SET` targets (`0` = Skip set), and repeated sequence movements; legacy `exerciseNames` + `targetRepsScheme` remain supported.",
       inputSchema: UpsertRoutineInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },

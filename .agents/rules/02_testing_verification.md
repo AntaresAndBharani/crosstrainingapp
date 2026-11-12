@@ -5,10 +5,9 @@
 - Always use `--no-daemon` on Windows to prevent file locking issues with Gradle daemons.
 
 ## 2. Pre-PR CI Parity Verification (Mandatory Gate)
-- Before creating a PR or pushing to a feature branch, execute the complete CI build matrix locally:
-  `.\gradlew.bat testDebugUnitTest assembleSnapshot -PsnapshotLabel=localtest --no-daemon`
-- If modifying UI components, capture and sync visual E2E test artifacts:
-  `.\scripts\run-e2e-tests.ps1 -CaptureArtifacts -Version "latest" -PushArtifacts`
+- Before creating a PR or pushing to a feature branch, execute the local verification suite:
+  `.\gradlew.bat testDebugUnitTest lintDebug assembleDebug --no-daemon; .\scripts\tests\Invoke-ScriptTests.ps1`
+- **No Emulator / Maestro / Visual E2E Tests:** Do NOT launch an Android emulator or execute Maestro E2E / visual screenshot flows (`.\scripts\run-e2e-tests.ps1`) unless explicitly requested by the user.
 - Ensure no machine-specific paths (e.g. Windows paths in `gradle.properties`) are committed to version control.
 
 ## 3. Test Authoring Best Practices

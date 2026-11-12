@@ -3,7 +3,12 @@ import crypto from "node:crypto";
 import type { Server } from "node:http";
 import { after, before, describe, it } from "node:test";
 import { createMcpExpressApp } from "../src/index.js";
-import { computeWeightMomentumAnalytics } from "../src/schemas.js";
+import {
+  computeWeightMomentumAnalytics,
+  decodeLegacyRoutineSlots,
+  defaultSetsForRoutineFormat,
+  formatRoutineBlockTargetSummary,
+} from "../src/schemas.js";
 import {
   type CycleGoalRecord,
   InMemoryBackingStore,
@@ -1148,5 +1153,240 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       upserts: [{ exerciseName: "Clean", targetReps: 1, targetWeight: 95 }],
     });
     assert.equal(explicit.cycle.cycleName, "Foundation");
+  });
+
+  it("supports Routine Builder v2 mixed metrics, 0 (Skip) per-set targets, sequence repeats, all-zero validation, and legacy compatibility", async () => {
+    async function callMcp(body: Record<string, unknown>) {
+      const res = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: "Bearer dev-static-token-123",
+        },
+        body: JSON.stringify(body),
+      });
+      assert.equal(res.status, 200);
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("text/event-stream")) {
+        const text = await res.text();
+        const dataLine = text.split("\n").find((l) => l.startsWith("data: "));
+        assert.ok(dataLine);
+        return JSON.parse(dataLine.slice(6));
+      }
+      return res.json();
+    }
+
+    // 1. Upsert structured v2 routine with GYMNASTICS + METCON, mixed metrics, 0 (Skip), and repeated sequence exercises
+    const upsertResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 701,
+      method: "tools/call",
+      params: {
+        name: "upsert_routine",
+        arguments: {
+          name: "Thursday Gymnastics & Mixed Engine",
+          description: "Skill capacity + mixed modal intervals",
+          blocks: [
+            {
+              name: "Gymnastics Skill EMOM",
+              kind: "GYMNASTICS",
+              format: "EMOM",
+              setsCount: 4,
+              notes: "Crisp hollow positions",
+              exercises: [
+                {
+                  name: "Ring Muscle-Up",
+                  category: "GYMNASTICS",
+                  metric: "REPS",
+                  mode: "PER_SET",
+                  perSetValues: [5, 0, 4, 0],
+                },
+                {
+                  name: "L-Sit Hold",
+                  category: "GYMNASTICS",
+                  metric: "TIME_SECONDS",
+                  mode: "PER_SET",
+                  perSetValues: [0, 30, 0, 30],
+                },
+              ],
+            },
+            {
+              name: "Shuttle Sandwich",
+              kind: "METCON",
+              format: "E3MOM",
+              setsCount: 3,
+              notes: "Negative split last round",
+              exercises: [
+                {
+                  name: "Shuttle Run",
+                  metric: "METERS",
+                  mode: "FIXED",
+                  fixedValue: 200,
+                },
+                {
+                  name: "SkiErg",
+                  metric: "CALORIES",
+                  mode: "PER_SET",
+                  perSetValues: [18, 15, 12],
+                },
+                {
+                  name: "Shuttle Run",
+                  metric: "METERS",
+                  mode: "FIXED",
+                  fixedValue: 100,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const upsertPayload = JSON.parse(upsertResp.result.content[0].text);
+    assert.equal(upsertPayload.status, "ok");
+    const savedRoutine = upsertPayload.routine as RoutineWithBlocksRecord;
+    assert.equal(savedRoutine.blocks.length, 2);
+
+    const b0 = savedRoutine.blocks[0];
+    assert.equal(b0.kind, "GYMNASTICS");
+    assert.equal(b0.cleanNotes, "Crisp hollow positions");
+    assert.ok(b0.notes.startsWith("[rb_v2=REPS:PER_SET:5:5.0.4.0;TIME_SECONDS:PER_SET:30:0.30.0.30]"));
+    assert.equal(b0.exercises?.length, 2);
+    assert.deepEqual(b0.exercises?.[0]?.perSetValues, [5, 0, 4, 0]);
+    assert.equal(b0.exercises?.[0]?.summary, "5 • 0 • 4 • 0 reps");
+    assert.deepEqual(b0.exercises?.[1]?.perSetValues, [0, 30, 0, 30]);
+    assert.equal(b0.exercises?.[1]?.summary, "0 • 30 • 0 • 30s");
+
+    const b1 = savedRoutine.blocks[1];
+    assert.equal(b1.exerciseNamesCsv, "Shuttle Run,SkiErg,Shuttle Run");
+    assert.equal(b1.exercises?.length, 3);
+    assert.equal(b1.exercises?.[0]?.fixedValue, 200);
+    assert.equal(b1.exercises?.[1]?.summary, "18 • 15 • 12 cal");
+    assert.equal(b1.exercises?.[2]?.fixedValue, 100);
+
+    // Verify auto-created exercises received inferred metricType and zero undefined fields in Firestore
+    const rawRoutines = await backingStore.readCollection<RoutineWithBlocksRecord>(
+      { uid: "dev-user-uid", env: "production" },
+      "routines"
+    );
+    const persisted = rawRoutines.find((r) => r.routine.name === "Thursday Gymnastics & Mixed Engine");
+    assert.ok(persisted);
+    for (const rawBlk of persisted.blocks) {
+      for (const [k, v] of Object.entries(rawBlk)) {
+        assert.notEqual(v, undefined, `RoutineBlock field '${k}' must not be undefined`);
+      }
+    }
+
+    const listExResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 702,
+      method: "tools/call",
+      params: { name: "list_exercises", arguments: { search: "SkiErg" } },
+    });
+    const skiErgEx = JSON.parse(listExResp.result.content[0].text).exercises[0];
+    assert.equal(skiErgEx.metricType, "CALORIES");
+    assert.equal(skiErgEx.category, "MACHINE");
+
+    // 2. Reject all-zero exercise targets (`fixedValue: 0` or `perSetValues: [0, 0, 0]`)
+    const allZeroResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 703,
+      method: "tools/call",
+      params: {
+        name: "upsert_routine",
+        arguments: {
+          name: "Invalid All Zero Routine",
+          blocks: [
+            {
+              name: "Broken Block",
+              setsCount: 3,
+              exercises: [
+                {
+                  name: "SkiErg",
+                  metric: "CALORIES",
+                  mode: "PER_SET",
+                  perSetValues: [0, 0, 0],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    assert.equal(allZeroResp.result?.isError, true, "All-zero perSetValues must be rejected");
+
+    // 3. Legacy `exerciseNames` + `targetRepsScheme` remains 100% compatible and returns decoded exercises
+    await callMcp({
+      jsonrpc: "2.0",
+      id: 704,
+      method: "tools/call",
+      params: {
+        name: "upsert_routine",
+        arguments: {
+          name: "Legacy Fran Template",
+          blocks: [
+            {
+              name: "Fran",
+              kind: "METCON",
+              format: "For Time",
+              setsCount: 3,
+              targetRepsScheme: "21-15-9",
+              exerciseNames: ["Thruster", "Pull-Up"],
+              notes: "Unbroken round 1",
+            },
+          ],
+        },
+      },
+    });
+
+    const listRoutinesResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 705,
+      method: "tools/call",
+      params: { name: "list_routines", arguments: {} },
+    });
+    const allRoutines = JSON.parse(listRoutinesResp.result.content[0].text)
+      .routines as RoutineWithBlocksRecord[];
+    const legacyFran = allRoutines.find((r) => r.routine.name === "Legacy Fran Template");
+    assert.ok(legacyFran);
+    assert.equal(legacyFran.blocks[0].cleanNotes, "Unbroken round 1");
+    assert.equal(legacyFran.blocks[0].exercises?.length, 2);
+    assert.deepEqual(legacyFran.blocks[0].exercises?.[0]?.perSetValues, [21, 15, 9]);
+  });
+
+  it("keeps Routine Builder v2 codec helpers in parity with Android RoutineTargetCodec", () => {
+    for (const fmt of ["AMRAP", "For Time", "Chipper", "Death by", "Time cap"]) {
+      assert.equal(defaultSetsForRoutineFormat(fmt), 1, `Expected 1 set for ${fmt}`);
+    }
+    assert.equal(defaultSetsForRoutineFormat("Max Effort"), 4);
+    assert.equal(defaultSetsForRoutineFormat("Tabata"), 8);
+    assert.equal(defaultSetsForRoutineFormat("EMOM"), 4);
+
+    assert.equal(
+      formatRoutineBlockTargetSummary(
+        [
+          { metric: "TIME_SECONDS", mode: "FIXED", fixedValue: 120, perSetValues: [120, 120] },
+          { metric: "METERS", mode: "FIXED", fixedValue: 1000, perSetValues: [1000, 1000] },
+          { metric: "REPS", mode: "FIXED", fixedValue: 1, perSetValues: [1, 1] },
+        ],
+        2
+      ),
+      "2m + 1km + 1 rep"
+    );
+
+    assert.deepEqual(decodeLegacyRoutineSlots("5,5,3", 3, ["REPS"])[0].perSetValues, [5, 5, 3]);
+    assert.deepEqual(decodeLegacyRoutineSlots("3-2-1-3-2-1", 4, ["REPS"])[0].perSetValues, [3, 2, 1, 3, 2, 1]);
+    assert.deepEqual(decodeLegacyRoutineSlots("21-15-9", 1, ["REPS"])[0].perSetValues, [21, 15, 9]);
+    assert.deepEqual(decodeLegacyRoutineSlots("5x3", 1, ["REPS"])[0], {
+      metric: "REPS",
+      mode: "FIXED",
+      fixedValue: 3,
+      perSetValues: [3, 3, 3, 3, 3],
+    });
+    const complex = decodeLegacyRoutineSlots("1 / 2", 5, ["REPS", "TIME_SECONDS"]);
+    assert.deepEqual(complex.map((s) => s.fixedValue), [1, 2]);
+    assert.equal(complex[1].metric, "TIME_SECONDS");
+    assert.equal(decodeLegacyRoutineSlots("TRISET_1", 4, ["CALORIES"])[0].fixedValue, 15);
   });
 });

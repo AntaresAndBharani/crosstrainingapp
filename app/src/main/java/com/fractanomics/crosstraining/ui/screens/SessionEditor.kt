@@ -125,7 +125,11 @@ import com.fractanomics.crosstraining.ui.timer.TimerPhase
 import com.fractanomics.crosstraining.ui.timer.TimerService
 import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfig
 import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfigParser
+import com.fractanomics.crosstraining.util.ExerciseTargetMetric
 import com.fractanomics.crosstraining.util.RepScheme
+import com.fractanomics.crosstraining.util.RoutineExerciseTargetSpec
+import com.fractanomics.crosstraining.util.RoutineTargetCodec
+import com.fractanomics.crosstraining.util.TargetMode
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
@@ -315,8 +319,178 @@ internal sealed class EditorBlockItem {
         val items: List<Pair<Int, BlockState>>
     ) : EditorBlockItem() {
         val totalRounds: Int
-            get() = items.maxOfOrNull { it.second.sets.size } ?: 0
+            get() = items.maxOfOrNull { (_, blk) ->
+                val maxGroup = blk.sets.mapNotNull { it.group.toIntOrNull() }.maxOrNull() ?: 0
+                maxOf(blk.sets.size, maxGroup)
+            } ?: 0
     }
+}
+
+private fun buildSessionSetStatesForTarget(
+    spec: RoutineExerciseTargetSpec,
+    setsCount: Int,
+    preserveGroupAlways: Boolean,
+    exercise: Exercise?
+): List<SetState> {
+    val perRoundValues = spec.effectiveValues(setsCount.coerceAtLeast(1))
+    val hasSkippedRound = perRoundValues.any { it <= 0 }
+    val includeGroup = preserveGroupAlways || hasSkippedRound
+    // `BlockState.toDraftOrNull()` persists `SetState.value` as `weight` for WEIGHT (or unresolved)
+    // exercises, so a Calories / Time / Meters target must never be written into `value` there
+    // (e.g. "250 m" on a weight-tracked Row would otherwise be logged as a 250 kg set).
+    val valueHoldsMetric = (exercise?.metricType ?: MetricType.WEIGHT) != MetricType.WEIGHT
+
+    val activeSets = perRoundValues.mapIndexedNotNull { roundIdx, target ->
+        if (target <= 0) return@mapIndexedNotNull null
+        val groupLabel = if (includeGroup) (roundIdx + 1).toString() else ""
+        when {
+            spec.metric == ExerciseTargetMetric.REPS || !valueHoldsMetric -> SetState(
+                reps = target.toString(),
+                value = "",
+                group = groupLabel
+            )
+            else -> SetState(
+                reps = "1",
+                value = target.toString(),
+                group = groupLabel
+            )
+        }
+    }
+
+    return activeSets.ifEmpty { listOf(SetState()) }
+}
+
+/**
+ * Expands a [RoutineWithBlocks] into ordered [BlockState] items for the Session Editor (`Load Routine...`).
+ *
+ * - Multi-exercise routine blocks expand into a shared [EditorBlockItem.SubBlockGroup] container
+ *   (one [BlockState] per exercise slot in sequence order, preserving intentional repeated exercises).
+ * - `0 (Skip)` sets are omitted while preserving 1-based round indices in [SetState.group].
+ * - Mixed metrics (`REPS`, `CALORIES`, `TIME_SECONDS`, `METERS`) pre-populate [SetState.reps] and [SetState.value].
+ */
+internal fun expandRoutineIntoSessionBlocks(
+    rwb: RoutineWithBlocks,
+    exercises: List<Exercise>,
+    defaultCompleted: Boolean = true
+): List<BlockState> {
+    val exercisesById = exercises.associateBy { it.id }
+    val expanded = mutableListOf<BlockState>()
+    val usedAutoSubBlockNames = mutableSetOf<String>()
+
+    rwb.blocks.sortedBy { it.position }.forEachIndexed { blockIdx, blk ->
+        val cleanNotes = RoutineTargetCodec.extractCleanNotes(blk.notes)
+        val isStructured = RoutineTargetCodec.hasStructuredHeader(blk.notes)
+        val decoded = RoutineTargetCodec.decodeBlockExercises(blk, exercisesById)
+
+        when {
+            decoded.size >= 2 -> {
+                val baseSubName = blk.subBlock.trim().ifBlank {
+                    blk.name.trim().ifBlank { "Block ${blockIdx + 1}" }
+                }
+                val resolvedSubName = if (blk.subBlock.isNotBlank()) {
+                    baseSubName
+                } else if (usedAutoSubBlockNames.add(baseSubName.lowercase())) {
+                    baseSubName
+                } else {
+                    "$baseSubName (${blockIdx + 1})".also { usedAutoSubBlockNames.add(it.lowercase()) }
+                }
+
+                decoded.forEachIndexed { seqIdx, (exId, spec) ->
+                    val exObj = exercisesById[exId]
+                    val movementTitle = exObj?.name ?: "${blk.name.ifBlank { blk.kind.label }} #${seqIdx + 1}"
+                    expanded.add(
+                        BlockState(
+                            name = movementTitle,
+                            kind = blk.kind,
+                            format = blk.format,
+                            scheme = RoutineTargetCodec.formatExerciseTargetBadge(spec, blk.setsCount),
+                            exercise = exObj,
+                            routine = rwb.routine,
+                            sequenceExercises = listOfNotNull(exObj),
+                            description = cleanNotes,
+                            sets = buildSessionSetStatesForTarget(
+                                spec = spec,
+                                setsCount = if (isStructured) blk.setsCount else spec.perSetValues.size,
+                                preserveGroupAlways = true,
+                                exercise = exObj
+                            ),
+                            section = blk.section,
+                            exerciseIdsCsv = exId.toString(),
+                            subBlock = resolvedSubName,
+                            isCompleted = defaultCompleted
+                        )
+                    )
+                }
+            }
+
+            decoded.size == 1 -> {
+                val (exId, decodedSpec) = decoded.first()
+                val exObj = exercisesById[exId]
+                // Legacy (non-`[rb_v2=...]`) blocks keep the exact pre-redesign `RepScheme.parse` set
+                // expansion ("5,5,3", "5x3" with setsCount = 1, 12-set waves stored with setsCount = 4).
+                val legacyReps = if (isStructured) null else RepScheme.parse(blk.targetRepsScheme, blk.setsCount)
+                val spec = if (legacyReps == null) {
+                    decodedSpec
+                } else {
+                    decodedSpec.copy(mode = TargetMode.PER_SET, perSetValues = legacyReps)
+                }
+                val effectiveSets = legacyReps?.size ?: blk.setsCount
+                val schemeLabel = if (isStructured) {
+                    RoutineTargetCodec.formatExerciseTargetBadge(spec, blk.setsCount)
+                } else {
+                    blk.targetRepsScheme
+                }
+                expanded.add(
+                    BlockState(
+                        name = blk.name.ifBlank { exObj?.name ?: blk.kind.label },
+                        kind = blk.kind,
+                        format = blk.format,
+                        scheme = schemeLabel,
+                        exercise = exObj,
+                        routine = rwb.routine,
+                        sequenceExercises = listOfNotNull(exObj),
+                        description = cleanNotes,
+                        sets = buildSessionSetStatesForTarget(
+                            spec = spec,
+                            setsCount = effectiveSets,
+                            preserveGroupAlways = blk.subBlock.isNotBlank(),
+                            exercise = exObj
+                        ),
+                        section = blk.section,
+                        exerciseIdsCsv = blk.exerciseIdsCsv,
+                        subBlock = blk.subBlock,
+                        isCompleted = defaultCompleted
+                    )
+                )
+            }
+
+            else -> {
+                val targetEx = exercises.firstOrNull { it.id == rwb.routine.mainExerciseId }
+                val parsedRepsList = RepScheme.parse(blk.targetRepsScheme, blk.setsCount)
+                expanded.add(
+                    BlockState(
+                        name = blk.name.ifBlank { blk.kind.label },
+                        kind = blk.kind,
+                        format = blk.format,
+                        scheme = blk.targetRepsScheme,
+                        exercise = targetEx,
+                        routine = rwb.routine,
+                        sequenceExercises = listOfNotNull(targetEx),
+                        description = cleanNotes,
+                        sets = parsedRepsList.map { reps ->
+                            SetState(reps = reps.toString(), value = "")
+                        },
+                        section = blk.section,
+                        exerciseIdsCsv = blk.exerciseIdsCsv,
+                        subBlock = blk.subBlock,
+                        isCompleted = defaultCompleted
+                    )
+                )
+            }
+        }
+    }
+
+    return expanded
 }
 
 internal fun groupEditorBlocks(blocks: List<BlockState>): List<EditorBlockItem> {
@@ -708,33 +882,13 @@ fun SessionEditorBody(
                             onSelect = { rwb ->
                                 if (title.isBlank()) title = rwb.routine.name
                                 blocks.clear()
-                                rwb.blocks.sortedBy { it.position }.forEach { blk ->
-                                    val seqExList = blk.exerciseIdsCsv.split(",")
-                                        .mapNotNull { idStr -> idStr.trim().toLongOrNull() }
-                                        .mapNotNull { id -> exercises.firstOrNull { it.id == id } }
-
-                                    val targetEx = seqExList.firstOrNull() ?: exercises.firstOrNull { it.id == rwb.routine.mainExerciseId }
-                                    val parsedRepsList = RepScheme.parse(blk.targetRepsScheme, blk.setsCount)
-
-                                    val newBlockState = BlockState(
-                                        name = blk.name.ifBlank { blk.kind.label },
-                                        kind = blk.kind,
-                                        format = blk.format,
-                                        scheme = blk.targetRepsScheme,
-                                        exercise = targetEx,
-                                        routine = rwb.routine,
-                                        sequenceExercises = seqExList,
-                                        description = blk.notes,
-                                        sets = parsedRepsList.map { reps ->
-                                            SetState(reps = reps.toString(), value = "")
-                                        }.toMutableStateList(),
-                                        section = blk.section,
-                                        exerciseIdsCsv = blk.exerciseIdsCsv,
-                                        subBlock = blk.subBlock,
-                                        isCompleted = !isFatLoss
+                                blocks.addAll(
+                                    expandRoutineIntoSessionBlocks(
+                                        rwb = rwb,
+                                        exercises = exercises,
+                                        defaultCompleted = !isFatLoss
                                     )
-                                    blocks.add(newBlockState)
-                                }
+                                )
                             },
                             placeholder = "Load Routine...",
                             modifier = Modifier.weight(1f)
@@ -1527,7 +1681,8 @@ private fun SpreadsheetSetRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Set Badge
+        // Set Badge (displays preserved 1-based round number when sets were skipped)
+        val badgeLabel = set.group.toIntOrNull()?.toString() ?: "$setIndex"
         Box(
             modifier = Modifier
                 .width(36.dp)
@@ -1537,7 +1692,7 @@ private fun SpreadsheetSetRow(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                "$setIndex",
+                badgeLabel,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurfaceVariant

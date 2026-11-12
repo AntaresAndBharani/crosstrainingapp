@@ -21,11 +21,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
@@ -51,7 +49,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Surface
 import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.platform.LocalContext
 import com.fractanomics.crosstraining.data.firebase.FirebaseSyncManager
 import com.fractanomics.crosstraining.data.firebase.SharedWorkoutPayload
 import androidx.compose.material3.FloatingActionButton
@@ -76,31 +73,24 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.toMutableStateList
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
-import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.RoutineBlock
 import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.ui.AppViewModel
-import com.fractanomics.crosstraining.ui.WORKOUT_FORMATS
 import com.fractanomics.crosstraining.ui.components.Dropdown
 import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.ScreenList
 import com.fractanomics.crosstraining.ui.components.WorkoutJourneyAssistantSheet
-import com.fractanomics.crosstraining.util.RepScheme
+import com.fractanomics.crosstraining.util.RoutineTargetCodec
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
@@ -456,11 +446,24 @@ fun LibraryScreen(
         )
     }
     if (showRoutineEditor) {
-        RoutineEditorDialog(
+        RoutineBuilderSheet(
             original = editingRoutine,
             exercises = exercises,
             onDismiss = { showRoutineEditor = false },
-            onAddQuickExercise = { name -> viewModel.saveExercise(Exercise(name = name)) },
+            onCreateAndAddExercise = { name, category, onCreated ->
+                val defaultMetric = when (category) {
+                    ExerciseCategory.MACHINE -> MetricType.CALORIES
+                    ExerciseCategory.GYMNASTICS -> MetricType.REPS
+                    ExerciseCategory.BARBELL, ExerciseCategory.ACCESSORY -> MetricType.WEIGHT
+                    ExerciseCategory.OTHER -> MetricType.REPS
+                }
+                viewModel.getOrCreateExerciseForRoutine(
+                    name = name,
+                    category = category,
+                    metricType = defaultMetric,
+                    onCreated = onCreated
+                )
+            },
             onSave = { routine, blocks ->
                 viewModel.saveRoutineWithBlocks(routine, blocks)
                 showRoutineEditor = false
@@ -824,6 +827,17 @@ private fun RoutineCard(
     }
 }
 
+internal fun formatRoutineBlockCardExercises(
+    blk: RoutineBlock,
+    exercises: List<Exercise>
+): List<String> {
+    val exercisesById = exercises.associateBy { it.id }
+    return RoutineTargetCodec.decodeBlockExercises(blk, exercisesById).map { (exId, spec) ->
+        val exName = exercisesById[exId]?.name ?: "Exercise #$exId"
+        "$exName · ${RoutineTargetCodec.formatExerciseTargetBadge(spec, blk.setsCount)}"
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RoutineBlockCard(
@@ -831,6 +845,9 @@ private fun RoutineBlockCard(
     blk: RoutineBlock,
     exercises: List<Exercise>
 ) {
+    val isStructuredV2 = RoutineTargetCodec.hasStructuredHeader(blk.notes)
+    val cleanNotes = RoutineTargetCodec.extractCleanNotes(blk.notes)
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -846,7 +863,8 @@ private fun RoutineBlockCard(
             Text(
                 text = "${idx + 1}. ${blk.name.ifBlank { blk.kind.label }}",
                 style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f, fill = false)
             )
             Box(
                 modifier = Modifier
@@ -854,24 +872,31 @@ private fun RoutineBlockCard(
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
                 Text(
-                    blk.kind.label,
+                    blk.kind.shortLabel,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             }
         }
 
-        val detailLine = listOfNotNull(
-            blk.format.takeIf { it.isNotBlank() }?.let { "Format: $it" },
-            if (blk.targetRepsScheme.isNotBlank()) "Reps: ${blk.targetRepsScheme}" else null,
-            if (blk.setsCount > 1) "${blk.setsCount} sets" else null
-        ).joinToString(" · ")
+        val detailLine = if (isStructuredV2) {
+            listOfNotNull(
+                blk.format.takeIf { it.isNotBlank() }?.let { "Format: $it" },
+                "${blk.setsCount} ${if (blk.setsCount == 1) "set" else "sets"}"
+            ).joinToString(" · ")
+        } else {
+            listOfNotNull(
+                blk.format.takeIf { it.isNotBlank() }?.let { "Format: $it" },
+                if (blk.targetRepsScheme.isNotBlank()) "Reps: ${blk.targetRepsScheme}" else null,
+                if (blk.setsCount > 1) "${blk.setsCount} sets" else null
+            ).joinToString(" · ")
+        }
 
         if (detailLine.isNotBlank()) {
             Text(detailLine, style = MaterialTheme.typography.bodySmall)
         }
 
-        val (wInt, rInt, sMetric) = parseMetabolicNotes(blk.notes)
+        val (wInt, rInt, sMetric) = parseMetabolicNotes(cleanNotes)
         if (wInt.isNotBlank() || rInt.isNotBlank()) {
             val metaSummary = listOfNotNull(
                 if (wInt.isNotBlank()) "Work: $wInt" else null,
@@ -887,29 +912,63 @@ private fun RoutineBlockCard(
             )
         }
 
-        val targetExNames = blk.exerciseIdsCsv.split(",")
-            .mapNotNull { idStr -> idStr.trim().toLongOrNull() }
-            .mapNotNull { id -> exercises.firstOrNull { it.id == id }?.name }
-
-        if (targetExNames.isNotEmpty()) {
-            if (targetExNames.size > 1 || blk.kind == BlockKind.COMPLEX || blk.kind == BlockKind.SUPERSET) {
-                val seqText = formatExerciseSequence(targetExNames, blk.targetRepsScheme)
-                Text(
-                    text = "Sequence: $seqText",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.primary,
+        if (isStructuredV2) {
+            val formattedPills = remember(blk, exercises) { formatRoutineBlockCardExercises(blk, exercises) }
+            if (formattedPills.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier.padding(top = 2.dp)
-                )
-            } else {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    targetExNames.forEach { exName ->
+                ) {
+                    formattedPills.forEach { badgeText ->
                         Box(
                             modifier = Modifier
-                                .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(4.dp))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(6.dp))
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
                         ) {
-                            Text(exName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                            Text(
+                                badgeText,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+                }
+            }
+            if (cleanNotes.isNotBlank() && wInt.isBlank() && rInt.isBlank()) {
+                Text(
+                    text = cleanNotes,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        } else {
+            val targetExNames = blk.exerciseIdsCsv.split(",")
+                .mapNotNull { idStr -> idStr.trim().toLongOrNull() }
+                .mapNotNull { id -> exercises.firstOrNull { it.id == id }?.name }
+
+            if (targetExNames.isNotEmpty()) {
+                if (targetExNames.size > 1 || blk.kind == BlockKind.COMPLEX || blk.kind == BlockKind.SUPERSET) {
+                    val seqText = formatExerciseSequence(targetExNames, blk.targetRepsScheme)
+                    Text(
+                        text = "Sequence: $seqText",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                } else {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        targetExNames.forEach { exName ->
+                            Box(
+                                modifier = Modifier
+                                    .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(exName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                            }
                         }
                     }
                 }
@@ -1019,505 +1078,6 @@ fun formatMetabolicNotes(work: String, rest: String, metric: MetricType, notes: 
     val metaHeader = metaParts.joinToString(" | ")
     val userCustomNotes = notes.lines().filter { !it.contains("Score:") && !it.contains("Work:") && !it.contains("Rest:") }.joinToString("\n").trim()
     return if (userCustomNotes.isNotBlank()) "$metaHeader\n$userCustomNotes" else metaHeader
-}
-
-private class SequenceItemState(
-    val exerciseId: Long,
-    targetReps: String = ""
-) {
-    var targetReps by mutableStateOf(targetReps)
-}
-
-private class RoutineBlockFormState(
-    name: String = "",
-    kind: BlockKind = BlockKind.WEIGHTLIFTING,
-    format: String = "EMOM",
-    setsCount: String = "4",
-    targetRepsScheme: String = "5",
-    sequenceItems: List<SequenceItemState> = emptyList(),
-    workInterval: String = "",
-    restInterval: String = "",
-    scoreMetric: MetricType = MetricType.TIME,
-    notes: String = ""
-) {
-    var name by mutableStateOf(name)
-    var kind by mutableStateOf(kind)
-    var format by mutableStateOf(format)
-    var setsCount by mutableStateOf(setsCount)
-    var targetRepsScheme by mutableStateOf(targetRepsScheme)
-    val sequenceItems = sequenceItems.toMutableStateList()
-    var workInterval by mutableStateOf(workInterval)
-    var restInterval by mutableStateOf(restInterval)
-    var scoreMetric by mutableStateOf(scoreMetric)
-    var pendingExerciseName by mutableStateOf("")
-    var notes by mutableStateOf(notes)
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun RoutineEditorDialog(
-    original: RoutineWithBlocks?,
-    exercises: List<Exercise>,
-    onDismiss: () -> Unit,
-    onAddQuickExercise: (String) -> Unit,
-    onSave: (Routine, List<RoutineBlock>) -> Unit
-) {
-    var name by remember { mutableStateOf(original?.routine?.name ?: "") }
-    var description by remember { mutableStateOf(original?.routine?.description ?: "") }
-
-    val blockStates = remember(original) {
-        val initialBlocks = original?.blocks?.sortedBy { it.position }?.map { blk ->
-            val exIds = blk.exerciseIdsCsv.split(",").mapNotNull { it.trim().toLongOrNull() }
-            val repParts = blk.targetRepsScheme.split(Regex("[+/\\-,]")).map { it.trim() }.filter { it.isNotBlank() }
-            val seqItems = exIds.mapIndexed { idx, id ->
-                SequenceItemState(
-                    exerciseId = id,
-                    targetReps = repParts.getOrNull(idx) ?: if (exIds.size == 1) blk.targetRepsScheme else "1"
-                )
-            }
-            val (parsedWork, parsedRest, parsedMetric) = parseMetabolicNotes(blk.notes)
-            RoutineBlockFormState(
-                name = blk.name,
-                kind = blk.kind,
-                format = blk.format,
-                setsCount = blk.setsCount.toString(),
-                targetRepsScheme = blk.targetRepsScheme,
-                sequenceItems = seqItems,
-                workInterval = parsedWork,
-                restInterval = parsedRest,
-                scoreMetric = parsedMetric,
-                notes = blk.notes
-            )
-        } ?: listOf(RoutineBlockFormState(name = "Block 1", kind = BlockKind.WEIGHTLIFTING))
-
-        initialBlocks.toMutableStateList()
-    }
-
-    val scrollState = rememberScrollState()
-    var viewportHeightPx by remember { mutableIntStateOf(0) }
-    val blockBoundsMap = remember { mutableMapOf<Int, CardLayoutBounds>() }
-    var pendingScrollBlockIndex by remember { mutableIntStateOf(-1) }
-    var scrollTriggerToken by remember { mutableIntStateOf(0) }
-
-    LaunchedEffect(scrollTriggerToken) {
-        if (scrollTriggerToken > 0 && pendingScrollBlockIndex >= 0) {
-            repeat(2) { withFrameNanos { } }
-            val bounds = blockBoundsMap[pendingScrollBlockIndex]
-            if (bounds != null) {
-                val targetOffset = resolveGoalCardScrollOffset(
-                    cardTopPx = bounds.topPx,
-                    cardHeightPx = bounds.heightPx,
-                    viewportHeightPx = viewportHeightPx,
-                    currentScrollPx = scrollState.value,
-                    maxScrollPx = scrollState.maxValue
-                )
-                if (targetOffset != scrollState.value) {
-                    scrollState.animateScrollTo(targetOffset)
-                }
-            }
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (original == null) "New Daily Routine" else "Edit Daily Routine") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onGloballyPositioned { coords ->
-                        viewportHeightPx = coords.size.height
-                    }
-                    .verticalScroll(scrollState),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Routine / Workout Name (e.g. Monday Snatch & Metcon)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Description / Workout Goal") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                HorizontalDivider()
-                Text("Routine Blocks", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-
-                blockStates.forEachIndexed { index, block ->
-                    ElevatedCard(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onGloballyPositioned { coords ->
-                                blockBoundsMap[index] = CardLayoutBounds(
-                                    topPx = coords.positionInParent().y.toInt(),
-                                    heightPx = coords.size.height
-                                )
-                            }
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Block ${index + 1}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                                IconButton(
-                                    onClick = {
-                                        blockStates.removeAt(index)
-                                        blockBoundsMap.keys.retainAll(0 until blockStates.size)
-                                    },
-                                    enabled = blockStates.size > 1
-                                ) {
-                                    Icon(Icons.Filled.Close, contentDescription = "Remove block")
-                                }
-                            }
-
-                            OutlinedTextField(
-                                value = block.name,
-                                onValueChange = { block.name = it },
-                                label = { Text("Block Name (e.g. Snatch Complex)") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-
-                            Dropdown(
-                                label = "Block Type",
-                                options = BlockKind.entries,
-                                selected = block.kind,
-                                labelOf = { it.label },
-                                onSelect = { block.kind = it }
-                            )
-
-                            val isMetabolic = block.kind == BlockKind.METABOLIC || block.kind == BlockKind.METCON || block.kind == BlockKind.CARDIO
-                            if (isMetabolic) {
-                                Text("Metabolic & Interval Structure:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-
-                                Text("Interval Presets:", style = MaterialTheme.typography.bodySmall)
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    FilterChip(
-                                        selected = block.workInterval == "15 cal" && block.restInterval == "1:00 min",
-                                        onClick = {
-                                            block.format = "Calorie Sprints"
-                                            block.setsCount = "5"
-                                            block.workInterval = "15 cal"
-                                            block.restInterval = "1:00 min"
-                                            block.scoreMetric = MetricType.TIME
-                                        },
-                                        label = { Text("15 Cal Sprint + 1m Rest (Score: Time)", style = MaterialTheme.typography.labelSmall) }
-                                    )
-                                    FilterChip(
-                                        selected = block.workInterval == "40 sec" && block.restInterval == "20 sec",
-                                        onClick = {
-                                            block.format = "Work/Rest Intervals"
-                                            block.setsCount = "8"
-                                            block.workInterval = "40 sec"
-                                            block.restInterval = "20 sec"
-                                            block.scoreMetric = MetricType.CALORIES
-                                        },
-                                        label = { Text("40s Work / 20s Rest (Score: Calories)", style = MaterialTheme.typography.labelSmall) }
-                                    )
-                                    FilterChip(
-                                        selected = block.workInterval == "500m" && block.restInterval == "2:00 min",
-                                        onClick = {
-                                            block.format = "Distance Sprints"
-                                            block.setsCount = "4"
-                                            block.workInterval = "500m"
-                                            block.restInterval = "2:00 min"
-                                            block.scoreMetric = MetricType.TIME
-                                        },
-                                        label = { Text("500m Row + 2m Rest (Score: Time)", style = MaterialTheme.typography.labelSmall) }
-                                    )
-                                    FilterChip(
-                                        selected = block.workInterval == "20 sec" && block.restInterval == "10 sec",
-                                        onClick = {
-                                            block.format = "Tabata"
-                                            block.setsCount = "8"
-                                            block.workInterval = "20 sec"
-                                            block.restInterval = "10 sec"
-                                            block.scoreMetric = MetricType.REPS
-                                        },
-                                        label = { Text("Tabata 20s/10s (Score: Reps)", style = MaterialTheme.typography.labelSmall) }
-                                    )
-                                }
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    OutlinedTextField(
-                                        value = block.workInterval,
-                                        onValueChange = { block.workInterval = it },
-                                        label = { Text("Work Target (e.g. 15 cal, 40s)") },
-                                        singleLine = true,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    OutlinedTextField(
-                                        value = block.restInterval,
-                                        onValueChange = { block.restInterval = it },
-                                        label = { Text("Rest Period (e.g. 1:00 min)") },
-                                        singleLine = true,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-
-                                Text("Primary Score / Output Metric:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    listOf(
-                                        MetricType.TIME to "⏱️ Time (Elapsed)",
-                                        MetricType.CALORIES to "🔥 Calories (Total)",
-                                        MetricType.REPS to "🏋️ Reps / Rounds",
-                                        MetricType.DISTANCE to "📏 Distance (Meters)"
-                                    ).forEach { (mType, mLabel) ->
-                                        FilterChip(
-                                            selected = block.scoreMetric == mType,
-                                            onClick = { block.scoreMetric = mType },
-                                            label = { Text(mLabel, style = MaterialTheme.typography.labelSmall) }
-                                        )
-                                    }
-                                }
-                            }
-
-                            OutlinedTextField(
-                                value = block.format,
-                                onValueChange = { block.format = it },
-                                label = { Text("Execution Format / Structure") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                WORKOUT_FORMATS.forEach { fmt ->
-                                    FilterChip(
-                                        selected = block.format == fmt,
-                                        onClick = { block.format = fmt },
-                                        label = { Text(fmt, style = MaterialTheme.typography.labelSmall) }
-                                    )
-                                }
-                            }
-
-                            OutlinedTextField(
-                                value = block.setsCount,
-                                onValueChange = { block.setsCount = it.filter { c -> c.isDigit() } },
-                                label = { Text("Number of Sets / Rounds") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-
-                            Text("Rep Scheme per Set:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-
-                            // Wave Presets
-                            Text("Wave Schemes:", style = MaterialTheme.typography.bodySmall)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                FilterChip(
-                                    selected = block.targetRepsScheme == RepScheme.WAVE_321,
-                                    onClick = {
-                                        block.targetRepsScheme = RepScheme.WAVE_321
-                                        block.setsCount = "12"
-                                    },
-                                    label = { Text("Wave 3-2-1 (12 sets)") }
-                                )
-                                FilterChip(
-                                    selected = block.targetRepsScheme == RepScheme.WAVE_221,
-                                    onClick = {
-                                        block.targetRepsScheme = RepScheme.WAVE_221
-                                        block.setsCount = "12"
-                                    },
-                                    label = { Text("Wave 2-2-1 (12 sets)") }
-                                )
-                            }
-
-                            // Fixed Reps Presets
-                            Text("Fixed Reps per Set:", style = MaterialTheme.typography.bodySmall)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                RepScheme.FIXED_REPS_PRESETS.forEach { r ->
-                                    FilterChip(
-                                        selected = block.targetRepsScheme == r.toString(),
-                                        onClick = { block.targetRepsScheme = r.toString() },
-                                        label = { Text("$r reps") }
-                                    )
-                                }
-                            }
-
-                            OutlinedTextField(
-                                value = block.targetRepsScheme,
-                                onValueChange = { block.targetRepsScheme = it },
-                                label = { Text("Custom Rep Scheme (e.g. 3 + 2 + 1 or 8 / 10 / 12)") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-
-                            Text("Exercise Sequence in this Block:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-
-                            if (block.sequenceItems.isNotEmpty()) {
-                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    block.sequenceItems.forEachIndexed { sIdx, item ->
-                                        val exObj = exercises.firstOrNull { it.id == item.exerciseId }
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
-                                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Text("${sIdx + 1}.", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                                            Text(
-                                                exObj?.name ?: "Exercise #${item.exerciseId}",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                            OutlinedTextField(
-                                                value = item.targetReps,
-                                                onValueChange = { newReps ->
-                                                    item.targetReps = newReps
-                                                    if (block.sequenceItems.size > 1 || block.kind == BlockKind.COMPLEX || block.kind == BlockKind.SUPERSET) {
-                                                        block.targetRepsScheme = block.sequenceItems.map { it.targetReps.ifBlank { "1" } }.joinToString(" + ")
-                                                    }
-                                                },
-                                                label = { Text("Reps") },
-                                                singleLine = true,
-                                                modifier = Modifier.width(75.dp)
-                                            )
-                                            IconButton(
-                                                onClick = {
-                                                    block.sequenceItems.removeAt(sIdx)
-                                                    if (block.sequenceItems.size > 1) {
-                                                        block.targetRepsScheme = block.sequenceItems.map { it.targetReps.ifBlank { "1" } }.joinToString(" + ")
-                                                    }
-                                                }
-                                            ) {
-                                                Icon(Icons.Filled.Close, contentDescription = "Remove from sequence")
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                Text(
-                                    "No exercises in sequence yet. Select or type below to add movements.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-
-                            val selectedExIds = block.sequenceItems.map { it.exerciseId }.toSet()
-                            val unselectedExercises = exercises.filter { !selectedExIds.contains(it.id) }
-                            if (unselectedExercises.isNotEmpty()) {
-                                Dropdown(
-                                    label = "Add exercise to sequence...",
-                                    options = unselectedExercises,
-                                    selected = null,
-                                    labelOf = { it.name },
-                                    onSelect = { ex ->
-                                        block.sequenceItems.add(SequenceItemState(ex.id, "1"))
-                                        if (block.sequenceItems.size > 1 || block.kind == BlockKind.COMPLEX || block.kind == BlockKind.SUPERSET) {
-                                            block.targetRepsScheme = block.sequenceItems.map { it.targetReps.ifBlank { "1" } }.joinToString(" + ")
-                                        }
-                                    },
-                                    placeholder = "Tap to pick exercise for complex/superset sequence..."
-                                )
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                OutlinedTextField(
-                                    value = block.pendingExerciseName,
-                                    onValueChange = { block.pendingExerciseName = it },
-                                    label = { Text("Or type new exercise name...") },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Button(
-                                    enabled = block.pendingExerciseName.isNotBlank(),
-                                    onClick = {
-                                        val typedName = block.pendingExerciseName.trim()
-                                        if (typedName.isNotBlank()) {
-                                            val existing = exercises.firstOrNull { it.name.equals(typedName, ignoreCase = true) }
-                                            if (existing != null) {
-                                                if (!selectedExIds.contains(existing.id)) {
-                                                    block.sequenceItems.add(SequenceItemState(existing.id, "1"))
-                                                    if (block.sequenceItems.size > 1 || block.kind == BlockKind.COMPLEX || block.kind == BlockKind.SUPERSET) {
-                                                        block.targetRepsScheme = block.sequenceItems.map { it.targetReps.ifBlank { "1" } }.joinToString(" + ")
-                                                    }
-                                                }
-                                            } else {
-                                                onAddQuickExercise(typedName)
-                                            }
-                                            block.pendingExerciseName = ""
-                                        }
-                                    }
-                                ) {
-                                    Text("＋ Add")
-                                }
-                            }
-                        }
-                    }
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        blockStates.add(
-                            RoutineBlockFormState(
-                                name = "Block ${blockStates.size + 1}",
-                                kind = BlockKind.WEIGHTLIFTING
-                            )
-                        )
-                        pendingScrollBlockIndex = blockStates.lastIndex
-                        scrollTriggerToken++
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Add Block to Routine")
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                enabled = name.isNotBlank(),
-                onClick = {
-                    val routine = (original?.routine ?: Routine(name = "")).copy(
-                        name = name.trim(),
-                        description = description.trim(),
-                        defaultFormat = blockStates.firstOrNull()?.format?.trim() ?: ""
-                    )
-
-                    val blocks = blockStates.mapIndexed { idx, bs ->
-                        val finalNotes = formatMetabolicNotes(bs.workInterval, bs.restInterval, bs.scoreMetric, bs.notes)
-                        RoutineBlock(
-                            id = 0,
-                            routineId = routine.id,
-                            position = idx,
-                            name = bs.name.trim().ifBlank { bs.kind.label },
-                            kind = bs.kind,
-                            format = bs.format.trim(),
-                            setsCount = bs.setsCount.toIntOrNull() ?: 1,
-                            targetRepsScheme = bs.targetRepsScheme.trim(),
-                            exerciseIdsCsv = bs.sequenceItems.map { it.exerciseId }.joinToString(","),
-                            notes = finalNotes
-                        )
-                    }
-
-                    onSave(routine, blocks)
-                }
-            ) { Text("Save Routine") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
 }
 
 @Composable

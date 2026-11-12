@@ -1067,20 +1067,23 @@ object UserCloudSyncManager {
                     return null
                 }
 
-                suspend fun resolveExerciseCsv(idsCsv: String?, namesCsv: String?): String {
+                suspend fun resolveExerciseCsv(
+                    idsCsv: String?,
+                    namesCsv: String?,
+                    preserveSequenceDuplicates: Boolean = false
+                ): String {
                     if (!namesCsv.isNullOrBlank()) {
                         val ids = namesCsv.split(",")
                             .mapNotNull { n -> n.trim().takeIf { it.isNotEmpty() } }
                             .map { name -> repo.getOrCreateExercise(name).id }
-                            .distinct()
-                        if (ids.isNotEmpty()) return ids.joinToString(",")
+                        val finalIds = if (preserveSequenceDuplicates) ids else ids.distinct()
+                        if (finalIds.isNotEmpty()) return finalIds.joinToString(",")
                     }
                     if (!idsCsv.isNullOrBlank()) {
-                        return idsCsv.split(",")
+                        val ids = idsCsv.split(",")
                             .mapNotNull { s -> s.trim().toLongOrNull() }
                             .map { id -> remoteExerciseIdToLocalId[id] ?: id }
-                            .distinct()
-                            .joinToString(",")
+                        return (if (preserveSequenceDuplicates) ids else ids.distinct()).joinToString(",")
                     }
                     return ""
                 }
@@ -1155,9 +1158,12 @@ object UserCloudSyncManager {
                         @Suppress("UNCHECKED_CAST")
                         val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
                         val blocks = bList.mapIndexed { idx, bMap ->
+                            val rawNotes = bMap["notes"] as? String ?: ""
+                            val preserveSeq = com.fractanomics.crosstraining.util.RoutineTargetCodec.hasStructuredHeader(rawNotes)
                             val resolvedCsv = resolveExerciseCsv(
-                                bMap["exerciseIdsCsv"] as? String,
-                                bMap["exerciseNamesCsv"] as? String
+                                idsCsv = bMap["exerciseIdsCsv"] as? String,
+                                namesCsv = bMap["exerciseNamesCsv"] as? String,
+                                preserveSequenceDuplicates = preserveSeq
                             )
                             RoutineBlock(
                                 id = 0,
@@ -1169,7 +1175,7 @@ object UserCloudSyncManager {
                                 setsCount = (bMap["setsCount"] as? Number)?.toInt() ?: 1,
                                 targetRepsScheme = bMap["targetRepsScheme"] as? String ?: "",
                                 exerciseIdsCsv = resolvedCsv,
-                                notes = bMap["notes"] as? String ?: "",
+                                notes = rawNotes,
                                 section = bMap["section"] as? String ?: "",
                                 subBlock = bMap["subBlock"] as? String ?: ""
                             )
@@ -1695,6 +1701,17 @@ object UserCloudSyncManager {
                     @Suppress("UNCHECKED_CAST")
                     val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
                     val blocks = bList.mapIndexed { idx, bMap ->
+                        val rawNotes = bMap["notes"] as? String ?: ""
+                        val preserveSeq = com.fractanomics.crosstraining.util.RoutineTargetCodec.hasStructuredHeader(rawNotes)
+                        val namesCsv = bMap["exerciseNamesCsv"] as? String
+                        val resolvedIdsCsv = if (!namesCsv.isNullOrBlank()) {
+                            val ids = namesCsv.split(",")
+                                .mapNotNull { n -> n.trim().takeIf { it.isNotEmpty() } }
+                                .map { exName -> repo.getOrCreateExercise(exName).id }
+                            (if (preserveSeq) ids else ids.distinct()).joinToString(",")
+                        } else {
+                            bMap["exerciseIdsCsv"] as? String ?: ""
+                        }
                         RoutineBlock(
                             id = 0,
                             routineId = 0,
@@ -1704,8 +1721,10 @@ object UserCloudSyncManager {
                             format = bMap["format"] as? String ?: "",
                             setsCount = (bMap["setsCount"] as? Number)?.toInt() ?: 1,
                             targetRepsScheme = bMap["targetRepsScheme"] as? String ?: "",
-                            exerciseIdsCsv = bMap["exerciseIdsCsv"] as? String ?: "",
-                            notes = bMap["notes"] as? String ?: ""
+                            exerciseIdsCsv = resolvedIdsCsv,
+                            notes = rawNotes,
+                            section = bMap["section"] as? String ?: "",
+                            subBlock = bMap["subBlock"] as? String ?: ""
                         )
                     }
                     repo.saveRoutineWithBlocks(Routine(name = name, description = description, defaultFormat = defaultFormat), blocks)
