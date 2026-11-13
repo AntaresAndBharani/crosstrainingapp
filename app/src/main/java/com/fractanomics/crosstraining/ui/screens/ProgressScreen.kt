@@ -3032,6 +3032,7 @@ private fun HorizonEstimationRowItem(
 // --- Cycle Goals View --------------------------------------------------------
 
 internal const val WEEKLY_BODY_WEIGHT_ROW_TITLE = "Weekly Body Weight"
+internal const val ESTIMATED_FINISH_WEIGHT_LABEL = "Estimated Finish Weight"
 internal const val SELECT_SUBCYCLE_TYPE_SHEET_TITLE = "Select Subcycle Type"
 internal const val SELECT_SUBCYCLE_TYPE_SHEET_SUBTITLE = "Changes target velocity corridors and projected finish goal."
 internal const val APPLY_SUBCYCLE_TYPE_BUTTON_LABEL = "Apply Subcycle Type"
@@ -3124,6 +3125,24 @@ internal fun resolveWeeklyBodyWeightVelocitySummary(
     return "Pace: $paceStr $weightUnit/wk · Momentum: $momStr/wk"
 }
 
+internal fun resolveWeeklyBodyWeightEstimatedFinishText(
+    row: HorizonMomentumRow,
+    weightUnit: String
+): String? {
+    if (!row.isPrimaryComposite) return null
+    val momFinish = row.estimatedFinishMomentumInUnit ?: return null
+    val paceFinish = row.estimatedFinishPaceInUnit ?: return null
+    return String.format(
+        Locale.US,
+        "%s: %.1f %s (Momentum) · %.1f %s (Pace)",
+        ESTIMATED_FINISH_WEIGHT_LABEL,
+        FatLossAnalytics.round1(momFinish),
+        weightUnit,
+        FatLossAnalytics.round1(paceFinish),
+        weightUnit
+    )
+}
+
 internal fun resolveHorizonMomentumLeftLabel(
     row: HorizonMomentumRow,
     weightUnit: String,
@@ -3145,7 +3164,18 @@ internal fun resolveHorizonMomentumContentDescription(
     weightUnit: String,
     calibrationDay: Int = 1
 ): String = if (row.isPrimaryComposite) {
-    val base = "${resolveWeeklyBodyWeightTitle(row, weightUnit)}, ${resolveWeeklyBodyWeightVelocitySummary(row, weightUnit, calibrationDay)}, ${row.statusLabel}"
+    val estimatedFinishText = resolveWeeklyBodyWeightEstimatedFinishText(row, weightUnit)
+    val base = buildString {
+        append(resolveWeeklyBodyWeightTitle(row, weightUnit))
+        append(", ")
+        append(resolveWeeklyBodyWeightVelocitySummary(row, weightUnit, calibrationDay))
+        if (estimatedFinishText != null) {
+            append(", ")
+            append(estimatedFinishText)
+        }
+        append(", ")
+        append(row.statusLabel)
+    }
     val helper = row.diagnosticMessage
     if (helper.isNullOrBlank()) base else "$base, $helper"
 } else {
@@ -3344,6 +3374,15 @@ internal fun CycleMomentumEstimationsCard(
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                val estimatedFinishText = resolveWeeklyBodyWeightEstimatedFinishText(primaryRow, state.weightUnit)
+                if (estimatedFinishText != null) {
+                    Text(
+                        text = estimatedFinishText,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                        fontWeight = FontWeight.SemiBold,
+                        color = badgeText
+                    )
+                }
                 CorridorRangeGauge(
                     gaugePosition = primaryRow.gaugePosition,
                     statusColor = badgeText,

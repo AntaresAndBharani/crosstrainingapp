@@ -4927,4 +4927,140 @@ class FatLossAnalyticsTest {
             FatLossAnalytics.evaluateCorridorDiagnostic(0.0049, WeightSubcycleType.MUSCLE_GAIN).status
         )
     }
+
+    @Test
+    fun `feature 020 - computeEstimatedFinishWeights and computeCycleMomentumState - dual Momentum and Pace projections, calibration gate, bounds, and edge cases`() {
+        // 1. Direct reference scenario (74.7 kg, -0.36 kg/wk, -0.47%/wk, 45 days / ~6.4w left)
+        val ref = FatLossAnalytics.computeEstimatedFinishWeights(
+            weeklyBodyWeightKg = 74.7,
+            weeklyPaceKg = -0.36,
+            weeklyMomentumPct = -0.47,
+            weeksRemaining = 45.0 / 7.0,
+            weightUnit = "kg"
+        )!!
+        assertEquals(72.5, FatLossAnalytics.round1(ref.momentumWeightInUnit), 1e-6)
+        assertEquals(72.4, FatLossAnalytics.round1(ref.paceWeightInUnit), 1e-6)
+        assertEquals(
+            "Estimated Finish Weight: 72.5 kg (Momentum) · 72.4 kg (Pace)",
+            FatLossAnalytics.formatEstimatedFinishWeightText(ref, "kg")
+        )
+
+        // 2. Calibration gate (< 8 days): null finish weights in computeEstimatedFinishWeights and CycleMomentumState
+        assertNull(FatLossAnalytics.computeEstimatedFinishWeights(80.0, null, null, 6.0, "kg"))
+        val start = LocalDate.of(2026, 10, 1)
+        val finish = start.plusWeeks(12)
+        val fatLossCycle = Cycle(
+            id = 2001L,
+            name = "Autumn Cut",
+            startDate = start,
+            endDate = finish,
+            type = CycleType.FAT_LOSS_BODYBUILDING,
+            subcycleType = WeightSubcycleType.FAT_LOSS
+        )
+        val day5Entries = listOf(
+            WeightEntry(date = start, weightKg = 80.0, updatedAtMillis = 1L),
+            WeightEntry(date = start.plusDays(4), weightKg = 79.6, updatedAtMillis = 2L)
+        )
+        val calState = FatLossAnalytics.computeCycleMomentumState(day5Entries, fatLossCycle, start.plusDays(4)) as CycleMomentumState.Active
+        assertTrue(calState.isCalibrating)
+        assertNull(calState.weeklyBodyWeightRow.estimatedFinishMomentumKg)
+        assertNull(calState.weeklyBodyWeightRow.estimatedFinishPaceKg)
+        assertNull(calState.estimatedFinishWeightText)
+        assertTrue(calState.horizonRows.all {
+            it.estimatedFinishMomentumKg == null &&
+                it.estimatedFinishMomentumInUnit == null &&
+                it.estimatedFinishPaceKg == null &&
+                it.estimatedFinishPaceInUnit == null
+        })
+
+        // 3. Calibrated cycle: composite row populated, 7D-28D horizon rows remain null, imperial lbs verified
+        val day14 = start.plusDays(13)
+        val steadyEntries = (0L..13L).map { offset ->
+            WeightEntry(
+                date = start.plusDays(offset),
+                weightKg = 80.0 - offset * 0.06,
+                updatedAtMillis = offset + 1L
+            )
+        }
+        val activeKg = FatLossAnalytics.computeCycleMomentumState(steadyEntries, fatLossCycle, day14, "kg") as CycleMomentumState.Active
+        assertFalse(activeKg.isCalibrating)
+        val compositeKg = activeKg.weeklyBodyWeightRow
+        assertNotNull(compositeKg.estimatedFinishMomentumInUnit)
+        assertNotNull(compositeKg.estimatedFinishPaceInUnit)
+        assertNotNull(activeKg.estimatedFinishWeightText)
+        assertEquals(CorridorComplianceStatus.ON_TARGET, compositeKg.complianceStatus)
+        // Optimal momentum must land inside Projected Finish Weight range
+        val projMinKg = FatLossAnalytics.round1(activeKg.activeProjection.projectedMinWeightInUnit)
+        val projMaxKg = FatLossAnalytics.round1(activeKg.activeProjection.projectedMaxWeightInUnit)
+        val estMomKg = FatLossAnalytics.round1(compositeKg.estimatedFinishMomentumInUnit!!)
+        assertTrue("Expected $estMomKg in [$projMinKg, $projMaxKg]", estMomKg in projMinKg..projMaxKg)
+        assertTrue(activeKg.horizonRows.all {
+            it.estimatedFinishMomentumKg == null && it.estimatedFinishPaceKg == null
+        })
+
+        val activeLbs = FatLossAnalytics.computeCycleMomentumState(steadyEntries, fatLossCycle, day14, "lbs") as CycleMomentumState.Active
+        val projMinLbs = FatLossAnalytics.round1(activeLbs.activeProjection.projectedMinWeightInUnit)
+        val projMaxLbs = FatLossAnalytics.round1(activeLbs.activeProjection.projectedMaxWeightInUnit)
+        val estMomLbs = FatLossAnalytics.round1(activeLbs.weeklyBodyWeightRow.estimatedFinishMomentumInUnit!!)
+        assertTrue("Expected $estMomLbs in [$projMinLbs, $projMaxLbs]", estMomLbs in projMinLbs..projMaxLbs)
+        assertTrue(activeLbs.estimatedFinishWeightText!!.contains(" lbs (Momentum) · "))
+        assertTrue(activeLbs.estimatedFinishWeightText!!.endsWith(" lbs (Pace)"))
+
+        // 4. Exact corridor boundary reconciliation with Projected Finish Weight (-1.00%, -0.25%, +0.75%)
+        val previewFatLoss = FatLossAnalytics.computeSubcyclePreviewProjection(80.0, WeightSubcycleType.FAT_LOSS, 6.0, "lbs")
+        val lowerBound = FatLossAnalytics.computeEstimatedFinishWeights(80.0, -0.80, -1.004, 6.0, "lbs")!!
+        val upperBound = FatLossAnalytics.computeEstimatedFinishWeights(80.0, -0.20, -0.254, 6.0, "lbs")!!
+        assertEquals(
+            FatLossAnalytics.round1(previewFatLoss.projectedMinWeightInUnit),
+            FatLossAnalytics.round1(lowerBound.momentumWeightInUnit),
+            1e-6
+        )
+        assertEquals(
+            FatLossAnalytics.round1(previewFatLoss.projectedMaxWeightInUnit),
+            FatLossAnalytics.round1(upperBound.momentumWeightInUnit),
+            1e-6
+        )
+
+        // 5. Zero-velocity display rounding parity (no hidden drift when Pace rounds to 0.00 and Momentum to 0.00%)
+        val tinyDrift = FatLossAnalytics.computeEstimatedFinishWeights(
+            weeklyBodyWeightKg = 75.0,
+            weeklyPaceKg = 0.002,
+            weeklyMomentumPct = 0.004,
+            weeksRemaining = 20.0,
+            weightUnit = "lbs"
+        )!!
+        val bwLbs = WeightAnalytics.kgToLbs(75.0)
+        assertEquals(FatLossAnalytics.round1(bwLbs), FatLossAnalytics.round1(tinyDrift.momentumWeightInUnit), 1e-6)
+        assertEquals(FatLossAnalytics.round1(bwLbs), FatLossAnalytics.round1(tinyDrift.paceWeightInUnit), 1e-6)
+
+        // 6. Completed cycle (daysRemaining <= 0) & open-ended cycle (endDate == null -> 8w from start) & 0.0 floor
+        val completedState = FatLossAnalytics.computeCycleMomentumState(steadyEntries, fatLossCycle, finish.plusDays(3), "kg") as CycleMomentumState.Active
+        assertTrue(completedState.isCycleComplete)
+        assertEquals(
+            FatLossAnalytics.round1(completedState.weeklyBodyWeightRow.currentWeightInUnit),
+            FatLossAnalytics.round1(completedState.weeklyBodyWeightRow.estimatedFinishMomentumInUnit!!),
+            1e-6
+        )
+        assertEquals(
+            FatLossAnalytics.round1(completedState.weeklyBodyWeightRow.currentWeightInUnit),
+            FatLossAnalytics.round1(completedState.weeklyBodyWeightRow.estimatedFinishPaceInUnit!!),
+            1e-6
+        )
+
+        val openCycle = fatLossCycle.copy(endDate = null)
+        val openState = FatLossAnalytics.computeCycleMomentumState(steadyEntries, openCycle, start.plusDays(13), "kg") as CycleMomentumState.Active
+        assertTrue(openState.isOpenEndedCycle)
+        assertEquals(start.plusWeeks(8), openState.finishDate)
+        assertNotNull(openState.estimatedFinishWeightText)
+
+        val extremeNeg = FatLossAnalytics.computeEstimatedFinishWeights(
+            weeklyBodyWeightKg = 50.0,
+            weeklyPaceKg = -20.0,
+            weeklyMomentumPct = -120.0,
+            weeksRemaining = 5.0,
+            weightUnit = "kg"
+        )!!
+        assertEquals(0.0, extremeNeg.momentumWeightKg, 1e-9)
+        assertEquals(0.0, extremeNeg.paceWeightKg, 1e-9)
+    }
 }

@@ -644,6 +644,64 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       { subcycleType: "MUSCLE_GAIN" }
     );
     assert.equal(muscleGainOptimal.weekly_body_weight_composite.diagnostic_code, "ON_TARGET");
+
+    // Verify SPEC-020 dual Momentum & Pace end-of-cycle estimated finish weights
+    const calibrating = computeWeightMomentumAnalytics(
+      [
+        { isoDate: "2026-10-01", weightKg: 80.0 },
+        { isoDate: "2026-10-05", weightKg: 79.6 },
+      ],
+      {
+        subcycleType: "FAT_LOSS",
+        cycleStartDate: "2026-10-01",
+        cycleFinishDate: "2026-11-26",
+      }
+    );
+    assert.equal(calibrating.weekly_body_weight_composite.estimated_finish_weight_momentum_kg, null);
+    assert.equal(calibrating.weekly_body_weight_composite.estimated_finish_weight_pace_kg, null);
+
+    const calibrated = computeWeightMomentumAnalytics(
+      [
+        { isoDate: "2026-10-01", weightKg: 80.0 },
+        { isoDate: "2026-10-08", weightKg: 79.3 },
+      ],
+      {
+        subcycleType: "FAT_LOSS",
+        cycleStartDate: "2026-10-01",
+        cycleFinishDate: "2026-11-26",
+      }
+    );
+    assert.ok(calibrated.weekly_body_weight_composite.estimated_finish_weight_momentum_kg !== null);
+    assert.ok(calibrated.weekly_body_weight_composite.estimated_finish_weight_pace_kg !== null);
+    assert.ok(
+      calibrated.weekly_body_weight_composite.estimated_finish_weight_momentum_kg! <
+        calibrated.weekly_body_weight_composite.current_kg!
+    );
+    assert.ok(
+      calibrated.weekly_body_weight_composite.estimated_finish_weight_pace_kg! <
+        calibrated.weekly_body_weight_composite.current_kg!
+    );
+
+    const completed = computeWeightMomentumAnalytics(
+      [
+        { isoDate: "2026-10-01", weightKg: 80.0 },
+        { isoDate: "2026-10-08", weightKg: 79.3 },
+      ],
+      {
+        subcycleType: "FAT_LOSS",
+        cycleStartDate: "2026-10-01",
+        cycleFinishDate: "2026-10-08",
+        asOfDate: "2026-10-10",
+      }
+    );
+    assert.equal(
+      completed.weekly_body_weight_composite.estimated_finish_weight_momentum_kg,
+      Math.round(completed.weekly_body_weight_composite.current_kg! * 10) / 10
+    );
+    assert.equal(
+      completed.weekly_body_weight_composite.estimated_finish_weight_pace_kg,
+      Math.round(completed.weekly_body_weight_composite.current_kg! * 10) / 10
+    );
   });
 
   it("replays the exact 6-order Gemini conversation (active cycle discovery + 2RM->3RM Snatch + 5 new goals) in 1 batch call", async () => {
