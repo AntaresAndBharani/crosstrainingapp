@@ -3130,16 +3130,10 @@ internal fun resolveWeeklyBodyWeightEstimatedFinishText(
     weightUnit: String
 ): String? {
     if (!row.isPrimaryComposite) return null
-    val momFinish = row.estimatedFinishMomentumInUnit ?: return null
-    val paceFinish = row.estimatedFinishPaceInUnit ?: return null
-    return String.format(
-        Locale.US,
-        "%s: %.1f %s (Momentum) · %.1f %s (Pace)",
-        ESTIMATED_FINISH_WEIGHT_LABEL,
-        FatLossAnalytics.round1(momFinish),
-        weightUnit,
-        FatLossAnalytics.round1(paceFinish),
-        weightUnit
+    return FatLossAnalytics.formatEstimatedFinishWeightText(
+        momentumWeightInUnit = row.estimatedFinishMomentumInUnit,
+        paceWeightInUnit = row.estimatedFinishPaceInUnit,
+        weightUnit = weightUnit
     )
 }
 

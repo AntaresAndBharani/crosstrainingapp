@@ -3882,15 +3882,29 @@ object FatLossAnalytics {
     internal fun formatEstimatedFinishWeightText(
         estimated: EstimatedFinishWeights?,
         weightUnit: String
+    ): String? = formatEstimatedFinishWeightText(
+        momentumWeightInUnit = estimated?.momentumWeightInUnit,
+        paceWeightInUnit = estimated?.paceWeightInUnit,
+        weightUnit = weightUnit
+    )
+
+    /**
+     * Single source of truth for the `SPEC-020` line
+     * `"Estimated Finish Weight: X.X <unit> (Momentum) · Y.Y <unit> (Pace)"`; `null` when either value is missing.
+     */
+    internal fun formatEstimatedFinishWeightText(
+        momentumWeightInUnit: Double?,
+        paceWeightInUnit: Double?,
+        weightUnit: String
     ): String? {
-        if (estimated == null) return null
+        if (momentumWeightInUnit == null || paceWeightInUnit == null) return null
         val unitLabel = if (weightUnit.equals("lbs", ignoreCase = true)) "lbs" else "kg"
         return String.format(
             Locale.US,
             "Estimated Finish Weight: %.1f %s (Momentum) · %.1f %s (Pace)",
-            round1(estimated.momentumWeightInUnit),
+            round1(momentumWeightInUnit),
             unitLabel,
-            round1(estimated.paceWeightInUnit),
+            round1(paceWeightInUnit),
             unitLabel
         )
     }
@@ -4030,22 +4044,11 @@ object FatLossAnalytics {
         } else {
             "Projected Finish Weight: ${activeProjection.projectedFinishRangeText}"
         }
-        val estimatedFinishWeightText = if (
-            weeklyBodyWeightRow.estimatedFinishMomentumInUnit != null &&
-            weeklyBodyWeightRow.estimatedFinishPaceInUnit != null
-        ) {
-            formatEstimatedFinishWeightText(
-                EstimatedFinishWeights(
-                    momentumWeightKg = weeklyBodyWeightRow.estimatedFinishMomentumKg!!,
-                    momentumWeightInUnit = weeklyBodyWeightRow.estimatedFinishMomentumInUnit,
-                    paceWeightKg = weeklyBodyWeightRow.estimatedFinishPaceKg!!,
-                    paceWeightInUnit = weeklyBodyWeightRow.estimatedFinishPaceInUnit
-                ),
-                unitLabel
-            )
-        } else {
-            null
-        }
+        val estimatedFinishWeightText = formatEstimatedFinishWeightText(
+            momentumWeightInUnit = weeklyBodyWeightRow.estimatedFinishMomentumInUnit,
+            paceWeightInUnit = weeklyBodyWeightRow.estimatedFinishPaceInUnit,
+            weightUnit = unitLabel
+        )
 
         return CycleMomentumState.Active(
             cycleName = cycleDisplayName,
