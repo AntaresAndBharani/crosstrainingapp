@@ -755,6 +755,17 @@ data class CorridorDiagnosticResult(
 )
 
 /**
+ * Dual end-of-cycle estimated finish weights derived from a calibrated Weekly Body Weight composite
+ * (`SPEC-020`): compounded weekly Momentum (%) and linear weekly Pace (`kg/wk` or `lbs/wk`).
+ */
+data class EstimatedFinishWeights(
+    val momentumWeightKg: Double,
+    val momentumWeightInUnit: Double,
+    val paceWeightKg: Double,
+    val paceWeightInUnit: Double
+)
+
+/**
  * Presentation & domain row for either the primary 3:4:2:1 Weekly Body Weight composite
  * ([isPrimaryComposite] == true, [windowDays] == 0) or an individual horizon ([windowDays] in {7, 14, 21, 28}).
  */
@@ -773,7 +784,11 @@ data class HorizonMomentumRow(
     val statusLabel: String,
     val gaugePosition: Float,
     val severity: MomentumSeverity = complianceStatus.severity,
-    val diagnosticMessage: String? = complianceStatus.defaultDiagnosticMessage
+    val diagnosticMessage: String? = complianceStatus.defaultDiagnosticMessage,
+    val estimatedFinishMomentumKg: Double? = null,
+    val estimatedFinishMomentumInUnit: Double? = null,
+    val estimatedFinishPaceKg: Double? = null,
+    val estimatedFinishPaceInUnit: Double? = null
 )
 
 /**
@@ -821,7 +836,8 @@ sealed class CycleMomentumState {
         val allSubcyclePreviews: List<SubcyclePreviewProjection>,
         val cycleTimelineHeaderText: String,
         val subtypeTargetHeaderText: String,
-        val projectedFinishHeaderText: String
+        val projectedFinishHeaderText: String,
+        val estimatedFinishWeightText: String? = null
     ) : CycleMomentumState()
 }
 
@@ -3826,6 +3842,74 @@ object FatLossAnalytics {
         else String.format(Locale.US, "%.2f", value)
 
     /**
+     * Computes dual end-of-cycle estimated finish weights (`SPEC-020`) from a calibrated Weekly Body Weight
+     * composite using both:
+     * - Compounded weekly Momentum (%): `BW_weekly * max(0.0, 1.0 + displayedMomentumPct / 100.0)^weeksRemaining`
+     * - Linear weekly Pace (`kg/wk` or `lbs/wk`): `max(0.0, BW_weekly_unit + round2(pace_unit) * weeksRemaining)`
+     *
+     * Returns `null` during the 8-day calibration gate when [weeklyPaceKg] or [weeklyMomentumPct] is `null`.
+     */
+    fun computeEstimatedFinishWeights(
+        weeklyBodyWeightKg: Double,
+        weeklyPaceKg: Double?,
+        weeklyMomentumPct: Double?,
+        weeksRemaining: Double,
+        weightUnit: String = "kg"
+    ): EstimatedFinishWeights? {
+        if (weeklyPaceKg == null || weeklyMomentumPct == null) return null
+        val isImperial = weightUnit.equals("lbs", ignoreCase = true)
+        val effectiveWeeks = weeksRemaining.coerceAtLeast(0.0)
+        val currentInUnit = if (isImperial) WeightAnalytics.kgToLbs(weeklyBodyWeightKg) else weeklyBodyWeightKg
+        val paceInUnit = if (isImperial) WeightAnalytics.kgToLbs(weeklyPaceKg) else weeklyPaceKg
+
+        // Reconcile with the displayed 2-decimal Momentum % and Pace so UI telemetry and finish estimates agree.
+        val effectiveMomentumPct = displayedMomentumPct(weeklyMomentumPct)
+        val compoundBase = (1.0 + effectiveMomentumPct / 100.0).coerceAtLeast(0.0)
+        val momentumKg = weeklyBodyWeightKg * compoundBase.pow(effectiveWeeks)
+        val momentumInUnit = if (isImperial) WeightAnalytics.kgToLbs(momentumKg) else momentumKg
+
+        val paceKg = (weeklyBodyWeightKg + round2(weeklyPaceKg) * effectiveWeeks).coerceAtLeast(0.0)
+        val paceWeightInUnit = (currentInUnit + round2(paceInUnit) * effectiveWeeks).coerceAtLeast(0.0)
+
+        return EstimatedFinishWeights(
+            momentumWeightKg = momentumKg,
+            momentumWeightInUnit = momentumInUnit,
+            paceWeightKg = paceKg,
+            paceWeightInUnit = paceWeightInUnit
+        )
+    }
+
+    internal fun formatEstimatedFinishWeightText(
+        estimated: EstimatedFinishWeights?,
+        weightUnit: String
+    ): String? = formatEstimatedFinishWeightText(
+        momentumWeightInUnit = estimated?.momentumWeightInUnit,
+        paceWeightInUnit = estimated?.paceWeightInUnit,
+        weightUnit = weightUnit
+    )
+
+    /**
+     * Single source of truth for the `SPEC-020` line
+     * `"Estimated Finish Weight: X.X <unit> (Momentum) · Y.Y <unit> (Pace)"`; `null` when either value is missing.
+     */
+    internal fun formatEstimatedFinishWeightText(
+        momentumWeightInUnit: Double?,
+        paceWeightInUnit: Double?,
+        weightUnit: String
+    ): String? {
+        if (momentumWeightInUnit == null || paceWeightInUnit == null) return null
+        val unitLabel = if (weightUnit.equals("lbs", ignoreCase = true)) "lbs" else "kg"
+        return String.format(
+            Locale.US,
+            "Estimated Finish Weight: %.1f %s (Momentum) · %.1f %s (Pace)",
+            round1(momentumWeightInUnit),
+            unitLabel,
+            round1(paceWeightInUnit),
+            unitLabel
+        )
+    }
+
+    /**
      * Computes the complete [CycleMomentumState] for any training cycle (`STRENGTH_WEIGHTLIFTING` or
      * `FAT_LOSS_BODYBUILDING`), evaluating:
      * - Linearly interpolated daily weight timeline (incorporating pre-cycle history when present)
@@ -3887,6 +3971,17 @@ object FatLossAnalytics {
                 calibrationDay = calibrationDay
             )
             val gaugePos = computeCorridorGaugePosition(momentumPct, subcycleType)
+            val estimatedFinish = if (isPrimaryComposite) {
+                computeEstimatedFinishWeights(
+                    weeklyBodyWeightKg = currentKg,
+                    weeklyPaceKg = paceKg,
+                    weeklyMomentumPct = momentumPct,
+                    weeksRemaining = weeksRemaining,
+                    weightUnit = unitLabel
+                )
+            } else {
+                null
+            }
 
             return HorizonMomentumRow(
                 windowDays = windowDays,
@@ -3903,7 +3998,11 @@ object FatLossAnalytics {
                 statusLabel = diagnostic.badgeLabel,
                 gaugePosition = gaugePos,
                 severity = diagnostic.severity,
-                diagnosticMessage = diagnostic.diagnosticMessage
+                diagnosticMessage = diagnostic.diagnosticMessage,
+                estimatedFinishMomentumKg = estimatedFinish?.momentumWeightKg,
+                estimatedFinishMomentumInUnit = estimatedFinish?.momentumWeightInUnit,
+                estimatedFinishPaceKg = estimatedFinish?.paceWeightKg,
+                estimatedFinishPaceInUnit = estimatedFinish?.paceWeightInUnit
             )
         }
 
@@ -3945,6 +4044,11 @@ object FatLossAnalytics {
         } else {
             "Projected Finish Weight: ${activeProjection.projectedFinishRangeText}"
         }
+        val estimatedFinishWeightText = formatEstimatedFinishWeightText(
+            momentumWeightInUnit = weeklyBodyWeightRow.estimatedFinishMomentumInUnit,
+            paceWeightInUnit = weeklyBodyWeightRow.estimatedFinishPaceInUnit,
+            weightUnit = unitLabel
+        )
 
         return CycleMomentumState.Active(
             cycleName = cycleDisplayName,
@@ -3966,7 +4070,8 @@ object FatLossAnalytics {
             allSubcyclePreviews = allPreviews,
             cycleTimelineHeaderText = cycleTimelineHeaderText,
             subtypeTargetHeaderText = subtypeTargetHeaderText,
-            projectedFinishHeaderText = projectedFinishHeaderText
+            projectedFinishHeaderText = projectedFinishHeaderText,
+            estimatedFinishWeightText = estimatedFinishWeightText
         )
     }
 }

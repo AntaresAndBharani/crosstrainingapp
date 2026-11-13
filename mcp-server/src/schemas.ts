@@ -845,6 +845,22 @@ export function computeWeightMomentumAnalytics(
       ? roundTo(latest.weeklyComposite * Math.pow(1 + corridor.maxPct / 100, daysRemaining / 7), 1)
       : null;
 
+  const estimatedFinishMomentumKg =
+    latest && compositeMomentumPct !== null
+      ? roundTo(
+          latest.weeklyComposite *
+            Math.pow(Math.max(0, 1 + compositeMomentumPct / 100), daysRemaining / 7),
+          1
+        )
+      : null;
+  const estimatedFinishPaceKg =
+    latest && compositeRateKg !== null
+      ? roundTo(
+          Math.max(0, latest.weeklyComposite + compositeRateKg * (daysRemaining / 7)),
+          1
+        )
+      : null;
+
   function buildHorizon(
     currVal: number | undefined,
     prevVal: number | undefined
@@ -908,6 +924,8 @@ export function computeWeightMomentumAnalytics(
       previous_week_kg: prevCompositeKg,
       weekly_rate_kg: compositeRateKg,
       weekly_momentum_pct: compositeMomentumPct,
+      estimated_finish_weight_momentum_kg: estimatedFinishMomentumKg,
+      estimated_finish_weight_pace_kg: estimatedFinishPaceKg,
       status: compositeDiagnostic.status,
       diagnostic_code: compositeDiagnostic.status,
       severity: compositeDiagnostic.severity,

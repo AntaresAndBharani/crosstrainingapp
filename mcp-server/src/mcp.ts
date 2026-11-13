@@ -439,7 +439,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Get Weight Momentum Analytics",
       description:
-        "Compute multi-horizon (7D/14D/21D/28D) moving averages, 3:4:2:1 Weekly Body Weight composite, weekly momentum %, subcycle corridor status, and projected finish weight window.",
+        "Compute multi-horizon (7D/14D/21D/28D) moving averages, 3:4:2:1 Weekly Body Weight composite, weekly momentum %, subcycle corridor status, projected finish weight window, and Momentum/Pace end-of-cycle estimated finish weights.",
       inputSchema: GetWeightMomentumAnalyticsInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },

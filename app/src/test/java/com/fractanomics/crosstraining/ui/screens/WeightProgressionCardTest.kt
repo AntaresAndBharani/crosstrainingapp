@@ -1657,4 +1657,88 @@ class WeightProgressionCardTest {
             resolveHorizonMomentumContentDescription(warningComposite, "kg", calibrationDay = 10)
         )
     }
+
+    @Test
+    fun feature020_specWeightCard03_estimatedFinishWeightResolverAndSemantics() {
+        assertEquals("Estimated Finish Weight", ESTIMATED_FINISH_WEIGHT_LABEL)
+
+        // 1. Calibrated composite row in kg
+        val calibratedCompositeKg = HorizonMomentumRow(
+            windowDays = 0,
+            isPrimaryComposite = true,
+            effectiveWindowDays = 28,
+            currentWeightKg = 74.7,
+            currentWeightInUnit = 74.7,
+            anchorWeightKg = 75.06,
+            weeklyPaceKg = -0.36,
+            weeklyPaceInUnit = -0.36,
+            weeklyMomentumPct = -0.47,
+            zone = MomentumZone.FAT_LOSS,
+            complianceStatus = CorridorComplianceStatus.ON_TARGET,
+            severity = MomentumSeverity.OPTIMAL_GREEN,
+            statusLabel = "Optimal",
+            diagnosticMessage = null,
+            gaugePosition = 0.30f,
+            estimatedFinishMomentumKg = 72.47,
+            estimatedFinishMomentumInUnit = 72.47,
+            estimatedFinishPaceKg = 72.39,
+            estimatedFinishPaceInUnit = 72.39
+        )
+        assertEquals(
+            "Estimated Finish Weight: 72.5 kg (Momentum) · 72.4 kg (Pace)",
+            resolveWeeklyBodyWeightEstimatedFinishText(calibratedCompositeKg, "kg")
+        )
+        assertEquals(
+            "✦ Weekly Body Weight: 74.7 kg, Pace: -0.36 kg/wk · Momentum: -0.47%/wk, Estimated Finish Weight: 72.5 kg (Momentum) · 72.4 kg (Pace), Optimal",
+            resolveHorizonMomentumContentDescription(calibratedCompositeKg, "kg", calibrationDay = 8)
+        )
+
+        // 2. Calibrated composite row in lbs with diagnostic message
+        val calibratedCompositeLbs = calibratedCompositeKg.copy(
+            currentWeightInUnit = 164.7,
+            weeklyPaceInUnit = -0.79,
+            complianceStatus = CorridorComplianceStatus.WARNING_FAT_LOSS_PHASE,
+            severity = MomentumSeverity.WARNING_AMBER,
+            statusLabel = "Warning: Fat loss phase",
+            diagnosticMessage = "Pace is below -0.25%/wk. Warning: You are currently in a fat loss phase.",
+            estimatedFinishMomentumInUnit = 159.77,
+            estimatedFinishPaceInUnit = 159.61
+        )
+        assertEquals(
+            "Estimated Finish Weight: 159.8 lbs (Momentum) · 159.6 lbs (Pace)",
+            resolveWeeklyBodyWeightEstimatedFinishText(calibratedCompositeLbs, "lbs")
+        )
+        assertEquals(
+            "✦ Weekly Body Weight: 164.7 lbs, Pace: -0.79 lbs/wk · Momentum: -0.47%/wk, Estimated Finish Weight: 159.8 lbs (Momentum) · 159.6 lbs (Pace), Warning: Fat loss phase, Pace is below -0.25%/wk. Warning: You are currently in a fat loss phase.",
+            resolveHorizonMomentumContentDescription(calibratedCompositeLbs, "lbs", calibrationDay = 12)
+        )
+
+        // 3. Calibrating composite row (Days 1-7) returns null and preserves calibrating description
+        val calibratingComposite = calibratedCompositeKg.copy(
+            weeklyPaceKg = null,
+            weeklyPaceInUnit = null,
+            weeklyMomentumPct = null,
+            zone = MomentumZone.CALIBRATING,
+            complianceStatus = CorridorComplianceStatus.CALIBRATING,
+            severity = MomentumSeverity.NEUTRAL,
+            statusLabel = "Calibrating (Day 5/8)",
+            diagnosticMessage = "Collecting initial 8-day baseline to calculate weekly momentum.",
+            estimatedFinishMomentumKg = null,
+            estimatedFinishMomentumInUnit = null,
+            estimatedFinishPaceKg = null,
+            estimatedFinishPaceInUnit = null
+        )
+        assertNull(resolveWeeklyBodyWeightEstimatedFinishText(calibratingComposite, "kg"))
+        assertEquals(
+            "✦ Weekly Body Weight: 74.7 kg, Calibrating (Day 5/8), Calibrating (Day 5/8), Collecting initial 8-day baseline to calculate weekly momentum.",
+            resolveHorizonMomentumContentDescription(calibratingComposite, "kg", calibrationDay = 5)
+        )
+
+        // 4. Non-composite horizon row (7D-28D) never produces an estimated finish weight line
+        val nonCompositeRow = calibratedCompositeKg.copy(
+            windowDays = 7,
+            isPrimaryComposite = false
+        )
+        assertNull(resolveWeeklyBodyWeightEstimatedFinishText(nonCompositeRow, "kg"))
+    }
 }
