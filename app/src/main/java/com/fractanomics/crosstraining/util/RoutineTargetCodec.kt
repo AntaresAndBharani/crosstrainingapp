@@ -160,7 +160,15 @@ data class RoutineExerciseTargetSpec(
 object RoutineTargetCodec {
 
     private const val HEADER_PREFIX = "[rb_v2="
+    /** Anchored `[rb_v2=...]` header used for structured target decoding only. */
     private val HEADER_LINE_REGEX = Regex("""^\[rb_v2=([^\]]*)]\s*\r?\n?""", RegexOption.IGNORE_CASE)
+
+    /**
+     * Any machine-readable metadata header line (`[rb_v2=...]` or Available Block `[ab_prs=...]`)
+     * stripped from human-visible notes. Kept separate from [HEADER_LINE_REGEX] so an
+     * `[ab_prs=...]` payload is never decoded as `rb_v2` target slots.
+     */
+    private val METADATA_HEADER_LINE_REGEX = Regex("""^\[(?:rb_v2|ab_prs)=([^\]]*)]\s*\r?\n?""", RegexOption.IGNORE_CASE)
 
     val PRIMARY_BLOCK_KINDS: List<BlockKind> = listOf(
         BlockKind.WEIGHTLIFTING,
@@ -188,9 +196,12 @@ object RoutineTargetCodec {
 
     fun extractCleanNotes(notes: String?): String {
         if (notes.isNullOrBlank()) return ""
-        val withoutV2 = notes.trimStart().replaceFirst(HEADER_LINE_REGEX, "")
+        var remaining = notes.trimStart()
+        while (METADATA_HEADER_LINE_REGEX.containsMatchIn(remaining)) {
+            remaining = remaining.replaceFirst(METADATA_HEADER_LINE_REGEX, "").trimStart()
+        }
         // Also strip legacy auto-injected "Score: TIME" header if Work/Rest are empty
-        val lines = withoutV2.lines()
+        val lines = remaining.lines()
         val firstLine = lines.firstOrNull()?.trim().orEmpty()
         if (firstLine.equals("Score: TIME", ignoreCase = true) ||
             firstLine.equals("Score: REPS", ignoreCase = true) ||
@@ -200,7 +211,7 @@ object RoutineTargetCodec {
         ) {
             return lines.drop(1).joinToString("\n").trim()
         }
-        return withoutV2.trim()
+        return remaining.trim()
     }
 
     fun encodeNotesWithTargets(

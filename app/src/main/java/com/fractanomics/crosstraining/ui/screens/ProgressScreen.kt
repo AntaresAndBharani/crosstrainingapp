@@ -66,6 +66,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -98,6 +99,9 @@ import com.fractanomics.crosstraining.ui.BlockPerformance
 import com.fractanomics.crosstraining.ui.DayPerformance
 import com.fractanomics.crosstraining.ui.blockPerformances
 import com.fractanomics.crosstraining.ui.byDay
+import com.fractanomics.crosstraining.ui.resolveRepMaxAttribution
+import com.fractanomics.crosstraining.util.AVAILABLE_BLOCK_FORMAT
+import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.ui.components.ChartPoint
 import com.fractanomics.crosstraining.ui.components.ChartSeries
 import com.fractanomics.crosstraining.ui.components.Dropdown
@@ -260,7 +264,7 @@ fun ProgressScreen(
                             Text(
                                 when (mode) {
                                     ProgressMode.BY_EXERCISE -> "By exercise"
-                                    ProgressMode.BY_ROUTINE -> "By routine"
+                                    ProgressMode.BY_ROUTINE -> "By block"
                                     ProgressMode.CYCLE_GOALS -> "Cycle goals"
                                     ProgressMode.FAT_LOSS -> "Fat loss"
                                     ProgressMode.BODY_WEIGHT -> "Body weight"
@@ -282,6 +286,8 @@ fun ProgressScreen(
                             routinesWithBlocks = routinesWithBlocks,
                             exercises = exercises,
                             sessions = sessions,
+                            repMaxes = repMaxes,
+                            weightUnit = weightUnit,
                             current = selectedRoutine ?: routines.firstOrNull(),
                             onSelect = { selectedRoutine = it }
                         )
@@ -392,6 +398,7 @@ fun ProgressScreen(
                                 exercises = exercises,
                                 repMaxes = repMaxes,
                                 sessions = sessions,
+                                routines = routines,
                                 current = selectedExercise ?: exercises.firstOrNull(),
                                 onSelect = { selectedExercise = it }
                             )
@@ -3860,6 +3867,7 @@ private fun ExerciseProgress(
     exercises: List<Exercise>,
     repMaxes: List<RepMax>,
     sessions: List<SessionWithBlocks>,
+    routines: List<Routine> = emptyList(),
     current: Exercise?,
     onSelect: (Exercise) -> Unit
 ) {
@@ -3930,24 +3938,43 @@ private fun ExerciseProgress(
             }
 
             SectionCard(title = "Personal records") {
-                TableHeader("RM", "Weight", "", "Date")
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Text("RM", Modifier.weight(0.55f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Weight", Modifier.weight(0.85f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Source & Date", Modifier.weight(1.8f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.End)
+                }
+                HorizontalDivider()
                 val bestByReps = rmSeries.groupBy { it.reps }
                     .mapValues { (_, list) -> list.maxBy { it.weight } }
                     .toSortedMap()
                 bestByReps.forEach { (r, rm) ->
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        Text("${r}RM", Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                    val attribution = remember(rm, sessions, routines, current.name) {
+                        resolveRepMaxAttribution(rm, sessions, routines, current.name)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("${r}RM", Modifier.weight(0.55f), fontWeight = FontWeight.SemiBold)
                         Text(
-                            "${rm.weight.trimmed()} kg",
-                            Modifier.weight(1f),
+                            "${rm.weight.trimmed()} ${current.unit}",
+                            Modifier.weight(0.85f),
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text("", Modifier.weight(1f))
                         Text(
-                            rm.date.formatShort(),
-                            Modifier.weight(1f),
+                            attribution.formattedLabel,
+                            Modifier.weight(1.8f),
                             style = MaterialTheme.typography.bodySmall,
-                            textAlign = TextAlign.End
+                            color = if (attribution.blockTitle != null) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            textAlign = TextAlign.End,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -3959,7 +3986,9 @@ private fun ExerciseProgress(
         blocks = blocks,
         unit = current.unit,
         selectionKey = "exercise-${current.id}",
-        emptyMessage = "No sessions logged for this exercise yet."
+        emptyMessage = "No sessions logged for this exercise yet.",
+        repMaxes = repMaxes,
+        exercises = exercises
     )
 }
 
@@ -3972,11 +4001,13 @@ private fun RoutineProgress(
     routinesWithBlocks: List<RoutineWithBlocks>,
     exercises: List<Exercise>,
     sessions: List<SessionWithBlocks>,
+    repMaxes: List<RepMax> = emptyList(),
+    weightUnit: String = "kg",
     current: Routine?,
     onSelect: (Routine) -> Unit
 ) {
     Dropdown(
-        label = "Routine / complex",
+        label = "Available block",
         options = routines,
         selected = current,
         labelOf = { it.name },
@@ -3986,23 +4017,59 @@ private fun RoutineProgress(
     if (current == null) return
 
     val target = exercises.firstOrNull { it.id == current.mainExerciseId }
-    val meta = listOfNotNull(
-        target?.let { "Improves: ${it.name}" },
-        current.defaultFormat.ifBlank { null }
-    ).joinToString(" · ")
-    if (meta.isNotBlank()) {
-        Text(
-            meta,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-
     val allRoutineBlocks = remember(sessions, current.id) {
         sessions.routineBlockPerformances(current.id, current)
     }
 
     val currentRwb = routinesWithBlocks.firstOrNull { it.routine.id == current.id }
+    val availableBlock = remember(currentRwb, exercises) {
+        currentRwb?.let { AvailableBlockCodec.fromRoutineWithBlocks(it, exercises) }
+    }
+    if (availableBlock != null) {
+        if (availableBlock.instructions.isNotBlank()) {
+            Text(
+                text = availableBlock.instructions,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (availableBlock.exercises.isNotEmpty()) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                availableBlock.exercises.forEach { ex ->
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Text(
+                            text = ex.name,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+        }
+    } else {
+        val meta = listOfNotNull(
+            target?.let { "Improves: ${it.name}" },
+            current.defaultFormat.takeIf { it != AVAILABLE_BLOCK_FORMAT && it.isNotBlank() }
+        ).joinToString(" · ")
+        if (meta.isNotBlank()) {
+            Text(
+                meta,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+
     val definedBlocks = currentRwb?.blocks?.sortedBy { it.position } ?: emptyList()
 
     fun matchesRoutineBlock(pb: BlockPerformance, rBlk: RoutineBlock, totalDefined: Int): Boolean {
@@ -4058,7 +4125,7 @@ private fun RoutineProgress(
     }
 
     val days = activeBlocks.byDay()
-    val unit = target?.unit ?: "kg"
+    val unit = target?.unit ?: weightUnit.ifBlank { "kg" }
 
     KpiRows(activeBlocks, days, unit)
     EvolutionCards(days, unit, titlePrefix = selectedBlockFilter ?: "All Blocks")
@@ -4141,7 +4208,9 @@ private fun RoutineProgress(
         blocks = activeBlocks,
         unit = unit,
         selectionKey = "routine-${current.id}-${selectedBlockFilter ?: "all"}",
-        emptyMessage = "No logged blocks match this selection yet."
+        emptyMessage = "No logged blocks match this selection yet.",
+        repMaxes = repMaxes,
+        exercises = exercises
     )
 }
 
@@ -4223,7 +4292,9 @@ private fun BlockHistoryCard(
     blocks: List<BlockPerformance>,
     unit: String,
     selectionKey: String,
-    emptyMessage: String
+    emptyMessage: String,
+    repMaxes: List<RepMax> = emptyList(),
+    exercises: List<Exercise> = emptyList()
 ) {
     SectionCard(title = "Block history") {
         if (blocks.isEmpty()) {
@@ -4242,6 +4313,8 @@ private fun BlockHistoryCard(
                     bp = bp,
                     unit = unit,
                     expanded = expandedKey == bp.block.id,
+                    repMaxes = repMaxes,
+                    exercises = exercises,
                     onToggle = {
                         expandedKey = if (expandedKey == bp.block.id) null else bp.block.id
                     }
@@ -4335,15 +4408,25 @@ private fun setToken(set: BlockSet): String {
     return "$prefix$core$suffix"
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BlockHistoryRow(
     bp: BlockPerformance,
     unit: String,
     expanded: Boolean,
+    repMaxes: List<RepMax> = emptyList(),
+    exercises: List<Exercise> = emptyList(),
     onToggle: () -> Unit
 ) {
     val b = bp.block
     val label = b.name.ifBlank { b.scheme.ifBlank { b.format.ifBlank { "Block" } } }
+    val achievedPrs = remember(repMaxes, b.id, bp.sessionId, b.mainExerciseId) {
+        repMaxes.filter { rm ->
+            (rm.blockId != null && rm.blockId == b.id) ||
+                (rm.blockId == null && rm.sessionId == bp.sessionId &&
+                    (b.mainExerciseId == null || rm.exerciseId == b.mainExerciseId))
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -4381,6 +4464,28 @@ private fun BlockHistoryRow(
                 fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.End
             )
+        }
+        if (achievedPrs.isNotEmpty()) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                achievedPrs.forEach { rm ->
+                    val exName = exercises.firstOrNull { it.id == rm.exerciseId }?.name ?: "Movement"
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                    ) {
+                        Text(
+                            text = "🔥 ${rm.reps}RM $exName · ${rm.weight.trimmed()} $unit",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
         }
         if (expanded) {
             val meta = listOfNotNull(

@@ -2,19 +2,23 @@ package com.fractanomics.crosstraining.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import android.view.HapticFeedbackConstants
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,72 +28,87 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Timer
-import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.filled.ViewAgenda
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Surface
 import androidx.compose.material3.FilterChip
-import androidx.compose.runtime.LaunchedEffect
-import com.fractanomics.crosstraining.data.firebase.FirebaseSyncManager
-import com.fractanomics.crosstraining.data.firebase.SharedWorkoutPayload
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fractanomics.crosstraining.data.firebase.FirebaseSyncManager
+import com.fractanomics.crosstraining.data.firebase.SharedWorkoutPayload
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RoutineBlock
-import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.components.Dropdown
 import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.ScreenList
 import com.fractanomics.crosstraining.ui.components.WorkoutJourneyAssistantSheet
+import com.fractanomics.crosstraining.util.AvailableBlock
+import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.RoutineTargetCodec
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -100,17 +119,20 @@ fun LibraryScreen(
     viewModel: AppViewModel,
     outerPadding: PaddingValues,
     onOpenDrawer: () -> Unit = {},
-    onOpenTimer: () -> Unit = {}
+    onOpenTimer: () -> Unit = {},
+    onLogBlock: (Long) -> Unit = {}
 ) {
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
-    val routinesWithBlocks by viewModel.routinesWithBlocks.collectAsStateWithLifecycle()
+    val availableBlocks by viewModel.availableBlocks.collectAsStateWithLifecycle()
+    val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val weightUnit by viewModel.weightUnit.collectAsStateWithLifecycle()
     val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
 
     var tab by remember { mutableIntStateOf(0) }
     var showExerciseEditor by remember { mutableStateOf(false) }
     var editingExercise by remember { mutableStateOf<Exercise?>(null) }
-    var showRoutineEditor by remember { mutableStateOf(false) }
-    var editingRoutine by remember { mutableStateOf<RoutineWithBlocks?>(null) }
+    var showQuickBlockSheet by remember { mutableStateOf(false) }
+    var editingAvailableBlock by remember { mutableStateOf<AvailableBlock?>(null) }
 
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -139,7 +161,7 @@ fun LibraryScreen(
 
     var exerciseSearch by remember { mutableStateOf("") }
     var exerciseCategoryFilter by remember { mutableStateOf<ExerciseCategory?>(null) }
-    var routineSearch by remember { mutableStateOf("") }
+    var blockSearch by remember { mutableStateOf("") }
 
     var activeShareCode by remember { mutableStateOf<String?>(null) }
     var showImportModal by remember { mutableStateOf(false) }
@@ -154,14 +176,8 @@ fun LibraryScreen(
         }
     }
 
-    val filteredRoutines = remember(routinesWithBlocks, routineSearch) {
-        routinesWithBlocks.filter { rwb ->
-            val query = routineSearch.trim().lowercase()
-            query.isBlank() ||
-                rwb.routine.name.lowercase().contains(query) ||
-                rwb.routine.description.lowercase().contains(query) ||
-                rwb.blocks.any { b -> b.name.lowercase().contains(query) }
-        }
+    val filteredAvailableBlocks = remember(availableBlocks, blockSearch) {
+        AvailableBlockCodec.filterAvailableBlocks(availableBlocks, blockSearch)
     }
 
     val userRole by viewModel.userRole.collectAsStateWithLifecycle()
@@ -204,6 +220,22 @@ fun LibraryScreen(
                     }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                         DropdownMenuItem(
+                            text = { Text("Import from Notes") },
+                            leadingIcon = { Icon(Icons.Filled.ContentPaste, contentDescription = null) },
+                            onClick = { showMenu = false; showWorkoutAssistantSheet = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Import Code") },
+                            leadingIcon = { Icon(Icons.Filled.CloudDownload, contentDescription = null) },
+                            onClick = { showMenu = false; showImportModal = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Community Library") },
+                            leadingIcon = { Icon(Icons.Filled.Public, contentDescription = null) },
+                            onClick = { showMenu = false; showCommunityModal = true }
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
                             text = { Text("Export backup (CSV)") },
                             onClick = {
                                 showMenu = false
@@ -235,9 +267,11 @@ fun LibraryScreen(
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 if (tab == 0) {
-                    editingExercise = null; showExerciseEditor = true
+                    editingAvailableBlock = null
+                    showQuickBlockSheet = true
                 } else {
-                    editingRoutine = null; showRoutineEditor = true
+                    editingExercise = null
+                    showExerciseEditor = true
                 }
             }) { Icon(Icons.Filled.Add, contentDescription = "Add") }
         }
@@ -247,15 +281,97 @@ fun LibraryScreen(
                 Tab(
                     selected = tab == 0,
                     onClick = { tab = 0 },
-                    text = { Text("Exercises (${exercises.size})", fontWeight = if (tab == 0) FontWeight.Bold else FontWeight.Normal) }
+                    text = {
+                        Text(
+                            "Available Blocks (${availableBlocks.size})",
+                            fontWeight = if (tab == 0) FontWeight.Bold else FontWeight.Normal,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 )
                 Tab(
                     selected = tab == 1,
                     onClick = { tab = 1 },
-                    text = { Text("Daily Routines (${routinesWithBlocks.size})", fontWeight = if (tab == 1) FontWeight.Bold else FontWeight.Normal) }
+                    text = {
+                        Text(
+                            "Exercises (${exercises.size})",
+                            fontWeight = if (tab == 1) FontWeight.Bold else FontWeight.Normal,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 )
             }
             if (tab == 0) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = blockSearch,
+                        onValueChange = { blockSearch = it },
+                        placeholder = {
+                            Text(
+                                "Search available blocks or exercises...",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (blockSearch.isNotEmpty()) {
+                                IconButton(onClick = { blockSearch = "" }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                if (filteredAvailableBlocks.isEmpty()) {
+                    EmptyState(
+                        if (blockSearch.isNotBlank()) "No available blocks match '$blockSearch'."
+                        else "No available blocks yet. Sync via MCP or tap + to add one."
+                    )
+                } else {
+                    ScreenList {
+                        items(filteredAvailableBlocks, key = { it.id }) { block ->
+                            val lastSummary = remember(block.id, block.title, sessions, exercises, weightUnit) {
+                                AvailableBlockCodec.resolveLastBlockSession(block, sessions, exercises, weightUnit)
+                            }
+                            AvailableBlockCard(
+                                block = block,
+                                lastSessionSummary = lastSummary,
+                                onLogBlock = { onLogBlock(block.id) },
+                                onEdit = {
+                                    editingAvailableBlock = block
+                                    showQuickBlockSheet = true
+                                },
+                                onDuplicate = { viewModel.duplicateAvailableBlock(block) },
+                                onDelete = {
+                                    viewModel.deleteAvailableBlock(block)
+                                    scope.launch {
+                                        val res = snackbar.showSnackbar(
+                                            message = "Block removed",
+                                            actionLabel = "Undo",
+                                            duration = SnackbarDuration.Short
+                                        )
+                                        if (res == SnackbarResult.ActionPerformed) {
+                                            viewModel.restoreAvailableBlock(block)
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            } else {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -304,73 +420,6 @@ fun LibraryScreen(
                                 exercise = ex,
                                 onEdit = { editingExercise = ex; showExerciseEditor = true },
                                 onDelete = { viewModel.deleteExercise(ex) }
-                            )
-                        }
-                    }
-                }
-            } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    OutlinedTextField(
-                        value = routineSearch,
-                        onValueChange = { routineSearch = it },
-                        placeholder = { Text("Search routines & complexes...") },
-                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                    )
-
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        FilterChip(
-                            selected = false,
-                            onClick = { showWorkoutAssistantSheet = true },
-                            label = { Text("Import from Notes", style = MaterialTheme.typography.labelSmall) },
-                            leadingIcon = { Icon(Icons.Filled.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                        )
-                        FilterChip(
-                            selected = false,
-                            onClick = { showImportModal = true },
-                            label = { Text("Import Code", style = MaterialTheme.typography.labelSmall) },
-                            leadingIcon = { Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                        )
-                        FilterChip(
-                            selected = false,
-                            onClick = { showCommunityModal = true },
-                            label = { Text("Community Library", style = MaterialTheme.typography.labelSmall) },
-                            leadingIcon = { Icon(Icons.Filled.Public, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                        )
-                    }
-                }
-
-                if (filteredRoutines.isEmpty()) {
-                    EmptyState(
-                        if (routineSearch.isNotBlank()) "No routines match '$routineSearch'."
-                        else "No daily routines created yet. Tap + to define one."
-                    )
-                } else {
-                    ScreenList {
-                        items(filteredRoutines, key = { it.routine.id }) { rwb ->
-                            RoutineCard(
-                                routineWithBlocks = rwb,
-                                exercises = exercises,
-                                onShare = {
-                                    viewModel.shareRoutine(rwb) { code ->
-                                        activeShareCode = code
-                                    }
-                                },
-                                onEdit = { editingRoutine = rwb; showRoutineEditor = true },
-                                onDelete = { viewModel.deleteRoutine(rwb.routine) }
                             )
                         }
                     }
@@ -429,7 +478,7 @@ fun LibraryScreen(
                 scope.launch {
                     val msg = buildString {
                         append("Workout journey saved")
-                        if (routine != null) append(" (Routine '${routine.name}')")
+                        if (routine != null) append(" (Block '${routine.name}')")
                         if (session != null) append(" (Session recorded)")
                     }
                     snackbar.showSnackbar(msg)
@@ -445,28 +494,28 @@ fun LibraryScreen(
             onSave = { ex -> viewModel.saveExercise(ex); showExerciseEditor = false }
         )
     }
-    if (showRoutineEditor) {
-        RoutineBuilderSheet(
-            original = editingRoutine,
+    if (showQuickBlockSheet) {
+        QuickCreateBlockSheet(
+            original = editingAvailableBlock,
             exercises = exercises,
-            onDismiss = { showRoutineEditor = false },
-            onCreateAndAddExercise = { name, category, onCreated ->
-                val defaultMetric = when (category) {
-                    ExerciseCategory.MACHINE -> MetricType.CALORIES
-                    ExerciseCategory.GYMNASTICS -> MetricType.REPS
-                    ExerciseCategory.BARBELL, ExerciseCategory.ACCESSORY -> MetricType.WEIGHT
-                    ExerciseCategory.OTHER -> MetricType.REPS
-                }
+            onCreateExercise = { name, onCreated ->
                 viewModel.getOrCreateExerciseForRoutine(
                     name = name,
-                    category = category,
-                    metricType = defaultMetric,
+                    category = ExerciseCategory.BARBELL,
+                    metricType = MetricType.WEIGHT,
                     onCreated = onCreated
                 )
             },
-            onSave = { routine, blocks ->
-                viewModel.saveRoutineWithBlocks(routine, blocks)
-                showRoutineEditor = false
+            onDismiss = { showQuickBlockSheet = false },
+            onSave = { title, instructions, selectedExerciseIds ->
+                viewModel.saveAvailableBlock(
+                    title = title,
+                    instructions = instructions,
+                    exerciseIds = selectedExerciseIds,
+                    existingId = editingAvailableBlock?.id ?: 0L,
+                    trackedPrs = editingAvailableBlock?.trackedPrs.orEmpty()
+                )
+                showQuickBlockSheet = false
             }
         )
     }
@@ -660,168 +709,348 @@ internal fun groupRoutineBlocks(blocks: List<RoutineBlock>): List<RoutineBlockIt
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun RoutineCard(
-    routineWithBlocks: RoutineWithBlocks,
-    exercises: List<Exercise>,
-    onShare: () -> Unit,
+private fun AvailableBlockCard(
+    block: AvailableBlock,
+    lastSessionSummary: com.fractanomics.crosstraining.util.LastBlockSessionSummary?,
+    onLogBlock: () -> Unit,
     onEdit: () -> Unit,
+    onDuplicate: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val routine = routineWithBlocks.routine
-    val blocks = routineWithBlocks.blocks.sortedBy { it.position }
+    val haptic = LocalHapticFeedback.current
+    val view = LocalView.current
+    var showOverflow by remember(block.id) { mutableStateOf(false) }
+    var instructionsExpanded by remember(block.id) { mutableStateOf(false) }
+    var hasInstructionsOverflow by remember(block.id, block.instructions) {
+        mutableStateOf(block.instructions.lines().size > 4 || block.instructions.length > 160)
+    }
 
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(routine.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            if (routine.description.isNotBlank()) {
-                Text(routine.description, style = MaterialTheme.typography.bodyMedium)
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = block.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+
+                Button(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        onLogBlock()
+                    },
+                    shape = RoundedCornerShape(24.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text(
+                        "Log Block ▸",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Box {
+                    IconButton(onClick = { showOverflow = true }) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            contentDescription = "Block options for ${block.title}"
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showOverflow,
+                        onDismissRequest = { showOverflow = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Edit") },
+                            leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                            onClick = { showOverflow = false; onEdit() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Duplicate") },
+                            leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                            onClick = { showOverflow = false; onDuplicate() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            },
+                            onClick = { showOverflow = false; onDelete() }
+                        )
+                    }
+                }
             }
 
-            if (blocks.isNotEmpty()) {
-                HorizontalDivider()
-                Text("Blocks (${blocks.size}):", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-
-                val routineItems = remember(blocks) { groupRoutineBlocks(blocks) }
-                var prevSection: String? = null
-                routineItems.forEach { rItem ->
-                    val currentSection = when (rItem) {
-                        is RoutineBlockItem.Standalone -> rItem.block.section.trim()
-                        is RoutineBlockItem.SubBlockGroup -> rItem.items.first().second.section.trim()
-                    }
-
-                    if (currentSection.isNotBlank() && currentSection != prevSection) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = if (prevSection != null) 8.dp else 0.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    text = currentSection,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
+            if (block.instructions.isNotBlank()) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = block.instructions,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = if (instructionsExpanded) Int.MAX_VALUE else 4,
+                        overflow = TextOverflow.Ellipsis,
+                        onTextLayout = { layoutResult ->
+                            if (layoutResult.hasVisualOverflow) {
+                                hasInstructionsOverflow = true
                             }
                         }
+                    )
+                    if (hasInstructionsOverflow || instructionsExpanded) {
+                        Text(
+                            text = if (instructionsExpanded) "Show less" else "Show more",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clickable { instructionsExpanded = !instructionsExpanded }
+                                .padding(vertical = 2.dp)
+                        )
                     }
-                    prevSection = currentSection
+                }
+            }
 
-                    when (rItem) {
-                        is RoutineBlockItem.Standalone -> {
-                            RoutineBlockCard(
-                                idx = rItem.index,
-                                blk = rItem.block,
-                                exercises = exercises
+            if (block.exercises.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    block.exercises.forEach { ex ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = ex.name,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
-                        is RoutineBlockItem.SubBlockGroup -> {
-                            OutlinedCard(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.outlinedCardColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                                ),
-                                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    // Sub-Block Header Row: Title, Format Badge, Sets / Rounds Counter
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            modifier = Modifier.weight(1f, fill = false)
-                                        ) {
-                                            Icon(
-                                                Icons.Filled.ViewAgenda,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp),
-                                                tint = MaterialTheme.colorScheme.primary
-                                            )
-                                            Text(
-                                                text = rItem.subBlockName,
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onSurface
-                                            )
-                                        }
+                    }
+                }
+            }
 
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            if (rItem.format.isNotBlank()) {
-                                                Surface(
-                                                    color = MaterialTheme.colorScheme.secondaryContainer,
-                                                    shape = RoundedCornerShape(6.dp)
-                                                ) {
-                                                    Text(
-                                                        text = rItem.format,
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-                                            val setsCount = rItem.totalSetsCount
-                                            if (setsCount > 0) {
-                                                Surface(
-                                                    color = MaterialTheme.colorScheme.tertiaryContainer,
-                                                    shape = RoundedCornerShape(6.dp)
-                                                ) {
-                                                    Text(
-                                                        text = "$setsCount ${if (setsCount == 1) "Round" else "Rounds"}",
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics(mergeDescendants = true) {},
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (lastSessionSummary != null) {
+                        "Last: ${lastSessionSummary.setWeightsSummary}"
+                    } else {
+                        "Not logged yet"
+                    },
+                    style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                    color = if (lastSessionSummary != null) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
 
-                                    // Child routine blocks inside container
-                                    rItem.items.forEach { (childIdx, childBlk) ->
-                                        RoutineBlockCard(
-                                            idx = childIdx,
-                                            blk = childBlk,
-                                            exercises = exercises
-                                        )
-                                    }
-                                }
+                if (block.trackedPrs.isNotEmpty()) {
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "🔥 ${block.trackedPrs.size} tracked PR(s)",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun QuickCreateBlockSheet(
+    original: AvailableBlock?,
+    exercises: List<Exercise>,
+    onCreateExercise: (String, (Exercise) -> Unit) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: (title: String, instructions: String, selectedExerciseIds: List<Long>) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var title by remember(original?.id) { mutableStateOf(original?.title.orEmpty()) }
+    var instructions by remember(original?.id) { mutableStateOf(original?.instructions.orEmpty()) }
+    var movementQuery by remember(original?.id) { mutableStateOf("") }
+    var newMovementName by remember(original?.id) { mutableStateOf("") }
+    val selectedIds = remember(original?.id) {
+        mutableStateListOf<Long>().apply {
+            addAll(original?.exercises?.map { it.id }.orEmpty())
+        }
+    }
+
+    val filteredMovements = remember(exercises, movementQuery) {
+        val needle = movementQuery.trim().lowercase()
+        val sorted = exercises.sortedBy { it.name.lowercase() }
+        if (needle.isEmpty()) sorted
+        else sorted.filter { it.name.lowercase().contains(needle) }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = if (original == null) "New Available Block" else "Edit Available Block",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+
+            OutlinedTextField(
+                value = title,
+                onValueChange = { title = it },
+                label = { Text("Block Name") },
+                placeholder = { Text("e.g. Clean Complex") },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+                value = instructions,
+                onValueChange = { instructions = it },
+                label = { Text("Instructions") },
+                placeholder = { Text("e.g. Every 90s x 6 sets: 1 Clean Pull + 1 Clean + 1 Jerk") },
+                minLines = 3,
+                maxLines = 6,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Text(
+                text = "Exercises (${selectedIds.size} selected)",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+
+            OutlinedTextField(
+                value = movementQuery,
+                onValueChange = { movementQuery = it },
+                placeholder = { Text("Filter movements...") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                filteredMovements.forEach { ex ->
+                    val isSelected = ex.id in selectedIds
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = {
+                            if (isSelected) selectedIds.remove(ex.id) else selectedIds.add(ex.id)
+                        },
+                        leadingIcon = if (isSelected) {
+                            { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        } else null,
+                        label = { Text(ex.name) }
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = newMovementName,
+                    onValueChange = { newMovementName = it },
+                    placeholder = { Text("New movement name") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(
+                    enabled = newMovementName.trim().isNotEmpty(),
+                    onClick = {
+                        val nameToCreate = newMovementName.trim()
+                        newMovementName = ""
+                        onCreateExercise(nameToCreate) { created ->
+                            if (created.id !in selectedIds) {
+                                selectedIds.add(created.id)
                             }
                         }
                     }
+                ) {
+                    Text("+ Add")
                 }
-            } else if (routine.defaultFormat.isNotBlank()) {
-                Text("Format: ${routine.defaultFormat}", style = MaterialTheme.typography.bodySmall)
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = onShare) {
-                    Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Share")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Cancel")
                 }
-                TextButton(onClick = onEdit) { Text("Edit") }
-                TextButton(onClick = onDelete) { Text("Delete") }
+                Button(
+                    enabled = title.trim().isNotEmpty(),
+                    onClick = {
+                        onSave(
+                            title.trim(),
+                            instructions.trim(),
+                            selectedIds.toList()
+                        )
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(if (original == null) "Create Block" else "Save Block")
+                }
             }
         }
     }

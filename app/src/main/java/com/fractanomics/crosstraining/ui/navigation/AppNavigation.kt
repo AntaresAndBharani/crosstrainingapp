@@ -308,7 +308,17 @@ fun AppNavigation(
                             viewModel = viewModel,
                             outerPadding = innerPadding,
                             onOpenDrawer = openDrawer,
-                            onOpenTimer = openTimer
+                            onOpenTimer = openTimer,
+                            onLogBlock = { blockId ->
+                                viewModel.requestLogAvailableBlock(blockId)
+                                navController.navigate(BottomDestination.LOG.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            }
                         )
                     }
                     composable(DrawerItem.TIMER.route) {

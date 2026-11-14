@@ -23,6 +23,11 @@ import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
+import com.fractanomics.crosstraining.util.AVAILABLE_BLOCK_FORMAT
+import com.fractanomics.crosstraining.util.AvailableBlock
+import com.fractanomics.crosstraining.util.AvailableBlockCodec
+import com.fractanomics.crosstraining.util.RoutineTargetCodec
+import com.fractanomics.crosstraining.util.TrackedPrSlot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
@@ -34,14 +39,18 @@ import java.time.LocalDate
 
 /**
  * Input for one block when saving a session: the block (with [SessionBlock.mainExerciseId]
- * already resolved), its sets, and an optional new rep-max to record for the
- * block's main exercise.
+ * already resolved), its sets, and optional new rep-maxes to record for one or multiple movements.
  */
 data class BlockInsert(
     val block: SessionBlock,
     val sets: List<BlockSet>,
-    val newRepMax: RepMax? = null
-)
+    val newRepMax: RepMax? = null,
+    val newRepMaxes: List<RepMax> = emptyList()
+) {
+    /** Returns the multi-PR list when provided, falling back to singular [newRepMax]. */
+    fun effectiveRepMaxes(): List<RepMax> =
+        if (newRepMaxes.isNotEmpty()) newRepMaxes else listOfNotNull(newRepMax)
+}
 
 /**
  * Single point of access to the persistence layer. Hides the DAOs from the UI
@@ -283,6 +292,60 @@ class Repository(
             }
             routineId
         }
+
+    /**
+     * Persists an [AvailableBlock] (`SPEC-021`) into `routines` / `routine_blocks`
+     * with `AVAILABLE_BLOCK` format and `[ab_prs=...]` tracked movement metadata.
+     */
+    suspend fun saveAvailableBlock(block: AvailableBlock): Long {
+        if (block.id > 0L) {
+            val existing = getAllRoutinesWithBlocksOnce().firstOrNull { it.routine.id == block.id }
+            val isLegacyRoutine = existing != null &&
+                !existing.routine.defaultFormat.equals(AVAILABLE_BLOCK_FORMAT, ignoreCase = true)
+            if (existing != null && isLegacyRoutine) {
+                val decoded = AvailableBlockCodec.fromRoutineWithBlocks(existing, getAllExercisesOnce())
+                val sameExercises = decoded.exercises.map { it.id } ==
+                    block.exercises.distinctBy { it.id }.map { it.id }
+                if (sameExercises) {
+                    // Legacy daily routine edited through the Available Block surface (title, instructions,
+                    // or tracked PR links only): keep its multi-block structure, formats, set counts, and
+                    // `[rb_v2=...]` targets instead of flattening it into the AVAILABLE_BLOCK layout.
+                    val cleanInstructions = AvailableBlockCodec.extractCleanInstructions(block.instructions)
+                    val updatedRoutine = existing.routine.copy(
+                        name = block.title.trim().ifEmpty { existing.routine.name },
+                        description = if (cleanInstructions == decoded.instructions) {
+                            existing.routine.description
+                        } else {
+                            cleanInstructions
+                        }
+                    )
+                    return saveRoutineWithBlocks(
+                        updatedRoutine,
+                        AvailableBlockCodec.applyTrackedPrsToRoutineBlocks(existing.blocks, block.trackedPrs)
+                    )
+                }
+            }
+        }
+        val rw = AvailableBlockCodec.toRoutineWithBlocks(block)
+        return saveRoutineWithBlocks(rw.routine, rw.blocks)
+    }
+
+    /**
+     * Updates only the persisted [trackedPrs] list on the [AvailableBlock] identified by [blockId].
+     */
+    suspend fun updateAvailableBlockTrackedPrs(
+        blockId: Long,
+        trackedPrs: List<TrackedPrSlot>
+    ) {
+        if (blockId <= 0L) return
+        val existing = getAllRoutinesWithBlocksOnce().firstOrNull { it.routine.id == blockId } ?: return
+        val exercises = getAllExercisesOnce()
+        val decoded = AvailableBlockCodec.fromRoutineWithBlocks(existing, exercises)
+        val updated = decoded.copy(
+            trackedPrs = AvailableBlockCodec.normalizeTrackedPrSlots(trackedPrs)
+        )
+        saveAvailableBlock(updated)
+    }
 
     suspend fun cleanupDuplicateExercises() = withDatabaseTransaction {
         cleanupDuplicateExercisesInternal()
@@ -655,9 +718,9 @@ class Repository(
                         }
                     )
                 }
-                item.newRepMax?.let {
+                item.effectiveRepMaxes().forEach { rm ->
                     upsertRepMaxInternal(
-                        it.copy(
+                        rm.copy(
                             id = 0,
                             sessionId = sessionId,
                             blockId = blockId,
@@ -672,17 +735,27 @@ class Repository(
     /**
      * Update an existing [session] (its id must be set) and replace its blocks
      * and sets with [blocks]. Existing blocks are deleted (cascading to their
-     * sets) and re-inserted in order. Historical rep-max records are kept; any
-     * new rep-maxes in [blocks] are added.
+     * sets) and re-inserted in order. Historical rep-max records are kept and
+     * re-linked to their corresponding newly inserted blockId; any new rep-maxes
+     * in [blocks] are added.
      */
     suspend fun updateSession(session: Session, blocks: List<BlockInsert>) {
         withDatabaseTransaction {
+            val priorBlocksById = sessionDao.getByIdOnce(session.id)
+                ?.blocks
+                ?.associate { it.block.id to it.block }
+                .orEmpty()
+            val priorSessionRepMaxes = repMaxDao.getAllOnce()
+                .filter { it.sessionId == session.id }
+
             sessionDao.updateSession(session)
             blockDao.deleteBlocksForSession(session.id)
+
+            val insertedBlocks = mutableListOf<Pair<Long, SessionBlock>>()
             blocks.forEachIndexed { blockIndex, item ->
-                val blockId = blockDao.insertBlock(
-                    item.block.copy(id = 0, sessionId = session.id, position = blockIndex)
-                )
+                val toInsert = item.block.copy(id = 0, sessionId = session.id, position = blockIndex)
+                val blockId = blockDao.insertBlock(toInsert)
+                insertedBlocks += blockId to toInsert
                 if (item.sets.isNotEmpty()) {
                     blockDao.insertSets(
                         item.sets.mapIndexed { setIndex, set ->
@@ -690,15 +763,45 @@ class Repository(
                         }
                     )
                 }
-                item.newRepMax?.let {
+                item.effectiveRepMaxes().forEach { rm ->
                     upsertRepMaxInternal(
-                        it.copy(
+                        rm.copy(
                             id = 0,
                             sessionId = session.id,
                             blockId = blockId,
                             cycleId = session.cycleId
                         )
                     )
+                }
+            }
+
+            // Deleting prior blocks fires SQLite ON DELETE SET NULL on rep_maxes.blockId.
+            // Re-link surviving session rep-maxes onto the matching re-inserted blockId.
+            priorSessionRepMaxes.forEach { oldRm ->
+                val oldBlock = oldRm.blockId?.let { priorBlocksById[it] }
+                val matchedBlockId = when {
+                    insertedBlocks.isEmpty() -> null
+                    oldBlock != null -> insertedBlocks.firstOrNull { (_, nb) ->
+                        nb.subBlock.equals(oldBlock.subBlock, ignoreCase = true) &&
+                            nb.name.equals(oldBlock.name, ignoreCase = true) &&
+                            nb.mainExerciseId == oldBlock.mainExerciseId
+                    }?.first ?: insertedBlocks.firstOrNull { (_, nb) ->
+                        nb.mainExerciseId == oldRm.exerciseId ||
+                            RoutineTargetCodec.parseExerciseIdsPreservingOrder(nb.exerciseIdsCsv)
+                                .contains(oldRm.exerciseId)
+                    }?.first ?: insertedBlocks.getOrNull(oldBlock.position)?.first
+                    else -> insertedBlocks.firstOrNull { (_, nb) ->
+                        nb.mainExerciseId == oldRm.exerciseId ||
+                            RoutineTargetCodec.parseExerciseIdsPreservingOrder(nb.exerciseIdsCsv)
+                                .contains(oldRm.exerciseId)
+                    }?.first
+                }
+                if (matchedBlockId != null) {
+                    repMaxDao.getAllOnce().firstOrNull { it.id == oldRm.id }?.let { liveRm ->
+                        if (liveRm.blockId != matchedBlockId || liveRm.cycleId != session.cycleId) {
+                            repMaxDao.update(liveRm.copy(blockId = matchedBlockId, cycleId = session.cycleId))
+                        }
+                    }
                 }
             }
         }
@@ -721,7 +824,9 @@ class Repository(
         reps: Int,
         weight: Double,
         date: LocalDate,
-        cycleId: Long?
+        cycleId: Long?,
+        sessionId: Long? = null,
+        blockId: Long? = null
     ): Long = withDatabaseTransaction {
         upsertRepMaxInternal(
             RepMax(
@@ -729,7 +834,9 @@ class Repository(
                 reps = reps,
                 weight = weight,
                 date = date,
-                cycleId = cycleId
+                cycleId = cycleId,
+                sessionId = sessionId,
+                blockId = blockId
             )
         )
     }

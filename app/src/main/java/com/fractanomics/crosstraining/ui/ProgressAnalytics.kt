@@ -1,9 +1,11 @@
 package com.fractanomics.crosstraining.ui
 
 import com.fractanomics.crosstraining.data.model.BlockSet
+import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
+import com.fractanomics.crosstraining.util.RoutineTargetCodec
 import java.time.LocalDate
 
 /**
@@ -51,9 +53,56 @@ fun List<SessionWithBlocks>.blockPerformances(exerciseId: Long): List<BlockPerfo
 fun List<SessionWithBlocks>.routineBlockPerformances(routineId: Long, routine: Routine? = null): List<BlockPerformance> =
     performances { b ->
         b.routineId == routineId ||
-            (routine != null && routine.mainExerciseId != null && b.mainExerciseId == routine.mainExerciseId) ||
-            (routine != null && routine.name.isNotBlank() && (b.name.equals(routine.name, ignoreCase = true)))
+            (routine != null && routine.name.isNotBlank() && (
+                b.subBlock.equals(routine.name, ignoreCase = true) ||
+                    b.name.equals(routine.name, ignoreCase = true)
+                )) ||
+            (routine != null && routine.mainExerciseId != null &&
+                b.routineId == null && b.subBlock.isBlank() &&
+                b.mainExerciseId == routine.mainExerciseId)
     }
+
+/** Attribution metadata connecting a [RepMax] record to the block and session where it was achieved. */
+data class RepMaxAttribution(
+    val blockTitle: String?,
+    val formattedLabel: String
+)
+
+/**
+ * Resolves a human-readable attribution label for [repMax], e.g.
+ * `"Achieved in Clean Complex · 14 Nov"` when linked to a logged block/session or `"14 Nov"` otherwise.
+ */
+fun resolveRepMaxAttribution(
+    repMax: RepMax,
+    sessions: List<SessionWithBlocks>,
+    routines: List<Routine>,
+    exerciseName: String = ""
+): RepMaxAttribution {
+    val dateLabel = repMax.date.formatShort()
+    val linkedSession = repMax.sessionId?.let { sid ->
+        sessions.firstOrNull { it.session.id == sid }
+    }
+    val linkedBlock = repMax.blockId?.let { bid ->
+        linkedSession?.blocks?.firstOrNull { it.block.id == bid }?.block
+            ?: sessions.asSequence().flatMap { it.blocks.asSequence() }.firstOrNull { it.block.id == bid }?.block
+    } ?: linkedSession?.blocks?.firstOrNull { bws ->
+        bws.block.mainExerciseId == repMax.exerciseId ||
+            RoutineTargetCodec.parseExerciseIdsPreservingOrder(bws.block.exerciseIdsCsv).contains(repMax.exerciseId)
+    }?.block
+
+    val blockTitle = linkedBlock?.let { sb ->
+        sb.subBlock.trim().takeIf { it.isNotEmpty() }
+            ?: sb.routineId?.let { rid -> routines.firstOrNull { it.id == rid }?.name?.trim() }?.takeIf { it.isNotEmpty() }
+            ?: sb.name.trim().takeIf { it.isNotEmpty() && !it.equals(exerciseName.trim(), ignoreCase = true) }
+    } ?: linkedSession?.session?.title?.trim()?.takeIf { it.isNotEmpty() }
+
+    val formattedLabel = if (!blockTitle.isNullOrBlank()) {
+        "Achieved in $blockTitle · $dateLabel"
+    } else {
+        dateLabel
+    }
+    return RepMaxAttribution(blockTitle = blockTitle, formattedLabel = formattedLabel)
+}
 
 private fun List<SessionWithBlocks>.performances(
     match: (SessionBlock) -> Boolean

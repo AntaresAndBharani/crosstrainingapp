@@ -16,6 +16,7 @@ import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.data.model.UserRole
+import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
@@ -601,6 +602,14 @@ object UserCloudSyncManager {
                 val allExercises = repo.getAllExercisesOnce().distinctBy { it.name.trim().lowercase() }
                 val exercisesById = allExercises.associateBy { it.id }
                 val cyclesById = repo.getAllCyclesOnce().associateBy { it.id }
+                val allRoutinesWithBlocks = repo.getAllRoutinesWithBlocksOnce()
+                    .distinctBy { it.routine.name.trim().lowercase() }
+                val routinesById = allRoutinesWithBlocks.associate { it.routine.id to it.routine }
+                val allSessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
+                val sessionsById = allSessionsWithBlocks.associateBy { it.session.id }
+                val sessionBlocksById = allSessionsWithBlocks
+                    .flatMap { swb -> swb.blocks.map { it.block } }
+                    .associateBy { it.id }
 
                 val doc = if (documentWriterForTesting != null) null else userDoc(uid)
                 val collectionErrors = mutableMapOf<String, Throwable>()
@@ -630,9 +639,7 @@ object UserCloudSyncManager {
 
                     val taskRoutines = async {
                         runCatching {
-                            val routinesWithBlocks = repo.getAllRoutinesWithBlocksOnce()
-                                .distinctBy { it.routine.name.trim().lowercase() }
-                            val routinesPayload = routinesWithBlocks.map { rwb ->
+                            val routinesPayload = allRoutinesWithBlocks.map { rwb ->
                                 val mainExName = rwb.routine.mainExerciseId?.let { exercisesById[it]?.name }
                                 val routineMap = mutableMapOf<String, Any?>(
                                     "id" to rwb.routine.id,
@@ -675,7 +682,7 @@ object UserCloudSyncManager {
                                 collectionName = "routines",
                                 docRef = doc?.collection("data")?.document("routines"),
                                 payload = routinesPayload,
-                                isLocallyEmpty = routinesWithBlocks.isEmpty()
+                                isLocallyEmpty = allRoutinesWithBlocks.isEmpty()
                             )
                         }
                     }
@@ -686,8 +693,7 @@ object UserCloudSyncManager {
                             // (cycleId, date, title, blocksSignature) natural key. Do NOT re-deduplicate here by
                             // (cycleId, date, title) alone: two distinct same-titled workouts logged on the same
                             // day would silently be dropped from the whole-list cloud backup.
-                            val sessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
-                            val sessionsPayload = sessionsWithBlocks.map { swb ->
+                            val sessionsPayload = allSessionsWithBlocks.map { swb ->
                                 val cycle = cyclesById[swb.session.cycleId]
                                 val cycleName = cycle?.name
                                 val sessionMap = mutableMapOf<String, Any?>(
@@ -705,6 +711,7 @@ object UserCloudSyncManager {
                                     "session" to sessionMap,
                                     "blocks" to swb.blocks.map { sb ->
                                         val mainExName = sb.block.mainExerciseId?.let { exercisesById[it]?.name }
+                                        val routineName = sb.block.routineId?.let { routinesById[it]?.name }
                                         val exerciseNamesCsv = sb.block.exerciseIdsCsv.split(",")
                                             .mapNotNull { it.trim().toLongOrNull()?.let { id -> exercisesById[id]?.name } }
                                             .joinToString(",")
@@ -729,6 +736,9 @@ object UserCloudSyncManager {
                                         )
                                         if (mainExName != null) {
                                             blockMap["mainExerciseName"] = mainExName
+                                        }
+                                        if (routineName != null) {
+                                            blockMap["routineName"] = routineName
                                         }
                                         if (exerciseNamesCsv.isNotEmpty()) {
                                             blockMap["exerciseNamesCsv"] = exerciseNamesCsv
@@ -757,7 +767,7 @@ object UserCloudSyncManager {
                                 collectionName = "sessions",
                                 docRef = doc?.collection("data")?.document("sessions"),
                                 payload = sessionsPayload,
-                                isLocallyEmpty = sessionsWithBlocks.isEmpty()
+                                isLocallyEmpty = allSessionsWithBlocks.isEmpty()
                             )
                         }
                     }
@@ -805,13 +815,20 @@ object UserCloudSyncManager {
                                 val exName = exercisesById[rm.exerciseId]?.name
                                 val cycle = rm.cycleId?.let { cyclesById[it] }
                                 val cycName = cycle?.name
+                                val linkedSession = rm.sessionId?.let { sessionsById[it] }
+                                val linkedBlock = rm.blockId?.let { sessionBlocksById[it] }
+                                val sourceBlockTitle = linkedBlock?.subBlock?.trim()?.takeIf { it.isNotEmpty() }
+                                    ?: linkedBlock?.name?.trim()?.takeIf { it.isNotEmpty() }
+                                val sessionTitle = linkedSession?.session?.title?.trim()?.takeIf { it.isNotEmpty() }
                                 val rmMap = mutableMapOf<String, Any?>(
                                     "id" to rm.id,
                                     "exerciseId" to rm.exerciseId,
                                     "reps" to rm.reps,
                                     "weight" to rm.weight,
                                     "date" to rm.date.toString(),
-                                    "cycleId" to rm.cycleId
+                                    "cycleId" to rm.cycleId,
+                                    "sessionId" to rm.sessionId,
+                                    "blockId" to rm.blockId
                                 )
                                 if (rm.cycleId != null) {
                                     rmMap["isActiveCycle"] = (cycle?.isActive == true)
@@ -821,6 +838,12 @@ object UserCloudSyncManager {
                                 }
                                 if (cycName != null) {
                                     rmMap["cycleName"] = cycName
+                                }
+                                if (sourceBlockTitle != null) {
+                                    rmMap["sourceBlockTitle"] = sourceBlockTitle
+                                }
+                                if (sessionTitle != null) {
+                                    rmMap["sessionTitle"] = sessionTitle
                                 }
                                 rmMap
                             }
@@ -1159,6 +1182,11 @@ object UserCloudSyncManager {
                         val bList = rwbMap["blocks"] as? List<Map<String, Any>> ?: emptyList()
                         val blocks = bList.mapIndexed { idx, bMap ->
                             val rawNotes = bMap["notes"] as? String ?: ""
+                            AvailableBlockCodec.decodeTrackedPrHeader(rawNotes).forEach { slot ->
+                                if (slot.movementName.isNotBlank()) {
+                                    repo.getOrCreateExercise(slot.movementName.trim())
+                                }
+                            }
                             val preserveSeq = com.fractanomics.crosstraining.util.RoutineTargetCodec.hasStructuredHeader(rawNotes)
                             val resolvedCsv = resolveExerciseCsv(
                                 idsCsv = bMap["exerciseIdsCsv"] as? String,
@@ -1325,6 +1353,9 @@ object UserCloudSyncManager {
                     }
 
                     val existingSessions = repo.getAllSessionsWithBlocksOnce().toMutableList()
+                    val localRoutines = repo.getAllRoutinesWithBlocksOnce()
+                    val localRoutinesById = localRoutines.associateBy { it.routine.id }
+                    val localRoutinesByLowerName = localRoutines.associateBy { it.routine.name.trim().lowercase() }
                     val incomingSessions = deduplicatedSessions.values.toList()
                     // Local session ids already paired with an incoming record during this pass, so a second
                     // distinct same-titled remote session is never collapsed onto (or overwrites) the first.
@@ -1413,6 +1444,14 @@ object UserCloudSyncManager {
                                     bMap["exerciseIdsCsv"] as? String,
                                     bMap["exerciseNamesCsv"] as? String
                                 )
+                                val rawRoutineId = (bMap["routineId"] as? Number)?.toLong()
+                                val remoteRoutineName = (bMap["routineName"] as? String)?.trim()
+                                    ?: (bMap["subBlock"] as? String)?.trim()
+                                val resolvedRoutineId = when {
+                                    rawRoutineId != null && localRoutinesById.containsKey(rawRoutineId) -> rawRoutineId
+                                    !remoteRoutineName.isNullOrBlank() -> localRoutinesByLowerName[remoteRoutineName.lowercase()]?.routine?.id
+                                    else -> null
+                                }
                                 val block = SessionBlock(
                                     id = 0,
                                     sessionId = 0,
@@ -1422,7 +1461,7 @@ object UserCloudSyncManager {
                                     format = bMap["format"] as? String ?: "",
                                     scheme = bMap["scheme"] as? String ?: "",
                                     mainExerciseId = resolvedMainExId,
-                                    routineId = (bMap["routineId"] as? Number)?.toLong(),
+                                    routineId = resolvedRoutineId,
                                     description = bMap["description"] as? String ?: "",
                                     resultText = bMap["resultText"] as? String ?: "",
                                     resultValue = (bMap["resultValue"] as? Number)?.toDouble(),
@@ -1441,8 +1480,8 @@ object UserCloudSyncManager {
                                         position = (sMapItem["position"] as? Number)?.toInt() ?: sIdx,
                                         groupIndex = (sMapItem["groupIndex"] as? Number)?.toInt() ?: 0,
                                         reps = (sMapItem["reps"] as? Number)?.toInt() ?: 0,
-                                        weight = (sMapItem["weight"] as? Number)?.toDouble() ?: 0.0,
-                                        metricValue = (sMapItem["metricValue"] as? Number)?.toDouble() ?: 0.0,
+                                        weight = (sMapItem["weight"] as? Number)?.toDouble()?.takeIf { it > 0.0 },
+                                        metricValue = (sMapItem["metricValue"] as? Number)?.toDouble()?.takeIf { it > 0.0 },
                                         isWarmup = sMapItem["isWarmup"] as? Boolean ?: false,
                                         isFailed = sMapItem["isFailed"] as? Boolean ?: false,
                                         notes = sMapItem["notes"] as? String ?: ""
@@ -1468,6 +1507,7 @@ object UserCloudSyncManager {
                 // 5. Download Rep Maxes (PR History — Deduplicate incoming & check live mutable list)
                 if (rmList.isNotEmpty()) {
                     val existingRms = repo.exportSnapshot().repMaxes.toMutableList()
+                    val localSessionsForRms = repo.getAllSessionsWithBlocksOnce()
                     rmList.forEach { map ->
                         if (!shouldImport(map)) return@forEach
                         val exerciseId = resolveLocalExerciseId(
@@ -1482,26 +1522,79 @@ object UserCloudSyncManager {
                             (map["cycleId"] as? Number)?.toLong(),
                             map["cycleName"] as? String
                         )
+                        val sourceBlockTitle = (map["sourceBlockTitle"] as? String)?.trim()
+                        val sessionTitle = (map["sessionTitle"] as? String)?.trim()
+                        val candidatesOnDate = localSessionsForRms.filter { it.session.date == date }
+                        val matchedSession = candidatesOnDate.firstOrNull { swb ->
+                            !sessionTitle.isNullOrBlank() && swb.session.title.trim().equals(sessionTitle, ignoreCase = true)
+                        } ?: candidatesOnDate.firstOrNull { swb ->
+                            !sourceBlockTitle.isNullOrBlank() && swb.blocks.any { bws ->
+                                bws.block.subBlock.trim().equals(sourceBlockTitle, ignoreCase = true) ||
+                                    bws.block.name.trim().equals(sourceBlockTitle, ignoreCase = true)
+                            }
+                        } ?: candidatesOnDate.firstOrNull { swb ->
+                            swb.blocks.any { bws ->
+                                bws.block.mainExerciseId == exerciseId ||
+                                    com.fractanomics.crosstraining.util.RoutineTargetCodec
+                                        .parseExerciseIdsPreservingOrder(bws.block.exerciseIdsCsv)
+                                        .contains(exerciseId)
+                            }
+                        }
+                        val matchedBlock = matchedSession?.blocks?.firstOrNull { bws ->
+                            val titleMatches = !sourceBlockTitle.isNullOrBlank() && (
+                                bws.block.subBlock.trim().equals(sourceBlockTitle, ignoreCase = true) ||
+                                    bws.block.name.trim().equals(sourceBlockTitle, ignoreCase = true)
+                                )
+                            val exMatches = bws.block.mainExerciseId == exerciseId ||
+                                com.fractanomics.crosstraining.util.RoutineTargetCodec
+                                    .parseExerciseIdsPreservingOrder(bws.block.exerciseIdsCsv)
+                                    .contains(exerciseId)
+                            titleMatches && exMatches
+                        } ?: matchedSession?.blocks?.firstOrNull { bws ->
+                            !sourceBlockTitle.isNullOrBlank() && (
+                                bws.block.subBlock.trim().equals(sourceBlockTitle, ignoreCase = true) ||
+                                    bws.block.name.trim().equals(sourceBlockTitle, ignoreCase = true)
+                                )
+                        } ?: matchedSession?.blocks?.firstOrNull { bws ->
+                            bws.block.mainExerciseId == exerciseId ||
+                                com.fractanomics.crosstraining.util.RoutineTargetCodec
+                                    .parseExerciseIdsPreservingOrder(bws.block.exerciseIdsCsv)
+                                    .contains(exerciseId)
+                        }
                         val normWeight = normalizeWeight(weight)
 
-                        val exists = existingRms.any {
+                        val existingRm = existingRms.firstOrNull {
                             it.exerciseId == exerciseId &&
                                 it.reps == reps &&
                                 normalizeWeight(it.weight) == normWeight &&
                                 it.date == date
                         }
-                        if (!exists) {
-                            val savedId = repo.recordRepMax(exerciseId, reps, weight, date, cycleId)
-                            existingRms.add(
-                                RepMax(
-                                    id = savedId,
-                                    exerciseId = exerciseId,
-                                    reps = reps,
-                                    weight = weight,
-                                    date = date,
-                                    cycleId = cycleId
-                                )
+                        if (existingRm == null || ((existingRm.sessionId == null || existingRm.blockId == null) && matchedSession != null)) {
+                            val savedId = repo.recordRepMax(
+                                exerciseId = exerciseId,
+                                reps = reps,
+                                weight = weight,
+                                date = date,
+                                cycleId = cycleId,
+                                sessionId = matchedSession?.session?.id,
+                                blockId = matchedBlock?.block?.id
                             )
+                            val updatedEntry = RepMax(
+                                id = savedId,
+                                exerciseId = exerciseId,
+                                reps = reps,
+                                weight = weight,
+                                date = date,
+                                cycleId = cycleId,
+                                sessionId = matchedSession?.session?.id,
+                                blockId = matchedBlock?.block?.id
+                            )
+                            val existingIdx = existingRms.indexOfFirst { it.id == savedId }
+                            if (existingIdx >= 0) {
+                                existingRms[existingIdx] = updatedEntry
+                            } else {
+                                existingRms.add(updatedEntry)
+                            }
                         }
                     }
                 }

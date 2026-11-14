@@ -10,6 +10,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
@@ -38,6 +41,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tune
@@ -52,6 +56,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
@@ -65,14 +70,19 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,8 +90,14 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -93,11 +109,13 @@ import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.MetricType
+import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.BlockDraft
+import com.fractanomics.crosstraining.ui.RepMaxDraft
 import com.fractanomics.crosstraining.ui.SessionDraft
 import com.fractanomics.crosstraining.ui.SetDraft
 import com.fractanomics.crosstraining.ui.components.DailyCheckInBottomSheet
@@ -125,11 +143,16 @@ import com.fractanomics.crosstraining.ui.timer.TimerPhase
 import com.fractanomics.crosstraining.ui.timer.TimerService
 import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfig
 import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfigParser
+import com.fractanomics.crosstraining.util.AvailableBlock
+import com.fractanomics.crosstraining.util.AvailableBlockCodec
+import com.fractanomics.crosstraining.util.EvaluatedPrChip
 import com.fractanomics.crosstraining.util.ExerciseTargetMetric
 import com.fractanomics.crosstraining.util.RepScheme
 import com.fractanomics.crosstraining.util.RoutineExerciseTargetSpec
 import com.fractanomics.crosstraining.util.RoutineTargetCodec
+import com.fractanomics.crosstraining.util.STANDARD_RM_REPS
 import com.fractanomics.crosstraining.util.TargetMode
+import com.fractanomics.crosstraining.util.TrackedPrSlot
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
@@ -308,6 +331,183 @@ internal fun BlockState.toDraftOrNull(): BlockDraft? {
         exerciseIdsCsv = exerciseIdsCsv.trim(),
         subBlock = subBlock.trim(),
         isCompleted = isCompleted
+    )
+}
+
+internal fun BlockState.isBlankLegacyPlaceholder(): Boolean =
+    name.isBlank() &&
+        exercise == null &&
+        newExerciseName.isBlank() &&
+        description.isBlank() &&
+        resultText.isBlank() &&
+        sets.all { it.reps.isBlank() && it.value.isBlank() }
+
+internal class LoadedAvailableBlockExerciseState(
+    val exerciseId: Long,
+    val exerciseName: String,
+    val lastSessionDateLabel: String?,
+    initialWeights: List<String>
+) {
+    val weights: SnapshotStateList<String> = initialWeights.toMutableStateList()
+}
+
+internal fun prSlotKey(movementId: Long, movementName: String, rmReps: Int): String =
+    if (movementId > 0L) "id:$movementId:$rmReps" else "name:${movementName.trim().lowercase()}:$rmReps"
+
+internal class LoadedAvailableBlockState(
+    val block: AvailableBlock,
+    exerciseStates: List<LoadedAvailableBlockExerciseState>,
+    initialTrackedPrs: List<TrackedPrSlot>
+) {
+    val exerciseSections: SnapshotStateList<LoadedAvailableBlockExerciseState> = exerciseStates.toMutableStateList()
+    val trackedPrSlots: SnapshotStateList<TrackedPrSlot> = initialTrackedPrs.toMutableStateList()
+    val prWeightOverrides: SnapshotStateMap<String, String> = mutableStateMapOf()
+
+    fun blockMaxSetWeight(): Double =
+        exerciseSections.asSequence()
+            .flatMap { it.weights.asSequence() }
+            .mapNotNull { AvailableBlockCodec.normalizedPositiveWeight(it) }
+            .maxOrNull() ?: 0.0
+
+    fun maxSetWeightFor(movementId: Long): Double {
+        if (movementId > 0L) {
+            val matchMax = exerciseSections.asSequence()
+                .filter { it.exerciseId == movementId }
+                .flatMap { it.weights.asSequence() }
+                .mapNotNull { AvailableBlockCodec.normalizedPositiveWeight(it) }
+                .maxOrNull()
+            if (matchMax != null && matchMax > 0.0) return matchMax
+        }
+        return blockMaxSetWeight()
+    }
+
+    fun evaluatePrChips(
+        exercises: List<Exercise>,
+        repMaxes: List<RepMax>
+    ): List<Pair<TrackedPrSlot, EvaluatedPrChip>> {
+        val byLowerName = exercises.associateBy { it.name.trim().lowercase() }
+        return trackedPrSlots.map { slot ->
+            val resolvedId = if (slot.movementId > 0L) {
+                slot.movementId
+            } else {
+                byLowerName[slot.movementName.trim().lowercase()]?.id ?: 0L
+            }
+            val resolvedSlot = if (resolvedId != slot.movementId) slot.copy(movementId = resolvedId) else slot
+            val key = prSlotKey(resolvedId, slot.movementName, slot.rmReps)
+            val candidateWeight = prWeightOverrides[key]?.let {
+                AvailableBlockCodec.normalizedPositiveWeight(it)
+            } ?: maxSetWeightFor(resolvedId)
+            val storedBest = AvailableBlockCodec.bestStoredRepMaxWeight(repMaxes, resolvedId, slot.rmReps)
+            resolvedSlot to AvailableBlockCodec.evaluateTrackedPrChip(resolvedSlot, candidateWeight, storedBest)
+        }
+    }
+
+    fun toBlockDrafts(
+        exercises: List<Exercise>,
+        repMaxes: List<RepMax>
+    ): List<BlockDraft> {
+        val chips = evaluatePrChips(exercises, repMaxes).map { it.second }
+        val activeNewPrs = chips.filter { it.isNewPr && it.movementId > 0L }
+        val matchedExerciseIds = exerciseSections.map { it.exerciseId }.filter { it > 0L }.toSet()
+        val unmatchedPrs = activeNewPrs.filter { it.movementId !in matchedExerciseIds }
+
+        if (exerciseSections.isEmpty()) {
+            return listOf(
+                BlockDraft(
+                    name = block.title,
+                    kind = BlockKind.STRENGTH,
+                    format = "",
+                    scheme = "",
+                    existingExerciseId = activeNewPrs.firstOrNull()?.movementId,
+                    newExerciseName = null,
+                    routineId = block.id.takeIf { it > 0L },
+                    description = block.instructions,
+                    resultText = "",
+                    resultValue = null,
+                    sets = listOf(SetDraft(reps = 1, weight = null)),
+                    newRepMaxReps = null,
+                    newRepMaxWeight = null,
+                    section = "",
+                    exerciseIdsCsv = "",
+                    subBlock = block.title,
+                    isCompleted = true,
+                    newRepMaxes = activeNewPrs.map { RepMaxDraft(it.movementId, it.rmReps, it.candidateWeight) }
+                )
+            )
+        }
+
+        return exerciseSections.mapIndexed { idx, exState ->
+            val positiveWeights = exState.weights.mapNotNull { AvailableBlockCodec.normalizedPositiveWeight(it) }
+            val sets = if (positiveWeights.isNotEmpty()) {
+                positiveWeights.map { SetDraft(reps = 1, weight = it) }
+            } else {
+                listOf(SetDraft(reps = 1, weight = null))
+            }
+            val prsForThis = activeNewPrs.filter { it.movementId == exState.exerciseId } +
+                if (idx == 0) unmatchedPrs else emptyList()
+
+            BlockDraft(
+                name = exState.exerciseName,
+                kind = BlockKind.STRENGTH,
+                format = "",
+                scheme = "",
+                existingExerciseId = exState.exerciseId.takeIf { it > 0L },
+                newExerciseName = if (exState.exerciseId <= 0L) exState.exerciseName else null,
+                routineId = block.id.takeIf { it > 0L },
+                description = block.instructions,
+                resultText = "",
+                resultValue = null,
+                sets = sets,
+                newRepMaxReps = null,
+                newRepMaxWeight = null,
+                section = "",
+                exerciseIdsCsv = exState.exerciseId.takeIf { it > 0L }?.toString().orEmpty(),
+                subBlock = block.title,
+                isCompleted = true,
+                newRepMaxes = prsForThis.map { RepMaxDraft(it.movementId, it.rmReps, it.candidateWeight) }
+            )
+        }
+    }
+}
+
+internal fun buildLoadedAvailableBlockState(
+    block: AvailableBlock,
+    sessions: List<SessionWithBlocks>,
+    exercises: List<Exercise>,
+    weightUnit: String
+): LoadedAvailableBlockState {
+    val lastSession = AvailableBlockCodec.resolveLastBlockSession(block, sessions, exercises, weightUnit)
+    val exStates = block.exercises.map { ex ->
+        val prevWeights = lastSession?.exerciseWeightsById?.get(ex.id)
+            ?: lastSession?.exerciseWeightsByName?.get(ex.name.trim().lowercase())
+        val initialWeights = if (!prevWeights.isNullOrEmpty()) {
+            prevWeights.map { w -> w?.takeIf { it > 0.0 }?.trimmed() ?: "" }
+        } else {
+            listOf("", "", "")
+        }
+        val dateBanner = if (!prevWeights.isNullOrEmpty() && lastSession != null) {
+            "Pre-filled from last session (${lastSession.dateFormatted})"
+        } else {
+            null
+        }
+        LoadedAvailableBlockExerciseState(
+            exerciseId = ex.id,
+            exerciseName = ex.name,
+            lastSessionDateLabel = dateBanner,
+            initialWeights = initialWeights
+        )
+    }
+    val byLowerName = exercises.associateBy { it.name.trim().lowercase() }
+    val resolvedSlots = AvailableBlockCodec.normalizeTrackedPrSlots(
+        block.trackedPrs.map { slot ->
+            if (slot.movementId > 0L) slot
+            else slot.copy(movementId = byLowerName[slot.movementName.trim().lowercase()]?.id ?: 0L)
+        }
+    )
+    return LoadedAvailableBlockState(
+        block = block,
+        exerciseStates = exStates,
+        initialTrackedPrs = resolvedSlots
     )
 }
 
@@ -555,6 +755,11 @@ fun SessionEditorBody(
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
     val routines by viewModel.routines.collectAsStateWithLifecycle()
     val routinesWithBlocks by viewModel.routinesWithBlocks.collectAsStateWithLifecycle()
+    val availableBlocks by viewModel.availableBlocks.collectAsStateWithLifecycle()
+    val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val repMaxes by viewModel.repMaxes.collectAsStateWithLifecycle()
+    val weightUnit by viewModel.weightUnit.collectAsStateWithLifecycle()
+    val pendingBlockIdsToLog by viewModel.pendingBlockIdsToLog.collectAsStateWithLifecycle()
     val dailyLogs by viewModel.dailyLogs.collectAsStateWithLifecycle()
 
     val snackbar = remember { SnackbarHostState() }
@@ -574,11 +779,33 @@ fun SessionEditorBody(
     val currentCycle = cycles.firstOrNull { it.id == effectiveCycleId } ?: activeCycle
     val isFatLoss = currentCycle?.type == CycleType.FAT_LOSS_BODYBUILDING
 
+    val loadedAvailableBlocks = remember(key) { mutableStateListOf<LoadedAvailableBlockState>() }
     val blocks = remember(key) {
         seed.blocks.map { buildBlockState(it, exercises, routines, defaultCompleted = !isFatLoss) }.toMutableStateList()
     }
     var showQuickAddDialog by remember { mutableStateOf(false) }
     var showWorkoutAssistantSheet by remember { mutableStateOf(false) }
+    var showLoadBlockSheet by remember { mutableStateOf(false) }
+    var activePrPickerForBlock by remember { mutableStateOf<LoadedAvailableBlockState?>(null) }
+
+    LaunchedEffect(pendingBlockIdsToLog, availableBlocks) {
+        if (pendingBlockIdsToLog.isEmpty() || availableBlocks.isEmpty()) return@LaunchedEffect
+        val idsToLoad = viewModel.consumePendingBlocksToLog()
+        idsToLoad.forEach { blockId ->
+            val block = availableBlocks.firstOrNull { it.id == blockId } ?: return@forEach
+            if (loadedAvailableBlocks.none { it.block.id == block.id }) {
+                loadedAvailableBlocks.add(
+                    buildLoadedAvailableBlockState(
+                        block = block,
+                        sessions = sessions,
+                        exercises = exercises,
+                        weightUnit = weightUnit
+                    )
+                )
+                if (title.isBlank()) title = block.title
+            }
+        }
+    }
 
     if (showQuickAddDialog) {
         QuickAddWorkoutDialog(
@@ -621,6 +848,51 @@ fun SessionEditorBody(
                     }
                     snackbar.showSnackbar(msg)
                 }
+            }
+        )
+    }
+
+    if (showLoadBlockSheet) {
+        LoadAvailableBlockSheet(
+            availableBlocks = availableBlocks,
+            alreadyLoadedIds = loadedAvailableBlocks.map { it.block.id }.toSet(),
+            onDismiss = { showLoadBlockSheet = false },
+            onConfirmSelected = { chosenBlocks ->
+                chosenBlocks.forEach { chosen ->
+                    if (loadedAvailableBlocks.none { it.block.id == chosen.id }) {
+                        loadedAvailableBlocks.add(
+                            buildLoadedAvailableBlockState(
+                                block = chosen,
+                                sessions = sessions,
+                                exercises = exercises,
+                                weightUnit = weightUnit
+                            )
+                        )
+                        if (title.isBlank()) title = chosen.title
+                    }
+                }
+                showLoadBlockSheet = false
+            }
+        )
+    }
+
+    val prPickerBlock = activePrPickerForBlock
+    if (prPickerBlock != null) {
+        MultiMovementPrPickerSheet(
+            blockState = prPickerBlock,
+            exercises = exercises,
+            repMaxes = repMaxes,
+            weightUnit = weightUnit,
+            onDismiss = { activePrPickerForBlock = null },
+            onApply = { updatedSlots, weightOverrides ->
+                prPickerBlock.trackedPrSlots.clear()
+                prPickerBlock.trackedPrSlots.addAll(updatedSlots)
+                prPickerBlock.prWeightOverrides.clear()
+                prPickerBlock.prWeightOverrides.putAll(weightOverrides)
+                if (prPickerBlock.block.id > 0L) {
+                    viewModel.updateAvailableBlockTrackedPrs(prPickerBlock.block.id, updatedSlots)
+                }
+                activePrPickerForBlock = null
             }
         )
     }
@@ -868,31 +1140,21 @@ fun SessionEditorBody(
                         )
                     }
 
-                    // Routine quick loader & Title toggle
+                    // Block quick loader & Title toggle
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Dropdown(
-                            label = "Load Routine",
-                            options = routinesWithBlocks,
-                            selected = null,
-                            labelOf = { it.routine.name },
-                            onSelect = { rwb ->
-                                if (title.isBlank()) title = rwb.routine.name
-                                blocks.clear()
-                                blocks.addAll(
-                                    expandRoutineIntoSessionBlocks(
-                                        rwb = rwb,
-                                        exercises = exercises,
-                                        defaultCompleted = !isFatLoss
-                                    )
-                                )
-                            },
-                            placeholder = "Load Routine...",
-                            modifier = Modifier.weight(1f)
-                        )
+                        OutlinedButton(
+                            onClick = { showLoadBlockSheet = true },
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Load Block ▾", fontWeight = FontWeight.SemiBold)
+                        }
 
                         TextButton(
                             onClick = { showSessionMeta = !showSessionMeta },
@@ -950,8 +1212,46 @@ fun SessionEditorBody(
                 onOpenFullCheckIn = { showDailyCheckInSheet = true }
             )
 
-            // Blocks List grouped by section header and sub-block containers
-            val editorItems = groupEditorBlocks(blocks)
+            // Loaded Available Blocks (1-tap Library handoff & Load Block multi-picker)
+            loadedAvailableBlocks.forEach { availState ->
+                LoadedAvailableBlockCard(
+                    blockState = availState,
+                    exercises = exercises,
+                    repMaxes = repMaxes,
+                    weightUnit = weightUnit,
+                    onRemoveBlock = {
+                        loadedAvailableBlocks.remove(availState)
+                        if (loadedAvailableBlocks.isEmpty() && blocks.isEmpty()) {
+                            blocks.add(BlockState(isCompleted = !isFatLoss))
+                        }
+                    },
+                    onLaunchTimer = {
+                        val timingToken = availState.block.instructions.ifBlank { null }
+                        launchTimingFromTokenOrOpenSheet(timingToken, 1, availState.block.title)
+                    },
+                    onOpenPrPicker = { activePrPickerForBlock = availState },
+                    onRemoveTrackedPr = { slot ->
+                        availState.trackedPrSlots.removeAll {
+                            it.movementId == slot.movementId &&
+                                it.movementName.equals(slot.movementName, ignoreCase = true) &&
+                                it.rmReps == slot.rmReps
+                        }
+                        availState.prWeightOverrides.remove(
+                            prSlotKey(slot.movementId, slot.movementName, slot.rmReps)
+                        )
+                        if (availState.block.id > 0L) {
+                            viewModel.updateAvailableBlockTrackedPrs(
+                                availState.block.id,
+                                availState.trackedPrSlots.toList()
+                            )
+                        }
+                    }
+                )
+            }
+
+            // Legacy / ad-hoc Blocks List grouped by section header and sub-block containers
+            val showLegacyBlocks = loadedAvailableBlocks.isEmpty() || blocks.any { !it.isBlankLegacyPlaceholder() }
+            val editorItems = if (showLegacyBlocks) groupEditorBlocks(blocks) else emptyList()
             var prevSection: String? = null
             editorItems.forEach { item ->
                 val currentSection = when (item) {
@@ -1161,6 +1461,20 @@ fun SessionEditorBody(
             }
 
             // Primary Save Action
+            val availableNewPrCount = loadedAvailableBlocks.sumOf { b ->
+                b.evaluatePrChips(exercises, repMaxes).count { (_, chip) -> chip.isNewPr && chip.movementId > 0L }
+            }
+            val legacyNewPrCount = blocks.count { blk ->
+                blk.recordRm &&
+                    (blk.rmWeight.replace(',', '.').toDoubleOrNull() ?: 0.0) > 0.0
+            }
+            val totalNewPrCount = availableNewPrCount + legacyNewPrCount
+            val dynamicSaveLabel = if (totalNewPrCount > 0) {
+                "$saveLabel ($totalNewPrCount New PR${if (totalNewPrCount == 1) "" else "s"})"
+            } else {
+                saveLabel
+            }
+
             Button(
                 onClick = {
                     val cycleId = effectiveCycleId
@@ -1168,7 +1482,13 @@ fun SessionEditorBody(
                         scope.launch { snackbar.showSnackbar("Create and select a cycle first (Cycles tab).") }
                         return@Button
                     }
-                    val blockDrafts = blocks.mapNotNull { it.toDraftOrNull() }
+                    val availableDrafts = loadedAvailableBlocks.flatMap { it.toBlockDrafts(exercises, repMaxes) }
+                    val legacyDrafts = if (loadedAvailableBlocks.isNotEmpty() && blocks.all { it.isBlankLegacyPlaceholder() }) {
+                        emptyList()
+                    } else {
+                        blocks.mapNotNull { it.toDraftOrNull() }
+                    }
+                    val blockDrafts = availableDrafts + legacyDrafts
                     if (blockDrafts.isEmpty()) {
                         scope.launch { snackbar.showSnackbar("Add at least one block with content.") }
                         return@Button
@@ -1194,7 +1514,7 @@ fun SessionEditorBody(
                     .height(50.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text(saveLabel, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(dynamicSaveLabel, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
 
             Spacer(Modifier.height(16.dp))
@@ -1835,6 +2155,732 @@ private fun SpreadsheetSetRow(
                 modifier = Modifier.size(16.dp),
                 tint = if (canRemove) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.outlineVariant
             )
+        }
+    }
+}
+
+// --- Available Blocks Logging Cards & Sheets ---------------------------------
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LoadedAvailableBlockCard(
+    blockState: LoadedAvailableBlockState,
+    exercises: List<Exercise>,
+    repMaxes: List<RepMax>,
+    weightUnit: String,
+    onRemoveBlock: () -> Unit,
+    onLaunchTimer: () -> Unit,
+    onOpenPrPicker: () -> Unit,
+    onRemoveTrackedPr: (TrackedPrSlot) -> Unit
+) {
+    val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
+    val fontScale = LocalConfiguration.current.fontScale
+    val columns = if (fontScale >= 1.4f) 2 else 4
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Card Header: BLOCK: {Title} + Timer + Remove
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "BLOCK: ${blockState.block.title.ifBlank { "Untitled Block" }}",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onLaunchTimer,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Timer,
+                            contentDescription = "Start timer for ${blockState.block.title}",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onRemoveBlock,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Remove block ${blockState.block.title}",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+
+            // Prescription Banner
+            if (blockState.block.instructions.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = blockState.block.instructions,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
+                }
+            }
+
+            // Per-movement Set Tiles
+            blockState.exerciseSections.forEach { exState ->
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = exState.exerciseName,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (!exState.lastSessionDateLabel.isNullOrBlank()) {
+                        Text(
+                            text = exState.lastSessionDateLabel,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                        val spacing = 8.dp
+                        val tileWidth = (maxWidth - spacing * (columns - 1)) / columns
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(spacing),
+                            verticalArrangement = Arrangement.spacedBy(spacing),
+                            maxItemsInEachRow = columns
+                        ) {
+                            exState.weights.forEachIndexed { idx, w ->
+                                WeightOnlySetTile(
+                                    setNumber = idx + 1,
+                                    value = w,
+                                    unit = weightUnit,
+                                    canRemove = exState.weights.size > 1,
+                                    onValueChange = { updated -> exState.weights[idx] = updated },
+                                    onRemove = { exState.weights.removeAt(idx) },
+                                    modifier = Modifier.width(tileWidth)
+                                )
+                            }
+                        }
+                    }
+                    TextButton(
+                        onClick = { exState.weights.add("") },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.heightIn(min = 36.dp)
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Add Set", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+
+            // Live PR Chips + "+ Record PR 🔥"
+            HorizontalDivider()
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                evaluatedChips.forEach { (slot, chip) ->
+                    val labelText = when {
+                        chip.isNewPr ->
+                            "🔥 NEW PR: ${chip.rmReps}RM ${chip.movementName} · ${chip.candidateWeight.trimmed()} $weightUnit"
+                        chip.storedBestWeight > 0.0 ->
+                            "${chip.rmReps}RM ${chip.movementName} · Best: ${chip.storedBestWeight.trimmed()} $weightUnit"
+                        else ->
+                            "${chip.rmReps}RM ${chip.movementName} · Best: —"
+                    }
+                    val containerColor = if (chip.isNewPr) {
+                        MaterialTheme.colorScheme.tertiaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                    }
+                    val contentColor = if (chip.isNewPr) {
+                        MaterialTheme.colorScheme.onTertiaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                    val borderColor = if (chip.isNewPr) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = containerColor,
+                        contentColor = contentColor,
+                        border = BorderStroke(1.dp, borderColor),
+                        modifier = Modifier
+                            .heightIn(min = 36.dp)
+                            .clickable(onClick = onOpenPrPicker)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp)
+                        ) {
+                            Text(
+                                text = labelText,
+                                style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                                fontWeight = if (chip.isNewPr) FontWeight.Bold else FontWeight.Medium
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            IconButton(
+                                onClick = { onRemoveTrackedPr(slot) },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "Remove tracked PR ${chip.rmReps}RM ${chip.movementName}",
+                                    modifier = Modifier.size(14.dp),
+                                    tint = contentColor
+                                )
+                            }
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onOpenPrPicker,
+                    shape = RoundedCornerShape(18.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.heightIn(min = 36.dp)
+                ) {
+                    Text("+ Record PR 🔥", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WeightOnlySetTile(
+    setNumber: Int,
+    value: String,
+    unit: String,
+    canRemove: Boolean,
+    onValueChange: (String) -> Unit,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val hasWeight = AvailableBlockCodec.normalizedPositiveWeight(value) != null
+    Surface(
+        modifier = modifier.heightIn(min = 64.dp),
+        shape = RoundedCornerShape(10.dp),
+        color = if (hasWeight) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        },
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (hasWeight) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant
+        )
+    ) {
+        Box(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+            if (canRemove) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Remove set $setNumber",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(16.dp)
+                        .clickable(onClick = onRemove)
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "Set $setNumber",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    BasicTextField(
+                        value = value,
+                        onValueChange = { raw ->
+                            val filtered = raw.filter { it.isDigit() || it == '.' || it == ',' }.take(8)
+                            onValueChange(filtered)
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Decimal,
+                            imeAction = ImeAction.Next
+                        ),
+                        textStyle = MaterialTheme.typography.titleMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            fontFeatureSettings = "tnum"
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.weight(1f, fill = false),
+                        decorationBox = { innerTextField ->
+                            Box(contentAlignment = Alignment.Center) {
+                                if (value.isBlank()) {
+                                    Text(
+                                        text = "—",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        }
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Text(
+                        text = unit,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LoadAvailableBlockSheet(
+    availableBlocks: List<AvailableBlock>,
+    alreadyLoadedIds: Set<Long>,
+    onDismiss: () -> Unit,
+    onConfirmSelected: (List<AvailableBlock>) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var query by remember { mutableStateOf("") }
+    val selectedIds = remember(alreadyLoadedIds) { mutableStateListOf<Long>().apply { addAll(alreadyLoadedIds) } }
+    val filtered = remember(availableBlocks, query) {
+        AvailableBlockCodec.filterAvailableBlocks(availableBlocks, query)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Load Available Blocks",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("Search available blocks...") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (filtered.isEmpty()) {
+                Text(
+                    text = if (availableBlocks.isEmpty()) {
+                        "No available blocks yet. Create blocks from Library first."
+                    } else {
+                        "No blocks matching \"$query\"."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    filtered.forEach { block ->
+                        val isChecked = block.id in selectedIds
+                        OutlinedCard(
+                            onClick = {
+                                if (isChecked) selectedIds.remove(block.id) else selectedIds.add(block.id)
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Checkbox(
+                                    checked = isChecked,
+                                    onCheckedChange = { checked ->
+                                        if (checked) {
+                                            if (block.id !in selectedIds) selectedIds.add(block.id)
+                                        } else {
+                                            selectedIds.remove(block.id)
+                                        }
+                                    }
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = block.title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    val summary = buildString {
+                                        if (block.exercises.isNotEmpty()) {
+                                            append(block.exercises.joinToString(", ") { it.name })
+                                        } else if (block.instructions.isNotBlank()) {
+                                            append(block.instructions.lines().first())
+                                        }
+                                        if (block.trackedPrs.isNotEmpty()) {
+                                            if (isNotEmpty()) append(" · ")
+                                            append("🔥 ${block.trackedPrs.size} tracked PR(s)")
+                                        }
+                                    }
+                                    if (summary.isNotBlank()) {
+                                        Text(
+                                            text = summary,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+                Spacer(Modifier.width(8.dp))
+                val chosenList = availableBlocks.filter { it.id in selectedIds }
+                Button(
+                    onClick = { onConfirmSelected(chosenList) },
+                    enabled = chosenList.isNotEmpty()
+                ) {
+                    Text("Load (${chosenList.size})")
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun MultiMovementPrPickerSheet(
+    blockState: LoadedAvailableBlockState,
+    exercises: List<Exercise>,
+    repMaxes: List<RepMax>,
+    weightUnit: String,
+    onDismiss: () -> Unit,
+    onApply: (List<TrackedPrSlot>, Map<String, String>) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var query by remember { mutableStateOf("") }
+
+    val blockExerciseIds = remember(blockState) {
+        blockState.exerciseSections.map { it.exerciseId }.filter { it > 0L }.toSet()
+    }
+    val initialTrackedIds = remember(blockState) {
+        blockState.trackedPrSlots.map { it.movementId }.filter { it > 0L }.toSet()
+    }
+
+    val trackableExercises = remember(exercises, blockExerciseIds, initialTrackedIds) {
+        exercises.filter { it.tracksRepMax || it.id in initialTrackedIds }
+            .sortedWith(
+                compareByDescending<Exercise> { it.id in initialTrackedIds }
+                    .thenByDescending { it.id in blockExerciseIds }
+                    .thenBy { it.name.lowercase() }
+            )
+    }
+
+    val selectedRmsByExerciseId = remember(blockState) {
+        mutableStateMapOf<Long, SnapshotStateList<Int>>().apply {
+            blockState.trackedPrSlots.forEach { slot ->
+                if (slot.movementId > 0L) {
+                    val list = getOrPut(slot.movementId) { mutableStateListOf() }
+                    if (slot.rmReps !in list) list.add(slot.rmReps)
+                }
+            }
+        }
+    }
+    val weightInputs = remember(blockState) {
+        mutableStateMapOf<String, String>().apply {
+            blockState.prWeightOverrides.forEach { (k, v) -> put(k, v) }
+            trackableExercises.forEach { ex ->
+                STANDARD_RM_REPS.forEach { rm ->
+                    val k = prSlotKey(ex.id, ex.name, rm)
+                    if (!containsKey(k)) {
+                        val fallback = blockState.maxSetWeightFor(ex.id).takeIf { it > 0.0 }?.trimmed().orEmpty()
+                        if (fallback.isNotEmpty()) put(k, fallback)
+                    }
+                }
+            }
+        }
+    }
+
+    val filtered = remember(trackableExercises, query) {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) trackableExercises else trackableExercises.filter { it.name.lowercase().contains(q) }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Record / Track PRs",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Select movements & rep-maxes to track on \"${blockState.block.title}\".",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("Search trackable movements...") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (filtered.isEmpty()) {
+                Text(
+                    text = "No PR-trackable movements found.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 380.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    filtered.forEach { ex ->
+                        val rmList = selectedRmsByExerciseId[ex.id]
+                        val isSelected = !rmList.isNullOrEmpty()
+                        OutlinedCard(
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            if (isSelected) {
+                                                selectedRmsByExerciseId.remove(ex.id)
+                                            } else {
+                                                selectedRmsByExerciseId[ex.id] = mutableStateListOf(1)
+                                            }
+                                        }
+                                ) {
+                                    Checkbox(
+                                        checked = isSelected,
+                                        onCheckedChange = { checked ->
+                                            if (checked) {
+                                                selectedRmsByExerciseId[ex.id] = mutableStateListOf(1)
+                                            } else {
+                                                selectedRmsByExerciseId.remove(ex.id)
+                                            }
+                                        }
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = ex.name,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        if (ex.id in blockExerciseIds) {
+                                            Text(
+                                                text = "In this block",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (isSelected && rmList != null) {
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        STANDARD_RM_REPS.forEach { rm ->
+                                            val rmActive = rm in rmList
+                                            FilterChip(
+                                                selected = rmActive,
+                                                onClick = {
+                                                    if (rmActive && rmList.size > 1) {
+                                                        rmList.remove(rm)
+                                                    } else if (!rmActive) {
+                                                        rmList.add(rm)
+                                                    }
+                                                },
+                                                label = { Text("${rm}RM") }
+                                            )
+                                        }
+                                    }
+                                    rmList.sorted().forEach { rm ->
+                                        val k = prSlotKey(ex.id, ex.name, rm)
+                                        val wText = weightInputs[k] ?: ""
+                                        val storedBest = AvailableBlockCodec.bestStoredRepMaxWeight(repMaxes, ex.id, rm)
+                                        val candidate = AvailableBlockCodec.normalizedPositiveWeight(wText) ?: 0.0
+                                        val beatsBest = candidate > 0.0 && candidate > storedBest
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(
+                                                text = "${rm}RM",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.width(44.dp)
+                                            )
+                                            OutlinedTextField(
+                                                value = wText,
+                                                onValueChange = { raw ->
+                                                    weightInputs[k] = raw.filter { it.isDigit() || it == '.' || it == ',' }.take(8)
+                                                },
+                                                singleLine = true,
+                                                label = {
+                                                    Text(
+                                                        if (storedBest > 0.0) {
+                                                            "Best ${storedBest.trimmed()} $weightUnit"
+                                                        } else {
+                                                            "Weight ($weightUnit)"
+                                                        }
+                                                    )
+                                                },
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            if (beatsBest) {
+                                                Text(
+                                                    text = "🔥 PR",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.tertiary
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        val updatedSlots = AvailableBlockCodec.normalizeTrackedPrSlots(
+                            selectedRmsByExerciseId.entries.flatMap { (exId, rms) ->
+                                val ex = exercises.firstOrNull { it.id == exId }
+                                val name = ex?.name ?: return@flatMap emptyList()
+                                rms.sorted().map { rm ->
+                                    TrackedPrSlot(
+                                        movementId = exId,
+                                        movementName = name,
+                                        rmReps = rm
+                                    )
+                                }
+                            }
+                        )
+                        val overrides = buildMap {
+                            updatedSlots.forEach { slot ->
+                                val k = prSlotKey(slot.movementId, slot.movementName, slot.rmReps)
+                                val entered = weightInputs[k]
+                                // Only persist manual edits: a value equal to the live max set weight is the
+                                // pre-filled default and must stay live so later set edits keep updating the chip.
+                                val liveDefault = blockState.maxSetWeightFor(slot.movementId)
+                                    .takeIf { it > 0.0 }?.trimmed().orEmpty()
+                                if (!entered.isNullOrBlank() && entered != liveDefault) {
+                                    put(k, entered)
+                                }
+                            }
+                        }
+                        onApply(updatedSlots, overrides)
+                    }
+                ) {
+                    Text("Apply PRs")
+                }
+            }
         }
     }
 }

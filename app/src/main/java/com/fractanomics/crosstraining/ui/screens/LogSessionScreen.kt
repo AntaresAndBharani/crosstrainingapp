@@ -19,7 +19,7 @@ fun LogSessionScreen(
         screenTitle = "Log Session",
         seed = remember { emptySessionSeed() },
         seedKey = "log",
-        saveLabel = "Save session",
+        saveLabel = "Save Session",
         clearAfterSave = true,
         onBack = null,
         onOpenDrawer = onOpenDrawer,

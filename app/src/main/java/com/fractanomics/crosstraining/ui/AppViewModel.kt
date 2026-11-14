@@ -48,9 +48,14 @@ import com.fractanomics.crosstraining.data.voice.VoiceInputState
 import com.fractanomics.crosstraining.ui.voice.VoiceWorkoutUiState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import com.fractanomics.crosstraining.data.ai.WorkoutEntityResolutionResult
+import com.fractanomics.crosstraining.util.AvailableBlock
+import com.fractanomics.crosstraining.util.AvailableBlockCodec
+import com.fractanomics.crosstraining.util.AvailableBlockExercise
 import com.fractanomics.crosstraining.util.ParsedWorkoutDocument
+import com.fractanomics.crosstraining.util.TrackedPrSlot
 import com.fractanomics.crosstraining.util.WorkoutDocumentParser
 import java.time.LocalDate
 
@@ -279,6 +284,25 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         data.repositoryFlow.flatMapLatest { it.routines }.stateInDefault(emptyList())
     val routinesWithBlocks: StateFlow<List<RoutineWithBlocks>> =
         data.repositoryFlow.flatMapLatest { it.routinesWithBlocks }.stateInDefault(emptyList())
+    val availableBlocks: StateFlow<List<AvailableBlock>> =
+        combine(routinesWithBlocks, exercises) { rwList, exList ->
+            rwList.map { AvailableBlockCodec.fromRoutineWithBlocks(it, exList) }
+        }.stateInDefault(emptyList())
+
+    private val _pendingBlockIdsToLog = MutableStateFlow<List<Long>>(emptyList())
+    val pendingBlockIdsToLog: StateFlow<List<Long>> = _pendingBlockIdsToLog.asStateFlow()
+
+    fun requestLogAvailableBlock(blockId: Long) {
+        if (blockId > 0L) {
+            _pendingBlockIdsToLog.value = listOf(blockId)
+        }
+    }
+
+    fun consumePendingBlocksToLog(): List<Long> {
+        val ids = _pendingBlockIdsToLog.value
+        _pendingBlockIdsToLog.value = emptyList()
+        return ids
+    }
     val sessions: StateFlow<List<SessionWithBlocks>> =
         data.repositoryFlow.flatMapLatest { it.allSessions }.stateInDefault(emptyList())
     val repMaxes: StateFlow<List<RepMax>> =
@@ -406,6 +430,95 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         UserCloudSyncManager.uploadUserData(data.realRepository)
     }
 
+    // --- Available Blocks (`SPEC-021`) ----------------------------------------
+    fun saveAvailableBlock(
+        title: String,
+        instructions: String,
+        exerciseIds: List<Long>,
+        newExerciseNames: List<String> = emptyList(),
+        existingId: Long = 0L,
+        trackedPrs: List<TrackedPrSlot> = emptyList()
+    ) = viewModelScope.launch {
+        val cleanTitle = title.trim()
+        if (cleanTitle.isEmpty()) return@launch
+        val allExisting = repo.getAllExercisesOnce().associateBy { it.id }
+        val resolvedExercises = mutableListOf<AvailableBlockExercise>()
+        val seenIds = linkedSetOf<Long>()
+        exerciseIds.forEach { exId ->
+            allExisting[exId]?.let { ex ->
+                if (seenIds.add(ex.id)) {
+                    resolvedExercises += AvailableBlockExercise(ex.id, ex.name, ex.tracksRepMax)
+                }
+            }
+        }
+        newExerciseNames
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .forEach { name ->
+                val ex = repo.getOrCreateExercise(name, ExerciseCategory.BARBELL, MetricType.WEIGHT)
+                if (seenIds.add(ex.id)) {
+                    resolvedExercises += AvailableBlockExercise(ex.id, ex.name, ex.tracksRepMax)
+                }
+            }
+        val block = AvailableBlock(
+            id = existingId,
+            title = cleanTitle,
+            instructions = AvailableBlockCodec.extractCleanInstructions(instructions),
+            exercises = resolvedExercises,
+            trackedPrs = AvailableBlockCodec.normalizeTrackedPrSlots(trackedPrs)
+        )
+        repo.saveAvailableBlock(block)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun duplicateAvailableBlock(block: AvailableBlock) = viewModelScope.launch {
+        val baseTitle = block.title.trim().ifEmpty { "Block" }
+        val existingTitles = availableBlocks.value.map { it.title.trim().lowercase() }.toSet()
+        var candidate = "$baseTitle (Copy)"
+        var idx = 2
+        while (candidate.lowercase() in existingTitles) {
+            candidate = "$baseTitle (Copy $idx)"
+            idx++
+        }
+        repo.saveAvailableBlock(
+            block.copy(
+                id = 0L,
+                title = candidate,
+                rawRoutine = null
+            )
+        )
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun deleteAvailableBlock(block: AvailableBlock) = viewModelScope.launch {
+        val target = block.rawRoutine?.routine ?: routines.value.firstOrNull {
+            it.id == block.id || it.name.equals(block.title, ignoreCase = true)
+        } ?: return@launch
+        repo.deleteRoutine(target)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun restoreAvailableBlock(block: AvailableBlock) = viewModelScope.launch {
+        val raw = block.rawRoutine
+        if (raw != null) {
+            // Lossless undo: re-insert the exact persisted routine + blocks (legacy daily routines keep
+            // their formats, set counts, and `[rb_v2=...]` targets).
+            repo.saveRoutineWithBlocks(raw.routine.copy(id = 0L), raw.blocks)
+        } else {
+            repo.saveAvailableBlock(block.copy(id = 0L, rawRoutine = null))
+        }
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun updateAvailableBlockTrackedPrs(
+        blockId: Long,
+        trackedPrs: List<TrackedPrSlot>
+    ) = viewModelScope.launch {
+        if (blockId <= 0L) return@launch
+        repo.updateAvailableBlockTrackedPrs(blockId, trackedPrs)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
     fun getOrCreateExerciseForRoutine(
         name: String,
         category: ExerciseCategory = ExerciseCategory.BARBELL,
@@ -483,15 +596,27 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
                 bd.existingExerciseId != null -> bd.existingExerciseId
                 else -> null
             }
-            val repMax: RepMax? =
+            val legacyRepMax: RepMax? =
                 if (exerciseId != null && bd.newRepMaxReps != null && bd.newRepMaxWeight != null) {
                     RepMax(
                         exerciseId = exerciseId,
                         reps = bd.newRepMaxReps,
                         weight = bd.newRepMaxWeight,
-                        date = draft.date
+                        date = draft.date,
+                        cycleId = draft.cycleId
                     )
                 } else null
+            val multiRepMaxes: List<RepMax> = bd.newRepMaxes
+                .filter { it.exerciseId > 0L && it.reps > 0 && it.weight > 0.0 }
+                .map { rmd ->
+                    RepMax(
+                        exerciseId = rmd.exerciseId,
+                        reps = rmd.reps,
+                        weight = rmd.weight,
+                        date = draft.date,
+                        cycleId = draft.cycleId
+                    )
+                }
             BlockInsert(
                 block = SessionBlock(
                     sessionId = 0,
@@ -522,7 +647,8 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
                         isFailed = sd.isFailed
                     )
                 },
-                newRepMax = repMax
+                newRepMax = legacyRepMax,
+                newRepMaxes = multiRepMaxes
             )
         }
 
