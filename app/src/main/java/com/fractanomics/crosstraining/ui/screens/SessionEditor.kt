@@ -2789,7 +2789,7 @@ private fun MultiMovementPrPickerSheet(
                                         val wText = weightInputs[k] ?: ""
                                         val storedBest = AvailableBlockCodec.bestStoredRepMaxWeight(repMaxes, ex.id, rm)
                                         val candidate = AvailableBlockCodec.normalizedPositiveWeight(wText) ?: 0.0
-                                        val beatsBest = candidate > 0.0 && (storedBest == null || candidate > storedBest)
+                                        val beatsBest = candidate > 0.0 && candidate > storedBest
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2809,7 +2809,7 @@ private fun MultiMovementPrPickerSheet(
                                                 singleLine = true,
                                                 label = {
                                                     Text(
-                                                        if (storedBest != null && storedBest > 0.0) {
+                                                        if (storedBest > 0.0) {
                                                             "Best ${storedBest.trimmed()} $weightUnit"
                                                         } else {
                                                             "Weight ($weightUnit)"
@@ -2866,7 +2866,11 @@ private fun MultiMovementPrPickerSheet(
                             updatedSlots.forEach { slot ->
                                 val k = prSlotKey(slot.movementId, slot.movementName, slot.rmReps)
                                 val entered = weightInputs[k]
-                                if (!entered.isNullOrBlank()) {
+                                // Only persist manual edits: a value equal to the live max set weight is the
+                                // pre-filled default and must stay live so later set edits keep updating the chip.
+                                val liveDefault = blockState.maxSetWeightFor(slot.movementId)
+                                    .takeIf { it > 0.0 }?.trimmed().orEmpty()
+                                if (!entered.isNullOrBlank() && entered != liveDefault) {
                                     put(k, entered)
                                 }
                             }

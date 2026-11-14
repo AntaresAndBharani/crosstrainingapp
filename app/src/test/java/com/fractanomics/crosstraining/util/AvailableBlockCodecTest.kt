@@ -7,6 +7,8 @@ import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
+import com.fractanomics.crosstraining.data.model.RoutineBlock
+import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
@@ -14,6 +16,7 @@ import com.fractanomics.crosstraining.ui.resolveRepMaxAttribution
 import com.fractanomics.crosstraining.ui.routineBlockPerformances
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -288,5 +291,66 @@ class AvailableBlockCodecTest {
             exerciseName = "Back Squat"
         )
         assertNull(standaloneAttribution.blockTitle)
+    }
+    @Test
+    fun `ab_prs header is never decoded as rb_v2 target slots and rb_v2 still decodes when ab_prs follows it`() {
+        assertNull(RoutineTargetCodec.decodeHeaderSlots("[ab_prs=Back+Squat:3]\nBuild heavy", 3))
+        // An empty `[ab_prs=]` payload must not be treated as an (empty) structured rb_v2 header.
+        assertNull(RoutineTargetCodec.decodeHeaderSlots("[ab_prs=]\nBuild heavy", 3))
+
+        val combined = "[rb_v2=REPS:PER_SET:5:5.0.4.0]\n[ab_prs=Back+Squat:3]\nCrisp reps"
+        val slots = RoutineTargetCodec.decodeHeaderSlots(combined, 4)
+        assertNotNull(slots)
+        assertEquals(listOf(5, 0, 4, 0), slots!![0].perSetValues)
+        assertEquals("Crisp reps", RoutineTargetCodec.extractCleanNotes(combined))
+    }
+
+    @Test
+    fun `replaceTrackedPrHeader keeps leading rb_v2 header and swaps only the ab_prs line`() {
+        val legacyNotes = "[rb_v2=REPS:PER_SET:5:5.0.4.0]\n[ab_prs=Back+Squat:3]\nCrisp reps"
+        val replaced = AvailableBlockCodec.replaceTrackedPrHeader(
+            legacyNotes,
+            listOf(TrackedPrSlot(backSquat.id, backSquat.name, 1))
+        )
+        assertEquals("[rb_v2=REPS:PER_SET:5:5.0.4.0]\n[ab_prs=Back+Squat:1]\nCrisp reps", replaced)
+        assertTrue(RoutineTargetCodec.hasStructuredHeader(replaced))
+        assertEquals(
+            "[rb_v2=REPS:PER_SET:5:5.0.4.0]\nCrisp reps",
+            AvailableBlockCodec.replaceTrackedPrHeader(legacyNotes, emptyList())
+        )
+        assertEquals(
+            "[ab_prs=Back+Squat:1]\nPlain notes",
+            AvailableBlockCodec.replaceTrackedPrHeader("Plain notes", listOf(TrackedPrSlot(backSquat.id, backSquat.name, 1)))
+        )
+    }
+
+    @Test
+    fun `applyTrackedPrsToRoutineBlocks preserves legacy routine block structure`() {
+        val legacyBlocks = listOf(
+            RoutineBlock(
+                id = 11L, routineId = 7L, position = 0, name = "Strength", format = "EMOM",
+                setsCount = 4, targetRepsScheme = "5,0,4,0", exerciseIdsCsv = "1",
+                notes = "[rb_v2=REPS:PER_SET:5:5.0.4.0]\nCrisp reps"
+            ),
+            RoutineBlock(
+                id = 12L, routineId = 7L, position = 1, name = "Metcon", format = "For Time",
+                setsCount = 1, exerciseIdsCsv = "3", notes = "[ab_prs=Back+Squat:5]\nNegative split"
+            )
+        )
+        val updated = AvailableBlockCodec.applyTrackedPrsToRoutineBlocks(
+            legacyBlocks,
+            listOf(TrackedPrSlot(backSquat.id, backSquat.name, 3))
+        )
+        assertEquals(2, updated.size)
+        assertEquals("EMOM", updated[0].format)
+        assertEquals(4, updated[0].setsCount)
+        assertEquals("[rb_v2=REPS:PER_SET:5:5.0.4.0]\n[ab_prs=Back+Squat:3]\nCrisp reps", updated[0].notes)
+        assertEquals("Negative split", updated[1].notes)
+
+        val decoded = AvailableBlockCodec.fromRoutineWithBlocks(
+            RoutineWithBlocks(Routine(id = 7L, name = "Thursday Engine"), updated),
+            listOf(backSquat, cleanAndJerk, burpees)
+        )
+        assertEquals(listOf(TrackedPrSlot(backSquat.id, backSquat.name, 3)), decoded.trackedPrs)
     }
 }

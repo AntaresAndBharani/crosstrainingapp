@@ -119,6 +119,67 @@ object AvailableBlockCodec {
     }
 
     /**
+     * Removes every `[ab_prs=...]` header from [notes] while preserving all other content,
+     * including a leading `[rb_v2=...]` structured target header.
+     */
+    fun stripTrackedPrHeaders(notes: String?): String {
+        if (notes.isNullOrEmpty()) return ""
+        return notes.lines()
+            .mapNotNull { line ->
+                if (!HEADER_REGEX.containsMatchIn(line)) return@mapNotNull line
+                // Drop lines that only carried the header; keep any trailing text on the same line.
+                line.replace(HEADER_REGEX, "").takeIf { it.isNotBlank() }
+            }
+            .joinToString("\n")
+            .trim()
+    }
+
+    /**
+     * Replaces the `[ab_prs=...]` header inside [existingNotes] with [trackedPrs] without touching
+     * the rest of the notes. A leading `[rb_v2=...]` header stays on the first line so
+     * [RoutineTargetCodec.hasStructuredHeader] / `decodeHeaderSlots` keep working for legacy routines.
+     */
+    fun replaceTrackedPrHeader(existingNotes: String?, trackedPrs: List<TrackedPrSlot>): String {
+        val withoutHeader = stripTrackedPrHeaders(existingNotes)
+        val header = encodeTrackedPrHeader(trackedPrs)
+        if (header.isBlank()) return withoutHeader
+        if (withoutHeader.isBlank()) return header
+        return if (RoutineTargetCodec.hasStructuredHeader(withoutHeader)) {
+            val firstBreak = withoutHeader.indexOf('\n')
+            if (firstBreak < 0) {
+                "$withoutHeader\n$header"
+            } else {
+                withoutHeader.substring(0, firstBreak) + "\n" + header + "\n" +
+                    withoutHeader.substring(firstBreak + 1)
+            }
+        } else {
+            "$header\n$withoutHeader"
+        }
+    }
+
+    /**
+     * Rewrites only the `[ab_prs=...]` metadata across [blocks] (header placed on the first block by
+     * position, stripped from all others) so legacy daily routines keep their formats, set counts,
+     * rep schemes, and `[rb_v2=...]` targets when their tracked PR links change.
+     */
+    fun applyTrackedPrsToRoutineBlocks(
+        blocks: List<RoutineBlock>,
+        trackedPrs: List<TrackedPrSlot>
+    ): List<RoutineBlock> {
+        val sorted = blocks.sortedBy { it.position }
+        if (sorted.isEmpty()) return sorted
+        return sorted.mapIndexed { idx, rb ->
+            rb.copy(
+                notes = if (idx == 0) {
+                    replaceTrackedPrHeader(rb.notes, trackedPrs)
+                } else {
+                    stripTrackedPrHeaders(rb.notes)
+                }
+            )
+        }
+    }
+
+    /**
      * Decodes `[ab_prs=...]` metadata inside [notes], resolving local exercise IDs and names
      * case-insensitively where available.
      */

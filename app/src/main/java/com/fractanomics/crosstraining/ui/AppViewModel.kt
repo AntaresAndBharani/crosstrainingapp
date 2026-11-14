@@ -499,7 +499,14 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     }
 
     fun restoreAvailableBlock(block: AvailableBlock) = viewModelScope.launch {
-        repo.saveAvailableBlock(block.copy(id = 0L, rawRoutine = null))
+        val raw = block.rawRoutine
+        if (raw != null) {
+            // Lossless undo: re-insert the exact persisted routine + blocks (legacy daily routines keep
+            // their formats, set counts, and `[rb_v2=...]` targets).
+            repo.saveRoutineWithBlocks(raw.routine.copy(id = 0L), raw.blocks)
+        } else {
+            repo.saveAvailableBlock(block.copy(id = 0L, rawRoutine = null))
+        }
         UserCloudSyncManager.uploadUserData(data.realRepository)
     }
 

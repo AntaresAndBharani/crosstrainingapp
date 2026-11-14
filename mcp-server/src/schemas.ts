@@ -528,8 +528,8 @@ const makeTrackedPrSlotInputSchema = () =>
       .number()
       .int()
       .min(1)
-      .max(100)
-      .describe("Rep max count tracked for PRs on this block (e.g. 1, 2, 3, 5, 10)"),
+      .max(20)
+      .describe("Rep max count tracked for PRs on this block (1-20, e.g. 1, 2, 3, 5, 10)"),
   });
 
 const makeAvailableBlockUpsertItemSchema = () =>
@@ -1381,6 +1381,45 @@ export function encodeAvailableBlockTrackedPrs(
     .map((s) => `${encodeURIComponent(s.movementName).replace(/%20/g, "+")}:${s.rmReps}`)
     .join(";")}]`;
   return clean.length === 0 ? header : `${header}\n${clean}`;
+}
+
+/**
+ * Removes every `[ab_prs=...]` header from `notes` while preserving all other content
+ * (including a leading `[rb_v2=...]` header). Parity with Android `AvailableBlockCodec.stripTrackedPrHeaders`.
+ */
+export function stripAvailableBlockTrackedPrHeaders(notes?: string): string {
+  if (!notes) return "";
+  const lines: string[] = [];
+  for (const line of notes.split(/\r?\n/)) {
+    if (!/\[ab_prs=[^\]]*\]/i.test(line)) {
+      lines.push(line);
+      continue;
+    }
+    const remainder = line.replace(/\[ab_prs=[^\]]*\]/gi, "");
+    if (remainder.trim().length > 0) lines.push(remainder);
+  }
+  return lines.join("\n").trim();
+}
+
+/**
+ * Replaces only the `[ab_prs=...]` header inside `existingNotes`, keeping a leading `[rb_v2=...]`
+ * header on the first line so legacy routine targets stay decodable.
+ * Parity with Android `AvailableBlockCodec.replaceTrackedPrHeader`.
+ */
+export function replaceAvailableBlockTrackedPrHeader(
+  existingNotes: string | undefined,
+  trackedPrs: TrackedPrSlotSpec[]
+): string {
+  const withoutHeader = stripAvailableBlockTrackedPrHeaders(existingNotes);
+  const headerOnly = encodeAvailableBlockTrackedPrs("", trackedPrs);
+  if (!headerOnly) return withoutHeader;
+  if (!withoutHeader) return headerOnly;
+  if (hasStructuredRoutineHeader(withoutHeader)) {
+    const firstBreak = withoutHeader.indexOf("\n");
+    if (firstBreak < 0) return `${withoutHeader}\n${headerOnly}`;
+    return `${withoutHeader.slice(0, firstBreak)}\n${headerOnly}\n${withoutHeader.slice(firstBreak + 1)}`;
+  }
+  return `${headerOnly}\n${withoutHeader}`;
 }
 
 export function encodeRoutineBlockTargets(

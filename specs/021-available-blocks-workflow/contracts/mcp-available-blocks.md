@@ -9,7 +9,7 @@ Total server tools increase from `28` to **`33`**. All schemas MUST serialize wi
 
 ## 2. `upsert_available_block`
 - **Annotations**: `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true`, `openWorldHint: false`
-- **Input**: `{ id?: integer (>= 1), title: string, instructions?: string, exercises?: string[], trackedPrs?: [{ movementName: string, rmReps: integer (>= 1) }] }`
+- **Input**: `{ id?: integer (>= 1), title: string, instructions?: string, exercises?: string[], trackedPrs?: [{ movementName: string, rmReps: integer (1..20) }] }`
 - **Behavior**: Idempotently resolves or creates named exercises in `exercises`, normalizes `trackedPrs`, writes `Routine` (`defaultFormat: 'AVAILABLE_BLOCK'`) + `RoutineBlock` entries with `[ab_prs=...]` metadata inside transactional Firestore update.
 
 ## 3. `batch_upsert_available_blocks`
@@ -34,4 +34,4 @@ Total server tools increase from `28` to **`33`**. All schemas MUST serialize wi
   - `exerciseLogs: [{ exerciseName: string, weights: number[], setCountForEmpty?: integer (>= 1) }] (min 1)`
   - `recordedPrs?: [{ movementName: string, rmReps: integer (>= 1), weight: number }]`
   - `updateTrackedPrLinks?: boolean`
-- **Behavior**: Resolves/creates exercises & block, creates/upserts `Session` + `SessionBlock` + weight-only `WorkoutSet` entries (`reps: 1`, positive numeric weight or `0` for unloaded bodyweight/cardio), records `RepMax` rows linked to `sessionId`, `blockId`, `cycleId`, `sourceBlockTitle`, `sessionTitle`, and appends any new `(movementName, rmReps)` links to the block's `trackedPrs` when `updateTrackedPrLinks !== false`.
+- **Behavior**: Resolves/creates exercises & block, creates/upserts `Session` + `SessionBlock` + weight-only `WorkoutSet` entries (`reps: 1`, positive numeric weight or `0` for unloaded bodyweight/cardio), records `RepMax` rows linked to `sessionId`, `blockId`, `cycleId`, `sourceBlockTitle`, `sessionTitle`, and appends any new `(movementName, rmReps <= 20)` links to the block's `trackedPrs` when `updateTrackedPrLinks !== false` (only the `[ab_prs=...]` header line is replaced; a leading `[rb_v2=...]` header and the block's own notes on legacy routines are preserved).

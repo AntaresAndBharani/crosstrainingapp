@@ -23,6 +23,7 @@ import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
+import com.fractanomics.crosstraining.util.AVAILABLE_BLOCK_FORMAT
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.RoutineTargetCodec
@@ -297,6 +298,34 @@ class Repository(
      * with `AVAILABLE_BLOCK` format and `[ab_prs=...]` tracked movement metadata.
      */
     suspend fun saveAvailableBlock(block: AvailableBlock): Long {
+        if (block.id > 0L) {
+            val existing = getAllRoutinesWithBlocksOnce().firstOrNull { it.routine.id == block.id }
+            val isLegacyRoutine = existing != null &&
+                !existing.routine.defaultFormat.equals(AVAILABLE_BLOCK_FORMAT, ignoreCase = true)
+            if (existing != null && isLegacyRoutine) {
+                val decoded = AvailableBlockCodec.fromRoutineWithBlocks(existing, getAllExercisesOnce())
+                val sameExercises = decoded.exercises.map { it.id } ==
+                    block.exercises.distinctBy { it.id }.map { it.id }
+                if (sameExercises) {
+                    // Legacy daily routine edited through the Available Block surface (title, instructions,
+                    // or tracked PR links only): keep its multi-block structure, formats, set counts, and
+                    // `[rb_v2=...]` targets instead of flattening it into the AVAILABLE_BLOCK layout.
+                    val cleanInstructions = AvailableBlockCodec.extractCleanInstructions(block.instructions)
+                    val updatedRoutine = existing.routine.copy(
+                        name = block.title.trim().ifEmpty { existing.routine.name },
+                        description = if (cleanInstructions == decoded.instructions) {
+                            existing.routine.description
+                        } else {
+                            cleanInstructions
+                        }
+                    )
+                    return saveRoutineWithBlocks(
+                        updatedRoutine,
+                        AvailableBlockCodec.applyTrackedPrsToRoutineBlocks(existing.blocks, block.trackedPrs)
+                    )
+                }
+            }
+        }
         val rw = AvailableBlockCodec.toRoutineWithBlocks(block)
         return saveRoutineWithBlocks(rw.routine, rw.blocks)
     }

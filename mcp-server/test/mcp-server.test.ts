@@ -12,6 +12,8 @@ import {
   encodeAvailableBlockTrackedPrs,
   extractCleanRoutineNotes,
   formatRoutineBlockTargetSummary,
+  replaceAvailableBlockTrackedPrHeader,
+  stripAvailableBlockTrackedPrHeaders,
 } from "../src/schemas.js";
 import {
   type CycleGoalRecord,
@@ -1551,6 +1553,44 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       ),
       "Historical session must remain preserved after block template deletion"
     );
+
+    // 5. Logging a PR against a legacy structured daily routine only swaps the `[ab_prs=...]` header and keeps
+    //    the routine's own block notes, `[rb_v2=...]` targets, and secondary blocks intact.
+    const legacyLogResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 713,
+      method: "tools/call",
+      params: {
+        name: "log_block_session",
+        arguments: {
+          date: "2026-11-13",
+          blockTitle: "Thursday Gymnastics & Mixed Engine",
+          exerciseLogs: [{ exerciseName: "Ring Muscle-Up", weights: [] }],
+          recordedPrs: [{ movementName: "Ring Muscle-Up", rmReps: 1, weight: 10 }],
+        },
+      },
+    });
+    const legacyLogPayload = JSON.parse(legacyLogResp.result.content[0].text);
+    assert.equal(legacyLogPayload.updatedTrackedPrs.length, 1);
+
+    const routinesAfterLegacyLogResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 714,
+      method: "tools/call",
+      params: { name: "list_routines", arguments: {} },
+    });
+    const legacyAfterLog = (
+      JSON.parse(routinesAfterLegacyLogResp.result.content[0].text).routines as RoutineWithBlocksRecord[]
+    ).find((r) => r.routine.name === "Thursday Gymnastics & Mixed Engine");
+    assert.ok(legacyAfterLog);
+    const legacyB0 = legacyAfterLog.blocks[0];
+    assert.ok(legacyB0.notes.startsWith("[rb_v2=REPS:PER_SET:5:5.0.4.0;TIME_SECONDS:PER_SET:30:0.30.0.30]"));
+    assert.equal(legacyB0.cleanNotes, "Crisp hollow positions");
+    assert.deepEqual(legacyB0.exercises?.[0]?.perSetValues, [5, 0, 4, 0]);
+    assert.deepEqual(decodeAvailableBlockTrackedPrs(legacyB0.notes), [
+      { movementName: "Ring Muscle-Up", rmReps: 1 },
+    ]);
+    assert.equal(legacyAfterLog.blocks[1].cleanNotes, "Negative split last round");
   });
 
   it("keeps Available Blocks [ab_prs=...] codec in parity with Android AvailableBlockCodec", () => {
@@ -1573,6 +1613,22 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       { movementName: "Clean & Jerk", rmReps: 2 },
     ]);
     assert.equal(extractCleanRoutineNotes(androidFormatted), "Build heavy");
+
+    // Replacing tracked PRs keeps a leading `[rb_v2=...]` header first and drops stale `[ab_prs=...]` lines.
+    const legacyNotes = "[rb_v2=REPS:PER_SET:10:21.15.9]\n[ab_prs=Thruster:3]\nUnbroken round 1";
+    const replaced = replaceAvailableBlockTrackedPrHeader(legacyNotes, [
+      { movementName: "Thruster", rmReps: 1 },
+    ]);
+    assert.equal(
+      replaced,
+      "[rb_v2=REPS:PER_SET:10:21.15.9]\n[ab_prs=Thruster:1]\nUnbroken round 1"
+    );
+    assert.equal(extractCleanRoutineNotes(replaced), "Unbroken round 1");
+    assert.equal(
+      stripAvailableBlockTrackedPrHeaders(legacyNotes),
+      "[rb_v2=REPS:PER_SET:10:21.15.9]\nUnbroken round 1"
+    );
+    assert.equal(replaceAvailableBlockTrackedPrHeader("Plain notes", []), "Plain notes");
   });
 
   it("keeps Routine Builder v2 codec helpers in parity with Android RoutineTargetCodec", () => {

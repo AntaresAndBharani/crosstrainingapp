@@ -20,7 +20,9 @@ import {
   inferRoutineTargetMetricFromLibraryMetric,
   normalizeTrackedPrSlotsSpec,
   parseCycleGoalMetadata,
+  replaceAvailableBlockTrackedPrHeader,
   resizeRoutinePerSetValues,
+  stripAvailableBlockTrackedPrHeaders,
 } from "./schemas.js";
 
 export type AppEnv = "production" | "snapshot";
@@ -2031,7 +2033,9 @@ export class WorkoutDomainService {
               movementName: s.movementName,
               rmReps: s.rmReps,
             })),
-            ...(input.recordedPrs ?? []).map((p) => {
+            // Tracked PR slots are limited to 1RM-20RM (Android `[ab_prs=...]` decoder bounds);
+            // higher-rep PRs are still recorded as rep_maxes but are not linked onto the template.
+            ...(input.recordedPrs ?? []).filter((p) => p.rmReps <= 20).map((p) => {
               const resolvedEx = exerciseMap.get(p.movementName.trim().toLowerCase());
               return {
                 movementName: resolvedEx?.name ?? p.movementName.trim(),
@@ -2039,21 +2043,28 @@ export class WorkoutDomainService {
               };
             }),
           ]);
-          const encodedNotes = encodeAvailableBlockTrackedPrs(
-            blockInstructions,
-            mergedSpecs
-          );
           const sortedRoutineBlocks = [...(matchedRoutine.blocks ?? [])].sort(
             (a, b) => a.position - b.position
           );
+          // Only swap the `[ab_prs=...]` header: legacy daily routines keep their own block notes and
+          // `[rb_v2=...]` targets, and secondary blocks drop stale headers so removals stick.
           const updatedRoutineBlocks: RoutineBlockRecord[] =
             sortedRoutineBlocks.length > 0
-              ? sortedRoutineBlocks.map((rb, idx) =>
-                  idx === 0 ? { ...rb, notes: encodedNotes } : rb
-                )
+              ? sortedRoutineBlocks.map((rb, idx) => ({
+                  ...rb,
+                  notes:
+                    idx === 0
+                      ? replaceAvailableBlockTrackedPrHeader(rb.notes, mergedSpecs)
+                      : stripAvailableBlockTrackedPrHeaders(rb.notes),
+                }))
               : [
                   {
-                    id: 1,
+                    id:
+                      routines.reduce(
+                        (max, r) =>
+                          Math.max(max, ...(r.blocks ?? []).map((b) => Number(b.id) || 0)),
+                        0
+                      ) + 1,
                     routineId: matchedRoutine.routine.id,
                     position: 0,
                     name: matchedRoutine.routine.name,
@@ -2063,7 +2074,7 @@ export class WorkoutDomainService {
                     targetRepsScheme: "",
                     exerciseIdsCsv: "",
                     exerciseNamesCsv: "",
-                    notes: encodedNotes,
+                    notes: encodeAvailableBlockTrackedPrs(blockInstructions, mergedSpecs),
                     section: "",
                     subBlock: matchedRoutine.routine.name,
                   },

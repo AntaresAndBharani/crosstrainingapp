@@ -9,12 +9,15 @@ import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
+import com.fractanomics.crosstraining.data.model.Routine
+import com.fractanomics.crosstraining.data.model.RoutineBlock
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.util.AVAILABLE_BLOCK_FORMAT
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.AvailableBlockExercise
+import com.fractanomics.crosstraining.util.RoutineTargetCodec
 import com.fractanomics.crosstraining.util.TrackedPrSlot
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -95,6 +98,49 @@ class AvailableBlockRepositoryAndSyncTest {
         )
         assertEquals(1, afterUpdate.trackedPrs.size)
         assertEquals(3, afterUpdate.trackedPrs[0].rmReps)
+    }
+
+    @Test
+    fun `updating tracked PRs on a legacy daily routine keeps its multi-block structure and rb_v2 targets`() = runTest {
+        val squat = repository.getOrCreateExercise("Back Squat")
+        val burpees = repository.getOrCreateExercise(
+            name = "Burpees",
+            category = ExerciseCategory.GYMNASTICS,
+            metricType = MetricType.REPS
+        )
+        val routineId = repository.saveRoutineWithBlocks(
+            Routine(name = "Thursday Engine", description = "Strength then engine", defaultFormat = "EMOM"),
+            listOf(
+                RoutineBlock(
+                    name = "Strength", kind = BlockKind.STRENGTH, format = "EMOM", setsCount = 4,
+                    exerciseIdsCsv = squat.id.toString(),
+                    notes = "[rb_v2=REPS:PER_SET:5:5.0.4.0]\nCrisp reps"
+                ),
+                RoutineBlock(
+                    name = "Engine", kind = BlockKind.METCON, format = "For Time", setsCount = 1,
+                    exerciseIdsCsv = burpees.id.toString(), notes = "Negative split"
+                )
+            )
+        )
+
+        repository.updateAvailableBlockTrackedPrs(
+            blockId = routineId,
+            trackedPrs = listOf(TrackedPrSlot(squat.id, squat.name, 3))
+        )
+
+        val stored = repository.getAllRoutinesWithBlocksOnce().first { it.routine.id == routineId }
+        assertEquals("EMOM", stored.routine.defaultFormat)
+        assertEquals("Strength then engine", stored.routine.description)
+        val blocks = stored.blocks.sortedBy { it.position }
+        assertEquals(2, blocks.size)
+        assertEquals("EMOM", blocks[0].format)
+        assertEquals(4, blocks[0].setsCount)
+        assertEquals("For Time", blocks[1].format)
+        assertTrue(RoutineTargetCodec.hasStructuredHeader(blocks[0].notes))
+        assertEquals("Crisp reps", RoutineTargetCodec.extractCleanNotes(blocks[0].notes))
+        assertEquals("Negative split", blocks[1].notes)
+        val decoded = AvailableBlockCodec.fromRoutineWithBlocks(stored, repository.getAllExercisesOnce())
+        assertEquals(listOf(3), decoded.trackedPrs.map { it.rmReps })
     }
 
     @Test
