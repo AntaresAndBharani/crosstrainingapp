@@ -3,22 +3,27 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   BatchRecordRepMaxesInputSchema,
+  BatchUpsertAvailableBlocksInputSchema,
   BatchUpsertDailyLogsInputSchema,
   BatchUpsertExercisesInputSchema,
   BatchUpsertWeightEntriesInputSchema,
   computeWeightMomentumAnalytics,
+  DeleteAvailableBlockInputSchema,
   DeleteCycleGoalInputSchema,
   DeleteDailyLogInputSchema,
   DeleteRoutineInputSchema,
   DeleteSessionInputSchema,
   DeleteWeightEntryInputSchema,
   GetWeightMomentumAnalyticsInputSchema,
+  ListAvailableBlocksInputSchema,
   ListCycleGoalsInputSchema,
   ListExercisesInputSchema,
   ListSessionsInputSchema,
+  LogBlockSessionInputSchema,
   makeListDateRangeInputSchema,
   ManageCycleGoalsInputSchema,
   RecordRepMaxInputSchema,
+  UpsertAvailableBlockInputSchema,
   UpsertCycleGoalInputSchema,
   UpsertDailyLogInputSchema,
   UpsertExerciseInputSchema,
@@ -52,7 +57,8 @@ const DELETE_ANNOTATIONS: ToolAnnotations = {
 export const CROSSTRAINING_MCP_INSTRUCTIONS = [
   "CrossTraining Workout Assistant Connector rules:",
   "1. ACTIVE CYCLE: Never assume Cycle 1 is the active cycle. Call `get_active_cycle` (or `get_workout_summary`) when the user asks for their current/active cycle or goals. Whenever `cycleId` is omitted on goal, session, or rep-max mutations, the server automatically targets the user's resolved active cycle.",
-  "2. BATCH MULTI-ORDER PROMPTS IN ONE CALL: When a user message contains multiple orders (e.g. changing 2RM Snatch to 3RM Snatch AND adding several new goals, or logging multiple exercises, PRs, weigh-ins, or daily logs), ALWAYS combine them into a single batch tool call (`manage_cycle_goals`, `batch_upsert_exercises`, `batch_record_rep_maxes`, `batch_upsert_weight_entries`, `batch_upsert_daily_logs`) instead of chaining multiple single-item tool calls. In `manage_cycle_goals`, set `previousTargetReps` on an upsert item to convert an RM goal (such as 2RM -> 3RM) in one atomic step.",
+  "2. BATCH MULTI-ORDER PROMPTS IN ONE CALL: When a user message contains multiple orders (e.g. changing 2RM Snatch to 3RM Snatch AND adding several new goals, or logging multiple exercises, PRs, weigh-ins, or daily logs), ALWAYS combine them into a single batch tool call (`manage_cycle_goals`, `batch_upsert_available_blocks`, `batch_upsert_exercises`, `batch_record_rep_maxes`, `batch_upsert_weight_entries`, `batch_upsert_daily_logs`) instead of chaining multiple single-item tool calls. In `manage_cycle_goals`, set `previousTargetReps` on an upsert item to convert an RM goal (such as 2RM -> 3RM) in one atomic step.",
+  "3. AVAILABLE BLOCKS & WEIGHT-ONLY SESSION LOGGING: Prefer `list_available_blocks`, `upsert_available_block`, `batch_upsert_available_blocks`, and `delete_available_block` when managing standalone Available Block cards (`[ab_prs=...]` tracked PR slots and free-form instructions), and use `log_block_session` when logging weight-only block sets (pass `weights: []` for unloaded/bodyweight movements) along with optional `recordedPrs` that auto-link to the session/block and persist on the block template.",
 ].join("\n");
 
 function jsonResult(data: unknown) {
@@ -583,6 +589,99 @@ export function createCrossTrainingMcpServer(
     async ({ date }) => {
       const deleted = await domain.deleteDailyLog(getUserContext(), date);
       return jsonResult({ status: deleted ? "deleted" : "not_found", date });
+    }
+  );
+
+  // ==========================================================================
+  // 8. Available Blocks & Block-Centric Session Logging
+  // ==========================================================================
+
+  server.registerTool(
+    "list_available_blocks",
+    {
+      title: "List Available Blocks",
+      description:
+        "List streamlined Available Block templates (title, clean instructions, ordered exercises, `[ab_prs=...]` tracked PR slots) with optional most recent historical session weight summary.",
+      inputSchema: ListAvailableBlocksInputSchema,
+      annotations: READ_ONLY_ANNOTATIONS,
+    },
+    async (args) => {
+      const availableBlocks = await domain.listAvailableBlocks(getUserContext(), args);
+      return jsonResult({ count: availableBlocks.length, availableBlocks });
+    }
+  );
+
+  server.registerTool(
+    "upsert_available_block",
+    {
+      title: "Upsert Available Block",
+      description:
+        "Create or update a single Available Block card (`defaultFormat: 'AVAILABLE_BLOCK'`) with title, instructions, ordered exercises, and auto-inherited `[ab_prs=...]` tracked PR slots. When upserting 2 or more blocks, prefer `batch_upsert_available_blocks`.",
+      inputSchema: UpsertAvailableBlockInputSchema,
+      annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
+    },
+    async (args) => {
+      const availableBlock = await domain.upsertAvailableBlock(getUserContext(), args);
+      return jsonResult({ status: "ok", availableBlock });
+    }
+  );
+
+  server.registerTool(
+    "batch_upsert_available_blocks",
+    {
+      title: "Batch Upsert Available Blocks",
+      description:
+        "Create or update multiple Available Block cards atomically in a single Firestore transaction.",
+      inputSchema: BatchUpsertAvailableBlocksInputSchema,
+      annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
+    },
+    async ({ blocks }) => {
+      const upserted = await domain.batchUpsertAvailableBlocks(getUserContext(), blocks);
+      return jsonResult({
+        status: "ok",
+        upsertedCount: upserted.length,
+        availableBlocks: upserted,
+      });
+    }
+  );
+
+  server.registerTool(
+    "delete_available_block",
+    {
+      title: "Delete Available Block",
+      description:
+        "Tombstone/delete an Available Block by numeric `id` or exact `title` while preserving all historical logged workout sessions and PRs.",
+      inputSchema: DeleteAvailableBlockInputSchema,
+      annotations: DELETE_ANNOTATIONS,
+    },
+    async (args) => {
+      const res = await domain.deleteAvailableBlock(getUserContext(), args);
+      return jsonResult({
+        status: res.deleted ? "deleted" : "not_found",
+        deletedCount: res.deletedCount,
+        deletedTitles: res.deletedTitles,
+      });
+    }
+  );
+
+  server.registerTool(
+    "log_block_session",
+    {
+      title: "Log Block Session",
+      description:
+        "Log an Available Block session with weight-only sets (`reps: 1`; pass `weights: []` for bodyweight/unloaded movements) and optional `recordedPrs` linked to session/block/cycle and auto-inherited onto the matched block's tracked PRs.",
+      inputSchema: LogBlockSessionInputSchema,
+      annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
+    },
+    async (args) => {
+      const res = await domain.logBlockSession(getUserContext(), args);
+      return jsonResult({
+        status: "ok",
+        session: res.session,
+        recordedPrsCount: res.recordedPrs.length,
+        recordedPrs: res.recordedPrs,
+        updatedTrackedPrs: res.updatedTrackedPrs,
+      });
     }
   );
 

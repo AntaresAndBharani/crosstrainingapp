@@ -513,6 +513,211 @@ export const DeleteDailyLogInputSchema = {
   date: isoDateSchema().describe("Date of the daily log entry to delete (YYYY-MM-DD)"),
 };
 
+// ============================================================================
+// Available Blocks & Block-Centric Session Logging Schemas (SPEC-021)
+// ============================================================================
+
+const makeTrackedPrSlotInputSchema = () =>
+  z.object({
+    movementName: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("Tracked barbell/strength movement name, e.g. 'Back Squat' or 'Power Clean'"),
+    rmReps: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .describe("Rep max count tracked for PRs on this block (e.g. 1, 2, 3, 5, 10)"),
+  });
+
+const makeAvailableBlockUpsertItemSchema = () =>
+  z.object({
+    id: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Optional numeric Available Block ID when updating an existing block by ID"),
+    title: z
+      .string()
+      .min(1)
+      .max(300)
+      .describe("Unique Available Block title, e.g. 'Strength Wave A' or 'Barbell Conditioning'"),
+    instructions: z
+      .string()
+      .max(4000)
+      .optional()
+      .describe("Free-form workout prescription, rep scheme, EMOM/AMRAP notes, or cues"),
+    exercises: z
+      .array(z.string().min(1).max(200))
+      .max(50)
+      .optional()
+      .describe("Ordered exercise names performed in this block (auto-created if missing)"),
+    trackedPrs: z
+      .array(makeTrackedPrSlotInputSchema())
+      .max(50)
+      .optional()
+      .describe("Movement PR slots auto-inherited whenever this block is opened in Log Session"),
+  });
+
+export const ListAvailableBlocksInputSchema = {
+  query: z
+    .string()
+    .max(200)
+    .optional()
+    .describe("Optional case-insensitive filter across block title, instructions, and exercise names"),
+  includeLastSession: z
+    .boolean()
+    .optional()
+    .describe("When true (default), includes the most recent historical session weight summary for each block"),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Optional maximum number of Available Blocks to return"),
+};
+
+export const UpsertAvailableBlockInputSchema = {
+  id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional numeric Available Block ID when updating an existing block by ID"),
+  title: z
+    .string()
+    .min(1)
+    .max(300)
+    .describe("Available Block title, e.g. 'Strength Wave A'"),
+  instructions: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("Free-form prescription, rep scheme, EMOM/AMRAP notes, or cues"),
+  exercises: z
+    .array(z.string().min(1).max(200))
+    .max(50)
+    .optional()
+    .describe("Ordered exercise names performed in this block (auto-created if missing)"),
+  trackedPrs: z
+    .array(makeTrackedPrSlotInputSchema())
+    .max(50)
+    .optional()
+    .describe("Movement PR slots auto-inherited across sessions for this block"),
+};
+
+export const BatchUpsertAvailableBlocksInputSchema = {
+  blocks: z
+    .array(makeAvailableBlockUpsertItemSchema())
+    .min(1)
+    .max(100)
+    .describe("Available Blocks to create or update atomically in a single call"),
+};
+
+export const DeleteAvailableBlockInputSchema = {
+  id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Numeric Available Block ID to delete (provide `id` or `title`)"),
+  title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Exact Available Block title to delete (provide `id` or `title`)"),
+};
+
+const makeBlockExerciseLogInputSchema = () =>
+  z.object({
+    exerciseName: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("Exercise name logged in this block (auto-created if missing)"),
+    weights: z
+      .array(z.number().min(0).max(2000))
+      .max(50)
+      .describe("Ordered set weights in kg; pass [] for bodyweight/unloaded movements"),
+    setCountForEmpty: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe("Number of empty set slots recorded when `weights` is empty (default 1)"),
+  });
+
+const makeBlockRecordedPrInputSchema = () =>
+  z.object({
+    movementName: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("PR movement name, e.g. 'Back Squat' or 'Clean & Jerk'"),
+    rmReps: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .describe("Rep max count (e.g. 1 for 1RM, 3 for 3RM, 5 for 5RM)"),
+    weight: z
+      .number()
+      .min(0.1)
+      .max(2000)
+      .describe("PR weight achieved in kg"),
+  });
+
+export const LogBlockSessionInputSchema = {
+  date: isoDateSchema().describe("Workout date in YYYY-MM-DD format"),
+  sessionTitle: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Optional session title (defaults to the resolved block title)"),
+  blockId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional Available Block numeric ID to link this logged session"),
+  blockTitle: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Available Block title to match/link (or block label if logging ad-hoc)"),
+  cycleId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional cycle ID (omit to automatically use the active cycle)"),
+  notes: z
+    .string()
+    .max(2000)
+    .optional()
+    .describe("Optional session notes"),
+  exerciseLogs: z
+    .array(makeBlockExerciseLogInputSchema())
+    .min(1)
+    .max(50)
+    .describe("Ordered per-exercise weight-only logs recorded for this block"),
+  recordedPrs: z
+    .array(makeBlockRecordedPrInputSchema())
+    .max(50)
+    .optional()
+    .describe("Optional PRs achieved in this block; linked to sessionId/blockId/sourceBlockTitle"),
+  updateTrackedPrLinks: z
+    .boolean()
+    .optional()
+    .describe("When true (default), appends new recordedPrs (movementName, rmReps) slots to the matched Available Block's trackedPrs"),
+};
+
 export const WeightSubcycleTypeValues = [
   "FAT_LOSS",
   "RECOMPOSITION",
@@ -1010,7 +1215,16 @@ export function parseCycleGoalMetadata(rawNotes?: string): {
 // Routine Builder v2 (`[rb_v2=...]`) Codec — 100% Parity with Android RoutineTargetCodec.kt
 // ============================================================================
 
+export const AVAILABLE_BLOCK_FORMAT = "AVAILABLE_BLOCK";
+
+export interface TrackedPrSlotSpec {
+  movementName: string;
+  rmReps: number;
+}
+
 const RB_V2_HEADER_LINE_REGEX = /^\[rb_v2=([^\r\n\]]*)\](?:\r?\n)?/i;
+const AB_PRS_HEADER_LINE_REGEX = /^\[ab_prs=([^\r\n\]]*)\](?:\r?\n)?/i;
+const AB_PRS_GLOBAL_REGEX = /\[ab_prs=([^\]]*)\]/gi;
 // Must match Android `RoutineTargetCodec.SINGLE_EFFORT_FORMATS` exactly.
 const SINGLE_EFFORT_ROUTINE_FORMATS = new Set(["amrap", "for time", "chipper", "death by", "time cap"]);
 
@@ -1091,13 +1305,82 @@ export function hasStructuredRoutineHeader(notes?: string): boolean {
 
 export function extractCleanRoutineNotes(notes?: string): string {
   if (!notes) return "";
-  const withoutV2 = notes.trimStart().replace(RB_V2_HEADER_LINE_REGEX, "");
-  const lines = withoutV2.split(/\r?\n/);
+  let remaining = notes.trimStart();
+  while (true) {
+    if (RB_V2_HEADER_LINE_REGEX.test(remaining)) {
+      remaining = remaining.replace(RB_V2_HEADER_LINE_REGEX, "").trimStart();
+      continue;
+    }
+    if (AB_PRS_HEADER_LINE_REGEX.test(remaining)) {
+      remaining = remaining.replace(AB_PRS_HEADER_LINE_REGEX, "").trimStart();
+      continue;
+    }
+    break;
+  }
+  const lines = remaining.split(/\r?\n/);
   const firstLine = (lines[0] ?? "").trim();
   if (/^Score:\s*(TIME|REPS|CALORIES|DISTANCE|WEIGHT)$/i.test(firstLine)) {
     return lines.slice(1).join("\n").trim();
   }
-  return withoutV2.trim();
+  return remaining.trim();
+}
+
+export function normalizeTrackedPrSlotsSpec(slots: TrackedPrSlotSpec[]): TrackedPrSlotSpec[] {
+  const seen = new Map<string, TrackedPrSlotSpec>();
+  for (const slot of slots) {
+    const cleanName = (slot.movementName ?? "").trim();
+    const rmReps = Math.trunc(Number(slot.rmReps) || 0);
+    if (!cleanName || rmReps <= 0) continue;
+    const clampedRm = Math.min(20, Math.max(1, rmReps));
+    const key = `${cleanName.toLowerCase()}:${clampedRm}`;
+    if (!seen.has(key)) {
+      seen.set(key, { movementName: cleanName, rmReps: clampedRm });
+    }
+  }
+  return Array.from(seen.values());
+}
+
+export function decodeAvailableBlockTrackedPrs(rawText?: string): TrackedPrSlotSpec[] {
+  if (!rawText) return [];
+  const slots: TrackedPrSlotSpec[] = [];
+  AB_PRS_GLOBAL_REGEX.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = AB_PRS_GLOBAL_REGEX.exec(rawText)) !== null) {
+    const payload = (match[1] ?? "").trim();
+    if (!payload) continue;
+    for (const rawEntry of payload.split(";")) {
+      const trimmed = rawEntry.trim();
+      if (!trimmed) continue;
+      const sepIdx = trimmed.lastIndexOf(":");
+      if (sepIdx <= 0 || sepIdx >= trimmed.length - 1) continue;
+      const encodedName = trimmed.slice(0, sepIdx);
+      const rmReps = Number.parseInt(trimmed.slice(sepIdx + 1).trim(), 10);
+      if (!Number.isFinite(rmReps) || rmReps < 1 || rmReps > 20) continue;
+      let decodedName = encodedName;
+      try {
+        decodedName = decodeURIComponent(encodedName.replace(/\+/g, " "));
+      } catch {
+        decodedName = encodedName.replace(/\+/g, " ");
+      }
+      decodedName = decodedName.trim();
+      if (!decodedName) continue;
+      slots.push({ movementName: decodedName, rmReps });
+    }
+  }
+  return normalizeTrackedPrSlotsSpec(slots);
+}
+
+export function encodeAvailableBlockTrackedPrs(
+  cleanInstructions: string,
+  trackedPrs: TrackedPrSlotSpec[]
+): string {
+  const clean = extractCleanRoutineNotes(cleanInstructions);
+  const normalized = normalizeTrackedPrSlotsSpec(trackedPrs);
+  if (normalized.length === 0) return clean;
+  const header = `[ab_prs=${normalized
+    .map((s) => `${encodeURIComponent(s.movementName).replace(/%20/g, "+")}:${s.rmReps}`)
+    .join(";")}]`;
+  return clean.length === 0 ? header : `${header}\n${clean}`;
 }
 
 export function encodeRoutineBlockTargets(

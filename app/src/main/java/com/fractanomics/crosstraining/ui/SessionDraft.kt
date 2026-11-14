@@ -13,6 +13,13 @@ data class SetDraft(
     val isFailed: Boolean = false
 )
 
+/** UI-side draft of a tracked movement PR recorded inside a logged block. */
+data class RepMaxDraft(
+    val exerciseId: Long,
+    val reps: Int,
+    val weight: Double
+)
+
 /**
  * UI-side draft of one block. The main exercise is given either as
  * [existingExerciseId] or a [newExerciseName] to be created on save.
@@ -34,7 +41,8 @@ data class BlockDraft(
     val section: String = "",
     val exerciseIdsCsv: String = "",
     val subBlock: String = "",
-    val isCompleted: Boolean = false
+    val isCompleted: Boolean = false,
+    val newRepMaxes: List<RepMaxDraft> = emptyList()
 )
 
 data class SessionDraft(

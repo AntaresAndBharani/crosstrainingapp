@@ -4,9 +4,13 @@ import type { Server } from "node:http";
 import { after, before, describe, it } from "node:test";
 import { createMcpExpressApp } from "../src/index.js";
 import {
+  AVAILABLE_BLOCK_FORMAT,
   computeWeightMomentumAnalytics,
+  decodeAvailableBlockTrackedPrs,
   decodeLegacyRoutineSlots,
   defaultSetsForRoutineFormat,
+  encodeAvailableBlockTrackedPrs,
+  extractCleanRoutineNotes,
   formatRoutineBlockTargetSummary,
 } from "../src/schemas.js";
 import {
@@ -418,7 +422,7 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
         openWorldHint?: boolean;
       };
     }>;
-    assert.equal(tools.length, 28, `Expected 28 registered tools, got ${tools.length}`);
+    assert.equal(tools.length, 33, `Expected 33 registered tools, got ${tools.length}`);
     const toolsJson = JSON.stringify(tools);
     assert.equal(toolsJson.includes('"$ref"'), false, "Tool schemas must never contain $ref (rejected by Gemini)");
     assert.equal(
@@ -439,6 +443,7 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       "get_weight_momentum_analytics",
       "list_weight_entries",
       "list_daily_logs",
+      "list_available_blocks",
     ]);
     const expectedDeleteTools = new Set([
       "delete_routine",
@@ -446,6 +451,7 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       "delete_cycle_goal",
       "delete_weight_entry",
       "delete_daily_log",
+      "delete_available_block",
     ]);
 
     for (const tool of tools) {
@@ -1411,6 +1417,162 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     assert.equal(legacyFran.blocks[0].cleanNotes, "Unbroken round 1");
     assert.equal(legacyFran.blocks[0].exercises?.length, 2);
     assert.deepEqual(legacyFran.blocks[0].exercises?.[0]?.perSetValues, [21, 15, 9]);
+
+    // 4. Available Blocks CRUD + log_block_session (weight-only + unloaded + PR attribution)
+    const upsertBlockResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 706,
+      method: "tools/call",
+      params: {
+        name: "upsert_available_block",
+        arguments: {
+          title: "Strength Wave A",
+          instructions: "Build across 3 working sets",
+          exercises: ["Back Squat", "Box Jump"],
+          trackedPrs: [{ movementName: "Back Squat", rmReps: 3 }],
+        },
+      },
+    });
+    const upsertedBlockPayload = JSON.parse(upsertBlockResp.result.content[0].text);
+    assert.equal(upsertedBlockPayload.status, "ok");
+    assert.equal(upsertedBlockPayload.availableBlock.title, "Strength Wave A");
+    assert.equal(upsertedBlockPayload.availableBlock.isAvailableBlockFormat, true);
+    assert.equal(upsertedBlockPayload.availableBlock.trackedPrs.length, 1);
+
+    const batchUpsertBlockResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 707,
+      method: "tools/call",
+      params: {
+        name: "batch_upsert_available_blocks",
+        arguments: {
+          blocks: [
+            {
+              title: "Olympic Complex B",
+              instructions: "1 Power Clean + 1 Front Squat",
+              exercises: ["Power Clean", "Front Squat"],
+            },
+            {
+              title: "Bodyweight Finisher",
+              instructions: "3 rounds max unbroken",
+              exercises: ["Pull-Up", "Burpee"],
+            },
+          ],
+        },
+      },
+    });
+    assert.equal(JSON.parse(batchUpsertBlockResp.result.content[0].text).upsertedCount, 2);
+
+    const logBlockResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 708,
+      method: "tools/call",
+      params: {
+        name: "log_block_session",
+        arguments: {
+          date: "2026-11-12",
+          blockTitle: "Strength Wave A",
+          exerciseLogs: [
+            { exerciseName: "Back Squat", weights: [100, 110, 122.5] },
+            { exerciseName: "Box Jump", weights: [], setCountForEmpty: 3 },
+          ],
+          recordedPrs: [
+            { movementName: "Back Squat", rmReps: 1, weight: 122.5 },
+          ],
+        },
+      },
+    });
+    const logBlockPayload = JSON.parse(logBlockResp.result.content[0].text);
+    assert.equal(logBlockPayload.status, "ok");
+    assert.equal(logBlockPayload.session.blocks.length, 2);
+    assert.deepEqual(
+      logBlockPayload.session.blocks[0].sets.map((s: { reps: number; weight: number }) => [s.reps, s.weight]),
+      [
+        [1, 100],
+        [1, 110],
+        [1, 122.5],
+      ]
+    );
+    assert.equal(logBlockPayload.session.blocks[1].sets.length, 3);
+    assert.equal(logBlockPayload.session.blocks[1].sets[0].weight, 0);
+    assert.equal(logBlockPayload.recordedPrsCount, 1);
+    assert.equal(logBlockPayload.recordedPrs[0].sourceBlockTitle, "Strength Wave A");
+    assert.ok(logBlockPayload.recordedPrs[0].blockId > 0);
+    // Auto-inherited 1RM PR link alongside existing 3RM
+    assert.equal(logBlockPayload.updatedTrackedPrs.length, 2);
+
+    const listBlocksResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 709,
+      method: "tools/call",
+      params: {
+        name: "list_available_blocks",
+        arguments: { query: "Strength Wave", includeLastSession: true },
+      },
+    });
+    const listBlocksPayload = JSON.parse(listBlocksResp.result.content[0].text);
+    assert.equal(listBlocksPayload.count, 1);
+    assert.equal(listBlocksPayload.availableBlocks[0].lastSession.date, "2026-11-12");
+    assert.equal(listBlocksPayload.availableBlocks[0].lastSession.topWeight, 122.5);
+    assert.equal(listBlocksPayload.availableBlocks[0].trackedPrs.length, 2);
+
+    const summaryAfterBlocksResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 710,
+      method: "tools/call",
+      params: { name: "get_workout_summary", arguments: {} },
+    });
+    const summaryAfterBlocks = JSON.parse(summaryAfterBlocksResp.result.content[0].text);
+    assert.ok(summaryAfterBlocks.availableBlockCount >= 3);
+
+    const deleteBlockResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 711,
+      method: "tools/call",
+      params: {
+        name: "delete_available_block",
+        arguments: { title: "Strength Wave A" },
+      },
+    });
+    const deleteBlockPayload = JSON.parse(deleteBlockResp.result.content[0].text);
+    assert.equal(deleteBlockPayload.status, "deleted");
+
+    // Historical sessions remain intact after Available Block deletion
+    const sessionsAfterDeleteResp = await callMcp({
+      jsonrpc: "2.0",
+      id: 712,
+      method: "tools/call",
+      params: { name: "list_sessions", arguments: { startDate: "2026-11-12", endDate: "2026-11-12" } },
+    });
+    const sessionsAfterDelete = JSON.parse(sessionsAfterDeleteResp.result.content[0].text);
+    assert.ok(
+      sessionsAfterDelete.sessions.some(
+        (s: { session: { title: string } }) => s.session.title === "Strength Wave A"
+      ),
+      "Historical session must remain preserved after block template deletion"
+    );
+  });
+
+  it("keeps Available Blocks [ab_prs=...] codec in parity with Android AvailableBlockCodec", () => {
+    const encoded = encodeAvailableBlockTrackedPrs("EMOM 10\nOdd: 3 Back Squat", [
+      { movementName: "Back Squat", rmReps: 3 },
+      { movementName: "Clean & Jerk", rmReps: 1 },
+      { movementName: "back squat", rmReps: 3 },
+    ]);
+    assert.ok(encoded.startsWith("[ab_prs="));
+    assert.equal(AVAILABLE_BLOCK_FORMAT, "AVAILABLE_BLOCK");
+    assert.equal(extractCleanRoutineNotes(encoded), "EMOM 10\nOdd: 3 Back Squat");
+    const decoded = decodeAvailableBlockTrackedPrs(encoded);
+    assert.deepEqual(decoded, [
+      { movementName: "Back Squat", rmReps: 3 },
+      { movementName: "Clean & Jerk", rmReps: 1 },
+    ]);
+    const androidFormatted = "[ab_prs=Back+Squat:5;Clean+%26+Jerk:2]\nBuild heavy";
+    assert.deepEqual(decodeAvailableBlockTrackedPrs(androidFormatted), [
+      { movementName: "Back Squat", rmReps: 5 },
+      { movementName: "Clean & Jerk", rmReps: 2 },
+    ]);
+    assert.equal(extractCleanRoutineNotes(androidFormatted), "Build heavy");
   });
 
   it("keeps Routine Builder v2 codec helpers in parity with Android RoutineTargetCodec", () => {
