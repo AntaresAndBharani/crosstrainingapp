@@ -519,6 +519,25 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         UserCloudSyncManager.uploadUserData(data.realRepository)
     }
 
+    fun prepareCustomSessionBlock(
+        rawTitle: String,
+        instructions: String,
+        selectedExerciseIds: List<Long>,
+        saveToLibrary: Boolean,
+        onReady: (AvailableBlock?) -> Unit
+    ) = viewModelScope.launch {
+        val block = repo.prepareCustomAvailableBlock(
+            rawTitle = rawTitle,
+            instructions = instructions,
+            selectedExerciseIds = selectedExerciseIds,
+            saveToLibrary = saveToLibrary
+        )
+        onReady(block)
+        if (block != null && saveToLibrary && block.id > 0L) {
+            UserCloudSyncManager.uploadUserData(data.realRepository)
+        }
+    }
+
     fun getOrCreateExerciseForRoutine(
         name: String,
         category: ExerciseCategory = ExerciseCategory.BARBELL,
