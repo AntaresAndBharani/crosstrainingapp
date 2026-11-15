@@ -23,6 +23,7 @@ import {
   makeListDateRangeInputSchema,
   ManageCycleGoalsInputSchema,
   RecordRepMaxInputSchema,
+  UpdateBlockSessionLogInputSchema,
   UpsertAvailableBlockInputSchema,
   UpsertCycleGoalInputSchema,
   UpsertDailyLogInputSchema,
@@ -58,7 +59,7 @@ export const CROSSTRAINING_MCP_INSTRUCTIONS = [
   "CrossTraining Workout Assistant Connector rules:",
   "1. ACTIVE CYCLE: Never assume Cycle 1 is the active cycle. Call `get_active_cycle` (or `get_workout_summary`) when the user asks for their current/active cycle or goals. Whenever `cycleId` is omitted on goal, session, or rep-max mutations, the server automatically targets the user's resolved active cycle.",
   "2. BATCH MULTI-ORDER PROMPTS IN ONE CALL: When a user message contains multiple orders (e.g. changing 2RM Snatch to 3RM Snatch AND adding several new goals, or logging multiple exercises, PRs, weigh-ins, or daily logs), ALWAYS combine them into a single batch tool call (`manage_cycle_goals`, `batch_upsert_available_blocks`, `batch_upsert_exercises`, `batch_record_rep_maxes`, `batch_upsert_weight_entries`, `batch_upsert_daily_logs`) instead of chaining multiple single-item tool calls. In `manage_cycle_goals`, set `previousTargetReps` on an upsert item to convert an RM goal (such as 2RM -> 3RM) in one atomic step.",
-  "3. AVAILABLE BLOCKS & WEIGHT-ONLY SESSION LOGGING: Prefer `list_available_blocks`, `upsert_available_block`, `batch_upsert_available_blocks`, and `delete_available_block` when managing standalone Available Block cards (`[ab_prs=...]` tracked PR slots and free-form instructions), and use `log_block_session` when logging weight-only block sets (pass `weights: []` for unloaded/bodyweight movements) along with optional `recordedPrs` that auto-link to the session/block and persist on the block template.",
+  "3. AVAILABLE BLOCKS & WEIGHT-ONLY SESSION LOGGING: Prefer `list_available_blocks`, `upsert_available_block`, `batch_upsert_available_blocks`, and `delete_available_block` when managing standalone Available Block cards (`[ab_prs=...]` tracked PR slots and free-form instructions), use `log_block_session` when logging weight-only block sets (pass `weights: []` for unloaded/bodyweight movements) along with optional `recordedPrs` that auto-link to the session/block and persist on the block template, and use `update_block_session_log` when editing an existing logged block session (updating set weights/counts, notes, date, or tracked PRs while reconciling/tombstoning replaced or removed session PRs).",
 ].join("\n");
 
 function jsonResult(data: unknown) {
@@ -680,6 +681,28 @@ export function createCrossTrainingMcpServer(
         session: res.session,
         recordedPrsCount: res.recordedPrs.length,
         recordedPrs: res.recordedPrs,
+        updatedTrackedPrs: res.updatedTrackedPrs,
+      });
+    }
+  );
+
+  server.registerTool(
+    "update_block_session_log",
+    {
+      title: "Update Block Session Log",
+      description:
+        "Edit an existing logged Available Block session in place (sets/weights, block/session notes, date, cycle, or tracked PRs), tombstoning replaced or removed session `rep_maxes` and auto-inheriting newly tracked 1RM-20RM PR slots onto the parent Available Block.",
+      inputSchema: UpdateBlockSessionLogInputSchema,
+      annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
+    },
+    async (args) => {
+      const res = await domain.updateBlockSessionLog(getUserContext(), args);
+      return jsonResult({
+        status: "ok",
+        session: res.session,
+        reconciledPrsCount: res.reconciledPrs.length,
+        reconciledPrs: res.reconciledPrs,
+        tombstonedRepMaxIds: res.tombstonedRepMaxIds,
         updatedTrackedPrs: res.updatedTrackedPrs,
       });
     }

@@ -1,6 +1,7 @@
 package com.fractanomics.crosstraining.util
 
 import com.fractanomics.crosstraining.data.model.BlockKind
+import com.fractanomics.crosstraining.data.model.BlockWithSets
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
@@ -71,6 +72,41 @@ data class EvaluatedPrChip(
     val candidateWeight: Double,
     val storedBestWeight: Double,
     val isNewPr: Boolean
+)
+
+data class HydratedBlockExerciseSeed(
+    val sourceBlockId: Long? = null,
+    val movementId: Long,
+    val movementName: String,
+    val weights: List<Double>,
+    val perSetReps: List<Int>,
+    val defaultReps: Int = 1,
+    val rawFormat: String = "",
+    val rawScheme: String = "",
+    val rawSection: String = "",
+    val rawKind: BlockKind = BlockKind.STRENGTH,
+    val rawIsCompleted: Boolean = true,
+    val subBlockTitle: String = ""
+)
+
+data class HydratedAvailableBlockSeed(
+    val resolvedAvailableBlock: AvailableBlock?,
+    val blockTitle: String,
+    val cleanNotes: String,
+    val sourceBlockIds: List<Long>,
+    val rawRoutineId: Long? = null,
+    val rawFormat: String = "",
+    val rawScheme: String = "",
+    val rawSection: String = "",
+    val rawKind: BlockKind = BlockKind.STRENGTH,
+    val rawIsCompleted: Boolean = true,
+    val exercises: List<HydratedBlockExerciseSeed>,
+    val persistedRepMaxes: List<RepMax>
+)
+
+data class SessionBlockHydrationResult(
+    val simplifiedBlocks: List<HydratedAvailableBlockSeed>,
+    val residualLegacyBlocks: List<BlockWithSets>
 )
 
 /**
@@ -379,13 +415,18 @@ object AvailableBlockCodec {
         block: AvailableBlock,
         sessions: List<SessionWithBlocks>,
         exercises: List<Exercise>,
-        weightUnit: String = "kg"
+        weightUnit: String = "kg",
+        excludeSessionId: Long? = null
     ): LastBlockSessionSummary? {
         val byId = exercises.associateBy { it.id }
-        val sortedSessions = sessions.sortedWith(
-            compareByDescending<SessionWithBlocks> { it.session.date }
-                .thenByDescending { it.session.id }
-        )
+        val sortedSessions = sessions
+            .asSequence()
+            .filter { excludeSessionId == null || it.session.id != excludeSessionId }
+            .sortedWith(
+                compareByDescending<SessionWithBlocks> { it.session.date }
+                    .thenByDescending { it.session.id }
+            )
+            .toList()
 
         for (sw in sortedSessions) {
             val matching = sw.blocks
@@ -479,16 +520,24 @@ object AvailableBlockCodec {
         }
     }
 
-    /** Looks up the stored best positive [RepMax] weight for `(movementId, rmReps)`. */
+    /**
+     * Looks up the stored best positive [RepMax] weight for `(movementId, rmReps)`,
+     * optionally excluding records that belong to [excludeSessionId] (edit mode).
+     */
     fun bestStoredRepMaxWeight(
         repMaxes: List<RepMax>,
         movementId: Long,
-        rmReps: Int
+        rmReps: Int,
+        excludeSessionId: Long? = null
     ): Double {
         if (movementId <= 0L) return 0.0
         return repMaxes
             .asSequence()
-            .filter { it.exerciseId == movementId && it.reps == rmReps }
+            .filter {
+                it.exerciseId == movementId &&
+                    it.reps == rmReps &&
+                    (excludeSessionId == null || it.sessionId != excludeSessionId)
+            }
             .map { it.weight }
             .maxOrNull() ?: 0.0
     }
@@ -506,4 +555,229 @@ object AvailableBlockCodec {
         storedBestWeight = storedBestWeight.coerceAtLeast(0.0),
         isNewPr = candidateWeight > 0.0 && candidateWeight > storedBestWeight
     )
+
+    /**
+     * Merges [additionalSlots] onto [existing] preserving slot order and deduplicating
+     * by `(movementId, rmReps)` or case-insensitive movement name (`SPEC-022`).
+     */
+    fun mergeTrackedPrSlots(
+        existing: AvailableBlock,
+        additionalSlots: List<TrackedPrSlot>
+    ): AvailableBlock {
+        if (additionalSlots.isEmpty()) return existing
+        val merged = normalizeTrackedPrSlots(existing.trackedPrs + additionalSlots)
+        return existing.copy(trackedPrs = merged)
+    }
+
+    /**
+     * Resolves an [AvailableBlock] matching [sessionBlock] by `routineId` first, then case-insensitive title.
+     */
+    fun resolveMatchingAvailableBlock(
+        sessionBlock: SessionBlock,
+        availableBlocks: List<AvailableBlock>
+    ): AvailableBlock? {
+        val routineId = sessionBlock.routineId
+        if (routineId != null && routineId > 0L) {
+            availableBlocks.firstOrNull { it.id == routineId }?.let { return it }
+        }
+        val sub = sessionBlock.subBlock.trim()
+        if (sub.isNotEmpty()) {
+            availableBlocks.firstOrNull { it.title.equals(sub, ignoreCase = true) }?.let { return it }
+        }
+        val name = sessionBlock.name.trim()
+        if (name.isNotEmpty()) {
+            availableBlocks.firstOrNull { it.title.equals(name, ignoreCase = true) }?.let { return it }
+        }
+        return null
+    }
+
+    private fun isResidualLegacyBlock(
+        bws: BlockWithSets,
+        matchedBlock: AvailableBlock?
+    ): Boolean {
+        // The simplified editor only round-trips (reps, positive weight) per set. Keep any block
+        // carrying warm-up / failed / grouped sets or unweighted rep-only sets on the legacy
+        // CompactBlockEditor so editing a historical log never silently drops set data.
+        if (bws.sets.any { it.isWarmup || it.isFailed || (it.groupIndex ?: 0) > 0 }) return true
+        val isBlankPlaceholder = bws.sets.size == 1 && bws.sets[0].reps <= 1
+        if (!isBlankPlaceholder && bws.sets.any { (it.weight ?: 0.0) <= 0.0 }) return true
+        if (matchedBlock != null) return false
+        val blk = bws.block
+        if (blk.resultText.isNotBlank() || blk.resultValue != null) return true
+        val hasPositiveWeight = bws.sets.any { (it.weight ?: 0.0) > 0.0 }
+        val hasNonWeightMetricOnly = bws.sets.any { (it.metricValue ?: 0.0) > 0.0 && (it.weight ?: 0.0) <= 0.0 }
+        if (hasNonWeightMetricOnly) return true
+        if (blk.kind == BlockKind.METCON && !hasPositiveWeight) return true
+        return false
+    }
+
+    private sealed interface HydrationGroupKey {
+        data class ByAvailableBlock(val availableBlockId: Long, val ordinalRun: Int) : HydrationGroupKey
+        data class BySubBlock(val normalizedTitle: String, val ordinalRun: Int) : HydrationGroupKey
+        data class Standalone(val blockIndex: Int) : HydrationGroupKey
+    }
+
+    /**
+     * Partitions a persisted [SessionWithBlocks] into simplified block editor cards and
+     * any residual legacy metcon/score blocks (`SPEC-BLOCK-LOG-EDIT-01`).
+     */
+    fun hydrateSessionBlocksForEditor(
+        session: SessionWithBlocks,
+        availableBlocks: List<AvailableBlock>,
+        exercises: List<Exercise>,
+        sessionRepMaxes: List<RepMax>
+    ): SessionBlockHydrationResult {
+        val exercisesById = exercises.associateBy { it.id }
+        val exercisesByLowerName = exercises.associateBy { it.name.trim().lowercase() }
+        val orderedBlocks = session.blocks.sortedBy { it.block.position }
+
+        val residualLegacy = mutableListOf<BlockWithSets>()
+        val simplifiedGroups = mutableListOf<Triple<HydrationGroupKey, AvailableBlock?, MutableList<BlockWithSets>>>()
+        var currentRun = 0
+        var lastSignature: String? = null
+
+        orderedBlocks.forEachIndexed { idx, bws ->
+            val matchedBlock = resolveMatchingAvailableBlock(bws.block, availableBlocks)
+            if (isResidualLegacyBlock(bws, matchedBlock)) {
+                residualLegacy += bws
+                lastSignature = null
+                return@forEachIndexed
+            }
+
+            val rawSub = bws.block.subBlock.trim()
+            val signature = when {
+                matchedBlock != null -> "ab:${matchedBlock.id}"
+                rawSub.isNotEmpty() -> "sub:${rawSub.lowercase()}"
+                else -> "single:$idx"
+            }
+            if (signature != lastSignature || signature.startsWith("single:")) {
+                currentRun += 1
+                lastSignature = signature
+                val key = when {
+                    matchedBlock != null -> HydrationGroupKey.ByAvailableBlock(matchedBlock.id, currentRun)
+                    rawSub.isNotEmpty() -> HydrationGroupKey.BySubBlock(rawSub.lowercase(), currentRun)
+                    else -> HydrationGroupKey.Standalone(idx)
+                }
+                simplifiedGroups += Triple(key, matchedBlock, mutableListOf(bws))
+            } else {
+                simplifiedGroups.last().third.add(bws)
+            }
+        }
+
+        val allSessionBlockIds = orderedBlocks.map { it.block.id }.filter { it > 0L }.toSet()
+        val claimedRepMaxIds = mutableSetOf<Long>()
+
+        val hydratedBlocks = simplifiedGroups.map { (_, matchedBlock, groupBlocks) ->
+            val firstBlock = groupBlocks.first().block
+            val blockTitle = matchedBlock?.title
+                ?.takeIf { it.isNotBlank() }
+                ?: firstBlock.subBlock.trim().ifBlank { firstBlock.name.trim() }
+                    .ifBlank { "Block" }
+
+            val rawDesc = firstBlock.description.ifBlank { RoutineTargetCodec.extractCleanNotes(firstBlock.notes) }
+            val cleanNotes = extractCleanInstructions(rawDesc)
+                .ifBlank { matchedBlock?.instructions.orEmpty() }
+
+            val exerciseSeeds = mutableListOf<HydratedBlockExerciseSeed>()
+            groupBlocks.forEach { bws ->
+                val blk = bws.block
+                val orderedSets = bws.sets.sortedBy { it.position }
+                val parsedCsvIds = RoutineTargetCodec.parseExerciseIdsPreservingOrder(blk.exerciseIdsCsv)
+
+                val weights = if (orderedSets.isNotEmpty()) {
+                    orderedSets.map { it.weight?.takeIf { w -> w > 0.0 } ?: 0.0 }
+                } else {
+                    listOf(0.0)
+                }
+                val perSetReps = if (orderedSets.isNotEmpty()) {
+                    orderedSets.map { it.reps.coerceAtLeast(1) }
+                } else {
+                    listOf(1)
+                }
+                val defaultReps = orderedSets.firstOrNull { it.reps > 0 }?.reps ?: 1
+
+                if (orderedSets.isEmpty() && parsedCsvIds.size > 1) {
+                    parsedCsvIds.forEachIndexed { csvIdx, exId ->
+                        val exName = exercisesById[exId]?.name
+                            ?: blk.name.trim().ifBlank { matchedBlock?.title.orEmpty() }
+                        exerciseSeeds += HydratedBlockExerciseSeed(
+                            sourceBlockId = blk.id.takeIf { it > 0L && csvIdx == 0 },
+                            movementId = exId,
+                            movementName = exName,
+                            weights = listOf(0.0),
+                            perSetReps = listOf(1),
+                            defaultReps = 1,
+                            rawFormat = blk.format,
+                            rawScheme = blk.scheme,
+                            rawSection = blk.section,
+                            rawKind = blk.kind,
+                            rawIsCompleted = blk.isCompleted,
+                            subBlockTitle = blk.subBlock
+                        )
+                    }
+                } else {
+                    var resolvedId = blk.mainExerciseId?.takeIf { it > 0L }
+                        ?: parsedCsvIds.firstOrNull()?.takeIf { it > 0L }
+                        ?: exercisesByLowerName[blk.name.trim().lowercase()]?.id
+                        ?: 0L
+                    if (resolvedId <= 0L && matchedBlock != null &&
+                        blk.name.trim().equals(matchedBlock.title, ignoreCase = true) &&
+                        matchedBlock.exercises.size == 1
+                    ) {
+                        resolvedId = matchedBlock.exercises.first().id
+                    }
+                    val resolvedName = (resolvedId.takeIf { it > 0L }?.let { exercisesById[it]?.name })
+                        ?: blk.name.trim().ifBlank { matchedBlock?.title.orEmpty() }
+
+                    exerciseSeeds += HydratedBlockExerciseSeed(
+                        sourceBlockId = blk.id.takeIf { it > 0L },
+                        movementId = resolvedId,
+                        movementName = resolvedName.ifBlank { blockTitle },
+                        weights = weights,
+                        perSetReps = perSetReps,
+                        defaultReps = defaultReps,
+                        rawFormat = blk.format,
+                        rawScheme = blk.scheme,
+                        rawSection = blk.section,
+                        rawKind = blk.kind,
+                        rawIsCompleted = blk.isCompleted,
+                        subBlockTitle = blk.subBlock
+                    )
+                }
+            }
+
+            val sourceIds = groupBlocks.map { it.block.id }.filter { it > 0L }.toSet()
+            val movementIds = exerciseSeeds.map { it.movementId }.filter { it > 0L }.toSet()
+
+            val persistedRms = sessionRepMaxes.filter { rm ->
+                if (rm.id > 0L && rm.id in claimedRepMaxIds) return@filter false
+                val matchesByBlock = rm.blockId != null && rm.blockId in sourceIds
+                val isUnboundToSessionBlocks = rm.blockId == null || rm.blockId !in allSessionBlockIds
+                val matchesByMovement = isUnboundToSessionBlocks && rm.exerciseId in movementIds
+                matchesByBlock || matchesByMovement
+            }.also { matched ->
+                matched.forEach { if (it.id > 0L) claimedRepMaxIds += it.id }
+            }
+
+            HydratedAvailableBlockSeed(
+                resolvedAvailableBlock = matchedBlock,
+                blockTitle = blockTitle,
+                cleanNotes = cleanNotes,
+                sourceBlockIds = sourceIds.toList(),
+                rawRoutineId = firstBlock.routineId,
+                rawFormat = firstBlock.format,
+                rawScheme = firstBlock.scheme,
+                rawSection = firstBlock.section,
+                rawKind = firstBlock.kind,
+                rawIsCompleted = firstBlock.isCompleted,
+                exercises = exerciseSeeds,
+                persistedRepMaxes = persistedRms
+            )
+        }
+
+        return SessionBlockHydrationResult(
+            simplifiedBlocks = hydratedBlocks,
+            residualLegacyBlocks = residualLegacy
+        )
+    }
 }

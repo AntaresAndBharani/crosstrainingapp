@@ -1,5 +1,6 @@
 package com.fractanomics.crosstraining.util
 
+import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.BlockWithSets
 import com.fractanomics.crosstraining.data.model.Exercise
@@ -352,5 +353,218 @@ class AvailableBlockCodecTest {
             listOf(backSquat, cleanAndJerk, burpees)
         )
         assertEquals(listOf(TrackedPrSlot(backSquat.id, backSquat.name, 3)), decoded.trackedPrs)
+    }
+
+    @Test
+    fun `bestStoredRepMaxWeight and resolveLastBlockSession exclude edited sessionId`() {
+        val prevDate = LocalDate.of(2026, 11, 1)
+        val editDate = LocalDate.of(2026, 11, 14)
+        val repMaxes = listOf(
+            RepMax(id = 1L, exerciseId = 1L, reps = 3, weight = 100.0, date = prevDate, sessionId = 10L),
+            RepMax(id = 2L, exerciseId = 1L, reps = 3, weight = 115.0, date = editDate, sessionId = 20L)
+        )
+
+        assertEquals(115.0, AvailableBlockCodec.bestStoredRepMaxWeight(repMaxes, 1L, 3), 0.001)
+        assertEquals(
+            100.0,
+            AvailableBlockCodec.bestStoredRepMaxWeight(repMaxes, 1L, 3, excludeSessionId = 20L),
+            0.001
+        )
+
+        val block = AvailableBlock(
+            id = 77L,
+            title = "Squat Wave",
+            instructions = "Build to heavy 3",
+            exercises = listOf(AvailableBlockExercise(1L, "Back Squat", true)),
+            trackedPrs = listOf(TrackedPrSlot(1L, "Back Squat", 3))
+        )
+        val olderSession = SessionWithBlocks(
+            session = Session(id = 10L, cycleId = 1L, date = prevDate, title = "Squat Wave"),
+            blocks = listOf(
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 100L, sessionId = 10L, position = 0, name = "Back Squat",
+                        mainExerciseId = 1L, routineId = 77L, subBlock = "Squat Wave"
+                    ),
+                    sets = listOf(BlockSet(blockId = 100L, position = 0, reps = 3, weight = 100.0))
+                )
+            )
+        )
+        val editedSession = SessionWithBlocks(
+            session = Session(id = 20L, cycleId = 1L, date = editDate, title = "Squat Wave"),
+            blocks = listOf(
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 200L, sessionId = 20L, position = 0, name = "Back Squat",
+                        mainExerciseId = 1L, routineId = 77L, subBlock = "Squat Wave"
+                    ),
+                    sets = listOf(BlockSet(blockId = 200L, position = 0, reps = 3, weight = 115.0))
+                )
+            )
+        )
+
+        val prevSummary = AvailableBlockCodec.resolveLastBlockSession(
+            block = block,
+            sessions = listOf(olderSession, editedSession),
+            exercises = listOf(backSquat),
+            weightUnit = "kg",
+            excludeSessionId = 20L
+        )!!
+        assertEquals("2026-11-01", prevSummary.dateIso)
+        assertEquals(listOf(100.0), prevSummary.exerciseWeightsById[1L])
+    }
+
+    @Test
+    fun `hydrateSessionBlocksForEditor groups multi-movement block preserves reps and isolates metcon`() {
+        val block = AvailableBlock(
+            id = 55L,
+            title = "Olympic Complex",
+            instructions = "Every 2:00 x 4",
+            exercises = listOf(
+                AvailableBlockExercise(1L, "Back Squat", true),
+                AvailableBlockExercise(2L, "Clean & Jerk", true)
+            ),
+            trackedPrs = listOf(TrackedPrSlot(1L, "Back Squat", 3))
+        )
+        val session = SessionWithBlocks(
+            session = Session(id = 30L, cycleId = 1L, date = LocalDate.of(2026, 11, 14), title = "Morning"),
+            blocks = listOf(
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 301L, sessionId = 30L, position = 0, name = "Back Squat",
+                        kind = BlockKind.WEIGHTLIFTING, format = "EMOM", scheme = "4x3",
+                        mainExerciseId = 1L, routineId = 55L, section = "A", subBlock = "Olympic Complex"
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 301L, position = 0, reps = 3, weight = 100.0),
+                        BlockSet(blockId = 301L, position = 1, reps = 3, weight = 105.0)
+                    )
+                ),
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 302L, sessionId = 30L, position = 1, name = "Clean & Jerk",
+                        kind = BlockKind.WEIGHTLIFTING, format = "EMOM", scheme = "4x2",
+                        mainExerciseId = 2L, routineId = 55L, section = "A", subBlock = "Olympic Complex"
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 302L, position = 0, reps = 2, weight = 80.0)
+                    )
+                ),
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 303L, sessionId = 30L, position = 2, name = "Grace",
+                        kind = BlockKind.METCON, format = "For Time",
+                        resultText = "3:42", resultValue = 222.0, mainExerciseId = 3L
+                    ),
+                    sets = listOf(BlockSet(blockId = 303L, position = 0, reps = 30, weight = null))
+                )
+            )
+        )
+        val sessionRms = listOf(
+            RepMax(
+                id = 500L, exerciseId = 1L, reps = 3, weight = 105.0,
+                date = LocalDate.of(2026, 11, 14), cycleId = 1L, sessionId = 30L, blockId = 301L
+            )
+        )
+
+        val hydrated = AvailableBlockCodec.hydrateSessionBlocksForEditor(
+            session = session,
+            availableBlocks = listOf(block),
+            exercises = listOf(backSquat, cleanAndJerk, burpees),
+            sessionRepMaxes = sessionRms
+        )
+
+        assertEquals(1, hydrated.simplifiedBlocks.size)
+        val card = hydrated.simplifiedBlocks[0]
+        assertEquals("Olympic Complex", card.blockTitle)
+        assertEquals(listOf(301L, 302L), card.sourceBlockIds)
+        assertEquals(2, card.exercises.size)
+        assertEquals(listOf(100.0, 105.0), card.exercises[0].weights)
+        assertEquals(listOf(3, 3), card.exercises[0].perSetReps)
+        assertEquals("EMOM", card.exercises[0].rawFormat)
+        assertEquals("4x3", card.exercises[0].rawScheme)
+        assertEquals("A", card.exercises[0].rawSection)
+        assertEquals(1, card.persistedRepMaxes.size)
+        assertEquals(500L, card.persistedRepMaxes[0].id)
+
+        assertEquals(1, hydrated.residualLegacyBlocks.size)
+        assertEquals("Grace", hydrated.residualLegacyBlocks[0].block.name)
+    }
+
+    @Test
+    fun `mergeTrackedPrSlots deduplicates case-insensitively and appends new slots`() {
+        val base = AvailableBlock(
+            id = 9L,
+            title = "Snatch Balance",
+            instructions = "Heavy triples",
+            exercises = listOf(AvailableBlockExercise(1L, "Back Squat", true)),
+            trackedPrs = listOf(TrackedPrSlot(1L, "Back Squat", 3))
+        )
+        val merged = AvailableBlockCodec.mergeTrackedPrSlots(
+            existing = base,
+            additionalSlots = listOf(
+                TrackedPrSlot(1L, "back squat", 3), // duplicate
+                TrackedPrSlot(1L, "Back Squat", 1), // new 1RM slot
+                TrackedPrSlot(2L, "Clean & Jerk", 2)
+            )
+        )
+        assertEquals(3, merged.trackedPrs.size)
+        assertEquals(listOf(3, 1, 2), merged.trackedPrs.map { it.rmReps })
+    }
+
+    @Test
+    fun `hydrateSessionBlocksForEditor keeps warm-up and unweighted rep-only blocks on the legacy editor`() {
+        val session = SessionWithBlocks(
+            session = Session(id = 40L, cycleId = 1L, date = LocalDate.of(2026, 11, 14), title = "Mixed"),
+            blocks = listOf(
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 401L, sessionId = 40L, position = 0, name = "Back Squat",
+                        kind = BlockKind.STRENGTH, mainExerciseId = 1L
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 401L, position = 0, reps = 5, weight = 100.0),
+                        BlockSet(blockId = 401L, position = 1, reps = 5, weight = 105.0)
+                    )
+                ),
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 402L, sessionId = 40L, position = 1, name = "Clean & Jerk",
+                        kind = BlockKind.WEIGHTLIFTING, mainExerciseId = 2L
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 402L, position = 0, reps = 2, weight = 50.0, isWarmup = true),
+                        BlockSet(blockId = 402L, position = 1, reps = 2, weight = 80.0)
+                    )
+                ),
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 403L, sessionId = 40L, position = 2, name = "Burpees",
+                        kind = BlockKind.STRENGTH, mainExerciseId = 3L
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 403L, position = 0, reps = 10, weight = null),
+                        BlockSet(blockId = 403L, position = 1, reps = 10, weight = null)
+                    )
+                ),
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 404L, sessionId = 40L, position = 3, name = "Back Squat",
+                        kind = BlockKind.STRENGTH, mainExerciseId = 1L, subBlock = "Placeholder"
+                    ),
+                    sets = listOf(BlockSet(blockId = 404L, position = 0, reps = 1, weight = null))
+                )
+            )
+        )
+
+        val hydrated = AvailableBlockCodec.hydrateSessionBlocksForEditor(
+            session = session,
+            availableBlocks = emptyList(),
+            exercises = listOf(backSquat, cleanAndJerk, burpees),
+            sessionRepMaxes = emptyList()
+        )
+
+        assertEquals(listOf(listOf(401L), listOf(404L)), hydrated.simplifiedBlocks.map { it.sourceBlockIds })
+        assertEquals(listOf(402L, 403L), hydrated.residualLegacyBlocks.map { it.block.id })
     }
 }
