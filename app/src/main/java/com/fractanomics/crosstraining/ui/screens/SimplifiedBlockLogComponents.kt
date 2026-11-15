@@ -1041,7 +1041,10 @@ internal fun AddBlockToSessionSheet(
     ) -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var selectedTab by remember(initialTab) { mutableStateOf(initialTab) }
+    // Resolve the initial tab once per sheet opening: `initialTab` is recomputed from live
+    // `availableBlocks` / `alreadyLoadedIds`, so keying on it would reset the active tab (and discard
+    // an in-progress Custom Block form) whenever a background sync or library save emits mid-sheet.
+    var selectedTab by remember { mutableStateOf(initialTab) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,

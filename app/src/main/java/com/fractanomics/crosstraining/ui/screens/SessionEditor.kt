@@ -859,7 +859,11 @@ fun SessionEditorBody(
                     isCompleted = !isFatLoss
                 )
                 blocks.add(newBlock)
-                pendingScrollTargetKey = "legacy_${blocks.lastIndex}"
+                val legacyScrollKey = "legacy_${blocks.lastIndex}"
+                // Legacy keys are index-based; drop any stale bounds left by a previously removed block
+                // at this index so the scroll effect waits for the new card's real layout.
+                blockCardBounds.remove(legacyScrollKey)
+                pendingScrollTargetKey = legacyScrollKey
             }
         )
     }
