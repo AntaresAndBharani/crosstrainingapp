@@ -347,6 +347,36 @@ class Repository(
         saveAvailableBlock(updated)
     }
 
+    /**
+     * Merges [additionalSlots] onto the [AvailableBlock] identified by [blockId] without
+     * removing existing tracked PR slots (`SPEC-022` parent template inheritance).
+     */
+    suspend fun mergeAvailableBlockTrackedPrs(
+        blockId: Long,
+        additionalSlots: List<TrackedPrSlot>
+    ) {
+        if (blockId <= 0L || additionalSlots.isEmpty()) return
+        val existing = getAllRoutinesWithBlocksOnce().firstOrNull { it.routine.id == blockId } ?: return
+        val exercises = getAllExercisesOnce()
+        val byLower = exercises.associateBy { it.name.trim().lowercase() }
+        val resolvedAdditional = additionalSlots.map { slot ->
+            if (slot.movementId > 0L) slot
+            else slot.copy(movementId = byLower[slot.movementName.trim().lowercase()]?.id ?: 0L)
+        }
+        val decoded = AvailableBlockCodec.fromRoutineWithBlocks(existing, exercises)
+        val merged = AvailableBlockCodec.mergeTrackedPrSlots(decoded, resolvedAdditional)
+        if (merged.trackedPrs != decoded.trackedPrs) {
+            if (existing.blocks.isNotEmpty()) {
+                saveRoutineWithBlocks(
+                    existing.routine,
+                    AvailableBlockCodec.applyTrackedPrsToRoutineBlocks(existing.blocks, merged.trackedPrs)
+                )
+            } else {
+                saveAvailableBlock(merged)
+            }
+        }
+    }
+
     suspend fun cleanupDuplicateExercises() = withDatabaseTransaction {
         cleanupDuplicateExercisesInternal()
     }
@@ -735,11 +765,22 @@ class Repository(
     /**
      * Update an existing [session] (its id must be set) and replace its blocks
      * and sets with [blocks]. Existing blocks are deleted (cascading to their
-     * sets) and re-inserted in order. Historical rep-max records are kept and
-     * re-linked to their corresponding newly inserted blockId; any new rep-maxes
-     * in [blocks] are added.
+     * sets) and re-inserted in order.
+     *
+     * When [reconcileRepMaxes] is `false` (default / cloud sync / legacy callers),
+     * historical rep-max records are kept and re-linked to their corresponding newly
+     * inserted blockId and any new rep-maxes in [blocks] are upserted.
+     *
+     * When [reconcileRepMaxes] is `true` (`SPEC-022` athlete block log edit), desired
+     * rep-maxes are reconciled atomically against prior session rep-maxes: matching
+     * `(exerciseId, reps)` rows are updated in place (preserving `RepMax.id`), new
+     * PRs are inserted, and removed PRs are deleted cleanly inside the transaction.
      */
-    suspend fun updateSession(session: Session, blocks: List<BlockInsert>) {
+    suspend fun updateSession(
+        session: Session,
+        blocks: List<BlockInsert>,
+        reconcileRepMaxes: Boolean = false
+    ) {
         withDatabaseTransaction {
             val priorBlocksById = sessionDao.getByIdOnce(session.id)
                 ?.blocks
@@ -752,6 +793,8 @@ class Repository(
             blockDao.deleteBlocksForSession(session.id)
 
             val insertedBlocks = mutableListOf<Pair<Long, SessionBlock>>()
+            val desiredEntries = mutableListOf<Pair<Long, RepMax>>()
+
             blocks.forEachIndexed { blockIndex, item ->
                 val toInsert = item.block.copy(id = 0, sessionId = session.id, position = blockIndex)
                 val blockId = blockDao.insertBlock(toInsert)
@@ -763,43 +806,94 @@ class Repository(
                         }
                     )
                 }
-                item.effectiveRepMaxes().forEach { rm ->
-                    upsertRepMaxInternal(
-                        rm.copy(
-                            id = 0,
-                            sessionId = session.id,
-                            blockId = blockId,
-                            cycleId = session.cycleId
+                if (reconcileRepMaxes) {
+                    item.effectiveRepMaxes().forEach { rm ->
+                        if (rm.exerciseId > 0L && rm.weight > 0.0) {
+                            desiredEntries += blockId to rm
+                        }
+                    }
+                } else {
+                    item.effectiveRepMaxes().forEach { rm ->
+                        upsertRepMaxInternal(
+                            rm.copy(
+                                id = 0,
+                                sessionId = session.id,
+                                blockId = blockId,
+                                cycleId = session.cycleId
+                            )
                         )
-                    )
+                    }
                 }
             }
 
-            // Deleting prior blocks fires SQLite ON DELETE SET NULL on rep_maxes.blockId.
-            // Re-link surviving session rep-maxes onto the matching re-inserted blockId.
-            priorSessionRepMaxes.forEach { oldRm ->
-                val oldBlock = oldRm.blockId?.let { priorBlocksById[it] }
-                val matchedBlockId = when {
-                    insertedBlocks.isEmpty() -> null
-                    oldBlock != null -> insertedBlocks.firstOrNull { (_, nb) ->
-                        nb.subBlock.equals(oldBlock.subBlock, ignoreCase = true) &&
-                            nb.name.equals(oldBlock.name, ignoreCase = true) &&
-                            nb.mainExerciseId == oldBlock.mainExerciseId
-                    }?.first ?: insertedBlocks.firstOrNull { (_, nb) ->
-                        nb.mainExerciseId == oldRm.exerciseId ||
-                            RoutineTargetCodec.parseExerciseIdsPreservingOrder(nb.exerciseIdsCsv)
-                                .contains(oldRm.exerciseId)
-                    }?.first ?: insertedBlocks.getOrNull(oldBlock.position)?.first
-                    else -> insertedBlocks.firstOrNull { (_, nb) ->
-                        nb.mainExerciseId == oldRm.exerciseId ||
-                            RoutineTargetCodec.parseExerciseIdsPreservingOrder(nb.exerciseIdsCsv)
-                                .contains(oldRm.exerciseId)
-                    }?.first
+            if (reconcileRepMaxes) {
+                val deduplicatedDesired = desiredEntries
+                    .groupBy { (_, rm) -> rm.exerciseId to rm.reps }
+                    .values
+                    .map { list -> list.maxBy { (_, rm) -> rm.weight } }
+                val matchedPriorIds = mutableSetOf<Long>()
+
+                deduplicatedDesired.forEach { (newBlockId, desiredRm) ->
+                    val prior = priorSessionRepMaxes.firstOrNull {
+                        it.id !in matchedPriorIds &&
+                            it.exerciseId == desiredRm.exerciseId &&
+                            it.reps == desiredRm.reps
+                    }
+                    if (prior != null) {
+                        matchedPriorIds += prior.id
+                        val updated = prior.copy(
+                            weight = desiredRm.weight,
+                            date = session.date,
+                            cycleId = session.cycleId,
+                            sessionId = session.id,
+                            blockId = newBlockId
+                        )
+                        if (updated != prior) {
+                            repMaxDao.update(updated)
+                        }
+                    } else {
+                        upsertRepMaxInternal(
+                            desiredRm.copy(
+                                id = 0,
+                                date = session.date,
+                                sessionId = session.id,
+                                blockId = newBlockId,
+                                cycleId = session.cycleId
+                            )
+                        )
+                    }
                 }
-                if (matchedBlockId != null) {
-                    repMaxDao.getAllOnce().firstOrNull { it.id == oldRm.id }?.let { liveRm ->
-                        if (liveRm.blockId != matchedBlockId || liveRm.cycleId != session.cycleId) {
-                            repMaxDao.update(liveRm.copy(blockId = matchedBlockId, cycleId = session.cycleId))
+
+                priorSessionRepMaxes
+                    .filter { it.id !in matchedPriorIds }
+                    .forEach { stale -> repMaxDao.delete(stale) }
+            } else {
+                // Deleting prior blocks fires SQLite ON DELETE SET NULL on rep_maxes.blockId.
+                // Re-link surviving session rep-maxes onto the matching re-inserted blockId.
+                priorSessionRepMaxes.forEach { oldRm ->
+                    val oldBlock = oldRm.blockId?.let { priorBlocksById[it] }
+                    val matchedBlockId = when {
+                        insertedBlocks.isEmpty() -> null
+                        oldBlock != null -> insertedBlocks.firstOrNull { (_, nb) ->
+                            nb.subBlock.equals(oldBlock.subBlock, ignoreCase = true) &&
+                                nb.name.equals(oldBlock.name, ignoreCase = true) &&
+                                nb.mainExerciseId == oldBlock.mainExerciseId
+                        }?.first ?: insertedBlocks.firstOrNull { (_, nb) ->
+                            nb.mainExerciseId == oldRm.exerciseId ||
+                                RoutineTargetCodec.parseExerciseIdsPreservingOrder(nb.exerciseIdsCsv)
+                                    .contains(oldRm.exerciseId)
+                        }?.first ?: insertedBlocks.getOrNull(oldBlock.position)?.first
+                        else -> insertedBlocks.firstOrNull { (_, nb) ->
+                            nb.mainExerciseId == oldRm.exerciseId ||
+                                RoutineTargetCodec.parseExerciseIdsPreservingOrder(nb.exerciseIdsCsv)
+                                    .contains(oldRm.exerciseId)
+                        }?.first
+                    }
+                    if (matchedBlockId != null) {
+                        repMaxDao.getAllOnce().firstOrNull { it.id == oldRm.id }?.let { liveRm ->
+                            if (liveRm.blockId != matchedBlockId || liveRm.cycleId != session.cycleId) {
+                                repMaxDao.update(liveRm.copy(blockId = matchedBlockId, cycleId = session.cycleId))
+                            }
                         }
                     }
                 }

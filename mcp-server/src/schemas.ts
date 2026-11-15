@@ -718,6 +718,144 @@ export const LogBlockSessionInputSchema = {
     .describe("When true (default), appends new recordedPrs (movementName, rmReps) slots to the matched Available Block's trackedPrs"),
 };
 
+const makeUpdateBlockSetItemSchema = () =>
+  z.object({
+    weight: z
+      .number()
+      .min(0)
+      .max(2000)
+      .describe("Set weight in kg (0 for bodyweight/unloaded sets)"),
+    reps: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe("Optional repetition count for this set (defaults to 1)"),
+  });
+
+const makeUpdateBlockExerciseInputSchema = () =>
+  z.object({
+    exerciseId: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Optional existing exercise numeric ID"),
+    exerciseName: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("Movement name in this block (auto-created if missing)"),
+    weights: z
+      .array(z.number().min(0).max(2000))
+      .max(50)
+      .optional()
+      .describe("Flat ordered set weights in kg when editing weight-only tiles"),
+    sets: z
+      .array(makeUpdateBlockSetItemSchema())
+      .max(50)
+      .optional()
+      .describe("Explicit ordered sets with weight and optional reps"),
+  });
+
+const makeUpdateBlockTrackedPrInputSchema = () =>
+  z.object({
+    exerciseId: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Optional existing exercise numeric ID"),
+    exerciseName: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Movement name for this PR slot"),
+    movementName: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Alias for exerciseName matching log_block_session"),
+    rmReps: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .describe("Rep max count (e.g. 1 for 1RM, 3 for 3RM, 5 for 5RM)"),
+    weight: z
+      .number()
+      .min(0)
+      .max(2000)
+      .optional()
+      .describe("PR weight in kg (omit to auto-resolve from max logged set weight for the movement)"),
+    remove: z
+      .boolean()
+      .optional()
+      .describe("Set true to explicitly remove & tombstone this session PR"),
+  });
+
+export const UpdateBlockSessionLogInputSchema = {
+  sessionId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Existing logged session ID to edit (provide sessionId, or date + blockId/blockTitle)"),
+  date: isoDateSchema()
+    .optional()
+    .describe("Workout date in YYYY-MM-DD format (updates session date when sessionId is passed, or locates session by date)"),
+  blockId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional Available Block numeric ID to scope which block is edited and inherit tracked PRs"),
+  blockTitle: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Optional updated or matching block title"),
+  title: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Optional updated session title"),
+  notes: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("Optional updated session notes"),
+  blockNotes: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("Optional updated block prescription/notes (preserves `[ab_prs=...]` / `[rb_v2=...]` markers)"),
+  cycleId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional cycle ID override"),
+  exercises: z
+    .array(makeUpdateBlockExerciseInputSchema())
+    .max(30)
+    .optional()
+    .describe("Updated movement groups and weight/set logs for this block"),
+  trackedPrs: z
+    .array(makeUpdateBlockTrackedPrInputSchema())
+    .max(30)
+    .optional()
+    .describe("Reconciled PR entries for this session/block; missing or `remove: true` prior PRs are tombstoned when `reconcilePrs` is true"),
+  reconcilePrs: z
+    .boolean()
+    .optional()
+    .describe("When true (default when `trackedPrs` or `exercises` changes), tombstones stale session rep_maxes replaced or removed during this edit"),
+};
+
 export const WeightSubcycleTypeValues = [
   "FAT_LOSS",
   "RECOMPOSITION",

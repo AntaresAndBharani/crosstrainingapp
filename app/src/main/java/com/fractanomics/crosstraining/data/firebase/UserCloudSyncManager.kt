@@ -1504,20 +1504,75 @@ object UserCloudSyncManager {
                     }
                 }
 
-                // 5. Download Rep Maxes (PR History — Deduplicate incoming & check live mutable list)
+                // 5. Download Rep Maxes (PR History — Deduplicate natural keys by timestamp & propagate tombstones)
                 if (rmList.isNotEmpty()) {
                     val existingRms = repo.exportSnapshot().repMaxes.toMutableList()
                     val localSessionsForRms = repo.getAllSessionsWithBlocksOnce()
+                    val localExercisesForRms = repo.getAllExercisesOnce()
+                    val localExerciseById = localExercisesForRms.associateBy { it.id }
+                    val localExerciseByLower = localExercisesForRms.associateBy { it.name.trim().lowercase() }
+
+                    val winningRmsByNaturalKey = LinkedHashMap<String, Map<String, Any>>()
                     rmList.forEach { map ->
                         if (!shouldImport(map)) return@forEach
-                        val exerciseId = resolveLocalExerciseId(
-                            (map["exerciseId"] as? Number)?.toLong(),
-                            map["exerciseName"] as? String
-                        ) ?: return@forEach
+                        val rawName = (map["exerciseName"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+                        val rawId = (map["exerciseId"] as? Number)?.toLong()
+                        val mappedId = rawId?.let { remoteExerciseIdToLocalId[it] ?: it }
                         val reps = (map["reps"] as? Number)?.toInt() ?: return@forEach
                         val weight = (map["weight"] as? Number)?.toDouble() ?: return@forEach
                         val dateStr = map["date"] as? String ?: return@forEach
                         val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
+                        val normWeight = normalizeWeight(weight)
+                        val exKey = rawName?.lowercase()
+                            ?: mappedId?.let { localExerciseById[it]?.name?.trim()?.lowercase() }
+                            ?: mappedId?.let { "id:$it" }
+                            ?: return@forEach
+                        val naturalKey = "$exKey#$reps#$normWeight#$date"
+
+                        val currentWinner = winningRmsByNaturalKey[naturalKey]
+                        if (currentWinner == null) {
+                            winningRmsByNaturalKey[naturalKey] = map
+                        } else {
+                            val currentTs = effectiveRemoteTs(currentWinner)
+                            val candidateTs = effectiveRemoteTs(map)
+                            if (candidateTs > currentTs || (candidateTs == currentTs && isRemoteDeleted(map))) {
+                                winningRmsByNaturalKey[naturalKey] = map
+                            }
+                        }
+                    }
+
+                    winningRmsByNaturalKey.values.forEach { map ->
+                        val rawName = (map["exerciseName"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+                        val rawId = (map["exerciseId"] as? Number)?.toLong()
+                        val reps = (map["reps"] as? Number)?.toInt() ?: return@forEach
+                        val weight = (map["weight"] as? Number)?.toDouble() ?: return@forEach
+                        val dateStr = map["date"] as? String ?: return@forEach
+                        val date = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: return@forEach
+                        val normWeight = normalizeWeight(weight)
+
+                        if (isRemoteDeleted(map)) {
+                            // Never resurrect deleted exercises when applying a tombstone: resolve existing only.
+                            val existingExerciseId = if (rawName != null) {
+                                localExerciseByLower[rawName.lowercase()]?.id
+                            } else {
+                                rawId?.let { remoteExerciseIdToLocalId[it] ?: it }
+                            }
+                            if (existingExerciseId != null) {
+                                val matchingLocalRms = existingRms.filter {
+                                    it.exerciseId == existingExerciseId &&
+                                        it.reps == reps &&
+                                        normalizeWeight(it.weight) == normWeight &&
+                                        it.date == date
+                                }
+                                matchingLocalRms.forEach { targetRm ->
+                                    repo.deleteRepMax(targetRm)
+                                    existingRms.remove(targetRm)
+                                }
+                            }
+                            return@forEach
+                        }
+
+                        val exerciseId = resolveLocalExerciseId(rawId, rawName) ?: return@forEach
                         val cycleId = resolveLocalCycleId(
                             (map["cycleId"] as? Number)?.toLong(),
                             map["cycleName"] as? String
@@ -1561,7 +1616,6 @@ object UserCloudSyncManager {
                                     .parseExerciseIdsPreservingOrder(bws.block.exerciseIdsCsv)
                                     .contains(exerciseId)
                         }
-                        val normWeight = normalizeWeight(weight)
 
                         val existingRm = existingRms.firstOrNull {
                             it.exerciseId == exerciseId &&

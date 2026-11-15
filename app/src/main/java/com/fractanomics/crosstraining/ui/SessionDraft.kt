@@ -50,7 +50,9 @@ data class SessionDraft(
     val date: LocalDate,
     val title: String,
     val notes: String,
-    val blocks: List<BlockDraft>
+    val blocks: List<BlockDraft>,
+    val reconcileRepMaxes: Boolean = false,
+    val inheritedBlockTrackedPrs: Map<Long, List<com.fractanomics.crosstraining.util.TrackedPrSlot>> = emptyMap()
 )
 
 /**

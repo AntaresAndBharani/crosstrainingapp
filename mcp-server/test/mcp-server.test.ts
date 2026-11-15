@@ -424,7 +424,7 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
         openWorldHint?: boolean;
       };
     }>;
-    assert.equal(tools.length, 33, `Expected 33 registered tools, got ${tools.length}`);
+    assert.equal(tools.length, 34, `Expected 34 registered tools, got ${tools.length}`);
     const toolsJson = JSON.stringify(tools);
     assert.equal(toolsJson.includes('"$ref"'), false, "Tool schemas must never contain $ref (rejected by Gemini)");
     assert.equal(
@@ -1664,5 +1664,154 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     assert.deepEqual(complex.map((s) => s.fixedValue), [1, 2]);
     assert.equal(complex[1].metric, "TIME_SECONDS");
     assert.equal(decodeLegacyRoutineSlots("TRISET_1", 4, ["CALORIES"])[0].fixedValue, 15);
+  });
+
+  it("update_block_session_log reweights sets, reconciles/tombstones rep_maxes, and inherits new tracked PRs", async () => {
+    let msgId = 900;
+    const callTool = async (name: string, args: Record<string, unknown>) => {
+      const id = msgId++;
+      const res = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: "Bearer dev-static-token-123",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: args },
+        }),
+      });
+      assert.equal(res.status, 200);
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("text/event-stream")) {
+        const text = await res.text();
+        const dataLine = text.split("\n").find((l) => l.startsWith("data: "));
+        assert.ok(dataLine);
+        return JSON.parse(dataLine.slice(6));
+      }
+      return res.json();
+    };
+
+    const blockResp = await callTool("upsert_available_block", {
+      title: "Hang Snatch Wave",
+      instructions: "Wave 3RM",
+      exercises: ["Hang Snatch"],
+      trackedPrs: [{ movementName: "Hang Snatch", rmReps: 3 }],
+    });
+    const blockId = JSON.parse(blockResp.result.content[0].text).availableBlock.id as number;
+
+    const logResp = await callTool("log_block_session", {
+      date: "2026-11-14",
+      blockId,
+      exerciseLogs: [{ exerciseName: "Hang Snatch", weights: [32.5, 35] }],
+      recordedPrs: [{ movementName: "Hang Snatch", rmReps: 3, weight: 35 }],
+    });
+    const logged = JSON.parse(logResp.result.content[0].text);
+    const sessionId = logged.session.session.id as number;
+    const initial3RmId = logged.recordedPrs[0].id as number;
+
+    const summaryBeforeResp = await callTool("get_workout_summary", {});
+    const summaryBefore = JSON.parse(summaryBeforeResp.result.content[0].text);
+    const baselineRepMaxCount = summaryBefore.repMaxesCount as number;
+
+    // 1. Reweight sets + 3RM PR (35 -> 37.5) and add new 1RM PR (42.5)
+    const editResp = await callTool("update_block_session_log", {
+      sessionId,
+      blockId,
+      exercises: [{ exerciseName: "Hang Snatch", weights: [32.5, 37.5, 42.5] }],
+      trackedPrs: [
+        { movementName: "Hang Snatch", rmReps: 3, weight: 37.5 },
+        { movementName: "Hang Snatch", rmReps: 1, weight: 42.5 },
+      ],
+    });
+    const editPayload = JSON.parse(editResp.result.content[0].text);
+    assert.equal(editPayload.status, "ok");
+    assert.equal(editPayload.reconciledPrsCount, 2);
+    assert.ok(editPayload.tombstonedRepMaxIds.includes(initial3RmId));
+
+    // Active rep max list hides tombstoned 35 kg record and returns 37.5 & 42.5
+    const activeRmsResp = await callTool("list_rep_maxes", { exerciseName: "Hang Snatch" });
+    const activeRms = JSON.parse(activeRmsResp.result.content[0].text).repMaxes as Array<{
+      id: number;
+      reps: number;
+      weight: number;
+    }>;
+    assert.deepEqual(
+      activeRms.map((r) => [r.reps, r.weight]).sort((a, b) => a[0] - b[0]),
+      [
+        [1, 42.5],
+        [3, 37.5],
+      ]
+    );
+
+    // Summary repMaxesCount reflects +1 net active PR (35 tombstoned, 37.5 + 42.5 active)
+    const summaryAfterEditResp = await callTool("get_workout_summary", {});
+    const summaryAfterEdit = JSON.parse(summaryAfterEditResp.result.content[0].text);
+    assert.equal(summaryAfterEdit.repMaxesCount, baselineRepMaxCount + 1);
+
+    // Raw backing storage retains the tombstoned 35 kg row so Android sync deletes it cleanly
+    const [prodRms, snapRms] = await Promise.all([
+      backingStore.readCollection<{ id: number; weight: number; deletedAtMillis?: number | null }>(
+        { uid: "dev-user-uid", env: "production" },
+        "rep_maxes"
+      ),
+      backingStore.readCollection<{ id: number; weight: number; deletedAtMillis?: number | null }>(
+        { uid: "dev-user-uid", env: "snapshot" },
+        "rep_maxes"
+      ),
+    ]);
+    const rawRms = [...prodRms, ...snapRms];
+    const tombstonedRow = rawRms.find((r) => r.id === initial3RmId);
+    assert.ok(tombstonedRow && (tombstonedRow.deletedAtMillis ?? 0) > 0);
+
+    // Parent Available Block inherited the new 1RM slot while preserving instructions
+    const blocksResp = await callTool("list_available_blocks", { query: "Hang Snatch Wave" });
+    const updatedBlock = JSON.parse(blocksResp.result.content[0].text).availableBlocks[0];
+    assert.deepEqual(
+      updatedBlock.trackedPrs.map((s: { rmReps: number }) => s.rmReps),
+      [3, 1]
+    );
+    assert.equal(updatedBlock.instructions, "Wave 3RM");
+
+    // 2. Explicitly remove 1RM PR and verify it is tombstoned & excluded, then revivable via record_rep_max
+    const removePrResp = await callTool("update_block_session_log", {
+      sessionId,
+      blockId,
+      trackedPrs: [
+        { movementName: "Hang Snatch", rmReps: 3, weight: 37.5 },
+        { movementName: "Hang Snatch", rmReps: 1, remove: true },
+      ],
+    });
+    const removePrPayload = JSON.parse(removePrResp.result.content[0].text);
+    assert.equal(removePrPayload.reconciledPrsCount, 1);
+
+    const activeAfterRemoveResp = await callTool("list_rep_maxes", { exerciseName: "Hang Snatch" });
+    const activeAfterRemove = JSON.parse(activeAfterRemoveResp.result.content[0].text).repMaxes as Array<{
+      reps: number;
+      weight: number;
+    }>;
+    assert.deepEqual(
+      activeAfterRemove.map((r) => [r.reps, r.weight]),
+      [[3, 37.5]]
+    );
+
+    // Reviving the exact tombstoned natural key via record_rep_max clears deletedAtMillis
+    await callTool("record_rep_max", {
+      exerciseName: "Hang Snatch",
+      reps: 1,
+      weight: 42.5,
+      date: "2026-11-14",
+    });
+    const activeAfterReviveResp = await callTool("list_rep_maxes", { exerciseName: "Hang Snatch" });
+    const activeAfterRevive = JSON.parse(activeAfterReviveResp.result.content[0].text).repMaxes as Array<{
+      reps: number;
+      weight: number;
+      deletedAtMillis?: number | null;
+    }>;
+    assert.equal(activeAfterRevive.length, 2);
+    assert.equal(activeAfterRevive.find((r) => r.reps === 1)?.deletedAtMillis ?? null, null);
   });
 });

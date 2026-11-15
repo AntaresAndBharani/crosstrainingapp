@@ -570,19 +570,40 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         repo.refreshActiveCycleBaseline()
 
     // --- Sessions -------------------------------------------------------------
-    fun deleteSession(session: Session) = viewModelScope.launch { repo.deleteSession(session) }
+    fun deleteSession(session: Session) = viewModelScope.launch {
+        repo.deleteSession(session)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
 
     /**
      * Save a new multi-block session. Each block's main exercise is resolved
      * from an existing id or a free-text name (created if missing).
      */
     fun saveSession(draft: SessionDraft) = viewModelScope.launch {
-        repo.saveSession(draft.toSession(), buildBlockInserts(draft))
+        val inserts = buildBlockInserts(draft)
+        repo.saveSession(draft.toSession(), inserts)
+        applyInheritedTrackedPrs(draft.inheritedBlockTrackedPrs)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
     }
 
     /** Update an existing session in place, replacing its blocks/sets. */
     fun updateSession(sessionId: Long, draft: SessionDraft) = viewModelScope.launch {
-        repo.updateSession(draft.toSession(sessionId), buildBlockInserts(draft))
+        val inserts = buildBlockInserts(draft)
+        repo.updateSession(
+            draft.toSession(sessionId),
+            inserts,
+            reconcileRepMaxes = draft.reconcileRepMaxes
+        )
+        applyInheritedTrackedPrs(draft.inheritedBlockTrackedPrs)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    private suspend fun applyInheritedTrackedPrs(inherited: Map<Long, List<TrackedPrSlot>>) {
+        inherited.forEach { (blockId, slots) ->
+            if (blockId > 0L && slots.isNotEmpty()) {
+                repo.mergeAvailableBlockTrackedPrs(blockId, slots)
+            }
+        }
     }
 
     private fun SessionDraft.toSession(id: Long = 0): Session =
