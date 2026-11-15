@@ -69,7 +69,7 @@ fun createTimerNotificationSpec(snapshot: TimerSnapshot): TimerNotificationSpec 
     }
 
     val nextAction = NotificationActionSpec(
-        title = "Next",
+        title = if (snapshot.phase == TimerPhase.TRANSITION) "Start Now" else "Next",
         iconRes = android.R.drawable.ic_media_next,
         action = TimerService.ACTION_NEXT,
         requestCode = 3
@@ -82,8 +82,12 @@ fun createTimerNotificationSpec(snapshot: TimerSnapshot): TimerNotificationSpec 
         requestCode = 4
     )
 
-    val roundInfo = "Round ${snapshot.currentRound}/${snapshot.totalRounds}"
-    val title = "${snapshot.phase.label} - $roundInfo"
+    val title = TimerNotificationFormatter.formatTitle(
+        snapshot.phase,
+        snapshot.currentRound,
+        snapshot.totalRounds,
+        snapshot.queuedNextStage?.config?.mode?.label
+    )
     val remainingFormatted = formatTimerNotificationTime(snapshot.roundSecondsRemaining)
     val totalRemainingFormatted = formatTimerNotificationTime(snapshot.totalSecondsRemaining)
     val contentText = "Remaining: $remainingFormatted | Total Left: $totalRemainingFormatted"

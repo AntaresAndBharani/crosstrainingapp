@@ -40,7 +40,7 @@ class TimerTeardownController(
                 performGracefulTeardown()
                 true
             }
-            TimerPhase.PREP, TimerPhase.WORK, TimerPhase.REST -> {
+            TimerPhase.PREP, TimerPhase.WORK, TimerPhase.REST, TimerPhase.TRANSITION -> {
                 false
             }
         }

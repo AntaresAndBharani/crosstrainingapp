@@ -1,0 +1,26 @@
+# Research & Compatibility Analysis: Continuous Workout Timer & Live Stage Queue
+
+## 1. Decision Log & Architecture Findings
+
+### Decision 1: Default `totalRounds` Per Mode (`WorkoutTimerConfig`)
+- **Problem**: Existing unit tests (`SharedTimerStateTest.kt`, `NotificationPermissionTest.kt`) construct `WorkoutTimerConfig(mode = TimerMode.AMRAP, targetMinutes = 12, prepCountdownSeconds = 0)` without passing `totalRounds` and assert `totalSecondsRemaining == 720`. Previously `WorkoutTimerConfig.totalRounds` hardcoded default `= 10` because `AMRAP`/`TIME_CAP`/`REST` ignored `totalRounds` in `calculateInitialTotalSeconds`.
+- **Decision**: Add `val defaultRounds: Int` and `val liveStepSeconds: Int` to `TimerMode` (`EMOM(10, 15)`, `AMRAP(1, 30)`, `DEATH_BY(15, 15)`, `TIME_CAP(1, 30)`, `TABATA(8, 5)`, `REST(1, 15)`), and default `WorkoutTimerConfig.totalRounds: Int = mode.defaultRounds`.
+- **Rationale**: Preserves `EMOM = 10`, `TABATA = 8`, `DEATH_BY = 15`, and sets `AMRAP = 1`, `TIME_CAP = 1`, `REST = 1` automatically so all legacy 1-round `AMRAP`/`TIME_CAP`/`REST` call sites compute identical initial totals (`720s` for 12m AMRAP), while explicitly passing `totalRounds = 3` enables multi-round AMRAP/TIME_CAP/REST cleanly.
+
+### Decision 2: `PREP` Phase Remaining Time Contract
+- **Problem**: `TimerEngineTest.kt` and `TimerServiceTest.kt` assert that during `TimerPhase.PREP`, `snapshot.totalSecondsRemaining` equals the workout's active stage total seconds (excluding `prepCountdownSeconds`).
+- **Decision**: Exclude `prepCountdownSeconds` inside `TimerEngine.calculateTotalSecondsRemaining(...)`, computing solely active round remaining + overridden `R{c+1}` (if `c < totalRounds`) + base rounds `(c+2)..totalRounds` (plus queued stage + transition only if desired? Wait: check existing tests! Existing tests only test single-mode with `queuedNextStage == null`! When `queuedNextStage == null`, excluding `prepCountdownSeconds` and adding queued `transitionSeconds + stageTotalSeconds()` when `queuedNextStage != null` preserves 100% compatibility when `queuedNextStage == null`, OR keeping `totalSecondsRemaining` scoped to active stage? Let's define: `totalSecondsRemaining` includes active stage remaining time (and `queuedNextStage` transition + stage duration when queued, so total remaining workout duration updates dynamically when queueing/editing Next Mode—with `queuedNextStage == null` yielding identical values to existing tests)).
+
+### Decision 3: Single-Round Override State & Consumption Semantics
+- **Decision**: Track `nextRoundOverrideSeconds: Int?` and `nextRoundRestOverrideSeconds: Int?` (for `TABATA`) in `TimerSnapshot` alongside `activeConfig` and `activeRoundRestSeconds` (the actual rest duration allocated to the current Tabata round so `WORK -> REST` knows whether R`c` had overridden rest or `0s` skipped rest).
+- **Consumption rule**: Whenever advancing from `currentRound = c` to `nextRound = c + 1` (either naturally at countdown `0` or via `skipRound()`), read `nextRoundOverrideSeconds ?: baseWork` and `nextRoundRestOverrideSeconds ?: baseRest`, set `activeRoundRestSeconds`, and immediately reset `nextRoundOverrideSeconds = null` and `nextRoundRestOverrideSeconds = null` so `c + 2` reverts cleanly to base durations.
+
+### Decision 4: Foreground Service Continuity (`TimerService` / `TimerTeardownController`) & Notifications
+- **Findings**:
+  - `TimerTeardownController.onSnapshotUpdated` currently stops `TimerService` on `IDLE` and `FINISHED`, returning `false` on `PREP`, `WORK`, `REST`. Adding `TimerPhase.TRANSITION -> false` ensures the foreground notification stays alive throughout inter-stage transitions.
+  - `TimerService.onStartCommand` calls `timerEngine.start()` whenever `TimerService.startService(context)` runs (`TimerScreen.kt`, `SessionEditor.kt`). When transitioning from `FINISHED` via `continueFromFinished(...)`, `TimerEngine.continueFromFinished` starts the job immediately with `isRunning = true` so a redundant `timerEngine.start()` returns early cleanly without clobbering state.
+  - `TimerNotificationFormatter` and `TimerNotificationSpec` have existing unit tests asserting `"${phase.label} - Round $currentRound/$totalRounds"` and `nextAction.title == "Next"` during `WORK`. Customizing ONLY `TimerPhase.TRANSITION` (`title = "Transition - Up Next: <NextMode>"` and `nextAction.title = "Start Now"`) satisfies SPEC-023 without breaking any existing notification tests.
+
+### Decision 5: Shared Numeric Field & Anti-Wrap Responsive Layout
+- **Findings**: `AppNumericTextField` already lives in `app/src/main/java/com/fractanomics/crosstraining/ui/components/CommonUi.kt` (`NumericInputSanitizer`, `Int` overload with `minValue`/`maxValue`). Reusing `AppNumericTextField` directly inside `DurationTapToTypeDialog` and `NextModeConfigSheet` guarantees IME integer keypad compliance and sanitizer consistency without creating duplicate input components.
+- **Anti-wrap Transport Pills**: Setting `height = 52.dp`, `RoundedCornerShape(999.dp)`, `maxLines = 1`, `softWrap = false`, compact horizontal padding, and hiding leading transport icons when `LocalDensity.current.fontScale >= 1.25f` prevents vertical letter wrapping on `360dp` devices at high system font scales.

@@ -16,7 +16,27 @@ object TimerNotificationFormatter {
      * e.g. "Work - Round 3/8", "Rest - Round 2/5", "Get Ready! - Round 1/10".
      */
     fun formatTitle(phase: TimerPhase, currentRound: Int, totalRounds: Int): String =
-        "${phase.label} - ${formatRoundInfo(currentRound, totalRounds)}"
+        formatTitle(phase, currentRound, totalRounds, null)
+
+    /**
+     * Formats notification title, rendering `"Transition - Up Next: <NextMode>"` during
+     * [TimerPhase.TRANSITION] and preserving round formatting for all other phases.
+     */
+    fun formatTitle(
+        phase: TimerPhase,
+        currentRound: Int,
+        totalRounds: Int,
+        nextModeLabel: String?
+    ): String = when (phase) {
+        TimerPhase.TRANSITION -> {
+            if (!nextModeLabel.isNullOrBlank()) {
+                "Transition - Up Next: $nextModeLabel"
+            } else {
+                "Transition"
+            }
+        }
+        else -> "${phase.label} - ${formatRoundInfo(currentRound, totalRounds)}"
+    }
 
     /**
      * Formats seconds into MM:SS format, clamping negative values to 00:00.
@@ -42,8 +62,9 @@ object TimerNotificationFormatter {
      * Creates a structured data representation of the notification content derived from a [TimerSnapshot].
      */
     fun createNotificationContent(snapshot: TimerSnapshot): TimerNotificationContent {
+        val nextLabel = snapshot.queuedNextStage?.config?.mode?.label
         return TimerNotificationContent(
-            title = formatTitle(snapshot.phase, snapshot.currentRound, snapshot.totalRounds),
+            title = formatTitle(snapshot.phase, snapshot.currentRound, snapshot.totalRounds, nextLabel),
             contentText = formatContentText(snapshot.roundSecondsRemaining, snapshot.totalSecondsRemaining),
             phase = snapshot.phase,
             currentRound = snapshot.currentRound,
