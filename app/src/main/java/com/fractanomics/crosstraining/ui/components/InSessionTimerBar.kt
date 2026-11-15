@@ -38,9 +38,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fractanomics.crosstraining.ui.timer.ContinuousTimerUiResolver
 import com.fractanomics.crosstraining.ui.timer.TimerEngine
 import com.fractanomics.crosstraining.ui.timer.TimerPhase
-import java.util.Locale
 
 /**
  * Compact docked in-session timer bar.
@@ -71,31 +71,19 @@ fun InSessionTimerBar(
 
     val nonFocusInteractionSource = remember { MutableInteractionSource() }
 
-    val phaseBadgeColor = when (snapshot.phase) {
-        TimerPhase.PREP -> MaterialTheme.colorScheme.tertiaryContainer
-        TimerPhase.WORK -> MaterialTheme.colorScheme.primaryContainer
-        TimerPhase.REST -> MaterialTheme.colorScheme.secondaryContainer
-        TimerPhase.FINISHED -> MaterialTheme.colorScheme.surfaceVariant
-        TimerPhase.IDLE -> MaterialTheme.colorScheme.surfaceVariant
-    }
-
-    val phaseTextColor = when (snapshot.phase) {
-        TimerPhase.PREP -> MaterialTheme.colorScheme.onTertiaryContainer
-        TimerPhase.WORK -> MaterialTheme.colorScheme.onPrimaryContainer
-        TimerPhase.REST -> MaterialTheme.colorScheme.onSecondaryContainer
-        TimerPhase.FINISHED -> MaterialTheme.colorScheme.onSurfaceVariant
-        TimerPhase.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
+    val phaseBadgeColor = resolveTimerPhaseBadgeContainer(snapshot.phase)
+    val phaseTextColor = resolveTimerPhaseBadgeContent(snapshot.phase)
 
     val phaseBadgeText = when (snapshot.phase) {
         TimerPhase.PREP -> "Get Ready!"
         TimerPhase.WORK -> "Work"
         TimerPhase.REST -> "Rest"
-        TimerPhase.FINISHED -> "Finished! 🎉"
+        TimerPhase.TRANSITION -> "Transition"
+        TimerPhase.FINISHED -> "Finished!"
         TimerPhase.IDLE -> "Idle"
     }
 
-    val countdownText = formatClockDisplay(snapshot.roundSecondsRemaining)
+    val countdownText = ContinuousTimerUiResolver.formatPrimaryClock(snapshot)
 
     ElevatedCard(
         modifier = modifier
@@ -138,7 +126,7 @@ fun InSessionTimerBar(
                 // Countdown time
                 Text(
                     text = countdownText,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleLarge.copy(fontFeatureSettings = "tnum"),
                     fontWeight = FontWeight.Bold,
                     fontSize = 20.sp,
                     color = MaterialTheme.colorScheme.onSurface
@@ -157,14 +145,18 @@ fun InSessionTimerBar(
                         )
                     }
 
-                    val roundInfo = if (snapshot.totalRounds > 1) {
-                        "Round ${snapshot.currentRound} of ${snapshot.totalRounds}"
-                    } else {
-                        snapshot.mode.label
+                    val roundInfo = when {
+                        snapshot.phase == TimerPhase.TRANSITION ->
+                            "Up Next: ${snapshot.queuedNextStage?.config?.mode?.label ?: "Next Stage"}"
+                        snapshot.totalRounds > 1 ->
+                            "Round ${snapshot.currentRound} of ${snapshot.totalRounds}"
+                        else -> snapshot.mode.label
                     }
                     Text(
                         text = roundInfo,
                         style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -178,7 +170,7 @@ fun InSessionTimerBar(
                 if (snapshot.phase == TimerPhase.FINISHED) {
                     // Inline dismiss button to reset engine to IDLE
                     IconButton(
-                        onClick = { timerEngine.stop() },
+                        onClick = { timerEngine.stopAndClearAll() },
                         modifier = Modifier
                             .size(36.dp)
                             .focusProperties { canFocus = false },
@@ -213,10 +205,19 @@ fun InSessionTimerBar(
                         )
                     }
 
-                    // Skip round button (if multi-round)
-                    if (snapshot.totalRounds > 1) {
+                    // Skip round / Start Now / Next Stage button
+                    if (snapshot.totalRounds > 1 ||
+                        snapshot.queuedNextStage != null ||
+                        snapshot.phase == TimerPhase.TRANSITION ||
+                        snapshot.phase == TimerPhase.PREP
+                    ) {
                         IconButton(
-                            onClick = { timerEngine.skipRound() },
+                            onClick = {
+                                timerEngine.skipRound()
+                                if (timerEngine.snapshot.value.isRunning) {
+                                    onStartService()
+                                }
+                            },
                             modifier = Modifier
                                 .size(36.dp)
                                 .focusProperties { canFocus = false },
@@ -224,7 +225,7 @@ fun InSessionTimerBar(
                         ) {
                             Icon(
                                 Icons.Filled.SkipNext,
-                                contentDescription = "Skip round",
+                                contentDescription = ContinuousTimerUiResolver.resolveSkipActionLabel(snapshot),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -248,10 +249,4 @@ fun InSessionTimerBar(
             }
         }
     }
-}
-
-private fun formatClockDisplay(seconds: Int): String {
-    val mins = seconds / 60
-    val secs = seconds % 60
-    return String.format(Locale.getDefault(), "%02d:%02d", mins, secs)
 }

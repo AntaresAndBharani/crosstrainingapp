@@ -30,12 +30,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fractanomics.crosstraining.ui.timer.ContinuousTimerUiResolver
 import com.fractanomics.crosstraining.ui.timer.TimerEngine
 import com.fractanomics.crosstraining.ui.timer.TimerPhase
-import java.util.Locale
 
 /**
  * Isolated leaf composable rendering an inline workout timer directly inside a Sub-Block header.
@@ -69,31 +70,19 @@ fun SubBlockInlineTimer(
 
     val nonFocusInteractionSource = remember { MutableInteractionSource() }
 
-    val phaseBadgeColor = when (snapshot.phase) {
-        TimerPhase.PREP -> MaterialTheme.colorScheme.tertiaryContainer
-        TimerPhase.WORK -> MaterialTheme.colorScheme.primaryContainer
-        TimerPhase.REST -> MaterialTheme.colorScheme.secondaryContainer
-        TimerPhase.FINISHED -> MaterialTheme.colorScheme.surfaceVariant
-        TimerPhase.IDLE -> MaterialTheme.colorScheme.surfaceVariant
-    }
-
-    val phaseTextColor = when (snapshot.phase) {
-        TimerPhase.PREP -> MaterialTheme.colorScheme.onTertiaryContainer
-        TimerPhase.WORK -> MaterialTheme.colorScheme.onPrimaryContainer
-        TimerPhase.REST -> MaterialTheme.colorScheme.onSecondaryContainer
-        TimerPhase.FINISHED -> MaterialTheme.colorScheme.onSurfaceVariant
-        TimerPhase.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
+    val phaseBadgeColor = resolveTimerPhaseBadgeContainer(snapshot.phase)
+    val phaseTextColor = resolveTimerPhaseBadgeContent(snapshot.phase)
 
     val phaseBadgeText = when (snapshot.phase) {
         TimerPhase.PREP -> "Get Ready!"
         TimerPhase.WORK -> "Work"
         TimerPhase.REST -> "Rest"
-        TimerPhase.FINISHED -> "Finished! 🎉"
+        TimerPhase.TRANSITION -> "Transition"
+        TimerPhase.FINISHED -> "Finished!"
         TimerPhase.IDLE -> "Idle"
     }
 
-    val countdownText = formatClockDisplay(snapshot.roundSecondsRemaining)
+    val countdownText = ContinuousTimerUiResolver.formatPrimaryClock(snapshot)
 
     val progress = when {
         snapshot.phase == TimerPhase.FINISHED -> 1f
@@ -103,7 +92,10 @@ fun SubBlockInlineTimer(
         else -> 0f
     }
 
-    val canRewind = snapshot.totalRounds > 1 && (snapshot.currentRound > 1 || snapshot.phase == TimerPhase.FINISHED || snapshot.phase == TimerPhase.REST)
+    val canRewind = snapshot.phase != TimerPhase.TRANSITION &&
+        snapshot.phase != TimerPhase.PREP &&
+        snapshot.totalRounds > 1 &&
+        (snapshot.currentRound > 1 || snapshot.phase == TimerPhase.FINISHED || snapshot.phase == TimerPhase.REST)
 
     ElevatedCard(
         modifier = modifier.fillMaxWidth(),
@@ -147,22 +139,26 @@ fun SubBlockInlineTimer(
                     // Countdown clock
                     Text(
                         text = countdownText,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp,
                         color = MaterialTheme.colorScheme.onSurface
                     )
 
                     // Round indicator
-                    val roundText = if (snapshot.totalRounds > 1) {
-                        "Round ${snapshot.currentRound} of ${snapshot.totalRounds}"
-                    } else {
-                        snapshot.mode.label
+                    val roundText = when {
+                        snapshot.phase == TimerPhase.TRANSITION ->
+                            "Up Next: ${snapshot.queuedNextStage?.config?.mode?.label ?: "Next Stage"}"
+                        snapshot.totalRounds > 1 ->
+                            "Round ${snapshot.currentRound} of ${snapshot.totalRounds}"
+                        else -> snapshot.mode.label
                     }
                     Text(
                         text = roundText,
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -212,10 +208,19 @@ fun SubBlockInlineTimer(
                         )
                     }
 
-                    // Next round button (⏭)
-                    if (snapshot.totalRounds > 1) {
+                    // Next round / Start Now / Next Stage button (⏭)
+                    if (snapshot.totalRounds > 1 ||
+                        snapshot.queuedNextStage != null ||
+                        snapshot.phase == TimerPhase.TRANSITION ||
+                        snapshot.phase == TimerPhase.PREP
+                    ) {
                         IconButton(
-                            onClick = { timerEngine.skipRound() },
+                            onClick = {
+                                timerEngine.skipRound()
+                                if (timerEngine.snapshot.value.isRunning) {
+                                    onStartService()
+                                }
+                            },
                             modifier = Modifier
                                 .size(32.dp)
                                 .focusProperties { canFocus = false },
@@ -223,7 +228,7 @@ fun SubBlockInlineTimer(
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.SkipNext,
-                                contentDescription = "Next round",
+                                contentDescription = ContinuousTimerUiResolver.resolveSkipActionLabel(snapshot),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(18.dp)
                             )
@@ -232,7 +237,7 @@ fun SubBlockInlineTimer(
 
                     // Dismiss / Close button (✕)
                     IconButton(
-                        onClick = { timerEngine.stop() },
+                        onClick = { timerEngine.stopAndClearAll() },
                         modifier = Modifier
                             .size(32.dp)
                             .focusProperties { canFocus = false },
@@ -254,21 +259,9 @@ fun SubBlockInlineTimer(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(3.dp),
-                color = when (snapshot.phase) {
-                    TimerPhase.WORK -> MaterialTheme.colorScheme.primary
-                    TimerPhase.REST -> MaterialTheme.colorScheme.secondary
-                    TimerPhase.PREP -> MaterialTheme.colorScheme.tertiary
-                    TimerPhase.FINISHED -> MaterialTheme.colorScheme.surfaceVariant
-                    TimerPhase.IDLE -> MaterialTheme.colorScheme.surfaceVariant
-                },
+                color = resolveTimerPhaseColor(snapshot.phase),
                 trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
             )
         }
     }
-}
-
-private fun formatClockDisplay(seconds: Int): String {
-    val mins = seconds / 60
-    val secs = seconds % 60
-    return String.format(Locale.getDefault(), "%02d:%02d", mins, secs)
 }
