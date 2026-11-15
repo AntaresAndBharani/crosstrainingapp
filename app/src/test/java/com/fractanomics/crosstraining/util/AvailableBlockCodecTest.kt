@@ -511,4 +511,60 @@ class AvailableBlockCodecTest {
         assertEquals(3, merged.trackedPrs.size)
         assertEquals(listOf(3, 1, 2), merged.trackedPrs.map { it.rmReps })
     }
+
+    @Test
+    fun `hydrateSessionBlocksForEditor keeps warm-up and unweighted rep-only blocks on the legacy editor`() {
+        val session = SessionWithBlocks(
+            session = Session(id = 40L, cycleId = 1L, date = LocalDate.of(2026, 11, 14), title = "Mixed"),
+            blocks = listOf(
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 401L, sessionId = 40L, position = 0, name = "Back Squat",
+                        kind = BlockKind.STRENGTH, mainExerciseId = 1L
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 401L, position = 0, reps = 5, weight = 100.0),
+                        BlockSet(blockId = 401L, position = 1, reps = 5, weight = 105.0)
+                    )
+                ),
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 402L, sessionId = 40L, position = 1, name = "Clean & Jerk",
+                        kind = BlockKind.WEIGHTLIFTING, mainExerciseId = 2L
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 402L, position = 0, reps = 2, weight = 50.0, isWarmup = true),
+                        BlockSet(blockId = 402L, position = 1, reps = 2, weight = 80.0)
+                    )
+                ),
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 403L, sessionId = 40L, position = 2, name = "Burpees",
+                        kind = BlockKind.STRENGTH, mainExerciseId = 3L
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 403L, position = 0, reps = 10, weight = null),
+                        BlockSet(blockId = 403L, position = 1, reps = 10, weight = null)
+                    )
+                ),
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 404L, sessionId = 40L, position = 3, name = "Back Squat",
+                        kind = BlockKind.STRENGTH, mainExerciseId = 1L, subBlock = "Placeholder"
+                    ),
+                    sets = listOf(BlockSet(blockId = 404L, position = 0, reps = 1, weight = null))
+                )
+            )
+        )
+
+        val hydrated = AvailableBlockCodec.hydrateSessionBlocksForEditor(
+            session = session,
+            availableBlocks = emptyList(),
+            exercises = listOf(backSquat, cleanAndJerk, burpees),
+            sessionRepMaxes = emptyList()
+        )
+
+        assertEquals(listOf(listOf(401L), listOf(404L)), hydrated.simplifiedBlocks.map { it.sourceBlockIds })
+        assertEquals(listOf(402L, 403L), hydrated.residualLegacyBlocks.map { it.block.id })
+    }
 }

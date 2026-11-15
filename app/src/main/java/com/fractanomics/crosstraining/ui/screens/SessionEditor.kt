@@ -148,6 +148,7 @@ import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfig
 import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfigParser
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
+import com.fractanomics.crosstraining.util.SessionBlockHydrationResult
 import com.fractanomics.crosstraining.util.EvaluatedPrChip
 import com.fractanomics.crosstraining.util.ExerciseTargetMetric
 import com.fractanomics.crosstraining.util.RepScheme
@@ -569,6 +570,14 @@ internal fun groupEditorBlocks(blocks: List<BlockState>): List<EditorBlockItem> 
 
 // --- Shared editor body ------------------------------------------------------
 
+internal fun managedRepMaxIdsOf(hydration: SessionBlockHydrationResult?): Set<Long> =
+    hydration?.simplifiedBlocks
+        ?.flatMap { it.persistedRepMaxes }
+        ?.map { it.id }
+        ?.filter { it > 0L }
+        ?.toSet()
+        .orEmpty()
+
 private fun blocksSignature(blocks: List<BlockState>): String =
     blocks.joinToString("|") { blk ->
         "${blk.name}#${blk.kind}#${blk.format}#${blk.scheme}#${blk.description}#${blk.resultText}#" +
@@ -660,6 +669,11 @@ fun SessionEditorBody(
         initialSeeds.map { buildBlockState(it, exercises, routines, defaultCompleted = !isFatLoss) }.toMutableStateList()
     }
 
+    // Prior session rep-max ids surfaced on simplified cards; only these are reconciled
+    // (updated / deleted) on save so PRs attached to residual legacy blocks are preserved.
+    var managedRepMaxIds by remember(key) {
+        mutableStateOf(managedRepMaxIdsOf(initialHydration))
+    }
     var simplifiedStructuralDirty by remember(key) { mutableStateOf(false) }
     var initialLegacySignature by remember(key) { mutableStateOf(blocksSignature(blocks)) }
     val currentLegacySignature = blocksSignature(blocks)
@@ -720,6 +734,7 @@ fun SessionEditorBody(
         blocks.clear()
         legacySeeds.forEach { blocks.add(buildBlockState(it, exercises, routines, defaultCompleted = !isFatLoss)) }
         initialLegacySignature = blocksSignature(blocks)
+        managedRepMaxIds = managedRepMaxIdsOf(hydrated)
         lastHydrationSignature = sig
     }
 
@@ -1492,6 +1507,7 @@ fun SessionEditorBody(
                             notes = notes.trim(),
                             blocks = blockDrafts,
                             reconcileRepMaxes = isEditMode,
+                            managedRepMaxIds = if (isEditMode) managedRepMaxIds else null,
                             inheritedBlockTrackedPrs = inheritedMap
                         )
                     )

@@ -595,6 +595,12 @@ object AvailableBlockCodec {
         bws: BlockWithSets,
         matchedBlock: AvailableBlock?
     ): Boolean {
+        // The simplified editor only round-trips (reps, positive weight) per set. Keep any block
+        // carrying warm-up / failed / grouped sets or unweighted rep-only sets on the legacy
+        // CompactBlockEditor so editing a historical log never silently drops set data.
+        if (bws.sets.any { it.isWarmup || it.isFailed || (it.groupIndex ?: 0) > 0 }) return true
+        val isBlankPlaceholder = bws.sets.size == 1 && bws.sets[0].reps <= 1
+        if (!isBlankPlaceholder && bws.sets.any { (it.weight ?: 0.0) <= 0.0 }) return true
         if (matchedBlock != null) return false
         val blk = bws.block
         if (blk.resultText.isNotBlank() || blk.resultValue != null) return true

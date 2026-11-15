@@ -775,11 +775,15 @@ class Repository(
      * rep-maxes are reconciled atomically against prior session rep-maxes: matching
      * `(exerciseId, reps)` rows are updated in place (preserving `RepMax.id`), new
      * PRs are inserted, and removed PRs are deleted cleanly inside the transaction.
+     * [managedRepMaxIds] scopes that reconciliation to the prior rep-max ids surfaced by
+     * the simplified block editor (`null` = every prior session rep-max is managed); any
+     * other prior session rep-max is preserved and re-linked exactly like the legacy path.
      */
     suspend fun updateSession(
         session: Session,
         blocks: List<BlockInsert>,
-        reconcileRepMaxes: Boolean = false
+        reconcileRepMaxes: Boolean = false,
+        managedRepMaxIds: Set<Long>? = null
     ) {
         withDatabaseTransaction {
             val priorBlocksById = sessionDao.getByIdOnce(session.id)
@@ -826,7 +830,47 @@ class Repository(
                 }
             }
 
+            // Deleting prior blocks fires SQLite ON DELETE SET NULL on rep_maxes.blockId.
+            // Re-link surviving session rep-maxes onto the matching re-inserted blockId.
+            suspend fun relinkPriorRepMaxes(priors: List<RepMax>) {
+                priors.forEach { oldRm ->
+                    val oldBlock = oldRm.blockId?.let { priorBlocksById[it] }
+                    val matchedBlockId = when {
+                        insertedBlocks.isEmpty() -> null
+                        oldBlock != null -> insertedBlocks.firstOrNull { (_, nb) ->
+                            nb.subBlock.equals(oldBlock.subBlock, ignoreCase = true) &&
+                                nb.name.equals(oldBlock.name, ignoreCase = true) &&
+                                nb.mainExerciseId == oldBlock.mainExerciseId
+                        }?.first ?: insertedBlocks.firstOrNull { (_, nb) ->
+                            nb.mainExerciseId == oldRm.exerciseId ||
+                                RoutineTargetCodec.parseExerciseIdsPreservingOrder(nb.exerciseIdsCsv)
+                                    .contains(oldRm.exerciseId)
+                        }?.first ?: insertedBlocks.getOrNull(oldBlock.position)?.first
+                        else -> insertedBlocks.firstOrNull { (_, nb) ->
+                            nb.mainExerciseId == oldRm.exerciseId ||
+                                RoutineTargetCodec.parseExerciseIdsPreservingOrder(nb.exerciseIdsCsv)
+                                    .contains(oldRm.exerciseId)
+                        }?.first
+                    }
+                    if (matchedBlockId != null) {
+                        repMaxDao.getAllOnce().firstOrNull { it.id == oldRm.id }?.let { liveRm ->
+                            if (liveRm.blockId != matchedBlockId || liveRm.cycleId != session.cycleId) {
+                                repMaxDao.update(liveRm.copy(blockId = matchedBlockId, cycleId = session.cycleId))
+                            }
+                        }
+                    }
+                }
+            }
+
             if (reconcileRepMaxes) {
+                // Only rep-maxes owned by the simplified block editor are reconciled (updated in
+                // place / deleted). Rep-maxes attached to legacy blocks the editor never surfaced
+                // (e.g. residual metcon / CompactBlockEditor blocks) are preserved and re-linked.
+                val (managedPriors, unmanagedPriors) = if (managedRepMaxIds == null) {
+                    priorSessionRepMaxes to emptyList()
+                } else {
+                    priorSessionRepMaxes.partition { it.id in managedRepMaxIds }
+                }
                 val deduplicatedDesired = desiredEntries
                     .groupBy { (_, rm) -> rm.exerciseId to rm.reps }
                     .values
@@ -834,7 +878,7 @@ class Repository(
                 val matchedPriorIds = mutableSetOf<Long>()
 
                 deduplicatedDesired.forEach { (newBlockId, desiredRm) ->
-                    val prior = priorSessionRepMaxes.firstOrNull {
+                    val prior = managedPriors.firstOrNull {
                         it.id !in matchedPriorIds &&
                             it.exerciseId == desiredRm.exerciseId &&
                             it.reps == desiredRm.reps
@@ -864,39 +908,12 @@ class Repository(
                     }
                 }
 
-                priorSessionRepMaxes
+                managedPriors
                     .filter { it.id !in matchedPriorIds }
                     .forEach { stale -> repMaxDao.delete(stale) }
+                relinkPriorRepMaxes(unmanagedPriors)
             } else {
-                // Deleting prior blocks fires SQLite ON DELETE SET NULL on rep_maxes.blockId.
-                // Re-link surviving session rep-maxes onto the matching re-inserted blockId.
-                priorSessionRepMaxes.forEach { oldRm ->
-                    val oldBlock = oldRm.blockId?.let { priorBlocksById[it] }
-                    val matchedBlockId = when {
-                        insertedBlocks.isEmpty() -> null
-                        oldBlock != null -> insertedBlocks.firstOrNull { (_, nb) ->
-                            nb.subBlock.equals(oldBlock.subBlock, ignoreCase = true) &&
-                                nb.name.equals(oldBlock.name, ignoreCase = true) &&
-                                nb.mainExerciseId == oldBlock.mainExerciseId
-                        }?.first ?: insertedBlocks.firstOrNull { (_, nb) ->
-                            nb.mainExerciseId == oldRm.exerciseId ||
-                                RoutineTargetCodec.parseExerciseIdsPreservingOrder(nb.exerciseIdsCsv)
-                                    .contains(oldRm.exerciseId)
-                        }?.first ?: insertedBlocks.getOrNull(oldBlock.position)?.first
-                        else -> insertedBlocks.firstOrNull { (_, nb) ->
-                            nb.mainExerciseId == oldRm.exerciseId ||
-                                RoutineTargetCodec.parseExerciseIdsPreservingOrder(nb.exerciseIdsCsv)
-                                    .contains(oldRm.exerciseId)
-                        }?.first
-                    }
-                    if (matchedBlockId != null) {
-                        repMaxDao.getAllOnce().firstOrNull { it.id == oldRm.id }?.let { liveRm ->
-                            if (liveRm.blockId != matchedBlockId || liveRm.cycleId != session.cycleId) {
-                                repMaxDao.update(liveRm.copy(blockId = matchedBlockId, cycleId = session.cycleId))
-                            }
-                        }
-                    }
-                }
+                relinkPriorRepMaxes(priorSessionRepMaxes)
             }
         }
     }

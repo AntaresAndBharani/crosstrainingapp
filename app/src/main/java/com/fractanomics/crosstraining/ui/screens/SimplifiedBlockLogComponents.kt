@@ -546,7 +546,11 @@ internal fun buildHydratedBlockState(
         )
     }
 
-    val effectiveBlock = seed.resolvedAvailableBlock ?: AvailableBlock(
+    // Keep the session's own historical prescription (seed.cleanNotes falls back to the template
+    // instructions when blank) so editing a log never rewrites it with the template's current text.
+    val effectiveBlock = seed.resolvedAvailableBlock?.let { resolved ->
+        resolved.copy(instructions = seed.cleanNotes.ifBlank { resolved.instructions })
+    } ?: AvailableBlock(
         id = seed.rawRoutineId ?: 0L,
         title = seed.blockTitle,
         instructions = seed.cleanNotes,

@@ -513,4 +513,74 @@ class AvailableBlockRepositoryAndSyncTest {
         assertEquals(37.5, localRms[0].weight, 0.001)
         assertTrue(repository.getAllExercisesOnce().none { it.name == "Deleted Ghost Lift" })
     }
+
+    @Test
+    fun `updateSession reconcile with managedRepMaxIds preserves PRs on legacy blocks the editor never surfaced`() = runTest {
+        val cycleId = repository.saveCycle(
+            Cycle(name = "Strength", startDate = LocalDate.of(2026, 11, 1), isActive = true)
+        )
+        val snatch = repository.getOrCreateExercise("Snatch")
+        val frontSquat = repository.getOrCreateExercise("Front Squat")
+        val date = LocalDate.of(2026, 11, 14)
+
+        val sessionId = repository.saveSession(
+            session = Session(cycleId = cycleId, date = date, title = "Mixed Day"),
+            blocks = listOf(
+                BlockInsert(
+                    block = SessionBlock(
+                        sessionId = 0L, position = 0, name = snatch.name,
+                        kind = BlockKind.STRENGTH, mainExerciseId = snatch.id, subBlock = "Snatch Wave"
+                    ),
+                    sets = listOf(BlockSet(blockId = 0L, position = 0, reps = 3, weight = 35.0)),
+                    newRepMaxes = listOf(RepMax(exerciseId = snatch.id, reps = 3, weight = 35.0, date = date))
+                ),
+                BlockInsert(
+                    block = SessionBlock(
+                        sessionId = 0L, position = 1, name = frontSquat.name,
+                        kind = BlockKind.STRENGTH, mainExerciseId = frontSquat.id
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 0L, position = 0, reps = 5, weight = 60.0, isWarmup = true),
+                        BlockSet(blockId = 0L, position = 1, reps = 5, weight = 100.0)
+                    ),
+                    newRepMaxes = listOf(RepMax(exerciseId = frontSquat.id, reps = 5, weight = 100.0, date = date))
+                )
+            )
+        )
+        val priorRms = fakeDb.repMaxDao().getAllOnce().filter { it.sessionId == sessionId }
+        val snatchRmId = priorRms.first { it.exerciseId == snatch.id }.id
+        val frontSquatRmId = priorRms.first { it.exerciseId == frontSquat.id }.id
+
+        // Simplified card only manages the Snatch PR; the legacy Front Squat block re-submits no PR.
+        val saved = repository.sessionById(sessionId)!!
+        val sortedBlocks = saved.blocks.sortedBy { it.block.position }
+        repository.updateSession(
+            session = saved.session,
+            blocks = listOf(
+                BlockInsert(
+                    block = sortedBlocks[0].block.copy(id = 0L),
+                    sets = listOf(BlockSet(blockId = 0L, position = 0, reps = 3, weight = 37.5)),
+                    newRepMaxes = listOf(RepMax(exerciseId = snatch.id, reps = 3, weight = 37.5, date = date))
+                ),
+                BlockInsert(
+                    block = sortedBlocks[1].block.copy(id = 0L),
+                    sets = sortedBlocks[1].sets.map { it.copy(id = 0L, blockId = 0L) }
+                )
+            ),
+            reconcileRepMaxes = true,
+            managedRepMaxIds = setOf(snatchRmId)
+        )
+
+        val afterRms = fakeDb.repMaxDao().getAllOnce().filter { it.sessionId == sessionId }
+        assertEquals(2, afterRms.size)
+        val snatchRm = afterRms.first { it.exerciseId == snatch.id }
+        assertEquals(snatchRmId, snatchRm.id)
+        assertEquals(37.5, snatchRm.weight, 0.001)
+        val frontSquatRm = afterRms.first { it.exerciseId == frontSquat.id }
+        assertEquals(frontSquatRmId, frontSquatRm.id)
+        assertEquals(100.0, frontSquatRm.weight, 0.001)
+        val newFrontSquatBlockId = repository.sessionById(sessionId)!!.blocks
+            .first { it.block.mainExerciseId == frontSquat.id }.block.id
+        assertEquals(newFrontSquatBlockId, frontSquatRm.blockId)
+    }
 }

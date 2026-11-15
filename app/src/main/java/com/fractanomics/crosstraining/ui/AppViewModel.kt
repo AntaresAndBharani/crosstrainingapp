@@ -592,7 +592,8 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         repo.updateSession(
             draft.toSession(sessionId),
             inserts,
-            reconcileRepMaxes = draft.reconcileRepMaxes
+            reconcileRepMaxes = draft.reconcileRepMaxes,
+            managedRepMaxIds = draft.managedRepMaxIds
         )
         applyInheritedTrackedPrs(draft.inheritedBlockTrackedPrs)
         UserCloudSyncManager.uploadUserData(data.realRepository)
