@@ -26,6 +26,7 @@ import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.util.AVAILABLE_BLOCK_FORMAT
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
+import com.fractanomics.crosstraining.util.AvailableBlockExercise
 import com.fractanomics.crosstraining.util.RoutineTargetCodec
 import com.fractanomics.crosstraining.util.TrackedPrSlot
 import kotlinx.coroutines.Dispatchers
@@ -375,6 +376,61 @@ class Repository(
                 saveAvailableBlock(merged)
             }
         }
+    }
+
+    /**
+     * Resolves movements and optionally saves a custom session block into the Available Blocks
+     * library (`SPEC-024`). When [saveToLibrary] is `false`, returns a session-only block (`id = 0L`)
+     * without writing to the `routines` table; if no movement chips were selected, ensures a weighted
+     * exercise matching the resolved title exists so the simplified set tiles and PR tracking work.
+     */
+    suspend fun prepareCustomAvailableBlock(
+        rawTitle: String,
+        instructions: String,
+        selectedExerciseIds: List<Long>,
+        saveToLibrary: Boolean
+    ): AvailableBlock? {
+        val exercisesById = getAllExercisesOnce().associateBy { it.id }
+        val chosenExercises = selectedExerciseIds
+            .distinct()
+            .mapNotNull { exercisesById[it] }
+            .toMutableList()
+        val trimmedTitle = rawTitle.trim()
+        val resolvedTitle = when {
+            trimmedTitle.isNotEmpty() -> trimmedTitle
+            chosenExercises.isEmpty() -> ""
+            chosenExercises.size <= 2 -> chosenExercises.joinToString(" + ") { it.name }
+            else -> "${chosenExercises.take(2).joinToString(" + ") { it.name }} +${chosenExercises.size - 2} more"
+        }
+        if (resolvedTitle.isEmpty()) return null
+
+        if (chosenExercises.isEmpty()) {
+            chosenExercises.add(
+                getOrCreateExercise(
+                    name = resolvedTitle,
+                    category = ExerciseCategory.BARBELL,
+                    metricType = MetricType.WEIGHT
+                )
+            )
+        }
+
+        val candidate = AvailableBlock(
+            id = 0L,
+            title = resolvedTitle,
+            instructions = instructions.trim(),
+            exercises = chosenExercises.map { ex ->
+                AvailableBlockExercise(
+                    id = ex.id,
+                    name = ex.name,
+                    tracksRepMax = ex.tracksRepMax
+                )
+            },
+            trackedPrs = emptyList()
+        )
+        if (!saveToLibrary) return candidate
+
+        val savedId = saveAvailableBlock(candidate)
+        return candidate.copy(id = savedId)
     }
 
     suspend fun cleanupDuplicateExercises() = withDatabaseTransaction {

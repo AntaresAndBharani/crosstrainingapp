@@ -74,6 +74,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -84,8 +85,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.runtime.toMutableStateList
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
@@ -108,6 +112,7 @@ import com.fractanomics.crosstraining.data.analytics.FatLossAnalytics
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.Exercise
+import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
@@ -159,6 +164,17 @@ import com.fractanomics.crosstraining.util.TargetMode
 import com.fractanomics.crosstraining.util.TrackedPrSlot
 import kotlinx.coroutines.launch
 import java.time.LocalDate
+import kotlin.math.roundToInt
+
+internal enum class AddBlockSheetOpenMode {
+    PREFER_SAVED,
+    SMART_DEFAULT
+}
+
+internal fun canRemoveResidualLegacyBlock(
+    loadedSimplifiedCount: Int,
+    legacyBlockCount: Int
+): Boolean = loadedSimplifiedCount > 0 || legacyBlockCount > 1
 
 // --- Plain seeds used to (re)initialise the editor form ----------------------
 
@@ -620,6 +636,32 @@ fun SessionEditorBody(
     var formKey by remember(seedKey) { mutableIntStateOf(0) }
     val key = seedKey to formKey
 
+    val scrollState = rememberScrollState()
+    var viewportHeightPx by remember { mutableIntStateOf(0) }
+    val blockCardBounds = remember(key) { mutableStateMapOf<String, CardLayoutBounds>() }
+    var pendingScrollTargetKey by remember(key) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(pendingScrollTargetKey) {
+        val targetKey = pendingScrollTargetKey ?: return@LaunchedEffect
+        var attempts = 0
+        while ((blockCardBounds[targetKey] == null || viewportHeightPx <= 0) && attempts < 3) {
+            withFrameNanos { }
+            attempts++
+        }
+        val bounds = blockCardBounds[targetKey]
+        if (bounds != null && viewportHeightPx > 0) {
+            val targetOffset = resolveGoalCardScrollOffset(
+                cardTopPx = bounds.topPx,
+                cardHeightPx = bounds.heightPx,
+                viewportHeightPx = viewportHeightPx,
+                currentScrollPx = scrollState.value,
+                maxScrollPx = scrollState.maxValue
+            )
+            scrollState.animateScrollTo(targetOffset)
+        }
+        pendingScrollTargetKey = null
+    }
+
     var selectedCycleId by remember(key) { mutableStateOf(seed.cycleId) }
     var date by remember(key) { mutableStateOf(seed.date) }
     var title by remember(key) { mutableStateOf(seed.title) }
@@ -712,8 +754,13 @@ fun SessionEditorBody(
             }
         )
     }
-    LaunchedEffect(isEditMode, editingSessionTarget, availableBlocks, exercises, repMaxes) {
-        if (!isEditMode || editingSessionTarget == null || isDirty) return@LaunchedEffect
+    var showQuickAddDialog by remember { mutableStateOf(false) }
+    var showWorkoutAssistantSheet by remember { mutableStateOf(false) }
+    var activeAddBlockSheetMode by remember { mutableStateOf<AddBlockSheetOpenMode?>(null) }
+    var activePrPickerForBlock by remember { mutableStateOf<LoadedAvailableBlockState?>(null) }
+
+    LaunchedEffect(isEditMode, editingSessionTarget, availableBlocks, exercises, repMaxes, activeAddBlockSheetMode) {
+        if (!isEditMode || editingSessionTarget == null || isDirty || activeAddBlockSheetMode != null) return@LaunchedEffect
         val sig = "${availableBlocks.size}:${exercises.size}:${repMaxes.count { it.sessionId == editingSessionTarget.session.id }}"
         if (sig == lastHydrationSignature) return@LaunchedEffect
         val hydrated = AvailableBlockCodec.hydrateSessionBlocksForEditor(
@@ -723,6 +770,7 @@ fun SessionEditorBody(
             sessionRepMaxes = repMaxes.filter { it.sessionId == editingSessionTarget.session.id }
         )
         loadedAvailableBlocks.clear()
+        blockCardBounds.clear()
         hydrated.simplifiedBlocks.forEach { blockSeed ->
             loadedAvailableBlocks.add(buildHydratedBlockState(blockSeed, exercises, editingSessionTarget.session.id))
         }
@@ -738,28 +786,29 @@ fun SessionEditorBody(
         lastHydrationSignature = sig
     }
 
-    var showQuickAddDialog by remember { mutableStateOf(false) }
-    var showWorkoutAssistantSheet by remember { mutableStateOf(false) }
-    var showLoadBlockSheet by remember { mutableStateOf(false) }
-    var activePrPickerForBlock by remember { mutableStateOf<LoadedAvailableBlockState?>(null) }
-
     LaunchedEffect(pendingBlockIdsToLog, availableBlocks) {
         if (pendingBlockIdsToLog.isEmpty() || availableBlocks.isEmpty()) return@LaunchedEffect
         val idsToLoad = viewModel.consumePendingBlocksToLog()
+        var lastAddedKey: String? = null
         idsToLoad.forEach { blockId ->
             val block = availableBlocks.firstOrNull { it.id == blockId } ?: return@forEach
             if (loadedAvailableBlocks.none { it.block.id == block.id }) {
-                loadedAvailableBlocks.add(
-                    buildLoadedAvailableBlockState(
-                        block = block,
-                        sessions = sessions,
-                        exercises = exercises,
-                        weightUnit = weightUnit
-                    )
+                val addedState = buildLoadedAvailableBlockState(
+                    block = block,
+                    sessions = sessions,
+                    exercises = exercises,
+                    weightUnit = weightUnit,
+                    isEditMode = isEditMode,
+                    editingSessionId = editingSessionId
                 )
+                loadedAvailableBlocks.add(addedState)
+                lastAddedKey = addedState.uiKey
                 if (isEditMode) simplifiedStructuralDirty = true
-                if (title.isBlank()) title = block.title
+                if (!isEditMode && title.isBlank()) title = block.title
             }
+        }
+        if (lastAddedKey != null) {
+            pendingScrollTargetKey = lastAddedKey
         }
     }
 
@@ -810,6 +859,11 @@ fun SessionEditorBody(
                     isCompleted = !isFatLoss
                 )
                 blocks.add(newBlock)
+                val legacyScrollKey = "legacy_${blocks.lastIndex}"
+                // Legacy keys are index-based; drop any stale bounds left by a previously removed block
+                // at this index so the scroll effect waits for the new card's real layout.
+                blockCardBounds.remove(legacyScrollKey)
+                pendingScrollTargetKey = legacyScrollKey
             }
         )
     }
@@ -831,27 +885,96 @@ fun SessionEditorBody(
         )
     }
 
-    if (showLoadBlockSheet) {
-        LoadAvailableBlockSheet(
+    val sheetMode = activeAddBlockSheetMode
+    if (sheetMode != null) {
+        val alreadyLoadedIds = loadedAvailableBlocks.map { it.block.id }.filter { it > 0L }.toSet()
+        AddBlockToSessionSheet(
             availableBlocks = availableBlocks,
-            alreadyLoadedIds = loadedAvailableBlocks.map { it.block.id }.filter { it > 0L }.toSet(),
-            onDismiss = { showLoadBlockSheet = false },
-            onConfirmSelected = { chosenBlocks ->
+            alreadyLoadedIds = alreadyLoadedIds,
+            exercises = exercises,
+            initialTab = resolveInitialAddBlockTab(
+                preferSaved = sheetMode == AddBlockSheetOpenMode.PREFER_SAVED,
+                availableBlocks = availableBlocks,
+                alreadyLoadedIds = alreadyLoadedIds
+            ),
+            onDismiss = { activeAddBlockSheetMode = null },
+            onConfirmSavedBlocks = { chosenBlocks ->
+                var lastAddedKey: String? = null
                 chosenBlocks.forEach { chosen ->
-                    if (loadedAvailableBlocks.none { it.block.id == chosen.id }) {
-                        loadedAvailableBlocks.add(
-                            buildLoadedAvailableBlockState(
-                                block = chosen,
-                                sessions = sessions,
-                                exercises = exercises,
-                                weightUnit = weightUnit
-                            )
+                    if (loadedAvailableBlocks.none { it.block.id > 0L && it.block.id == chosen.id }) {
+                        val addedState = buildLoadedAvailableBlockState(
+                            block = chosen,
+                            sessions = sessions,
+                            exercises = exercises,
+                            weightUnit = weightUnit,
+                            isEditMode = isEditMode,
+                            editingSessionId = editingSessionId
                         )
+                        loadedAvailableBlocks.add(addedState)
+                        lastAddedKey = addedState.uiKey
                         if (isEditMode) simplifiedStructuralDirty = true
-                        if (title.isBlank()) title = chosen.title
+                        if (!isEditMode && title.isBlank()) title = chosen.title
                     }
                 }
-                showLoadBlockSheet = false
+                if (lastAddedKey != null) {
+                    pendingScrollTargetKey = lastAddedKey
+                }
+                activeAddBlockSheetMode = null
+            },
+            onCreateExercise = { name, onCreated ->
+                viewModel.getOrCreateExerciseForRoutine(
+                    name = name,
+                    category = ExerciseCategory.BARBELL,
+                    metricType = MetricType.WEIGHT,
+                    onCreated = onCreated
+                )
+            },
+            onConfirmCustomBlock = { rawTitle, instructions, selectedExerciseIds, saveToLibrary ->
+                viewModel.prepareCustomSessionBlock(
+                    rawTitle = rawTitle,
+                    instructions = instructions,
+                    selectedExerciseIds = selectedExerciseIds,
+                    saveToLibrary = saveToLibrary
+                ) { prepared ->
+                    if (prepared == null) {
+                        activeAddBlockSheetMode = null
+                        return@prepareCustomSessionBlock
+                    }
+                    val existingDuplicate = if (prepared.id > 0L) {
+                        loadedAvailableBlocks.firstOrNull { it.block.id == prepared.id }
+                    } else {
+                        null
+                    }
+                    if (existingDuplicate != null) {
+                        activeAddBlockSheetMode = null
+                        pendingScrollTargetKey = existingDuplicate.uiKey
+                        scope.launch {
+                            snackbar.showSnackbar("\"${prepared.title}\" is already in this session.")
+                        }
+                        return@prepareCustomSessionBlock
+                    }
+                    val addedState = if (saveToLibrary && prepared.id > 0L) {
+                        buildLoadedAvailableBlockState(
+                            block = prepared,
+                            sessions = sessions,
+                            exercises = exercises,
+                            weightUnit = weightUnit,
+                            isEditMode = isEditMode,
+                            editingSessionId = editingSessionId
+                        )
+                    } else {
+                        buildCustomAvailableBlockState(
+                            block = prepared,
+                            isEditMode = isEditMode,
+                            editingSessionId = editingSessionId
+                        )
+                    }
+                    loadedAvailableBlocks.add(addedState)
+                    pendingScrollTargetKey = addedState.uiKey
+                    if (isEditMode) simplifiedStructuralDirty = true
+                    if (!isEditMode && title.isBlank()) title = prepared.title
+                    activeAddBlockSheetMode = null
+                }
             }
         )
     }
@@ -1092,7 +1215,8 @@ fun SessionEditorBody(
         Column(
             modifier = Modifier
                 .padding(pad)
-                .verticalScroll(rememberScrollState())
+                .onGloballyPositioned { viewportHeightPx = it.size.height }
+                .verticalScroll(scrollState)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -1137,7 +1261,7 @@ fun SessionEditorBody(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         OutlinedButton(
-                            onClick = { showLoadBlockSheet = true },
+                            onClick = { activeAddBlockSheetMode = AddBlockSheetOpenMode.PREFER_SAVED },
                             modifier = Modifier
                                 .weight(1f)
                                 .heightIn(min = 48.dp),
@@ -1202,53 +1326,62 @@ fun SessionEditorBody(
                 onOpenFullCheckIn = { showDailyCheckInSheet = true }
             )
 
-            // Loaded Available Blocks (1-tap Library handoff, Load Block multi-picker & History Edit)
+            // Loaded Available Blocks (1-tap Library handoff, Add Block sheet & History Edit)
             loadedAvailableBlocks.forEach { availState ->
-                SimplifiedBlockLogCard(
-                    blockState = availState,
-                    exercises = exercises,
-                    repMaxes = repMaxes,
-                    weightUnit = weightUnit,
-                    onRemoveBlock = {
-                        loadedAvailableBlocks.remove(availState)
-                        if (isEditMode) simplifiedStructuralDirty = true
-                        if (loadedAvailableBlocks.isEmpty() && blocks.isEmpty()) {
-                            blocks.add(BlockState(isCompleted = !isFatLoss))
-                        }
-                    },
-                    onLaunchTimer = {
-                        val timingToken = availState.block.instructions.ifBlank { null }
-                        launchTimingFromTokenOrOpenSheet(timingToken, 1, availState.block.title)
-                    },
-                    onOpenPrPicker = { activePrPickerForBlock = availState },
-                    onRemoveTrackedPr = { slot ->
-                        val removedSnapshot = availState.removeTrackedPrSlot(slot)
-                        if (!isEditMode && availState.block.id > 0L) {
-                            viewModel.updateAvailableBlockTrackedPrs(
-                                availState.block.id,
-                                availState.trackedPrSlots.toList()
-                            )
-                        }
-                        if (removedSnapshot != null) {
-                            scope.launch {
-                                val res = snackbar.showSnackbar(
-                                    message = "Removed ${slot.rmReps}RM ${slot.movementName}",
-                                    actionLabel = "Undo",
-                                    duration = SnackbarDuration.Short
+                key(availState.uiKey) {
+                    SimplifiedBlockLogCard(
+                        blockState = availState,
+                        exercises = exercises,
+                        repMaxes = repMaxes,
+                        weightUnit = weightUnit,
+                        onRemoveBlock = {
+                            loadedAvailableBlocks.remove(availState)
+                            blockCardBounds.remove(availState.uiKey)
+                            if (isEditMode) simplifiedStructuralDirty = true
+                            if (loadedAvailableBlocks.isEmpty() && blocks.isEmpty()) {
+                                blocks.add(BlockState(isCompleted = !isFatLoss))
+                            }
+                        },
+                        onLaunchTimer = {
+                            val timingToken = availState.block.instructions.ifBlank { null }
+                            launchTimingFromTokenOrOpenSheet(timingToken, 1, availState.block.title)
+                        },
+                        onOpenPrPicker = { activePrPickerForBlock = availState },
+                        onRemoveTrackedPr = { slot ->
+                            val removedSnapshot = availState.removeTrackedPrSlot(slot)
+                            if (!isEditMode && availState.block.id > 0L) {
+                                viewModel.updateAvailableBlockTrackedPrs(
+                                    availState.block.id,
+                                    availState.trackedPrSlots.toList()
                                 )
-                                if (res == SnackbarResult.ActionPerformed) {
-                                    availState.restoreDismissedPr(removedSnapshot)
-                                    if (!isEditMode && availState.block.id > 0L) {
-                                        viewModel.updateAvailableBlockTrackedPrs(
-                                            availState.block.id,
-                                            availState.trackedPrSlots.toList()
-                                        )
+                            }
+                            if (removedSnapshot != null) {
+                                scope.launch {
+                                    val res = snackbar.showSnackbar(
+                                        message = "Removed ${slot.rmReps}RM ${slot.movementName}",
+                                        actionLabel = "Undo",
+                                        duration = SnackbarDuration.Short
+                                    )
+                                    if (res == SnackbarResult.ActionPerformed) {
+                                        availState.restoreDismissedPr(removedSnapshot)
+                                        if (!isEditMode && availState.block.id > 0L) {
+                                            viewModel.updateAvailableBlockTrackedPrs(
+                                                availState.block.id,
+                                                availState.trackedPrSlots.toList()
+                                            )
+                                        }
                                     }
                                 }
                             }
+                        },
+                        modifier = Modifier.onGloballyPositioned { coords ->
+                            blockCardBounds[availState.uiKey] = CardLayoutBounds(
+                                topPx = coords.positionInParent().y.roundToInt(),
+                                heightPx = coords.size.height
+                            )
                         }
-                    }
-                )
+                    )
+                }
             }
 
             // Legacy / ad-hoc Blocks List grouped by section header and sub-block containers
@@ -1286,26 +1419,44 @@ fun SessionEditorBody(
 
                 when (item) {
                     is EditorBlockItem.Standalone -> {
+                        val legacyKey = "legacy_${item.index}"
                         CompactBlockEditor(
                             index = item.index,
                             block = item.block,
                             blocks = blocks,
                             exercises = exercises,
                             routines = routines,
-                            canRemove = blocks.size > 1,
-                            onRemove = { blocks.removeAt(item.index) },
+                            canRemove = canRemoveResidualLegacyBlock(loadedAvailableBlocks.size, blocks.size),
+                            onRemove = {
+                                blockCardBounds.remove(legacyKey)
+                                blocks.removeAt(item.index)
+                            },
                             onLaunchTimer = {
                                 val label = item.block.exercise?.name ?: item.block.name.ifBlank { "Movement ${item.index + 1}" }
                                 val timingToken = item.block.format.ifBlank {
                                     if (item.block.description.contains("Rest", ignoreCase = true)) item.block.description else null
                                 }
                                 launchTimingFromTokenOrOpenSheet(timingToken, item.block.sets.size, label)
+                            },
+                            modifier = Modifier.onGloballyPositioned { coords ->
+                                blockCardBounds[legacyKey] = CardLayoutBounds(
+                                    topPx = coords.positionInParent().y.roundToInt(),
+                                    heightPx = coords.size.height
+                                )
                             }
                         )
                     }
                     is EditorBlockItem.SubBlockGroup -> {
+                        val groupKey = "legacy_${item.items.first().first}"
                         OutlinedCard(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onGloballyPositioned { coords ->
+                                    blockCardBounds[groupKey] = CardLayoutBounds(
+                                        topPx = coords.positionInParent().y.roundToInt(),
+                                        heightPx = coords.size.height
+                                    )
+                                },
                             shape = RoundedCornerShape(14.dp),
                             colors = CardDefaults.outlinedCardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
@@ -1418,8 +1569,11 @@ fun SessionEditorBody(
                                         blocks = blocks,
                                         exercises = exercises,
                                         routines = routines,
-                                        canRemove = blocks.size > 1,
-                                        onRemove = { blocks.removeAt(childIndex) },
+                                        canRemove = canRemoveResidualLegacyBlock(loadedAvailableBlocks.size, blocks.size),
+                                        onRemove = {
+                                            blockCardBounds.remove("legacy_$childIndex")
+                                            blocks.removeAt(childIndex)
+                                        },
                                         onLaunchTimer = {
                                             val label = childBlock.exercise?.name ?: childBlock.name.ifBlank { "Movement ${childIndex + 1}" }
                                             val timingToken = childBlock.format.ifBlank {
@@ -1442,7 +1596,7 @@ fun SessionEditorBody(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
-                    onClick = { blocks.add(BlockState(isCompleted = !isFatLoss)) },
+                    onClick = { activeAddBlockSheetMode = AddBlockSheetOpenMode.SMART_DEFAULT },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(10.dp)
                 ) {
@@ -1543,7 +1697,8 @@ private fun CompactBlockEditor(
     routines: List<Routine>,
     canRemove: Boolean,
     onRemove: () -> Unit,
-    onLaunchTimer: (() -> Unit)? = null
+    onLaunchTimer: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
 ) {
     val metric = block.exercise?.metricType ?: MetricType.WEIGHT
     val valueLabel = if (metric == MetricType.WEIGHT) "kg" else metric.defaultUnit
@@ -1551,7 +1706,7 @@ private fun CompactBlockEditor(
     val isMetabolic = block.kind == BlockKind.METCON || block.kind == BlockKind.METABOLIC || block.kind == BlockKind.CARDIO
 
     ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp)
     ) {
         Column(
