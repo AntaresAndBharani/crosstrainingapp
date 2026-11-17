@@ -856,6 +856,285 @@ export const UpdateBlockSessionLogInputSchema = {
     .describe("When true (default when `trackedPrs` or `exercises` changes), tombstones stale session rep_maxes replaced or removed during this edit"),
 };
 
+// ============================================================================
+// Daily Routines Schemas (SPEC-MCP-DAILY-ROUTINES-01 / SPEC-025)
+// ============================================================================
+
+const makeDailyRoutineTrackedPrSlotSchema = () =>
+  z.object({
+    movement_name: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Tracked movement name (snake_case, e.g. 'Romanian Deadlift')"),
+    movementName: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Alias for movement_name (camelCase)"),
+    rm_reps: z
+      .number()
+      .int()
+      .min(1)
+      .max(20)
+      .optional()
+      .describe("Rep max count 1-20 (snake_case)"),
+    rmReps: z
+      .number()
+      .int()
+      .min(1)
+      .max(20)
+      .optional()
+      .describe("Alias for rm_reps (camelCase)"),
+  });
+
+const makeDailyRoutineBlockExerciseLogSchema = () =>
+  z.object({
+    exercise_name: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Movement name in this block (snake_case)"),
+    exerciseName: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Alias for exercise_name (camelCase)"),
+    weights: z
+      .array(z.number().min(0).max(2000))
+      .max(50)
+      .describe("Ordered working set weights in kg; pass [] for unloaded/bodyweight movements"),
+    set_count_for_empty: z
+      .number()
+      .int()
+      .min(1)
+      .max(20)
+      .optional()
+      .describe("Optional empty set tile count when weights is []"),
+    setCountForEmpty: z
+      .number()
+      .int()
+      .min(1)
+      .max(20)
+      .optional()
+      .describe("Alias for set_count_for_empty"),
+  });
+
+const makeDailyRoutineItemInputSchema = () =>
+  z.object({
+    item_type: z
+      .enum(["BLOCK", "EXERCISE"])
+      .describe("Constituent item type: 'BLOCK' (Saved Available Block ref) or 'EXERCISE' (standalone Exercise)"),
+    block_id: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("For item_type='BLOCK': optional numeric Available Block ID"),
+    block_title: z
+      .string()
+      .min(1)
+      .max(300)
+      .optional()
+      .describe("For item_type='BLOCK': Available Block title (resolved case-insensitively)"),
+    exercise_name: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("For item_type='EXERCISE': standalone exercise name (auto-created as WEIGHT if missing)"),
+    note: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe("For item_type='EXERCISE': optional routine note / cue, e.g. 'Tempo 3010 · RIR 2'"),
+    default_tracked_prs: z
+      .array(makeDailyRoutineTrackedPrSlotSchema())
+      .max(20)
+      .optional()
+      .describe("For item_type='EXERCISE': optional default tracked RM slots"),
+  });
+
+export const ListDailyRoutinesInputSchema = {
+  query: z
+    .string()
+    .max(200)
+    .optional()
+    .describe("Optional case-insensitive filter across routine title, notes, constituent blocks, and exercises"),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Optional maximum number of Daily Routines to return"),
+};
+
+export const UpsertDailyRoutineInputSchema = {
+  routine_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional numeric Daily Routine ID when updating or renaming an existing Daily Routine"),
+  title: z
+    .string()
+    .min(1)
+    .max(300)
+    .describe("Daily Routine title, e.g. 'Push Power + Hypertrophy' or 'Lower Strength A'"),
+  notes: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("Optional routine description or warm-up notes"),
+  items: z
+    .array(makeDailyRoutineItemInputSchema())
+    .min(1)
+    .max(50)
+    .describe("Ordered list of Saved Available Blocks ('BLOCK') and standalone Exercises ('EXERCISE')"),
+};
+
+export const DeleteDailyRoutineInputSchema = {
+  routine_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Numeric Daily Routine ID to delete (provide `routine_id` or `title`)"),
+  title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Exact Daily Routine title to delete (provide `routine_id` or `title`)"),
+};
+
+const makeDailyRoutinePrInputSchema = () =>
+  z.object({
+    movement_name: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("Movement name for this PR record"),
+    rm_reps: z
+      .number()
+      .int()
+      .min(1)
+      .max(20)
+      .describe("Rep max count (1-20)"),
+    weight_kg: z
+      .number()
+      .min(0.1)
+      .max(2000)
+      .describe("PR weight achieved in kg"),
+  });
+
+const makeDailyRoutineLoggedItemInputSchema = () =>
+  z.object({
+    item_type: z
+      .enum(["BLOCK", "EXERCISE"])
+      .describe("Logged item type: 'BLOCK' or 'EXERCISE' (standalone)"),
+    block_id: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("For item_type='BLOCK': optional Available Block ID"),
+    block_title: z
+      .string()
+      .min(1)
+      .max(300)
+      .optional()
+      .describe("For item_type='BLOCK': Available Block title"),
+    exercise_name: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("For item_type='EXERCISE': standalone exercise name"),
+    note: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe("For item_type='EXERCISE': optional session/routine note preserved in `description`"),
+    set_weights_kg: z
+      .array(z.number().min(0).max(2000))
+      .max(50)
+      .optional()
+      .describe("For item_type='EXERCISE' (or single-movement block): ordered weight-only sets in kg"),
+    exercise_logs: z
+      .array(makeDailyRoutineBlockExerciseLogSchema())
+      .max(30)
+      .optional()
+      .describe("For item_type='BLOCK': ordered movement logs inside the block"),
+    achieved_prs: z
+      .array(makeDailyRoutinePrInputSchema())
+      .max(30)
+      .optional()
+      .describe("Optional PRs achieved on this item; recorded to `rep_maxes` and auto-inherited"),
+  });
+
+export const LogDailyRoutineSessionInputSchema = {
+  date: isoDateSchema().describe("Workout date in YYYY-MM-DD format"),
+  routine_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional Daily Routine numeric ID to attribute & look up template items"),
+  routine_title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Daily Routine title when attributing by title"),
+  session_title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Optional session title override (defaults to resolved routine title)"),
+  notes: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("Optional session notes"),
+  cycle_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional cycle ID (defaults to active cycle)"),
+  update_routine_template: z
+    .boolean()
+    .optional()
+    .describe("When true and `routine_id`/`routine_title` resolves, updates the Daily Routine template structure to match `logged_items`"),
+  logged_items: z
+    .array(makeDailyRoutineLoggedItemInputSchema())
+    .min(1)
+    .max(50)
+    .describe("Ordered list of logged Blocks (`BLOCK`) and standalone Exercises (`EXERCISE`)"),
+};
+
+export const GetDailyRoutineProgressInputSchema = {
+  routine_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Daily Routine numeric ID (provide `routine_id` or `routine_title`)"),
+  routine_title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Exact Daily Routine title (provide `routine_id` or `routine_title`)"),
+};
+
 export const WeightSubcycleTypeValues = [
   "FAT_LOSS",
   "RECOMPOSITION",
@@ -1354,15 +1633,78 @@ export function parseCycleGoalMetadata(rawNotes?: string): {
 // ============================================================================
 
 export const AVAILABLE_BLOCK_FORMAT = "AVAILABLE_BLOCK";
+export const DAILY_ROUTINE_FORMAT = "DAILY_ROUTINE";
+export const DAILY_ROUTINE_BLOCK_ITEM_FORMAT = "DR_BLOCK";
+export const DAILY_ROUTINE_EXERCISE_ITEM_FORMAT = "DR_EXERCISE";
+export const STANDALONE_EXERCISE_SESSION_FORMAT = "STANDALONE_EXERCISE";
 
 export interface TrackedPrSlotSpec {
   movementName: string;
   rmReps: number;
 }
 
+export interface DecodedDailyRoutineItemHeader {
+  itemType: "BLOCK" | "EXERCISE";
+  refId: number;
+  refName: string;
+}
+
 const RB_V2_HEADER_LINE_REGEX = /^\[rb_v2=([^\r\n\]]*)\](?:\r?\n)?/i;
 const AB_PRS_HEADER_LINE_REGEX = /^\[ab_prs=([^\r\n\]]*)\](?:\r?\n)?/i;
 const AB_PRS_GLOBAL_REGEX = /\[ab_prs=([^\]]*)\]/gi;
+const DR_ITEM_HEADER_LINE_REGEX = /^\[dr_item=([^\r\n\]]*)\](?:\r?\n)?/i;
+const DR_ITEM_SEARCH_REGEX = /\[dr_item=([^\]]*)\]/i;
+
+export function isDailyRoutineFormat(defaultFormat?: string | null): boolean {
+  return (defaultFormat ?? "").trim().toUpperCase() === DAILY_ROUTINE_FORMAT;
+}
+
+export function routineNaturalKey(name: string, defaultFormat?: string | null): string {
+  const prefix = isDailyRoutineFormat(defaultFormat) ? "dr" : "ab";
+  return `${prefix}:${name.trim().toLowerCase()}`;
+}
+
+export function encodeDailyRoutineBlockHeader(blockId: number, blockTitle: string): string {
+  const encoded = encodeURIComponent(blockTitle.trim()).replace(/%20/g, "+");
+  return `[dr_item=BLOCK:id=${Math.max(0, Math.trunc(blockId))}:title=${encoded}]`;
+}
+
+export function encodeDailyRoutineExerciseHeader(exerciseId: number, exerciseName: string): string {
+  const encoded = encodeURIComponent(exerciseName.trim()).replace(/%20/g, "+");
+  return `[dr_item=EXERCISE:id=${Math.max(0, Math.trunc(exerciseId))}:name=${encoded}]`;
+}
+
+export function decodeDailyRoutineItemHeader(
+  notes?: string | null
+): DecodedDailyRoutineItemHeader | null {
+  if (!notes) return null;
+  const match = DR_ITEM_SEARCH_REGEX.exec(notes);
+  if (!match) return null;
+  const payload = (match[1] ?? "").trim();
+  if (!payload) return null;
+  const parts = payload.split(":");
+  const typeToken = (parts[0] ?? "").trim().toUpperCase();
+  if (typeToken !== "BLOCK" && typeToken !== "EXERCISE") return null;
+  let refId = 0;
+  let refName = "";
+  for (const part of parts.slice(1)) {
+    const eqIdx = part.indexOf("=");
+    if (eqIdx <= 0) continue;
+    const key = part.slice(0, eqIdx).trim().toLowerCase();
+    const val = part.slice(eqIdx + 1).trim();
+    if (key === "id") {
+      const parsed = Number.parseInt(val, 10);
+      refId = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    } else if (key === "title" || key === "name") {
+      try {
+        refName = decodeURIComponent(val.replace(/\+/g, " ")).trim();
+      } catch {
+        refName = val.replace(/\+/g, " ").trim();
+      }
+    }
+  }
+  return { itemType: typeToken, refId, refName };
+}
 // Must match Android `RoutineTargetCodec.SINGLE_EFFORT_FORMATS` exactly.
 const SINGLE_EFFORT_ROUTINE_FORMATS = new Set(["amrap", "for time", "chipper", "death by", "time cap"]);
 
@@ -1445,6 +1787,10 @@ export function extractCleanRoutineNotes(notes?: string): string {
   if (!notes) return "";
   let remaining = notes.trimStart();
   while (true) {
+    if (DR_ITEM_HEADER_LINE_REGEX.test(remaining)) {
+      remaining = remaining.replace(DR_ITEM_HEADER_LINE_REGEX, "").trimStart();
+      continue;
+    }
     if (RB_V2_HEADER_LINE_REGEX.test(remaining)) {
       remaining = remaining.replace(RB_V2_HEADER_LINE_REGEX, "").trimStart();
       continue;

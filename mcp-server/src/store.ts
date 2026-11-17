@@ -1,23 +1,31 @@
 import type { Firestore } from "firebase-admin/firestore";
 import {
   AVAILABLE_BLOCK_FORMAT,
+  DAILY_ROUTINE_BLOCK_ITEM_FORMAT,
+  DAILY_ROUTINE_EXERCISE_ITEM_FORMAT,
+  DAILY_ROUTINE_FORMAT,
+  STANDALONE_EXERCISE_SESSION_FORMAT,
   type RoutineExerciseTargetSlot,
   type RoutineTargetMetric,
   type RoutineTargetMode,
   type TrackedPrSlotSpec,
   decodeAvailableBlockTrackedPrs,
+  decodeDailyRoutineItemHeader,
   decodeLegacyRoutineSlots,
   decodeRoutineHeaderSlots,
   defaultFixedForRoutineMetric,
   defaultSetsForRoutineFormat,
   encodeAvailableBlockTrackedPrs,
   encodeCycleGoalMetadata,
+  encodeDailyRoutineBlockHeader,
+  encodeDailyRoutineExerciseHeader,
   encodeRoutineBlockTargets,
   extractCleanRoutineNotes,
   formatRoutineBlockTargetSummary,
   formatRoutineExerciseBadge,
   inferLibraryMetricTypeFromRoutineTarget,
   inferRoutineTargetMetricFromLibraryMetric,
+  isDailyRoutineFormat,
   normalizeTrackedPrSlotsSpec,
   parseCycleGoalMetadata,
   replaceAvailableBlockTrackedPrHeader,
@@ -272,6 +280,113 @@ export interface LogBlockSessionInput {
     weight: number;
   }>;
   updateTrackedPrLinks?: boolean;
+}
+
+export interface DailyRoutineItemRecord {
+  itemType: "BLOCK" | "EXERCISE";
+  position: number;
+  blockId: number | null;
+  blockTitle: string | null;
+  instructions: string | null;
+  exerciseId: number | null;
+  exerciseName: string | null;
+  note: string;
+  defaultTrackedPrs: TrackedPrSlotRecord[];
+  missingBlock?: boolean;
+}
+
+export interface DailyRoutineRecord {
+  id: number;
+  title: string;
+  notes: string;
+  blockCount: number;
+  exerciseCount: number;
+  missingBlockCount: number;
+  totalTrackedPrCount: number;
+  lastSessionDate: string | null;
+  updatedAtMillis: number | null;
+  items: DailyRoutineItemRecord[];
+}
+
+export interface UpsertDailyRoutineInput {
+  routine_id?: number;
+  title: string;
+  notes?: string;
+  items: Array<{
+    item_type: "BLOCK" | "EXERCISE";
+    block_id?: number;
+    block_title?: string;
+    exercise_name?: string;
+    note?: string;
+    default_tracked_prs?: Array<{
+      movement_name?: string;
+      movementName?: string;
+      rm_reps?: number;
+      rmReps?: number;
+    }>;
+  }>;
+}
+
+export interface LogDailyRoutineSessionInput {
+  date: string;
+  routine_id?: number;
+  routine_title?: string;
+  session_title?: string;
+  notes?: string;
+  cycle_id?: number;
+  update_routine_template?: boolean;
+  logged_items: Array<{
+    item_type: "BLOCK" | "EXERCISE";
+    block_id?: number;
+    block_title?: string;
+    exercise_name?: string;
+    note?: string;
+    set_weights_kg?: number[];
+    exercise_logs?: Array<{
+      exercise_name?: string;
+      exerciseName?: string;
+      weights: number[];
+      set_count_for_empty?: number;
+      setCountForEmpty?: number;
+    }>;
+    achieved_prs?: Array<{
+      movement_name: string;
+      rm_reps: number;
+      weight_kg: number;
+    }>;
+  }>;
+}
+
+export interface DailyRoutineConstituentProgressRecord {
+  itemType: "BLOCK" | "EXERCISE";
+  title: string;
+  subtitle: string;
+  allTimeTopKg: number | null;
+  lastTopKg: number | null;
+  lastTopDate: string | null;
+  lastAverageKg: number | null;
+  lastVolumeKg: number | null;
+  topDeltaKg: number | null;
+  lastSetsKg: number[];
+  trackedPrs: Array<{
+    movementId: number;
+    movementName: string;
+    rmReps: number;
+    bestWeightKg: number | null;
+  }>;
+  chartPoints: Array<{
+    date: string;
+    topKg: number;
+    averageKg: number;
+    volumeKg: number;
+  }>;
+  recentSessions: Array<{
+    sessionId: number;
+    date: string;
+    sessionTitle: string;
+    topKg: number | null;
+    weightsKg: number[];
+  }>;
 }
 
 export interface WeightEntryRecord {
@@ -852,14 +967,22 @@ export class WorkoutDomainService {
   }
 
   async getWorkoutSummary(ctx: UserContext) {
-    const [activeInfo, routines, weights, dailyLogs, exercises, repMaxes] = await Promise.all([
+    const [activeInfo, rawRoutines, weights, dailyLogs, exercises, repMaxes] = await Promise.all([
       this.getActiveCycle(ctx),
-      this.listRoutines(ctx),
+      this.backing.readCollection<RoutineWithBlocksRecord>(ctx, "routines"),
       this.listWeightEntries(ctx, {}),
       this.listDailyLogs(ctx, {}),
       this.listExercises(ctx),
       this.listRepMaxes(ctx),
     ]);
+
+    const activeRoutines = rawRoutines.filter((r) => !isDeletedTombstone(r.routine?.deletedAtMillis));
+    const nonDailyRoutines = activeRoutines.filter(
+      (r) => !isDailyRoutineFormat(r.routine?.defaultFormat)
+    );
+    const dailyRoutinesCount = activeRoutines.filter((r) =>
+      isDailyRoutineFormat(r.routine?.defaultFormat)
+    ).length;
 
     return {
       activeCycle: activeInfo.activeCycle,
@@ -868,8 +991,9 @@ export class WorkoutDomainService {
       recentActiveCycleSessions: activeInfo.recentSessions.slice(0, 5),
       cyclesCount: activeInfo.allCycles.length,
       exercisesCount: exercises.length,
-      routinesCount: routines.length,
-      availableBlockCount: routines.length,
+      routinesCount: nonDailyRoutines.length,
+      availableBlockCount: nonDailyRoutines.length,
+      dailyRoutineCount: dailyRoutinesCount,
       repMaxesCount: repMaxes.length,
       latestWeightEntry: weights[0] ?? null,
       latestDailyLog: dailyLogs[0] ?? null,
@@ -1096,7 +1220,11 @@ export class WorkoutDomainService {
       exercises.map((e) => [Number(e.id), e])
     );
     return routines
-      .filter((r) => !isDeletedTombstone(r.routine?.deletedAtMillis))
+      .filter(
+        (r) =>
+          !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+          !isDailyRoutineFormat(r.routine?.defaultFormat)
+      )
       .map((r) => ({
         ...r,
         blocks: (r.blocks ?? []).map((blk) => this.enrichRoutineBlock(blk, exercisesById)),
@@ -1166,7 +1294,9 @@ export class WorkoutDomainService {
       const routines = await tx.readCollection<RoutineWithBlocksRecord>(ctx, "routines");
       const trimmedName = input.name.trim();
       const existingIdx = routines.findIndex(
-        (r) => r.routine.name.trim().toLowerCase() === trimmedName.toLowerCase()
+        (r) =>
+          !isDailyRoutineFormat(r.routine?.defaultFormat) &&
+          r.routine.name.trim().toLowerCase() === trimmedName.toLowerCase()
       );
 
       const maxRoutineId = routines.reduce(
@@ -1346,6 +1476,7 @@ export class WorkoutDomainService {
         const r = routines[i];
         if (
           !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+          !isDailyRoutineFormat(r.routine?.defaultFormat) &&
           r.routine.name.trim().toLowerCase() === trimmed
         ) {
           routines[i] = {
@@ -1539,7 +1670,11 @@ export class WorkoutDomainService {
       });
 
     let blocks = routines
-      .filter((r) => !isDeletedTombstone(r.routine?.deletedAtMillis))
+      .filter(
+        (r) =>
+          !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+          !isDailyRoutineFormat(r.routine?.defaultFormat)
+      )
       .map((r) =>
         this.buildAvailableBlockRecord(
           r,
@@ -1627,9 +1762,13 @@ export class WorkoutDomainService {
         }
         const existingIdx =
           item.id !== undefined
-            ? routines.findIndex((r) => r.routine?.id === item.id)
+            ? routines.findIndex(
+                (r) => !isDailyRoutineFormat(r.routine?.defaultFormat) && r.routine?.id === item.id
+              )
             : routines.findIndex(
-                (r) => r.routine?.name.trim().toLowerCase() === cleanTitle.toLowerCase()
+                (r) =>
+                  !isDailyRoutineFormat(r.routine?.defaultFormat) &&
+                  r.routine?.name.trim().toLowerCase() === cleanTitle.toLowerCase()
               );
         const existing = existingIdx >= 0 ? routines[existingIdx] : undefined;
         const routineId = existing ? existing.routine.id : ++maxRoutineId;
@@ -1768,6 +1907,7 @@ export class WorkoutDomainService {
       for (let i = 0; i < routines.length; i++) {
         const r = routines[i];
         if (isDeletedTombstone(r.routine?.deletedAtMillis)) continue;
+        if (isDailyRoutineFormat(r.routine?.defaultFormat)) continue;
         const matchesId = input.id !== undefined && r.routine.id === input.id;
         const matchesTitle =
           Boolean(cleanTitle) && r.routine.name.trim().toLowerCase() === cleanTitle;
@@ -1895,12 +2035,14 @@ export class WorkoutDomainService {
             ? routines.findIndex(
                 (r) =>
                   !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+                  !isDailyRoutineFormat(r.routine?.defaultFormat) &&
                   r.routine.id === input.blockId
               )
             : cleanBlockTitleInput
               ? routines.findIndex(
                   (r) =>
                     !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+                    !isDailyRoutineFormat(r.routine?.defaultFormat) &&
                     r.routine.name.trim().toLowerCase() ===
                       cleanBlockTitleInput.toLowerCase()
                 )
@@ -3704,5 +3846,1336 @@ export class WorkoutDomainService {
       await tx.writeCollection(ctx, "daily_logs", logs);
       return true;
     });
+  }
+
+  // ==========================================================================
+  // Composite Daily Routines (`defaultFormat: 'DAILY_ROUTINE'`, SPEC-025)
+  // ==========================================================================
+
+  private round2dp(value: number): number {
+    return Math.round(value * 100) / 100;
+  }
+
+  private buildDailyRoutineRecord(
+    rwb: RoutineWithBlocksRecord,
+    availableBlocksById: Map<number, AvailableBlockRecord>,
+    availableBlocksByLowerTitle: Map<string, AvailableBlockRecord>,
+    exercisesById: Map<number, ExerciseRecord>,
+    exercisesByLowerName: Map<string, ExerciseRecord>,
+    sortedSessions: SessionWithBlocksRecord[]
+  ): DailyRoutineRecord {
+    const sortedBlocks = [...(rwb.blocks ?? [])].sort((a, b) => a.position - b.position);
+    const items: DailyRoutineItemRecord[] = [];
+    let missingBlockCount = 0;
+
+    for (let idx = 0; idx < sortedBlocks.length; idx++) {
+      const rb = sortedBlocks[idx];
+      const decoded = decodeDailyRoutineItemHeader(rb.notes);
+      const effectiveType: "BLOCK" | "EXERCISE" =
+        decoded?.itemType ??
+        ((rb.format ?? "").trim().toUpperCase() === DAILY_ROUTINE_BLOCK_ITEM_FORMAT
+          ? "BLOCK"
+          : "EXERCISE");
+
+      if (effectiveType === "BLOCK") {
+        const refId = decoded?.refId ?? 0;
+        const refTitle = (decoded?.refName || rb.name || "").trim();
+        const byId = refId > 0 ? availableBlocksById.get(refId) : undefined;
+        const resolvedBlock =
+          byId && (!refTitle || byId.title.trim().toLowerCase() === refTitle.toLowerCase())
+            ? byId
+            : (refTitle ? availableBlocksByLowerTitle.get(refTitle.toLowerCase()) : undefined) ??
+              byId;
+
+        if (resolvedBlock) {
+          items.push({
+            itemType: "BLOCK",
+            position: idx,
+            blockId: resolvedBlock.id,
+            blockTitle: resolvedBlock.title,
+            instructions: resolvedBlock.instructions,
+            exerciseId: null,
+            exerciseName: null,
+            note: "",
+            defaultTrackedPrs: resolvedBlock.trackedPrs,
+            missingBlock: false,
+          });
+        } else {
+          missingBlockCount += 1;
+        }
+      } else {
+        const csvIds = (rb.exerciseIdsCsv ?? "")
+          .split(",")
+          .map((s) => Number.parseInt(s.trim(), 10))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        const refId = (decoded?.refId ?? 0) > 0 ? decoded!.refId : (csvIds[0] ?? 0);
+        const refName = (decoded?.refName || rb.name || "").trim();
+        const byId = refId > 0 ? exercisesById.get(refId) : undefined;
+        const resolvedEx =
+          byId && (!refName || byId.name.trim().toLowerCase() === refName.toLowerCase())
+            ? byId
+            : (refName ? exercisesByLowerName.get(refName.toLowerCase()) : undefined) ?? byId;
+        const cleanNote = extractCleanRoutineNotes(rb.notes);
+        const decodedPrs = decodeAvailableBlockTrackedPrs(rb.notes).map((slot) => {
+          const matched = exercisesByLowerName.get(slot.movementName.trim().toLowerCase());
+          return {
+            movementId: matched?.id ?? resolvedEx?.id ?? 0,
+            movementName: matched?.name ?? slot.movementName,
+            rmReps: slot.rmReps,
+          };
+        });
+        items.push({
+          itemType: "EXERCISE",
+          position: idx,
+          blockId: null,
+          blockTitle: null,
+          instructions: null,
+          exerciseId: resolvedEx?.id ?? (refId > 0 ? refId : null),
+          exerciseName: resolvedEx?.name ?? (refName || "Exercise"),
+          note: cleanNote,
+          defaultTrackedPrs: decodedPrs,
+          missingBlock: false,
+        });
+      }
+    }
+
+    const routineTitleLower = rwb.routine.name.trim().toLowerCase();
+    const lastSession = sortedSessions.find((sw) => {
+      const titleMatch =
+        routineTitleLower.length > 0 &&
+        (sw.session.title ?? "").trim().toLowerCase() === routineTitleLower;
+      const idMatch = (sw.blocks ?? []).some((b) => b.block.routineId === rwb.routine.id);
+      return titleMatch || idMatch;
+    });
+
+    const dedupPrSpecs = normalizeTrackedPrSlotsSpec(
+      items.flatMap((it) =>
+        it.defaultTrackedPrs.map((s) => ({
+          movementName: s.movementName,
+          rmReps: s.rmReps,
+        }))
+      )
+    );
+
+    return {
+      id: rwb.routine.id,
+      title: rwb.routine.name,
+      notes: extractCleanRoutineNotes(rwb.routine.description),
+      blockCount: items.filter((i) => i.itemType === "BLOCK").length,
+      exerciseCount: items.filter((i) => i.itemType === "EXERCISE").length,
+      missingBlockCount,
+      totalTrackedPrCount: dedupPrSpecs.length,
+      lastSessionDate: lastSession?.session.date ?? null,
+      updatedAtMillis: rwb.routine.updatedAtMillis ?? null,
+      items,
+    };
+  }
+
+  async listDailyRoutines(
+    ctx: UserContext,
+    filter?: { query?: string; limit?: number }
+  ): Promise<DailyRoutineRecord[]> {
+    const [routines, exercises, sessions] = await Promise.all([
+      this.backing.readCollection<RoutineWithBlocksRecord>(ctx, "routines"),
+      this.backing.readCollection<ExerciseRecord>(ctx, "exercises"),
+      this.backing.readCollection<SessionWithBlocksRecord>(ctx, "sessions"),
+    ]);
+
+    const exercisesById = new Map<number, ExerciseRecord>(
+      exercises.map((e) => [Number(e.id), e])
+    );
+    const exercisesByLowerName = new Map<string, ExerciseRecord>(
+      exercises.map((e) => [e.name.trim().toLowerCase(), e])
+    );
+    const activeSessions = sessions
+      .filter((s) => !isDeletedTombstone(s.session?.deletedAtMillis))
+      .sort((a, b) => {
+        const cmp = (b.session?.date ?? "").localeCompare(a.session?.date ?? "");
+        return cmp !== 0 ? cmp : (Number(b.session?.id) || 0) - (Number(a.session?.id) || 0);
+      });
+
+    const activeAvailableBlocks = routines
+      .filter(
+        (r) =>
+          !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+          !isDailyRoutineFormat(r.routine?.defaultFormat)
+      )
+      .map((r) =>
+        this.buildAvailableBlockRecord(
+          r,
+          exercisesById,
+          exercisesByLowerName,
+          [],
+          false
+        )
+      );
+    const abById = new Map<number, AvailableBlockRecord>(
+      activeAvailableBlocks.map((b) => [b.id, b])
+    );
+    const abByLowerTitle = new Map<string, AvailableBlockRecord>(
+      activeAvailableBlocks.map((b) => [b.title.trim().toLowerCase(), b])
+    );
+
+    let list = routines
+      .filter(
+        (r) =>
+          !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+          isDailyRoutineFormat(r.routine?.defaultFormat)
+      )
+      .map((r) =>
+        this.buildDailyRoutineRecord(
+          r,
+          abById,
+          abByLowerTitle,
+          exercisesById,
+          exercisesByLowerName,
+          activeSessions
+        )
+      );
+
+    const q = filter?.query?.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (dr) =>
+          dr.title.toLowerCase().includes(q) ||
+          dr.notes.toLowerCase().includes(q) ||
+          dr.items.some(
+            (it) =>
+              (it.blockTitle ?? "").toLowerCase().includes(q) ||
+              (it.exerciseName ?? "").toLowerCase().includes(q) ||
+              it.note.toLowerCase().includes(q)
+          )
+      );
+    }
+
+    if (filter?.limit !== undefined && filter.limit > 0) {
+      list = list.slice(0, filter.limit);
+    }
+    return list;
+  }
+
+  private buildDailyRoutineStoredBlocksInTx(
+    routineId: number,
+    items: Array<{
+      itemType: "BLOCK" | "EXERCISE";
+      resolvedBlock?: RoutineWithBlocksRecord;
+      resolvedExercise?: ExerciseRecord;
+      note?: string;
+      defaultTrackedPrs?: TrackedPrSlotSpec[];
+    }>,
+    nextBlockIdFn: () => number
+  ): RoutineBlockRecord[] {
+    return items.map((item, idx) => {
+      if (item.itemType === "BLOCK") {
+        const blk = item.resolvedBlock!;
+        const blkExIds = Array.from(
+          new Set(
+            (blk.blocks ?? [])
+              .flatMap((b) =>
+                (b.exerciseIdsCsv ?? "")
+                  .split(",")
+                  .map((s) => Number.parseInt(s.trim(), 10))
+                  .filter((n) => Number.isFinite(n) && n > 0)
+              )
+          )
+        );
+        return {
+          id: nextBlockIdFn(),
+          routineId,
+          position: idx,
+          name: blk.routine.name,
+          kind: "COMPLEX",
+          format: DAILY_ROUTINE_BLOCK_ITEM_FORMAT,
+          setsCount: 1,
+          targetRepsScheme: "",
+          exerciseIdsCsv: blkExIds.join(","),
+          exerciseNamesCsv: "",
+          notes: encodeDailyRoutineBlockHeader(blk.routine.id, blk.routine.name),
+          section: "",
+          subBlock: blk.routine.name,
+        };
+      }
+
+      const ex = item.resolvedExercise!;
+      const drHeader = encodeDailyRoutineExerciseHeader(ex.id, ex.name);
+      const noteAndPrs = encodeAvailableBlockTrackedPrs(
+        (item.note ?? "").trim(),
+        item.defaultTrackedPrs ?? []
+      );
+      const fullNotes = noteAndPrs ? `${drHeader}\n${noteAndPrs}` : drHeader;
+      return {
+        id: nextBlockIdFn(),
+        routineId,
+        position: idx,
+        name: ex.name,
+        kind: "STRENGTH",
+        format: DAILY_ROUTINE_EXERCISE_ITEM_FORMAT,
+        setsCount: 1,
+        targetRepsScheme: "",
+        exerciseIdsCsv: String(ex.id),
+        exerciseNamesCsv: ex.name,
+        notes: fullNotes,
+        section: "",
+        subBlock: "",
+      };
+    });
+  }
+
+  async upsertDailyRoutine(
+    ctx: UserContext,
+    input: UpsertDailyRoutineInput
+  ): Promise<DailyRoutineRecord> {
+    const cleanTitle = input.title.trim();
+    if (!cleanTitle) {
+      throw new Error("Daily Routine title cannot be blank.");
+    }
+    if (!input.items || input.items.length === 0) {
+      throw new Error("Daily Routine must contain at least one Block or Exercise item.");
+    }
+
+    return this.runWithUserMutationLock(ctx, ["exercises", "routines"], async (tx) => {
+      const exerciseReqs: Array<{ name: string; metricType?: string; tracksRepMax?: boolean }> = [];
+      for (const item of input.items) {
+        if (item.item_type === "EXERCISE") {
+          const cleanEx = (item.exercise_name ?? "").trim();
+          if (!cleanEx) {
+            throw new Error("Each item with item_type='EXERCISE' must specify exercise_name.");
+          }
+          exerciseReqs.push({ name: cleanEx, metricType: "WEIGHT", tracksRepMax: true });
+          for (const pr of item.default_tracked_prs ?? []) {
+            const mvName = (pr.movement_name ?? pr.movementName ?? "").trim();
+            if (mvName) {
+              exerciseReqs.push({
+                name: mvName,
+                metricType: "WEIGHT",
+                tracksRepMax: true,
+              });
+            }
+          }
+        }
+      }
+
+      const exerciseMap = await this.resolveExerciseMapInStore(tx, ctx, exerciseReqs);
+      const allExercises = await tx.readCollection<ExerciseRecord>(ctx, "exercises");
+      const exercisesById = new Map<number, ExerciseRecord>(
+        allExercises.map((e) => [Number(e.id), e])
+      );
+      const exercisesByLowerName = new Map<string, ExerciseRecord>(
+        allExercises.map((e) => [e.name.trim().toLowerCase(), e])
+      );
+
+      const routines = await tx.readCollection<RoutineWithBlocksRecord>(ctx, "routines");
+      const activeAvailableRoutines = routines.filter(
+        (r) =>
+          !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+          !isDailyRoutineFormat(r.routine?.defaultFormat)
+      );
+
+      const resolvedItems: Array<{
+        itemType: "BLOCK" | "EXERCISE";
+        resolvedBlock?: RoutineWithBlocksRecord;
+        resolvedExercise?: ExerciseRecord;
+        note?: string;
+        defaultTrackedPrs?: TrackedPrSlotSpec[];
+      }> = [];
+
+      for (const item of input.items) {
+        if (item.item_type === "BLOCK") {
+          const matchedBlock =
+            item.block_id !== undefined
+              ? activeAvailableRoutines.find((r) => r.routine.id === item.block_id)
+              : item.block_title?.trim()
+                ? activeAvailableRoutines.find(
+                    (r) =>
+                      r.routine.name.trim().toLowerCase() ===
+                      item.block_title!.trim().toLowerCase()
+                  )
+                : undefined;
+          if (!matchedBlock) {
+            throw new Error(
+              `Referenced Available Block not found (${item.block_id ?? item.block_title ?? "unspecified"}).`
+            );
+          }
+          resolvedItems.push({ itemType: "BLOCK", resolvedBlock: matchedBlock });
+        } else {
+          const cleanName = (item.exercise_name ?? "").trim();
+          const ex =
+            exerciseMap.get(cleanName.toLowerCase()) ??
+            exercisesByLowerName.get(cleanName.toLowerCase());
+          if (!ex) {
+            throw new Error(`Failed to resolve standalone exercise '${cleanName}'.`);
+          }
+          const normalizedPrs = normalizeTrackedPrSlotsSpec(
+            (item.default_tracked_prs ?? []).map((s) => {
+              const mv = (s.movement_name ?? s.movementName ?? "").trim();
+              const reps = Number(s.rm_reps ?? s.rmReps ?? 1);
+              return {
+                movementName:
+                  exerciseMap.get(mv.toLowerCase())?.name ?? mv,
+                rmReps: reps,
+              };
+            })
+          );
+          resolvedItems.push({
+            itemType: "EXERCISE",
+            resolvedExercise: ex,
+            note: extractCleanRoutineNotes(item.note ?? ""),
+            defaultTrackedPrs: normalizedPrs,
+          });
+        }
+      }
+
+      const existingIdx =
+        input.routine_id !== undefined
+          ? routines.findIndex(
+              (r) =>
+                isDailyRoutineFormat(r.routine?.defaultFormat) &&
+                r.routine?.id === input.routine_id
+            )
+          : routines.findIndex(
+              (r) =>
+                isDailyRoutineFormat(r.routine?.defaultFormat) &&
+                r.routine?.name.trim().toLowerCase() === cleanTitle.toLowerCase()
+            );
+
+      const maxRoutineId = routines.reduce(
+        (max, r) => Math.max(max, Number(r.routine?.id) || 0),
+        0
+      );
+      let maxRoutineBlockId = routines.reduce(
+        (max, r) =>
+          Math.max(max, ...(r.blocks ?? []).map((b) => Number(b.id) || 0)),
+        0
+      );
+      const routineId =
+        existingIdx >= 0 ? routines[existingIdx].routine.id : maxRoutineId + 1;
+
+      const firstExId =
+        resolvedItems.find((it) => it.itemType === "EXERCISE")?.resolvedExercise?.id ??
+        resolvedItems.find((it) => it.itemType === "BLOCK")?.resolvedBlock?.routine
+          .mainExerciseId ??
+        null;
+
+      const storedBlocks = this.buildDailyRoutineStoredBlocksInTx(
+        routineId,
+        resolvedItems,
+        () => ++maxRoutineBlockId
+      );
+
+      const now = Date.now();
+      const record: RoutineWithBlocksRecord = {
+        routine: {
+          id: routineId,
+          name: cleanTitle,
+          description: extractCleanRoutineNotes(input.notes ?? ""),
+          mainExerciseId: firstExId,
+          mainExerciseName: firstExId ? exercisesById.get(firstExId)?.name ?? null : null,
+          defaultFormat: DAILY_ROUTINE_FORMAT,
+          updatedAtMillis: now,
+          deletedAtMillis: null,
+        },
+        blocks: storedBlocks,
+      };
+
+      if (existingIdx >= 0) {
+        routines[existingIdx] = record;
+      } else {
+        routines.push(record);
+      }
+      await tx.writeCollection(ctx, "routines", routines);
+
+      const activeAbRecords = routines
+        .filter(
+          (r) =>
+            !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+            !isDailyRoutineFormat(r.routine?.defaultFormat)
+        )
+        .map((r) =>
+          this.buildAvailableBlockRecord(
+            r,
+            exercisesById,
+            exercisesByLowerName,
+            [],
+            false
+          )
+        );
+      return this.buildDailyRoutineRecord(
+        record,
+        new Map(activeAbRecords.map((b) => [b.id, b])),
+        new Map(activeAbRecords.map((b) => [b.title.trim().toLowerCase(), b])),
+        exercisesById,
+        exercisesByLowerName,
+        []
+      );
+    });
+  }
+
+  async deleteDailyRoutine(
+    ctx: UserContext,
+    input: { routine_id?: number; title?: string }
+  ): Promise<{ deleted: boolean; deletedCount: number; deletedTitles: string[] }> {
+    const cleanTitle = input.title?.trim().toLowerCase();
+    if (input.routine_id === undefined && !cleanTitle) {
+      throw new Error("Provide either 'routine_id' or 'title' to delete a Daily Routine.");
+    }
+    return this.runWithUserMutationLock(ctx, ["routines"], async (tx) => {
+      const routines = await tx.readCollection<RoutineWithBlocksRecord>(ctx, "routines");
+      const now = Date.now();
+      const deletedTitles: string[] = [];
+
+      for (let i = 0; i < routines.length; i++) {
+        const r = routines[i];
+        if (isDeletedTombstone(r.routine?.deletedAtMillis)) continue;
+        if (!isDailyRoutineFormat(r.routine?.defaultFormat)) continue;
+        const matchesId =
+          input.routine_id !== undefined && r.routine.id === input.routine_id;
+        const matchesTitle =
+          Boolean(cleanTitle) && r.routine.name.trim().toLowerCase() === cleanTitle;
+        if (matchesId || matchesTitle) {
+          deletedTitles.push(r.routine.name);
+          routines[i] = {
+            ...r,
+            routine: {
+              ...r.routine,
+              updatedAtMillis: now,
+              deletedAtMillis: now,
+            },
+          };
+        }
+      }
+
+      if (deletedTitles.length > 0) {
+        await tx.writeCollection(ctx, "routines", routines);
+      }
+      return {
+        deleted: deletedTitles.length > 0,
+        deletedCount: deletedTitles.length,
+        deletedTitles,
+      };
+    });
+  }
+
+  async logDailyRoutineSession(
+    ctx: UserContext,
+    input: LogDailyRoutineSessionInput
+  ): Promise<{
+    session: SessionWithBlocksRecord;
+    recordedPrs: RepMaxRecord[];
+    updatedRoutineTemplate: DailyRoutineRecord | null;
+  }> {
+    return this.runWithUserMutationLock(
+      ctx,
+      ["exercises", "routines", "sessions", "cycle_goals", "rep_maxes"],
+      async (tx) => {
+        const targetCycle = await this.resolveTargetCycleInStore(
+          tx,
+          ctx,
+          input.cycle_id
+        );
+        const routines = await tx.readCollection<RoutineWithBlocksRecord>(ctx, "routines");
+        const cleanRoutineTitle = input.routine_title?.trim() ?? "";
+
+        const matchedDrIdx =
+          input.routine_id !== undefined
+            ? routines.findIndex(
+                (r) =>
+                  !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+                  isDailyRoutineFormat(r.routine?.defaultFormat) &&
+                  r.routine.id === input.routine_id
+              )
+            : cleanRoutineTitle
+              ? routines.findIndex(
+                  (r) =>
+                    !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+                    isDailyRoutineFormat(r.routine?.defaultFormat) &&
+                    r.routine.name.trim().toLowerCase() ===
+                      cleanRoutineTitle.toLowerCase()
+                )
+              : -1;
+        const matchedDr = matchedDrIdx >= 0 ? routines[matchedDrIdx] : undefined;
+
+        const nonDailyRoutines = routines.filter(
+          (r) =>
+            !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+            !isDailyRoutineFormat(r.routine?.defaultFormat)
+        );
+
+        const exReqs: Array<{ name: string; metricType?: string; tracksRepMax?: boolean }> =
+          [];
+        for (const item of input.logged_items) {
+          if (item.exercise_name?.trim()) {
+            exReqs.push({
+              name: item.exercise_name.trim(),
+              metricType: "WEIGHT",
+              tracksRepMax: true,
+            });
+          }
+          for (const log of item.exercise_logs ?? []) {
+            const logName = (log.exercise_name ?? log.exerciseName ?? "").trim();
+            if (logName) {
+              exReqs.push({
+                name: logName,
+                metricType: "WEIGHT",
+                tracksRepMax: true,
+              });
+            }
+          }
+          for (const pr of item.achieved_prs ?? []) {
+            if (pr.movement_name?.trim()) {
+              exReqs.push({
+                name: pr.movement_name.trim(),
+                metricType: "WEIGHT",
+                tracksRepMax: true,
+              });
+            }
+          }
+        }
+        const exerciseMap = await this.resolveExerciseMapInStore(tx, ctx, exReqs);
+        const allExercises = await tx.readCollection<ExerciseRecord>(ctx, "exercises");
+        const exercisesById = new Map<number, ExerciseRecord>(
+          allExercises.map((e) => [Number(e.id), e])
+        );
+        const exercisesByLowerName = new Map<string, ExerciseRecord>(
+          allExercises.map((e) => [e.name.trim().toLowerCase(), e])
+        );
+
+        const resolvedSessionTitle =
+          input.session_title?.trim() ||
+          matchedDr?.routine.name ||
+          cleanRoutineTitle ||
+          input.logged_items[0]?.block_title?.trim() ||
+          input.logged_items[0]?.exercise_name?.trim() ||
+          "Daily Routine Session";
+
+        const sessions = await tx.readCollection<SessionWithBlocksRecord>(ctx, "sessions");
+        const existingSessionIdx = sessions.findIndex(
+          (s) =>
+            !isDeletedTombstone(s.session?.deletedAtMillis) &&
+            s.session.date === input.date &&
+            s.session.title.trim().toLowerCase() === resolvedSessionTitle.toLowerCase()
+        );
+        const maxSessionId = sessions.reduce(
+          (max, s) => Math.max(max, Number(s.session?.id) || 0),
+          0
+        );
+        let maxBlockId = sessions.reduce(
+          (max, s) =>
+            Math.max(max, ...(s.blocks ?? []).map((b) => Number(b.block?.id) || 0)),
+          0
+        );
+        let maxSetId = sessions.reduce(
+          (max, s) =>
+            Math.max(
+              max,
+              ...(s.blocks ?? []).flatMap((b) =>
+                (b.sets ?? []).map((st) => Number(st.id) || 0)
+              )
+            ),
+          0
+        );
+
+        const sessionId =
+          existingSessionIdx >= 0
+            ? sessions[existingSessionIdx].session.id
+            : maxSessionId + 1;
+        const now = Date.now();
+
+        const createdBlocks: SessionBlockEntryRecord[] = [];
+        const pendingItemPrs: Array<{
+          pr: { movement_name: string; rm_reps: number; weight_kg: number };
+          targetBlockId: number;
+          sourceBlockTitle: string;
+        }> = [];
+        const templateItemsForUpdate: Array<{
+          itemType: "BLOCK" | "EXERCISE";
+          resolvedBlock?: RoutineWithBlocksRecord;
+          resolvedExercise?: ExerciseRecord;
+          note?: string;
+          defaultTrackedPrs?: TrackedPrSlotSpec[];
+        }> = [];
+
+        for (const item of input.logged_items) {
+          if (item.item_type === "BLOCK") {
+            const cleanTitle = (item.block_title ?? "").trim();
+            const matchedAb =
+              item.block_id !== undefined
+                ? nonDailyRoutines.find((r) => r.routine.id === item.block_id)
+                : cleanTitle
+                  ? nonDailyRoutines.find(
+                      (r) =>
+                        r.routine.name.trim().toLowerCase() === cleanTitle.toLowerCase()
+                    )
+                  : undefined;
+            const decodedAb = matchedAb
+              ? this.buildAvailableBlockRecord(
+                  matchedAb,
+                  exercisesById,
+                  exercisesByLowerName,
+                  [],
+                  false
+                )
+              : undefined;
+            const resolvedBlockTitle =
+              matchedAb?.routine.name || cleanTitle || "Training Block";
+            const instructions = decodedAb?.instructions ?? "";
+
+            const movementLogs: Array<{
+              exerciseName: string;
+              weights: number[];
+              setCountForEmpty?: number;
+            }> =
+              item.exercise_logs && item.exercise_logs.length > 0
+                ? item.exercise_logs
+                    .map((l) => ({
+                      exerciseName: (l.exercise_name ?? l.exerciseName ?? "").trim() || resolvedBlockTitle,
+                      weights: l.weights ?? [],
+                      setCountForEmpty: l.set_count_for_empty ?? l.setCountForEmpty,
+                    }))
+                : item.set_weights_kg !== undefined &&
+                    (decodedAb?.exercises.length ?? 0) <= 1
+                  ? [
+                      {
+                        exerciseName:
+                          decodedAb?.exercises[0]?.name || resolvedBlockTitle,
+                        weights: item.set_weights_kg,
+                      },
+                    ]
+                  : decodedAb && decodedAb.exercises.length > 0
+                    ? decodedAb.exercises.map((e) => ({
+                        exerciseName: e.name,
+                        weights: item.set_weights_kg ?? [],
+                        setCountForEmpty: 3,
+                      }))
+                    : [
+                        {
+                          exerciseName: resolvedBlockTitle,
+                          weights: item.set_weights_kg ?? [],
+                          setCountForEmpty: 1,
+                        },
+                      ];
+
+            const blockIdsForItem: number[] = [];
+            const exIdsForBlock: Array<{ exId: number; sessionBlockId: number }> = [];
+
+            for (const mLog of movementLogs) {
+              const ex =
+                exerciseMap.get(mLog.exerciseName.trim().toLowerCase()) ??
+                exercisesByLowerName.get(mLog.exerciseName.trim().toLowerCase()) ??
+                null;
+              const blockId = ++maxBlockId;
+              blockIdsForItem.push(blockId);
+              if (ex) {
+                exIdsForBlock.push({ exId: ex.id, sessionBlockId: blockId });
+              }
+              const weightsList = mLog.weights ?? [];
+              const sets: SessionSetRecord[] =
+                weightsList.length > 0
+                  ? weightsList.map((w, sIdx) => ({
+                      id: ++maxSetId,
+                      blockId,
+                      position: sIdx,
+                      groupIndex: 0,
+                      reps: 1,
+                      weight: Number(w) > 0 ? Number(w) : 0.0,
+                      metricValue: 0.0,
+                      isWarmup: false,
+                      isFailed: false,
+                      notes: "",
+                    }))
+                  : Array.from(
+                      { length: Math.max(1, Math.trunc(mLog.setCountForEmpty ?? 1)) },
+                      (_, sIdx) => ({
+                        id: ++maxSetId,
+                        blockId,
+                        position: sIdx,
+                        groupIndex: 0,
+                        reps: 1,
+                        weight: 0.0,
+                        metricValue: 0.0,
+                        isWarmup: false,
+                        isFailed: false,
+                        notes: "",
+                      })
+                    );
+
+              createdBlocks.push({
+                block: {
+                  id: blockId,
+                  sessionId,
+                  position: createdBlocks.length,
+                  name: ex?.name ?? mLog.exerciseName.trim(),
+                  kind: "STRENGTH",
+                  format: "",
+                  scheme: "",
+                  mainExerciseId: ex ? ex.id : null,
+                  mainExerciseName: ex ? ex.name : null,
+                  routineId: matchedAb ? matchedAb.routine.id : null,
+                  routineName: matchedAb ? matchedAb.routine.name : resolvedBlockTitle,
+                  description: instructions,
+                  resultText: "",
+                  resultValue: null,
+                  notes: "",
+                  section: "",
+                  subBlock: resolvedBlockTitle,
+                  exerciseIdsCsv: ex ? String(ex.id) : "",
+                  exerciseNamesCsv: ex ? ex.name : mLog.exerciseName.trim(),
+                  isCompleted: true,
+                },
+                sets,
+              });
+            }
+
+            if (matchedAb) {
+              templateItemsForUpdate.push({
+                itemType: "BLOCK",
+                resolvedBlock: matchedAb,
+              });
+            }
+
+            for (const pr of item.achieved_prs ?? []) {
+              const prEx = exerciseMap.get(pr.movement_name.trim().toLowerCase());
+              const targetBlockId =
+                (prEx
+                  ? exIdsForBlock.find((x) => x.exId === prEx.id)?.sessionBlockId
+                  : undefined) ?? blockIdsForItem[0];
+              if (targetBlockId) {
+                pendingItemPrs.push({
+                  pr,
+                  targetBlockId,
+                  sourceBlockTitle: resolvedBlockTitle,
+                });
+              }
+            }
+          } else {
+            const cleanExName = (item.exercise_name ?? "").trim();
+            if (!cleanExName) {
+              throw new Error(
+                "Each logged item with item_type='EXERCISE' must provide exercise_name."
+              );
+            }
+            const ex =
+              exerciseMap.get(cleanExName.toLowerCase()) ??
+              exercisesByLowerName.get(cleanExName.toLowerCase());
+            if (!ex) {
+              throw new Error(`Failed to resolve standalone exercise '${cleanExName}'.`);
+            }
+            const blockId = ++maxBlockId;
+            const cleanNote = (item.note ?? "").trim();
+            const rawWeights =
+              item.set_weights_kg ?? item.exercise_logs?.[0]?.weights ?? [];
+            const sets: SessionSetRecord[] =
+              rawWeights.length > 0
+                ? rawWeights.map((w, sIdx) => ({
+                    id: ++maxSetId,
+                    blockId,
+                    position: sIdx,
+                    groupIndex: 0,
+                    reps: 1,
+                    weight: Number(w) > 0 ? Number(w) : 0.0,
+                    metricValue: 0.0,
+                    isWarmup: false,
+                    isFailed: false,
+                    notes: "",
+                  }))
+                : Array.from({ length: 4 }, (_, sIdx) => ({
+                    id: ++maxSetId,
+                    blockId,
+                    position: sIdx,
+                    groupIndex: 0,
+                    reps: 1,
+                    weight: 0.0,
+                    metricValue: 0.0,
+                    isWarmup: false,
+                    isFailed: false,
+                    notes: "",
+                  }));
+
+            createdBlocks.push({
+              block: {
+                id: blockId,
+                sessionId,
+                position: createdBlocks.length,
+                name: ex.name,
+                kind: "STRENGTH",
+                format: STANDALONE_EXERCISE_SESSION_FORMAT,
+                scheme: "",
+                mainExerciseId: ex.id,
+                mainExerciseName: ex.name,
+                routineId: null,
+                routineName: null,
+                description: cleanNote,
+                resultText: "",
+                resultValue: null,
+                notes: "",
+                section: "",
+                subBlock: "",
+                exerciseIdsCsv: String(ex.id),
+                exerciseNamesCsv: ex.name,
+                isCompleted: true,
+              },
+              sets,
+            });
+
+            const itemPrSlots = normalizeTrackedPrSlotsSpec(
+              (item.achieved_prs ?? [])
+                .filter((p) => p.rm_reps >= 1 && p.rm_reps <= 20)
+                .map((p) => ({
+                  movementName:
+                    exerciseMap.get(p.movement_name.trim().toLowerCase())?.name ??
+                    p.movement_name.trim(),
+                  rmReps: p.rm_reps,
+                }))
+            );
+            templateItemsForUpdate.push({
+              itemType: "EXERCISE",
+              resolvedExercise: ex,
+              note: cleanNote,
+              defaultTrackedPrs: itemPrSlots,
+            });
+
+            for (const pr of item.achieved_prs ?? []) {
+              pendingItemPrs.push({
+                pr,
+                targetBlockId: blockId,
+                sourceBlockTitle: ex.name,
+              });
+            }
+          }
+        }
+
+        const sessionRecord: SessionWithBlocksRecord = {
+          session: {
+            id: sessionId,
+            cycleId: targetCycle.cycleId,
+            cycleName: targetCycle.cycleName,
+            isActiveCycle: targetCycle.isActive,
+            date: input.date,
+            title: resolvedSessionTitle,
+            notes: input.notes ?? "",
+            updatedAtMillis: now,
+            deletedAtMillis: null,
+          },
+          blocks: createdBlocks,
+        };
+
+        if (existingSessionIdx >= 0) {
+          sessions[existingSessionIdx] = sessionRecord;
+        } else {
+          sessions.push(sessionRecord);
+        }
+        await tx.writeCollection(ctx, "sessions", sessions);
+
+        const repMaxes = await tx.readCollection<RepMaxRecord>(ctx, "rep_maxes");
+        let maxRepMaxId = repMaxes.reduce(
+          (max, rm) => Math.max(max, Number(rm.id) || 0),
+          0
+        );
+        const recordedPrs: RepMaxRecord[] = [];
+        let repMaxMutated = false;
+
+        for (const pending of pendingItemPrs) {
+          const ex =
+            exerciseMap.get(pending.pr.movement_name.trim().toLowerCase()) ??
+            exercisesByLowerName.get(pending.pr.movement_name.trim().toLowerCase());
+          if (!ex) {
+            throw new Error(
+              `Failed to resolve PR movement '${pending.pr.movement_name}'.`
+            );
+          }
+          const existingRmIdx = repMaxes.findIndex(
+            (rm) =>
+              rm.exerciseId === ex.id &&
+              rm.reps === pending.pr.rm_reps &&
+              Math.round(Number(rm.weight) * 100) ===
+                Math.round(pending.pr.weight_kg * 100) &&
+              rm.date === input.date
+          );
+
+          if (existingRmIdx >= 0) {
+            const updatedRm: RepMaxRecord = {
+              ...repMaxes[existingRmIdx],
+              exerciseName: ex.name,
+              sessionId,
+              blockId: pending.targetBlockId,
+              sessionTitle: resolvedSessionTitle,
+              sourceBlockTitle: pending.sourceBlockTitle,
+              updatedAtMillis: now,
+              deletedAtMillis: null,
+            };
+            repMaxes[existingRmIdx] = updatedRm;
+            repMaxMutated = true;
+            recordedPrs.push(updatedRm);
+          } else {
+            const createdRm: RepMaxRecord = {
+              id: ++maxRepMaxId,
+              exerciseId: ex.id,
+              exerciseName: ex.name,
+              reps: pending.pr.rm_reps,
+              weight: pending.pr.weight_kg,
+              date: input.date,
+              cycleId: targetCycle.cycleId,
+              cycleName: targetCycle.cycleName,
+              isActiveCycle: targetCycle.isActive,
+              sessionId,
+              blockId: pending.targetBlockId,
+              sessionTitle: resolvedSessionTitle,
+              sourceBlockTitle: pending.sourceBlockTitle,
+              updatedAtMillis: now,
+              deletedAtMillis: null,
+            };
+            repMaxes.push(createdRm);
+            repMaxMutated = true;
+            recordedPrs.push(createdRm);
+          }
+        }
+
+        if (repMaxMutated) {
+          await tx.writeCollection(ctx, "rep_maxes", repMaxes);
+        }
+
+        let updatedRoutineTemplate: DailyRoutineRecord | null = null;
+        if (
+          input.update_routine_template === true &&
+          matchedDrIdx >= 0 &&
+          matchedDr &&
+          templateItemsForUpdate.length > 0
+        ) {
+          let maxRoutineBlockId = routines.reduce(
+            (max, r) =>
+              Math.max(max, ...(r.blocks ?? []).map((b) => Number(b.id) || 0)),
+            0
+          );
+          const storedBlocks = this.buildDailyRoutineStoredBlocksInTx(
+            matchedDr.routine.id,
+            templateItemsForUpdate,
+            () => ++maxRoutineBlockId
+          );
+          const firstExId =
+            templateItemsForUpdate.find((t) => t.itemType === "EXERCISE")
+              ?.resolvedExercise?.id ??
+            templateItemsForUpdate.find((t) => t.itemType === "BLOCK")?.resolvedBlock
+              ?.routine.mainExerciseId ??
+            matchedDr.routine.mainExerciseId;
+
+          const updatedDrRecord: RoutineWithBlocksRecord = {
+            routine: {
+              ...matchedDr.routine,
+              mainExerciseId: firstExId,
+              mainExerciseName: firstExId
+                ? exercisesById.get(firstExId)?.name ?? null
+                : null,
+              defaultFormat: DAILY_ROUTINE_FORMAT,
+              updatedAtMillis: now,
+              deletedAtMillis: null,
+            },
+            blocks: storedBlocks,
+          };
+          routines[matchedDrIdx] = updatedDrRecord;
+          await tx.writeCollection(ctx, "routines", routines);
+
+          const activeAbRecords = routines
+            .filter(
+              (r) =>
+                !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+                !isDailyRoutineFormat(r.routine?.defaultFormat)
+            )
+            .map((r) =>
+              this.buildAvailableBlockRecord(
+                r,
+                exercisesById,
+                exercisesByLowerName,
+                [],
+                false
+              )
+            );
+          updatedRoutineTemplate = this.buildDailyRoutineRecord(
+            updatedDrRecord,
+            new Map(activeAbRecords.map((b) => [b.id, b])),
+            new Map(activeAbRecords.map((b) => [b.title.trim().toLowerCase(), b])),
+            exercisesById,
+            exercisesByLowerName,
+            [sessionRecord]
+          );
+        }
+
+        return {
+          session: sessionRecord,
+          recordedPrs,
+          updatedRoutineTemplate,
+        };
+      }
+    );
+  }
+
+  async getDailyRoutineProgress(
+    ctx: UserContext,
+    input: { routine_id?: number; routine_title?: string }
+  ): Promise<{
+    dailyRoutine: DailyRoutineRecord;
+    items: DailyRoutineConstituentProgressRecord[];
+  }> {
+    if (input.routine_id === undefined && !input.routine_title?.trim()) {
+      throw new Error(
+        "Provide 'routine_id' or 'routine_title' to query Daily Routine progress."
+      );
+    }
+    const [routines, exercises, sessions, repMaxes] = await Promise.all([
+      this.backing.readCollection<RoutineWithBlocksRecord>(ctx, "routines"),
+      this.backing.readCollection<ExerciseRecord>(ctx, "exercises"),
+      this.backing.readCollection<SessionWithBlocksRecord>(ctx, "sessions"),
+      this.backing.readCollection<RepMaxRecord>(ctx, "rep_maxes"),
+    ]);
+
+    const cleanTitle = input.routine_title?.trim().toLowerCase();
+    const targetRaw = routines.find(
+      (r) =>
+        !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+        isDailyRoutineFormat(r.routine?.defaultFormat) &&
+        ((input.routine_id !== undefined && r.routine.id === input.routine_id) ||
+          (cleanTitle !== undefined &&
+            r.routine.name.trim().toLowerCase() === cleanTitle))
+    );
+    if (!targetRaw) {
+      throw new Error(
+        `Active Daily Routine not found (${input.routine_id ?? input.routine_title}).`
+      );
+    }
+
+    const exercisesById = new Map<number, ExerciseRecord>(
+      exercises.map((e) => [Number(e.id), e])
+    );
+    const exercisesByLowerName = new Map<string, ExerciseRecord>(
+      exercises.map((e) => [e.name.trim().toLowerCase(), e])
+    );
+    const activeSessions = sessions
+      .filter((s) => !isDeletedTombstone(s.session?.deletedAtMillis))
+      .sort((a, b) => {
+        const cmp = (b.session?.date ?? "").localeCompare(a.session?.date ?? "");
+        return cmp !== 0
+          ? cmp
+          : (Number(b.session?.id) || 0) - (Number(a.session?.id) || 0);
+      });
+
+    const activeAvailableBlocks = routines
+      .filter(
+        (r) =>
+          !isDeletedTombstone(r.routine?.deletedAtMillis) &&
+          !isDailyRoutineFormat(r.routine?.defaultFormat)
+      )
+      .map((r) =>
+        this.buildAvailableBlockRecord(
+          r,
+          exercisesById,
+          exercisesByLowerName,
+          [],
+          false
+        )
+      );
+    const abById = new Map<number, AvailableBlockRecord>(
+      activeAvailableBlocks.map((b) => [b.id, b])
+    );
+    const abByLowerTitle = new Map<string, AvailableBlockRecord>(
+      activeAvailableBlocks.map((b) => [b.title.trim().toLowerCase(), b])
+    );
+
+    const dailyRoutine = this.buildDailyRoutineRecord(
+      targetRaw,
+      abById,
+      abByLowerTitle,
+      exercisesById,
+      exercisesByLowerName,
+      activeSessions
+    );
+    const activeRms = repMaxes.filter(
+      (rm) => !isDeletedTombstone(rm.deletedAtMillis) && Number(rm.weight) > 0
+    );
+
+    const items: DailyRoutineConstituentProgressRecord[] = dailyRoutine.items.map(
+      (item) => {
+        const itemTitle =
+          item.itemType === "BLOCK"
+            ? item.blockTitle ?? "Block"
+            : item.exerciseName ?? "Exercise";
+        const subtitle =
+          item.itemType === "BLOCK" ? item.instructions ?? "" : item.note ?? "";
+
+        const matchedEntries: Array<{
+          sessionId: number;
+          date: string;
+          sessionTitle: string;
+          weightsKg: number[];
+          volumeKg: number;
+        }> = [];
+
+        const ascSessions = [...activeSessions].reverse();
+        for (const sw of ascSessions) {
+          const matchingBlocks = (sw.blocks ?? []).filter((entry) => {
+            const blk = entry.block;
+            if (item.itemType === "BLOCK") {
+              if (
+                (blk.format ?? "").trim().toUpperCase() ===
+                STANDALONE_EXERCISE_SESSION_FORMAT
+              ) {
+                return false;
+              }
+              if (item.blockId && blk.routineId === item.blockId) return true;
+              const tLower = itemTitle.trim().toLowerCase();
+              return (
+                (blk.subBlock ?? "").trim().toLowerCase() === tLower ||
+                blk.name.trim().toLowerCase() === tLower
+              );
+            } else {
+              const exId = item.exerciseId ?? 0;
+              if (exId > 0 && blk.mainExerciseId === exId) return true;
+              const csvIds = (blk.exerciseIdsCsv ?? "")
+                .split(",")
+                .map((s) => Number.parseInt(s.trim(), 10))
+                .filter((n) => Number.isFinite(n) && n > 0);
+              if (exId > 0 && blk.mainExerciseId == null && csvIds.length === 1 && csvIds[0] === exId) {
+                return true;
+              }
+              return blk.name.trim().toLowerCase() === itemTitle.trim().toLowerCase();
+            }
+          });
+
+          if (matchingBlocks.length === 0) continue;
+
+          const weightsKg: number[] = [];
+          let volumeKg = 0;
+          for (const entry of matchingBlocks) {
+            const workingSets = (entry.sets ?? []).filter(
+              (st) => !st.isWarmup && !st.isFailed
+            );
+            const targetSets =
+              workingSets.length > 0 ? workingSets : entry.sets ?? [];
+            for (const st of targetSets) {
+              const w = Number(st.weight);
+              if (Number.isFinite(w) && w > 0) {
+                weightsKg.push(w);
+                volumeKg += w * Math.max(1, Number(st.reps) || 1);
+              }
+            }
+          }
+          if (weightsKg.length > 0) {
+            matchedEntries.push({
+              sessionId: sw.session.id,
+              date: sw.session.date,
+              sessionTitle: sw.session.title,
+              weightsKg,
+              volumeKg: this.round2dp(volumeKg),
+            });
+          }
+        }
+
+        const byDate = new Map<
+          string,
+          { weights: number[]; volumeKg: number }
+        >();
+        for (const m of matchedEntries) {
+          const cur = byDate.get(m.date) ?? { weights: [], volumeKg: 0 };
+          cur.weights.push(...m.weightsKg);
+          cur.volumeKg = this.round2dp(cur.volumeKg + m.volumeKg);
+          byDate.set(m.date, cur);
+        }
+
+        const chartPoints = Array.from(byDate.entries())
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([date, agg]) => {
+            const topKg = Math.max(...agg.weights);
+            const avg =
+              agg.weights.reduce((s, w) => s + w, 0) / agg.weights.length;
+            return {
+              date,
+              topKg: this.round2dp(topKg),
+              averageKg: this.round2dp(avg),
+              volumeKg: agg.volumeKg,
+            };
+          });
+
+        const allTimeTopKg =
+          chartPoints.length > 0
+            ? this.round2dp(Math.max(...chartPoints.map((c) => c.topKg)))
+            : null;
+        const latestDay =
+          chartPoints.length > 0 ? chartPoints[chartPoints.length - 1] : null;
+        const prevDay =
+          chartPoints.length > 1 ? chartPoints[chartPoints.length - 2] : null;
+        const topDeltaKg =
+          latestDay && prevDay
+            ? this.round2dp(latestDay.topKg - prevDay.topKg)
+            : null;
+        const lastSetsKg = latestDay
+          ? byDate.get(latestDay.date)?.weights ?? []
+          : [];
+
+        const ab = item.blockId ? abById.get(item.blockId) : undefined;
+        const targetExIds = new Set<number>();
+        if (item.itemType === "BLOCK" && ab) {
+          for (const ex of ab.exercises) targetExIds.add(ex.id);
+          for (const p of ab.trackedPrs) {
+            if (p.movementId > 0) targetExIds.add(p.movementId);
+          }
+        } else if (item.exerciseId && item.exerciseId > 0) {
+          targetExIds.add(item.exerciseId);
+        }
+
+        const bestByKey = new Map<string, RepMaxRecord>();
+        for (const rm of activeRms) {
+          if (!targetExIds.has(rm.exerciseId)) continue;
+          const k = `${rm.exerciseId}#${rm.reps}`;
+          const prev = bestByKey.get(k);
+          if (!prev || Number(rm.weight) > Number(prev.weight)) {
+            bestByKey.set(k, rm);
+          }
+        }
+
+        const trackedPrs = item.defaultTrackedPrs.map((slot) => {
+          const exId =
+            slot.movementId > 0
+              ? slot.movementId
+              : exercisesByLowerName.get(slot.movementName.trim().toLowerCase())?.id ??
+                0;
+          const matchedRm = bestByKey.get(`${exId}#${slot.rmReps}`);
+          return {
+            movementId: exId,
+            movementName: slot.movementName,
+            rmReps: slot.rmReps,
+            bestWeightKg: matchedRm ? Number(matchedRm.weight) : null,
+          };
+        });
+
+        const recentSessions = [...matchedEntries]
+          .reverse()
+          .slice(0, 10)
+          .map((m) => ({
+            sessionId: m.sessionId,
+            date: m.date,
+            sessionTitle: m.sessionTitle,
+            topKg:
+              m.weightsKg.length > 0
+                ? this.round2dp(Math.max(...m.weightsKg))
+                : null,
+            weightsKg: m.weightsKg,
+          }));
+
+        return {
+          itemType: item.itemType,
+          title: itemTitle,
+          subtitle,
+          allTimeTopKg,
+          lastTopKg: latestDay?.topKg ?? null,
+          lastTopDate: latestDay?.date ?? null,
+          lastAverageKg: latestDay?.averageKg ?? null,
+          lastVolumeKg: latestDay?.volumeKg ?? null,
+          topDeltaKg,
+          lastSetsKg,
+          trackedPrs,
+          chartPoints,
+          recentSessions,
+        };
+      }
+    );
+
+    return { dailyRoutine, items };
   }
 }

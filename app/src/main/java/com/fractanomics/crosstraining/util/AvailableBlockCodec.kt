@@ -101,7 +101,8 @@ data class HydratedAvailableBlockSeed(
     val rawKind: BlockKind = BlockKind.STRENGTH,
     val rawIsCompleted: Boolean = true,
     val exercises: List<HydratedBlockExerciseSeed>,
-    val persistedRepMaxes: List<RepMax>
+    val persistedRepMaxes: List<RepMax>,
+    val isStandaloneExercise: Boolean = false
 )
 
 data class SessionBlockHydrationResult(
@@ -637,7 +638,8 @@ object AvailableBlockCodec {
         var lastSignature: String? = null
 
         orderedBlocks.forEachIndexed { idx, bws ->
-            val matchedBlock = resolveMatchingAvailableBlock(bws.block, availableBlocks)
+            val isStandaloneEx = bws.block.format.equals(STANDALONE_EXERCISE_SESSION_FORMAT, ignoreCase = true)
+            val matchedBlock = if (isStandaloneEx) null else resolveMatchingAvailableBlock(bws.block, availableBlocks)
             if (isResidualLegacyBlock(bws, matchedBlock)) {
                 residualLegacy += bws
                 lastSignature = null
@@ -646,11 +648,12 @@ object AvailableBlockCodec {
 
             val rawSub = bws.block.subBlock.trim()
             val signature = when {
+                isStandaloneEx -> "standalone_ex:$idx"
                 matchedBlock != null -> "ab:${matchedBlock.id}"
                 rawSub.isNotEmpty() -> "sub:${rawSub.lowercase()}"
                 else -> "single:$idx"
             }
-            if (signature != lastSignature || signature.startsWith("single:")) {
+            if (signature != lastSignature || signature.startsWith("single:") || signature.startsWith("standalone_ex:")) {
                 currentRun += 1
                 lastSignature = signature
                 val key = when {
@@ -771,7 +774,8 @@ object AvailableBlockCodec {
                 rawKind = firstBlock.kind,
                 rawIsCompleted = firstBlock.isCompleted,
                 exercises = exerciseSeeds,
-                persistedRepMaxes = persistedRms
+                persistedRepMaxes = persistedRms,
+                isStandaloneExercise = firstBlock.format.equals(STANDALONE_EXERCISE_SESSION_FORMAT, ignoreCase = true)
             )
         }
 

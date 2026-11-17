@@ -424,7 +424,7 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
         openWorldHint?: boolean;
       };
     }>;
-    assert.equal(tools.length, 34, `Expected 34 registered tools, got ${tools.length}`);
+    assert.equal(tools.length, 39, `Expected 39 registered tools, got ${tools.length}`);
     const toolsJson = JSON.stringify(tools);
     assert.equal(toolsJson.includes('"$ref"'), false, "Tool schemas must never contain $ref (rejected by Gemini)");
     assert.equal(
@@ -446,6 +446,8 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       "list_weight_entries",
       "list_daily_logs",
       "list_available_blocks",
+      "list_daily_routines",
+      "get_daily_routine_progress",
     ]);
     const expectedDeleteTools = new Set([
       "delete_routine",
@@ -454,6 +456,7 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       "delete_weight_entry",
       "delete_daily_log",
       "delete_available_block",
+      "delete_daily_routine",
     ]);
 
     for (const tool of tools) {
@@ -1813,5 +1816,168 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     }>;
     assert.equal(activeAfterRevive.length, 2);
     assert.equal(activeAfterRevive.find((r) => r.reps === 1)?.deletedAtMillis ?? null, null);
+  });
+
+  it("Daily Routines MCP parity: CRUD, dr: vs ab: isolation, log_daily_routine_session with template sync & get_daily_routine_progress", async () => {
+    let msgId = 950;
+    const callTool = async (name: string, argumentsObj: Record<string, unknown>) => {
+      const id = msgId++;
+      const res = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: "Bearer dev-static-token-123",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: argumentsObj },
+        }),
+      });
+      assert.equal(res.status, 200);
+      const contentType = res.headers.get("content-type") || "";
+      const resp = contentType.includes("text/event-stream")
+        ? JSON.parse(
+            (await res.text())
+              .split("\n")
+              .find((l) => l.startsWith("data: "))!
+              .slice(6)
+          )
+        : await res.json();
+      assert.ok(!resp.error, `Tool ${name} returned JSON-RPC error: ${JSON.stringify(resp.error)}`);
+      assert.notEqual(
+        resp.result?.isError,
+        true,
+        `Tool ${name} returned error result: ${JSON.stringify(resp.result)}`
+      );
+      return JSON.parse(resp.result.content[0].text);
+    };
+
+    // 1. Seed a Saved Available Block named "Lower Power"
+    const blockPayload = await callTool("upsert_available_block", {
+      title: "Lower Power",
+      instructions: "Warm up + 3x5 Heavy",
+      exercises: ["Back Squat"],
+      trackedPrs: [{ movementName: "Back Squat", rmReps: 5 }],
+    });
+    const savedBlockId = blockPayload.availableBlock.id as number;
+    assert.ok(savedBlockId > 0);
+
+    // 2. Create a Daily Routine with the EXACT SAME title "Lower Power" (dr: vs ab: isolation)
+    const routineUpsert = await callTool("upsert_daily_routine", {
+      title: "Lower Power",
+      notes: "Primary leg day",
+      items: [
+        { item_type: "BLOCK", block_id: savedBlockId },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Romanian Deadlift",
+          note: "3s eccentric · RIR 2",
+          default_tracked_prs: [{ movementName: "Romanian Deadlift", rmReps: 8 }],
+        },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Seated Calf Raise",
+          note: "Full stretch",
+        },
+      ],
+    });
+    const dailyRoutine = routineUpsert.dailyRoutine;
+    assert.ok(dailyRoutine.id > 0);
+    assert.notEqual(dailyRoutine.id, savedBlockId, "Daily Routine must not overwrite same-named Available Block");
+    assert.equal(dailyRoutine.blockCount, 1);
+    assert.equal(dailyRoutine.exerciseCount, 2);
+    assert.equal(dailyRoutine.lastSessionDate, null);
+
+    // 3. list_available_blocks excludes DAILY_ROUTINE, and get_workout_summary reports dailyRoutineCount
+    const blocksList = await callTool("list_available_blocks", {});
+    assert.equal(
+      blocksList.availableBlocks.filter((b: { title: string }) => b.title === "Lower Power").length,
+      1,
+      "Only the Available Block should appear in list_available_blocks"
+    );
+    const routinesList = await callTool("list_daily_routines", { query: "Lower Power" });
+    assert.equal(routinesList.count, 1);
+    assert.equal(routinesList.dailyRoutines[0].items.length, 3);
+
+    const summaryBefore = await callTool("get_workout_summary", {});
+    assert.ok(summaryBefore.dailyRoutineCount >= 1);
+
+    // 4. Log Session #1 from the Daily Routine with an extra exercise + update_routine_template=true + achieved PR
+    const log1 = await callTool("log_daily_routine_session", {
+      date: "2026-11-10",
+      routine_id: dailyRoutine.id,
+      update_routine_template: true,
+      logged_items: [
+        {
+          item_type: "BLOCK",
+          block_id: savedBlockId,
+          exercise_logs: [{ exerciseName: "Back Squat", weights: [110, 115, 120] }],
+          achieved_prs: [{ movement_name: "Back Squat", rm_reps: 5, weight_kg: 120 }],
+        },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Romanian Deadlift",
+          note: "3s eccentric · RIR 2",
+          set_weights_kg: [90, 95, 95],
+        },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Weighted Plank",
+          note: "3x45s",
+          set_weights_kg: [20, 20],
+        },
+      ],
+    });
+    assert.equal(log1.recordedPrsCount, 1);
+    assert.equal(log1.session.blocks.length, 3);
+    assert.equal(log1.session.blocks[0].block.routineId, savedBlockId);
+    assert.equal(log1.session.blocks[1].block.format, "STANDALONE_EXERCISE");
+    assert.equal(log1.session.blocks[1].block.routineId, null);
+    assert.equal(log1.session.blocks[1].block.description, "3s eccentric · RIR 2");
+    assert.ok(log1.updatedRoutineTemplate);
+    assert.equal(log1.updatedRoutineTemplate.items.length, 3);
+    assert.equal(log1.updatedRoutineTemplate.items[2].exerciseName, "Weighted Plank");
+
+    // 5. Log an ad-hoc standalone session for Romanian Deadlift on 2026-11-15 to test cross-app progress
+    await callTool("log_daily_routine_session", {
+      date: "2026-11-15",
+      session_title: "Quick Pull",
+      logged_items: [
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Romanian Deadlift",
+          set_weights_kg: [100, 102.5],
+        },
+      ],
+    });
+
+    // 6. get_daily_routine_progress unifies history across routine and standalone sessions
+    const progress = await callTool("get_daily_routine_progress", { routine_id: dailyRoutine.id });
+    assert.equal(progress.dailyRoutine.title, "Lower Power");
+    assert.equal(progress.items.length, 3);
+    const squatProg = progress.items[0];
+    assert.equal(squatProg.itemType, "BLOCK");
+    assert.equal(squatProg.allTimeTopKg, 120);
+    const rdlProg = progress.items[1];
+    assert.equal(rdlProg.itemType, "EXERCISE");
+    assert.equal(rdlProg.allTimeTopKg, 102.5);
+    assert.equal(rdlProg.lastTopKg, 102.5);
+    assert.equal(rdlProg.topDeltaKg, 7.5);
+    assert.equal(rdlProg.chartPoints.length, 2);
+
+    // 7. Deleting the Daily Routine leaves both the same-named Available Block and historical sessions intact
+    const delResp = await callTool("delete_daily_routine", { routine_id: dailyRoutine.id });
+    assert.equal(delResp.status, "deleted");
+    assert.deepEqual(delResp.deletedTitles, ["Lower Power"]);
+
+    const remainingBlocks = await callTool("list_available_blocks", { query: "Lower Power" });
+    assert.equal(remainingBlocks.count, 1);
+    assert.equal(remainingBlocks.availableBlocks[0].id, savedBlockId);
+
+    const remainingRoutines = await callTool("list_daily_routines", { query: "Lower Power" });
+    assert.equal(remainingRoutines.count, 0);
   });
 });

@@ -150,15 +150,54 @@ import com.fractanomics.crosstraining.ui.components.DailyCheckInCard
 import com.fractanomics.crosstraining.ui.screens.weight.WeightEntryBottomSheet
 import com.fractanomics.crosstraining.ui.screens.weight.WeightSummaryCard
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.Button
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Surface
 import androidx.compose.ui.unit.sp
+import com.fractanomics.crosstraining.util.ConstituentProgressSummary
+import com.fractanomics.crosstraining.util.ConstituentTrendDirection
+import com.fractanomics.crosstraining.util.DailyRoutine
+import com.fractanomics.crosstraining.util.DailyRoutineCodec
+import com.fractanomics.crosstraining.util.DailyRoutineItemType
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
 import java.util.Locale
 import kotlin.math.abs
 
-enum class ProgressMode { BY_EXERCISE, BY_ROUTINE, CYCLE_GOALS, BODY_WEIGHT, FAT_LOSS }
+enum class ProgressMode { BY_DAILY_ROUTINE, BY_EXERCISE, BY_ROUTINE, CYCLE_GOALS, BODY_WEIGHT, FAT_LOSS }
+
+internal fun deriveAvailableProgressModes(
+    hasBlocks: Boolean,
+    hasCycles: Boolean
+): List<ProgressMode> = listOfNotNull(
+    ProgressMode.BY_DAILY_ROUTINE,
+    if (hasBlocks) ProgressMode.BY_ROUTINE else null,
+    ProgressMode.BY_EXERCISE,
+    if (hasCycles) ProgressMode.CYCLE_GOALS else null,
+    if (hasCycles) ProgressMode.FAT_LOSS else null,
+    ProgressMode.BODY_WEIGHT
+)
+
+internal fun resolveDefaultSelectedDailyRoutine(
+    dailyRoutines: List<DailyRoutine>,
+    sessions: List<SessionWithBlocks>
+): DailyRoutine? {
+    if (dailyRoutines.isEmpty()) return null
+    val sortedSessions = sessions.sortedWith(
+        compareByDescending<SessionWithBlocks> { it.session.date }
+            .thenByDescending { it.session.id }
+    )
+    for (sw in sortedSessions) {
+        val titleLower = sw.session.title.trim().lowercase()
+        val matched = dailyRoutines.firstOrNull { dr ->
+            (titleLower.isNotEmpty() && dr.title.trim().lowercase() == titleLower) ||
+                (dr.id > 0L && sw.blocks.any { it.block.routineId == dr.id })
+        }
+        if (matched != null) return matched
+    }
+    return dailyRoutines.firstOrNull()
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -166,11 +205,13 @@ fun ProgressScreen(
     viewModel: AppViewModel,
     outerPadding: PaddingValues,
     onOpenDrawer: () -> Unit = {},
-    onOpenTimer: () -> Unit = {}
+    onOpenTimer: () -> Unit = {},
+    onNavigateToRoutinesLibrary: (() -> Unit)? = null
 ) {
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
     val routines by viewModel.routines.collectAsStateWithLifecycle()
     val routinesWithBlocks by viewModel.routinesWithBlocks.collectAsStateWithLifecycle()
+    val dailyRoutines by viewModel.dailyRoutines.collectAsStateWithLifecycle()
     val cycles by viewModel.cycles.collectAsStateWithLifecycle()
     val activeCycle by viewModel.activeCycle.collectAsStateWithLifecycle()
     val cycleGoals by viewModel.cycleGoals.collectAsStateWithLifecycle()
@@ -180,8 +221,14 @@ fun ProgressScreen(
     val weightUnit by viewModel.weightUnit.collectAsStateWithLifecycle()
     val dailyLogs by viewModel.dailyLogs.collectAsStateWithLifecycle()
 
+    val nonDailyRoutines = remember(routines) { routines.filterNot { DailyRoutineCodec.isDailyRoutine(it) } }
+    val nonDailyRoutinesWithBlocks = remember(routinesWithBlocks) {
+        routinesWithBlocks.filterNot { DailyRoutineCodec.isDailyRoutine(it) }
+    }
+
     var selectedExercise by remember { mutableStateOf<Exercise?>(null) }
     var selectedRoutine by remember { mutableStateOf<Routine?>(null) }
+    var selectedDailyRoutineId by remember { mutableStateOf<Long?>(null) }
     var selectedCycleGoalCycle by remember { mutableStateOf<Cycle?>(null) }
     var selectedFatLossCycle by remember { mutableStateOf<Cycle?>(null) }
     var showDailyCheckInSheet by remember { mutableStateOf(false) }
@@ -225,13 +272,10 @@ fun ProgressScreen(
             }
         }
     ) { pad ->
-        val availableModes = remember(routines.isNotEmpty(), cycles.isNotEmpty()) {
-            listOfNotNull(
-                ProgressMode.BY_EXERCISE,
-                if (routines.isNotEmpty()) ProgressMode.BY_ROUTINE else null,
-                if (cycles.isNotEmpty()) ProgressMode.CYCLE_GOALS else null,
-                if (cycles.isNotEmpty()) ProgressMode.FAT_LOSS else null,
-                ProgressMode.BODY_WEIGHT
+        val availableModes = remember(nonDailyRoutines.isNotEmpty(), cycles.isNotEmpty()) {
+            deriveAvailableProgressModes(
+                hasBlocks = nonDailyRoutines.isNotEmpty(),
+                hasCycles = cycles.isNotEmpty()
             )
         }
         val lazyListState = rememberLazyListState()
@@ -263,6 +307,7 @@ fun ProgressScreen(
                         label = {
                             Text(
                                 when (mode) {
+                                    ProgressMode.BY_DAILY_ROUTINE -> "By routine"
                                     ProgressMode.BY_EXERCISE -> "By exercise"
                                     ProgressMode.BY_ROUTINE -> "By block"
                                     ProgressMode.CYCLE_GOALS -> "Cycle goals"
@@ -280,15 +325,30 @@ fun ProgressScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 when (progressMode) {
+                    ProgressMode.BY_DAILY_ROUTINE -> {
+                        val activeDailyRoutine = dailyRoutines.firstOrNull { it.id == selectedDailyRoutineId }
+                            ?: resolveDefaultSelectedDailyRoutine(dailyRoutines, sessions)
+                        DailyRoutineProgressSection(
+                            dailyRoutines = dailyRoutines,
+                            currentRoutine = activeDailyRoutine,
+                            sessions = sessions,
+                            repMaxes = repMaxes,
+                            exercises = exercises,
+                            weightUnit = weightUnit,
+                            onSelectRoutine = { selectedDailyRoutineId = it.id },
+                            onNavigateToRoutinesLibrary = onNavigateToRoutinesLibrary
+                        )
+                    }
                     ProgressMode.BY_ROUTINE -> {
                         RoutineProgress(
-                            routines = routines,
-                            routinesWithBlocks = routinesWithBlocks,
+                            routines = nonDailyRoutines,
+                            routinesWithBlocks = nonDailyRoutinesWithBlocks,
                             exercises = exercises,
                             sessions = sessions,
                             repMaxes = repMaxes,
                             weightUnit = weightUnit,
-                            current = selectedRoutine ?: routines.firstOrNull(),
+                            current = selectedRoutine?.takeIf { sel -> nonDailyRoutines.any { it.id == sel.id } }
+                                ?: nonDailyRoutines.firstOrNull(),
                             onSelect = { selectedRoutine = it }
                         )
                     }
@@ -398,7 +458,7 @@ fun ProgressScreen(
                                 exercises = exercises,
                                 repMaxes = repMaxes,
                                 sessions = sessions,
-                                routines = routines,
+                                routines = nonDailyRoutines,
                                 current = selectedExercise ?: exercises.firstOrNull(),
                                 onSelect = { selectedExercise = it }
                             )
@@ -3987,6 +4047,361 @@ private fun ExerciseProgress(
         unit = current.unit,
         selectionKey = "exercise-${current.id}",
         emptyMessage = "No sessions logged for this exercise yet.",
+        repMaxes = repMaxes,
+        exercises = exercises
+    )
+}
+
+// --- Daily Routine view ---------------------------------------------------------
+
+@Composable
+private fun DailyRoutineProgressSection(
+    dailyRoutines: List<DailyRoutine>,
+    currentRoutine: DailyRoutine?,
+    sessions: List<SessionWithBlocks>,
+    repMaxes: List<RepMax>,
+    exercises: List<Exercise>,
+    weightUnit: String,
+    onSelectRoutine: (DailyRoutine) -> Unit,
+    onNavigateToRoutinesLibrary: (() -> Unit)?
+) {
+    if (dailyRoutines.isEmpty()) {
+        SectionCard(title = "Daily Routines Progress") {
+            Text(
+                text = "Daily Routines combine Saved Blocks and standalone Exercises into complete workouts. Create one in Library → Routines to track every movement and block together here.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (onNavigateToRoutinesLibrary != null) {
+                Button(
+                    onClick = onNavigateToRoutinesLibrary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Go to Routines Library", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        return
+    }
+
+    Dropdown(
+        label = "Daily Routine",
+        options = dailyRoutines,
+        selected = currentRoutine,
+        labelOf = { it.title },
+        onSelect = onSelectRoutine
+    )
+
+    if (currentRoutine == null) return
+
+    val constituents = remember(currentRoutine, sessions, repMaxes, exercises, weightUnit) {
+        DailyRoutineCodec.computeDailyRoutineProgress(
+            routine = currentRoutine,
+            sessions = sessions,
+            repMaxes = repMaxes,
+            exercises = exercises,
+            weightUnit = weightUnit
+        )
+    }
+
+    var selectedItemKey by remember(currentRoutine.id) { mutableStateOf<String?>(null) }
+    val selectedItem = constituents.firstOrNull { it.key == selectedItemKey }
+
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        item {
+            FilterChip(
+                selected = selectedItem == null,
+                onClick = { selectedItemKey = null },
+                label = { Text("All Items (${constituents.size})", maxLines = 1, softWrap = false) }
+            )
+        }
+        items(constituents, key = { it.key }) { item ->
+            val prefix = if (item.itemType == DailyRoutineItemType.BLOCK) "BLOCK: " else "EX: "
+            FilterChip(
+                selected = selectedItem?.key == item.key,
+                onClick = { selectedItemKey = item.key },
+                label = { Text("$prefix${item.title}", maxLines = 1, softWrap = false) }
+            )
+        }
+    }
+
+    if (selectedItem == null) {
+        if (constituents.isEmpty()) {
+            EmptyState("This Daily Routine has no active items yet. Edit it in Library → Routines.")
+        } else {
+            constituents.forEach { item ->
+                DailyRoutineConstituentOverviewCard(
+                    item = item,
+                    onClick = { selectedItemKey = item.key }
+                )
+            }
+        }
+    } else {
+        DailyRoutineConstituentDrillDown(
+            item = selectedItem,
+            weightUnit = weightUnit,
+            repMaxes = repMaxes,
+            exercises = exercises,
+            onBackToOverview = { selectedItemKey = null }
+        )
+    }
+}
+
+@Composable
+private fun ConstituentTypeBadge(itemType: DailyRoutineItemType) {
+    val isDark = isSystemInDarkTheme()
+    val isBlock = itemType == DailyRoutineItemType.BLOCK
+    val bg = when {
+        isBlock && isDark -> Color(0xFF1E3A5F)
+        isBlock -> Color(0xFFE0F2FE)
+        isDark -> Color(0xFF064E3B)
+        else -> Color(0xFFD1FAE5)
+    }
+    val fg = when {
+        isBlock && isDark -> Color(0xFF7DD3FC)
+        isBlock -> Color(0xFF0369A1)
+        isDark -> Color(0xFF2ECC71)
+        else -> Color(0xFF0B6E3F)
+    }
+    Surface(
+        color = bg,
+        shape = RoundedCornerShape(6.dp)
+    ) {
+        Text(
+            text = if (isBlock) "BLOCK" else "EXERCISE",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = fg,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DailyRoutineConstituentOverviewCard(
+    item: ConstituentProgressSummary,
+    onClick: () -> Unit
+) {
+    val isDark = isSystemInDarkTheme()
+    val trendLabel = when (item.trendDirection) {
+        ConstituentTrendDirection.UP ->
+            item.topDelta?.let { "↗ +${it.trimmed()} ${item.unit}" } ?: "↗ Up"
+        ConstituentTrendDirection.FLAT ->
+            "→ 0 ${item.unit}"
+        ConstituentTrendDirection.DOWN ->
+            item.topDelta?.let { "↘ ${it.trimmed()} ${item.unit}" } ?: "↘ Down"
+        ConstituentTrendDirection.NONE ->
+            if (item.lastTop != null) "1 session" else "No logs yet"
+    }
+    val trendBg = when (item.trendDirection) {
+        ConstituentTrendDirection.UP -> if (isDark) Color(0xFF064E3B) else Color(0xFFD1FAE5)
+        ConstituentTrendDirection.DOWN -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val trendFg = when (item.trendDirection) {
+        ConstituentTrendDirection.UP -> if (isDark) Color(0xFF2ECC71) else Color(0xFF0B6E3F)
+        ConstituentTrendDirection.DOWN -> MaterialTheme.colorScheme.onErrorContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    ElevatedCard(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ConstituentTypeBadge(item.itemType)
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Surface(
+                    color = trendBg,
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = trendLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                        fontWeight = FontWeight.SemiBold,
+                        color = trendFg,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            if (item.subtitle.isNotBlank()) {
+                Text(
+                    text = item.subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "All-Time Top: ${item.allTimeTop?.let { "${it.trimmed()} ${item.unit}" } ?: "—"}",
+                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                    fontWeight = FontWeight.Medium
+                )
+                val lastTopText = if (item.lastTop != null && item.lastTopDateFormatted != null) {
+                    "Last: ${item.lastTop.trimmed()} ${item.unit} (${item.lastTopDateFormatted})"
+                } else {
+                    "Last: —"
+                }
+                Text(
+                    text = lastTopText,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (item.lastSetsSummary.isNotBlank()) {
+                Text(
+                    text = "Last Sets: ${item.lastSetsSummary}",
+                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (item.bestPrBadges.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    item.bestPrBadges.forEach { badge ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = badge,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Text(
+                    text = "View Chart ▸",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DailyRoutineConstituentDrillDown(
+    item: ConstituentProgressSummary,
+    weightUnit: String,
+    repMaxes: List<RepMax>,
+    exercises: List<Exercise>,
+    onBackToOverview: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FilterChip(
+            selected = false,
+            onClick = onBackToOverview,
+            label = { Text("⬅ All Items", maxLines = 1, softWrap = false) }
+        )
+        ConstituentTypeBadge(item.itemType)
+        Text(
+            text = item.title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+    }
+
+    if (item.subtitle.isNotBlank()) {
+        Text(
+            text = item.subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    if (item.dayPerformances.isNotEmpty()) {
+        KpiRows(item.performances, item.dayPerformances, weightUnit)
+        EvolutionCards(item.dayPerformances, weightUnit, titlePrefix = item.title)
+    }
+
+    if (item.bestPrBadges.isNotEmpty()) {
+        SectionCard(title = "Tracked PRs") {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                item.bestPrBadges.forEach { badge ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(
+                            text = badge,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    BlockHistoryCard(
+        blocks = item.performances,
+        unit = weightUnit,
+        selectionKey = "daily-routine-${item.key}",
+        emptyMessage = "No sessions logged for ${item.title} yet.",
         repMaxes = repMaxes,
         exercises = exercises
     )

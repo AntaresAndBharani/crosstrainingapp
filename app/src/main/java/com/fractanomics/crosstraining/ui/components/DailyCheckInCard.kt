@@ -133,16 +133,19 @@ fun DailyCheckInCard(
             }
 
             // Fasting Actions & Rest Day Chips
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
                     "Fasting:",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.align(Alignment.CenterVertically)
                 )
 
                 FilterChip(
@@ -155,14 +158,15 @@ fun DailyCheckInCard(
                         )
                         onSaveDailyLog(updated)
                     },
-                    label = { Text("Done") },
+                    label = { Text("Done", maxLines = 1, softWrap = false) },
                     leadingIcon = if (isDone) {
                         { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
                     } else null,
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                         selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
+                    ),
+                    modifier = Modifier.align(Alignment.CenterVertically)
                 )
 
                 FilterChip(
@@ -175,17 +179,16 @@ fun DailyCheckInCard(
                         )
                         onSaveDailyLog(updated)
                     },
-                    label = { Text("Ate something") },
+                    label = { Text("Ate something", maxLines = 1, softWrap = false) },
                     leadingIcon = if (isAte) {
                         { Icon(Icons.Filled.Restaurant, contentDescription = null, modifier = Modifier.size(14.dp)) }
                     } else null,
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
                         selectedLabelColor = MaterialTheme.colorScheme.onErrorContainer
-                    )
+                    ),
+                    modifier = Modifier.align(Alignment.CenterVertically)
                 )
-
-                Spacer(Modifier.weight(1f))
 
                 FilterChip(
                     selected = isRest,
@@ -197,7 +200,8 @@ fun DailyCheckInCard(
                         )
                         onSaveDailyLog(updated)
                     },
-                    label = { Text("Rest") }
+                    label = { Text("Rest", maxLines = 1, softWrap = false) },
+                    modifier = Modifier.align(Alignment.CenterVertically)
                 )
             }
 

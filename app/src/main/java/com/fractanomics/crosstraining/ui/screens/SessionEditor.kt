@@ -153,6 +153,9 @@ import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfig
 import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfigParser
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
+import com.fractanomics.crosstraining.util.DailyRoutine
+import com.fractanomics.crosstraining.util.DailyRoutineCodec
+import com.fractanomics.crosstraining.util.DailyRoutineItem
 import com.fractanomics.crosstraining.util.SessionBlockHydrationResult
 import com.fractanomics.crosstraining.util.EvaluatedPrChip
 import com.fractanomics.crosstraining.util.ExerciseTargetMetric
@@ -175,6 +178,97 @@ internal fun canRemoveResidualLegacyBlock(
     loadedSimplifiedCount: Int,
     legacyBlockCount: Int
 ): Boolean = loadedSimplifiedCount > 0 || legacyBlockCount > 1
+
+internal fun expandDailyRoutineForSession(
+    routine: DailyRoutine,
+    availableBlocks: List<AvailableBlock>,
+    sessions: List<SessionWithBlocks>,
+    exercises: List<Exercise>,
+    repMaxes: List<RepMax>,
+    weightUnit: String,
+    isEditMode: Boolean = false,
+    editingSessionId: Long? = null
+): List<LoadedAvailableBlockState> {
+    val blocksById = availableBlocks.associateBy { it.id }
+    val exercisesById = exercises.associateBy { it.id }
+    val exercisesByLowerName = exercises.associateBy { it.name.trim().lowercase() }
+
+    return routine.items.mapNotNull { item ->
+        when (item) {
+            is DailyRoutineItem.BlockRef -> {
+                val block = item.resolvedBlock
+                    ?: item.blockId.takeIf { it > 0L }?.let { blocksById[it] }
+                    ?: availableBlocks.firstOrNull { it.title.equals(item.blockTitle, ignoreCase = true) }
+                    ?: return@mapNotNull null
+                buildLoadedAvailableBlockState(
+                    block = block,
+                    sessions = sessions,
+                    exercises = exercises,
+                    weightUnit = weightUnit,
+                    isEditMode = isEditMode,
+                    editingSessionId = editingSessionId
+                )
+            }
+
+            is DailyRoutineItem.StandaloneExercise -> {
+                val ex = item.resolvedExercise
+                    ?: item.exerciseId.takeIf { it > 0L }?.let { exercisesById[it] }
+                    ?: exercisesByLowerName[item.exerciseName.trim().lowercase()]
+                    ?: Exercise(id = item.exerciseId, name = item.exerciseName)
+                buildLoadedStandaloneExerciseState(
+                    exercise = ex,
+                    note = item.note,
+                    defaultTrackedPrs = item.defaultTrackedPrs,
+                    sessions = sessions,
+                    repMaxes = repMaxes,
+                    weightUnit = weightUnit,
+                    isEditMode = isEditMode,
+                    editingSessionId = editingSessionId
+                )
+            }
+        }
+    }
+}
+
+internal fun deriveRoutineItemsFromSessionStates(
+    states: List<LoadedAvailableBlockState>
+): List<DailyRoutineItem>? {
+    val items = mutableListOf<DailyRoutineItem>()
+    for (state in states) {
+        when (state.itemKind) {
+            SessionItemKind.BLOCK -> {
+                if (state.block.id <= 0L) return null
+                items += DailyRoutineItem.BlockRef(
+                    blockId = state.block.id,
+                    blockTitle = state.block.title,
+                    resolvedBlock = state.block
+                )
+            }
+
+            SessionItemKind.EXERCISE -> {
+                val exSection = state.exerciseSections.firstOrNull()
+                val exId = exSection?.exerciseId ?: state.block.exercises.firstOrNull()?.id ?: 0L
+                val exName = exSection?.exerciseName?.ifBlank { state.block.title } ?: state.block.title
+                items += DailyRoutineItem.StandaloneExercise(
+                    exerciseId = exId,
+                    exerciseName = exName,
+                    note = state.block.instructions,
+                    defaultTrackedPrs = AvailableBlockCodec.normalizeTrackedPrSlots(state.trackedPrSlots.toList())
+                )
+            }
+        }
+    }
+    return items
+}
+
+internal fun hasStructuralDiffFromRoutine(
+    initialSignature: String,
+    states: List<LoadedAvailableBlockState>
+): Boolean {
+    if (initialSignature.isBlank()) return false
+    val currentItems = deriveRoutineItemsFromSessionStates(states) ?: return true
+    return DailyRoutineCodec.routineItemsSignature(currentItems) != initialSignature
+}
 
 // --- Plain seeds used to (re)initialise the editor form ----------------------
 
@@ -624,10 +718,12 @@ fun SessionEditorBody(
     val routines by viewModel.routines.collectAsStateWithLifecycle()
     val routinesWithBlocks by viewModel.routinesWithBlocks.collectAsStateWithLifecycle()
     val availableBlocks by viewModel.availableBlocks.collectAsStateWithLifecycle()
+    val dailyRoutines by viewModel.dailyRoutines.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
     val repMaxes by viewModel.repMaxes.collectAsStateWithLifecycle()
     val weightUnit by viewModel.weightUnit.collectAsStateWithLifecycle()
     val pendingBlockIdsToLog by viewModel.pendingBlockIdsToLog.collectAsStateWithLifecycle()
+    val pendingRoutineIdToLog by viewModel.pendingRoutineIdToLog.collectAsStateWithLifecycle()
     val dailyLogs by viewModel.dailyLogs.collectAsStateWithLifecycle()
 
     val snackbar = remember { SnackbarHostState() }
@@ -757,7 +853,39 @@ fun SessionEditorBody(
     var showQuickAddDialog by remember { mutableStateOf(false) }
     var showWorkoutAssistantSheet by remember { mutableStateOf(false) }
     var activeAddBlockSheetMode by remember { mutableStateOf<AddBlockSheetOpenMode?>(null) }
+    var showLoadRoutineSheet by remember { mutableStateOf(false) }
+    var showAddExerciseSheet by remember { mutableStateOf(false) }
     var activePrPickerForBlock by remember { mutableStateOf<LoadedAvailableBlockState?>(null) }
+    var loadedRoutineId by remember(key) { mutableStateOf<Long?>(null) }
+    var loadedRoutineTitle by remember(key) { mutableStateOf("") }
+    var initialRoutineSignature by remember(key) { mutableStateOf("") }
+    var syncRoutineTemplateChecked by remember(key) { mutableStateOf(false) }
+
+    val applyLoadedDailyRoutine: (DailyRoutine) -> Unit = { routine ->
+        val expanded = expandDailyRoutineForSession(
+            routine = routine,
+            availableBlocks = availableBlocks,
+            sessions = sessions,
+            exercises = exercises,
+            repMaxes = repMaxes,
+            weightUnit = weightUnit,
+            isEditMode = isEditMode,
+            editingSessionId = editingSessionId
+        )
+        loadedAvailableBlocks.clear()
+        blockCardBounds.clear()
+        loadedAvailableBlocks.addAll(expanded)
+        val previousTitle = loadedRoutineTitle
+        loadedRoutineId = routine.id
+        loadedRoutineTitle = routine.title
+        initialRoutineSignature = DailyRoutineCodec.routineItemsSignature(routine.items)
+        syncRoutineTemplateChecked = false
+        if (isEditMode) simplifiedStructuralDirty = true
+        if (!isEditMode && (title.isBlank() || title == previousTitle)) {
+            title = routine.title
+        }
+        pendingScrollTargetKey = expanded.firstOrNull()?.uiKey
+    }
 
     LaunchedEffect(isEditMode, editingSessionTarget, availableBlocks, exercises, repMaxes, activeAddBlockSheetMode) {
         if (!isEditMode || editingSessionTarget == null || isDirty || activeAddBlockSheetMode != null) return@LaunchedEffect
@@ -810,6 +938,13 @@ fun SessionEditorBody(
         if (lastAddedKey != null) {
             pendingScrollTargetKey = lastAddedKey
         }
+    }
+
+    LaunchedEffect(pendingRoutineIdToLog, dailyRoutines, availableBlocks, exercises) {
+        val targetId = pendingRoutineIdToLog ?: return@LaunchedEffect
+        val matchedRoutine = dailyRoutines.firstOrNull { it.id == targetId } ?: return@LaunchedEffect
+        viewModel.consumePendingRoutineToLog()
+        applyLoadedDailyRoutine(matchedRoutine)
     }
 
     if (showDiscardChangesDialog && onBack != null) {
@@ -979,6 +1114,49 @@ fun SessionEditorBody(
         )
     }
 
+    if (showLoadRoutineSheet) {
+        LoadDailyRoutineSheet(
+            dailyRoutines = dailyRoutines,
+            sessions = sessions,
+            onDismiss = { showLoadRoutineSheet = false },
+            onSelectRoutine = { chosen ->
+                showLoadRoutineSheet = false
+                applyLoadedDailyRoutine(chosen)
+            }
+        )
+    }
+
+    if (showAddExerciseSheet) {
+        AddExerciseToSessionSheet(
+            exercises = exercises,
+            onDismiss = { showAddExerciseSheet = false },
+            onCreateExercise = { name, onCreated ->
+                viewModel.getOrCreateExerciseForRoutine(
+                    name = name,
+                    category = ExerciseCategory.BARBELL,
+                    metricType = MetricType.WEIGHT,
+                    onCreated = onCreated
+                )
+            },
+            onSelectExercise = { chosenEx, itemNote ->
+                val addedState = buildLoadedStandaloneExerciseState(
+                    exercise = chosenEx,
+                    note = itemNote,
+                    sessions = sessions,
+                    repMaxes = repMaxes,
+                    weightUnit = weightUnit,
+                    isEditMode = isEditMode,
+                    editingSessionId = editingSessionId
+                )
+                loadedAvailableBlocks.add(addedState)
+                pendingScrollTargetKey = addedState.uiKey
+                if (isEditMode) simplifiedStructuralDirty = true
+                if (!isEditMode && title.isBlank()) title = chosenEx.name
+                showAddExerciseSheet = false
+            }
+        )
+    }
+
     val prPickerBlock = activePrPickerForBlock
     if (prPickerBlock != null) {
         MultiMovementPrPickerSheet(
@@ -994,7 +1172,7 @@ fun SessionEditorBody(
                     exercises = exercises,
                     repMaxes = repMaxes
                 )
-                if (!isEditMode && prPickerBlock.block.id > 0L) {
+                if (!isEditMode && prPickerBlock.itemKind == SessionItemKind.BLOCK && prPickerBlock.block.id > 0L) {
                     viewModel.updateAvailableBlockTrackedPrs(prPickerBlock.block.id, prPickerBlock.trackedPrSlots.toList())
                 }
                 activePrPickerForBlock = null
@@ -1254,25 +1432,51 @@ fun SessionEditorBody(
                         )
                     }
 
-                    // Block quick loader & Title toggle
+                    // Daily Routine quick loader & Title toggle
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         OutlinedButton(
-                            onClick = { activeAddBlockSheetMode = AddBlockSheetOpenMode.PREFER_SAVED },
+                            onClick = { showLoadRoutineSheet = true },
                             modifier = Modifier
                                 .weight(1f)
                                 .heightIn(min = 48.dp),
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                         ) {
-                            Text("Load Block ▾", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = if (loadedRoutineId != null && loadedRoutineTitle.isNotBlank()) {
+                                    "📋 Routine: $loadedRoutineTitle ▾"
+                                } else {
+                                    "📋 Load Daily Routine ▾"
+                                },
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        if (loadedRoutineId != null) {
+                            IconButton(
+                                onClick = {
+                                    loadedRoutineId = null
+                                    loadedRoutineTitle = ""
+                                    initialRoutineSignature = ""
+                                    syncRoutineTemplateChecked = false
+                                }
+                            ) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "Clear loaded Daily Routine banner"
+                                )
+                            }
                         }
 
                         TextButton(
                             onClick = { showSessionMeta = !showSessionMeta },
-                            modifier = Modifier.padding(start = 4.dp)
+                            modifier = Modifier.padding(start = 2.dp)
                         ) {
                             Icon(
                                 if (showSessionMeta) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
@@ -1280,7 +1484,12 @@ fun SessionEditorBody(
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(Modifier.width(4.dp))
-                            Text(if (showSessionMeta) "Hide Details" else "Title & Notes", style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                if (showSessionMeta) "Hide Details" else "Title & Notes",
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
                         }
                     }
 
@@ -1326,66 +1535,83 @@ fun SessionEditorBody(
                 onOpenFullCheckIn = { showDailyCheckInSheet = true }
             )
 
-            // Loaded Available Blocks (1-tap Library handoff, Add Block sheet & History Edit)
-            loadedAvailableBlocks.forEach { availState ->
+            // Loaded Daily Routine / Block / Exercise Cards
+            loadedAvailableBlocks.forEachIndexed { idx, availState ->
                 key(availState.uiKey) {
-                    SimplifiedBlockLogCard(
-                        blockState = availState,
-                        exercises = exercises,
-                        repMaxes = repMaxes,
-                        weightUnit = weightUnit,
-                        onRemoveBlock = {
-                            loadedAvailableBlocks.remove(availState)
-                            blockCardBounds.remove(availState.uiKey)
-                            if (isEditMode) simplifiedStructuralDirty = true
-                            if (loadedAvailableBlocks.isEmpty() && blocks.isEmpty()) {
-                                blocks.add(BlockState(isCompleted = !isFatLoss))
-                            }
-                        },
-                        onLaunchTimer = {
-                            val timingToken = availState.block.instructions.ifBlank { null }
-                            launchTimingFromTokenOrOpenSheet(timingToken, 1, availState.block.title)
-                        },
-                        onOpenPrPicker = { activePrPickerForBlock = availState },
-                        onRemoveTrackedPr = { slot ->
-                            val removedSnapshot = availState.removeTrackedPrSlot(slot)
-                            if (!isEditMode && availState.block.id > 0L) {
-                                viewModel.updateAvailableBlockTrackedPrs(
-                                    availState.block.id,
-                                    availState.trackedPrSlots.toList()
+                    val onRemoveItem: () -> Unit = {
+                        loadedAvailableBlocks.remove(availState)
+                        blockCardBounds.remove(availState.uiKey)
+                        if (isEditMode) simplifiedStructuralDirty = true
+                    }
+                    val onTimerForItem: () -> Unit = {
+                        val timingToken = availState.block.instructions.ifBlank { null }
+                        launchTimingFromTokenOrOpenSheet(timingToken, 1, availState.block.title)
+                    }
+                    val onRemovePrSlot: (TrackedPrSlot) -> Unit = { slot ->
+                        val removedSnapshot = availState.removeTrackedPrSlot(slot)
+                        if (!isEditMode && availState.itemKind == SessionItemKind.BLOCK && availState.block.id > 0L) {
+                            viewModel.updateAvailableBlockTrackedPrs(
+                                availState.block.id,
+                                availState.trackedPrSlots.toList()
+                            )
+                        }
+                        if (removedSnapshot != null) {
+                            scope.launch {
+                                val res = snackbar.showSnackbar(
+                                    message = "Removed ${slot.rmReps}RM ${slot.movementName}",
+                                    actionLabel = "Undo",
+                                    duration = SnackbarDuration.Short
                                 )
-                            }
-                            if (removedSnapshot != null) {
-                                scope.launch {
-                                    val res = snackbar.showSnackbar(
-                                        message = "Removed ${slot.rmReps}RM ${slot.movementName}",
-                                        actionLabel = "Undo",
-                                        duration = SnackbarDuration.Short
-                                    )
-                                    if (res == SnackbarResult.ActionPerformed) {
-                                        availState.restoreDismissedPr(removedSnapshot)
-                                        if (!isEditMode && availState.block.id > 0L) {
-                                            viewModel.updateAvailableBlockTrackedPrs(
-                                                availState.block.id,
-                                                availState.trackedPrSlots.toList()
-                                            )
-                                        }
+                                if (res == SnackbarResult.ActionPerformed) {
+                                    availState.restoreDismissedPr(removedSnapshot)
+                                    if (!isEditMode && availState.itemKind == SessionItemKind.BLOCK && availState.block.id > 0L) {
+                                        viewModel.updateAvailableBlockTrackedPrs(
+                                            availState.block.id,
+                                            availState.trackedPrSlots.toList()
+                                        )
                                     }
                                 }
                             }
-                        },
-                        modifier = Modifier.onGloballyPositioned { coords ->
-                            blockCardBounds[availState.uiKey] = CardLayoutBounds(
-                                topPx = coords.positionInParent().y.roundToInt(),
-                                heightPx = coords.size.height
-                            )
                         }
-                    )
+                    }
+                    val cardModifier = Modifier.onGloballyPositioned { coords ->
+                        blockCardBounds[availState.uiKey] = CardLayoutBounds(
+                            topPx = coords.positionInParent().y.roundToInt(),
+                            heightPx = coords.size.height
+                        )
+                    }
+                    if (availState.itemKind == SessionItemKind.EXERCISE) {
+                        SimplifiedExerciseLogCard(
+                            blockState = availState,
+                            exercises = exercises,
+                            repMaxes = repMaxes,
+                            weightUnit = weightUnit,
+                            onRemoveBlock = onRemoveItem,
+                            onLaunchTimer = onTimerForItem,
+                            onOpenPrPicker = { activePrPickerForBlock = availState },
+                            onRemoveTrackedPr = onRemovePrSlot,
+                            itemNumber = idx + 1,
+                            modifier = cardModifier
+                        )
+                    } else {
+                        SimplifiedBlockLogCard(
+                            blockState = availState,
+                            exercises = exercises,
+                            repMaxes = repMaxes,
+                            weightUnit = weightUnit,
+                            onRemoveBlock = onRemoveItem,
+                            onLaunchTimer = onTimerForItem,
+                            onOpenPrPicker = { activePrPickerForBlock = availState },
+                            onRemoveTrackedPr = onRemovePrSlot,
+                            itemNumber = idx + 1,
+                            modifier = cardModifier
+                        )
+                    }
                 }
             }
 
-            // Legacy / ad-hoc Blocks List grouped by section header and sub-block containers
-            val showLegacyBlocks = loadedAvailableBlocks.isEmpty() || blocks.any { !it.isBlankLegacyPlaceholder() }
+            // Legacy / ad-hoc Blocks List (suppress blank placeholder table on clean Log Session)
+            val showLegacyBlocks = blocks.any { !it.isBlankLegacyPlaceholder() }
             val editorItems = if (showLegacyBlocks) groupEditorBlocks(blocks) else emptyList()
             var prevSection: String? = null
             editorItems.forEach { item ->
@@ -1590,29 +1816,89 @@ fun SessionEditorBody(
                 }
             }
 
-            // Quick Add Blocks Action Bar
+            // Dual Add Block + Add Exercise Action Row + Quick Parse
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
                     onClick = { activeAddBlockSheetMode = AddBlockSheetOpenMode.SMART_DEFAULT },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Add Block")
+                    Text("Add Block", maxLines = 1, softWrap = false)
                 }
 
-                Button(
-                    onClick = { showQuickAddDialog = true },
-                    modifier = Modifier.weight(1f),
+                OutlinedButton(
+                    onClick = { showAddExerciseSheet = true },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Quick Parse")
+                    Text("Add Exercise", maxLines = 1, softWrap = false)
+                }
+            }
+
+            OutlinedButton(
+                onClick = { showQuickAddDialog = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Quick Parse Workout")
+            }
+
+            val activeLoadedRoutine = dailyRoutines.firstOrNull { it.id == loadedRoutineId }
+            val derivedRoutineItems = if (activeLoadedRoutine != null) {
+                deriveRoutineItemsFromSessionStates(loadedAvailableBlocks)
+            } else {
+                null
+            }
+            val syncTargetItems = derivedRoutineItems?.takeIf { it.isNotEmpty() }
+            val syncTargetRoutine = if (
+                activeLoadedRoutine != null &&
+                syncTargetItems != null &&
+                hasStructuralDiffFromRoutine(initialRoutineSignature, loadedAvailableBlocks)
+            ) {
+                activeLoadedRoutine
+            } else {
+                null
+            }
+
+            if (syncTargetRoutine != null) {
+                OutlinedCard(
+                    onClick = { syncRoutineTemplateChecked = !syncRoutineTemplateChecked },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Checkbox(
+                            checked = syncRoutineTemplateChecked,
+                            onCheckedChange = { syncRoutineTemplateChecked = it }
+                        )
+                        Text(
+                            text = "Also update \"${syncTargetRoutine.title}\" routine template",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
 
@@ -1653,6 +1939,16 @@ fun SessionEditorBody(
                         .mapNotNull { it.inheritedTrackedPrSlotsForParent(exercises) }
                         .groupBy({ it.first }, { it.second })
                         .mapValues { (_, lists) -> AvailableBlockCodec.normalizeTrackedPrSlots(lists.flatten()) }
+                    val syncTemplateId = if (syncRoutineTemplateChecked) {
+                        syncTargetRoutine?.id
+                    } else {
+                        null
+                    }
+                    val syncTemplateItems = if (syncTemplateId != null) {
+                        syncTargetItems.orEmpty()
+                    } else {
+                        emptyList()
+                    }
                     onSubmit(
                         SessionDraft(
                             cycleId = cycleId,
@@ -1662,7 +1958,9 @@ fun SessionEditorBody(
                             blocks = blockDrafts,
                             reconcileRepMaxes = isEditMode,
                             managedRepMaxIds = if (isEditMode) managedRepMaxIds else null,
-                            inheritedBlockTrackedPrs = inheritedMap
+                            inheritedBlockTrackedPrs = inheritedMap,
+                            syncRoutineTemplateId = syncTemplateId,
+                            syncRoutineTemplateItems = syncTemplateItems
                         )
                     )
                     if (clearAfterSave) {

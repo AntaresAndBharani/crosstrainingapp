@@ -164,11 +164,11 @@ object RoutineTargetCodec {
     private val HEADER_LINE_REGEX = Regex("""^\[rb_v2=([^\]]*)]\s*\r?\n?""", RegexOption.IGNORE_CASE)
 
     /**
-     * Any machine-readable metadata header line (`[rb_v2=...]` or Available Block `[ab_prs=...]`)
-     * stripped from human-visible notes. Kept separate from [HEADER_LINE_REGEX] so an
-     * `[ab_prs=...]` payload is never decoded as `rb_v2` target slots.
+     * Any machine-readable metadata header line (`[rb_v2=...]`, Available Block `[ab_prs=...]`, or
+     * Daily Routine item `[dr_item=...]`) stripped from human-visible notes. Kept separate from
+     * [HEADER_LINE_REGEX] so non-`rb_v2` payloads are never decoded as `rb_v2` target slots.
      */
-    private val METADATA_HEADER_LINE_REGEX = Regex("""^\[(?:rb_v2|ab_prs)=([^\]]*)]\s*\r?\n?""", RegexOption.IGNORE_CASE)
+    private val METADATA_HEADER_LINE_REGEX = Regex("""^\[(?:rb_v2|ab_prs|dr_item)=([^\]]*)]\s*\r?\n?""", RegexOption.IGNORE_CASE)
 
     val PRIMARY_BLOCK_KINDS: List<BlockKind> = listOf(
         BlockKind.WEIGHTLIFTING,

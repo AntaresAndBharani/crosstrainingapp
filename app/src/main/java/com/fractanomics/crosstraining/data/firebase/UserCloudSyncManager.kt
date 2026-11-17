@@ -17,6 +17,9 @@ import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.data.model.UserRole
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
+import com.fractanomics.crosstraining.util.DAILY_ROUTINE_FORMAT
+import com.fractanomics.crosstraining.util.DailyRoutineCodec
+import com.fractanomics.crosstraining.util.DailyRoutineItemType
 import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
@@ -603,7 +606,7 @@ object UserCloudSyncManager {
                 val exercisesById = allExercises.associateBy { it.id }
                 val cyclesById = repo.getAllCyclesOnce().associateBy { it.id }
                 val allRoutinesWithBlocks = repo.getAllRoutinesWithBlocksOnce()
-                    .distinctBy { it.routine.name.trim().lowercase() }
+                    .distinctBy { DailyRoutineCodec.routineNaturalKey(it) }
                 val routinesById = allRoutinesWithBlocks.associate { it.routine.id to it.routine }
                 val allSessionsWithBlocks = repo.getAllSessionsWithBlocksOnce()
                 val sessionsById = allSessionsWithBlocks.associateBy { it.session.id }
@@ -1137,7 +1140,7 @@ object UserCloudSyncManager {
                     return (localCycles.find { it.isActive } ?: localCycles.first()).id
                 }
 
-                // 2. Download Routines (deduplicated by normalized routine name, honoring MCP tombstones)
+                // 2. Download Routines (deduplicated by namespaced dr:/ab: key, honoring MCP tombstones)
                 if (routList.isNotEmpty()) {
                     val deduplicatedRoutines = LinkedHashMap<String, Map<String, Any>>()
                     routList.forEach { rwbMap ->
@@ -1146,7 +1149,8 @@ object UserCloudSyncManager {
                         if (!shouldImport(rMap) && !isRemoteDeleted(rwbMap)) return@forEach
                         val name = (rMap["name"] as? String)?.trim() ?: return@forEach
                         if (name.isEmpty()) return@forEach
-                        val key = name.lowercase()
+                        val defaultFormat = rMap["defaultFormat"] as? String
+                        val key = DailyRoutineCodec.routineNaturalKey(name, defaultFormat)
                         val existing = deduplicatedRoutines[key]
                         if (existing == null) {
                             deduplicatedRoutines[key] = rwbMap
@@ -1165,14 +1169,18 @@ object UserCloudSyncManager {
                         @Suppress("UNCHECKED_CAST")
                         val rMap = rwbMap["routine"] as? Map<String, Any> ?: return@forEach
                         val name = (rMap["name"] as? String)?.trim() ?: return@forEach
+                        val defaultFormat = rMap["defaultFormat"] as? String ?: ""
+                        val isDr = defaultFormat.equals(DAILY_ROUTINE_FORMAT, ignoreCase = true)
                         if (isRemoteDeleted(rMap) || isRemoteDeleted(rwbMap)) {
                             repo.getAllRoutinesWithBlocksOnce()
-                                .filter { it.routine.name.trim().equals(name, ignoreCase = true) }
+                                .filter {
+                                    DailyRoutineCodec.isDailyRoutine(it) == isDr &&
+                                        it.routine.name.trim().equals(name, ignoreCase = true)
+                                }
                                 .forEach { repo.deleteRoutine(it.routine) }
                             return@forEach
                         }
                         val description = rMap["description"] as? String ?: ""
-                        val defaultFormat = rMap["defaultFormat"] as? String ?: ""
                         val mainExId = resolveLocalExerciseId(
                             (rMap["mainExerciseId"] as? Number)?.toLong(),
                             rMap["mainExerciseName"] as? String
@@ -1185,6 +1193,14 @@ object UserCloudSyncManager {
                             AvailableBlockCodec.decodeTrackedPrHeader(rawNotes).forEach { slot ->
                                 if (slot.movementName.isNotBlank()) {
                                     repo.getOrCreateExercise(slot.movementName.trim())
+                                }
+                            }
+                            DailyRoutineCodec.decodeItemHeader(rawNotes)?.let { drHeader ->
+                                if (drHeader.itemType == DailyRoutineItemType.EXERCISE && drHeader.refName.isNotBlank()) {
+                                    val localEx = repo.getOrCreateExercise(drHeader.refName.trim())
+                                    if (drHeader.refId > 0L) {
+                                        remoteExerciseIdToLocalId[drHeader.refId] = localEx.id
+                                    }
                                 }
                             }
                             val preserveSeq = com.fractanomics.crosstraining.util.RoutineTargetCodec.hasStructuredHeader(rawNotes)
