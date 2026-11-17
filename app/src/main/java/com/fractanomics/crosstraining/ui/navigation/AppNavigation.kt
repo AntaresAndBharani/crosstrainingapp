@@ -292,7 +292,17 @@ fun AppNavigation(
                             viewModel = viewModel,
                             outerPadding = innerPadding,
                             onOpenDrawer = openDrawer,
-                            onOpenTimer = openTimer
+                            onOpenTimer = openTimer,
+                            onNavigateToRoutinesLibrary = {
+                                viewModel.requestOpenLibraryTab(0)
+                                navController.navigate(BottomDestination.LIBRARY.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            }
                         )
                     }
                     composable(BottomDestination.CYCLES.route) {
@@ -311,6 +321,16 @@ fun AppNavigation(
                             onOpenTimer = openTimer,
                             onLogBlock = { blockId ->
                                 viewModel.requestLogAvailableBlock(blockId)
+                                navController.navigate(BottomDestination.LOG.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            },
+                            onLogRoutine = { routineId ->
+                                viewModel.requestLogDailyRoutine(routineId)
                                 navController.navigate(BottomDestination.LOG.route) {
                                     popUpTo(navController.graph.findStartDestination().id) {
                                         saveState = true

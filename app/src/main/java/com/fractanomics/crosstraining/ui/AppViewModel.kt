@@ -54,6 +54,9 @@ import com.fractanomics.crosstraining.data.ai.WorkoutEntityResolutionResult
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.AvailableBlockExercise
+import com.fractanomics.crosstraining.util.DailyRoutine
+import com.fractanomics.crosstraining.util.DailyRoutineCodec
+import com.fractanomics.crosstraining.util.DailyRoutineItem
 import com.fractanomics.crosstraining.util.ParsedWorkoutDocument
 import com.fractanomics.crosstraining.util.TrackedPrSlot
 import com.fractanomics.crosstraining.util.WorkoutDocumentParser
@@ -286,7 +289,15 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         data.repositoryFlow.flatMapLatest { it.routinesWithBlocks }.stateInDefault(emptyList())
     val availableBlocks: StateFlow<List<AvailableBlock>> =
         combine(routinesWithBlocks, exercises) { rwList, exList ->
-            rwList.map { AvailableBlockCodec.fromRoutineWithBlocks(it, exList) }
+            rwList
+                .filterNot { DailyRoutineCodec.isDailyRoutine(it) }
+                .map { AvailableBlockCodec.fromRoutineWithBlocks(it, exList) }
+        }.stateInDefault(emptyList())
+    val dailyRoutines: StateFlow<List<DailyRoutine>> =
+        combine(routinesWithBlocks, availableBlocks, exercises) { rwList, blocksList, exList ->
+            rwList
+                .filter { DailyRoutineCodec.isDailyRoutine(it) }
+                .map { DailyRoutineCodec.fromRoutineWithBlocks(it, blocksList, exList) }
         }.stateInDefault(emptyList())
 
     private val _pendingBlockIdsToLog = MutableStateFlow<List<Long>>(emptyList())
@@ -302,6 +313,34 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         val ids = _pendingBlockIdsToLog.value
         _pendingBlockIdsToLog.value = emptyList()
         return ids
+    }
+
+    private val _pendingRoutineIdToLog = MutableStateFlow<Long?>(null)
+    val pendingRoutineIdToLog: StateFlow<Long?> = _pendingRoutineIdToLog.asStateFlow()
+
+    fun requestLogDailyRoutine(routineId: Long) {
+        if (routineId > 0L) {
+            _pendingRoutineIdToLog.value = routineId
+        }
+    }
+
+    fun consumePendingRoutineToLog(): Long? {
+        val id = _pendingRoutineIdToLog.value
+        _pendingRoutineIdToLog.value = null
+        return id
+    }
+
+    private val _pendingLibraryTab = MutableStateFlow<Int?>(null)
+    val pendingLibraryTab: StateFlow<Int?> = _pendingLibraryTab.asStateFlow()
+
+    fun requestOpenLibraryTab(tab: Int) {
+        _pendingLibraryTab.value = tab
+    }
+
+    fun consumePendingLibraryTab(): Int? {
+        val t = _pendingLibraryTab.value
+        _pendingLibraryTab.value = null
+        return t
     }
     val sessions: StateFlow<List<SessionWithBlocks>> =
         data.repositoryFlow.flatMapLatest { it.allSessions }.stateInDefault(emptyList())
@@ -538,6 +577,69 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         }
     }
 
+    // --- Daily Routines (`SPEC-025`) ------------------------------------------
+    fun saveDailyRoutine(
+        title: String,
+        notes: String,
+        items: List<DailyRoutineItem>,
+        existingId: Long = 0L
+    ) = viewModelScope.launch {
+        val cleanTitle = title.trim()
+        if (cleanTitle.isEmpty() || items.isEmpty()) return@launch
+        val routine = DailyRoutine(
+            id = existingId,
+            title = cleanTitle,
+            notes = notes.trim(),
+            items = items
+        )
+        repo.saveDailyRoutine(routine)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun duplicateDailyRoutine(routine: DailyRoutine) = viewModelScope.launch {
+        val baseTitle = routine.title.trim().ifEmpty { "Daily Routine" }
+        val existingTitles = dailyRoutines.value.map { it.title.trim().lowercase() }.toSet()
+        var candidate = "$baseTitle (Copy)"
+        var idx = 2
+        while (candidate.lowercase() in existingTitles) {
+            candidate = "$baseTitle (Copy $idx)"
+            idx++
+        }
+        repo.saveDailyRoutine(
+            routine.copy(
+                id = 0L,
+                title = candidate,
+                rawRoutine = null
+            )
+        )
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun deleteDailyRoutine(routine: DailyRoutine) = viewModelScope.launch {
+        val target = routine.rawRoutine?.routine ?: routines.value.firstOrNull {
+            DailyRoutineCodec.isDailyRoutine(it) &&
+                (it.id == routine.id || it.name.equals(routine.title, ignoreCase = true))
+        } ?: return@launch
+        repo.deleteRoutine(target)
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun restoreDailyRoutine(routine: DailyRoutine) = viewModelScope.launch {
+        val raw = routine.rawRoutine
+        if (raw != null) {
+            repo.saveRoutineWithBlocks(raw.routine.copy(id = 0L), raw.blocks)
+        } else {
+            repo.saveDailyRoutine(routine.copy(id = 0L, rawRoutine = null))
+        }
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
+    fun cleanMissingBlocksFromDailyRoutine(routine: DailyRoutine) = viewModelScope.launch {
+        if (routine.id <= 0L) return@launch
+        repo.saveDailyRoutine(routine.copy(missingBlockCount = 0))
+        UserCloudSyncManager.uploadUserData(data.realRepository)
+    }
+
     fun getOrCreateExerciseForRoutine(
         name: String,
         category: ExerciseCategory = ExerciseCategory.BARBELL,
@@ -602,6 +704,9 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         val inserts = buildBlockInserts(draft)
         repo.saveSession(draft.toSession(), inserts)
         applyInheritedTrackedPrs(draft.inheritedBlockTrackedPrs)
+        if (draft.syncRoutineTemplateId != null && !draft.syncRoutineTemplateItems.isNullOrEmpty()) {
+            repo.updateDailyRoutineItems(draft.syncRoutineTemplateId, draft.syncRoutineTemplateItems)
+        }
         UserCloudSyncManager.uploadUserData(data.realRepository)
     }
 
@@ -615,6 +720,9 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
             managedRepMaxIds = draft.managedRepMaxIds
         )
         applyInheritedTrackedPrs(draft.inheritedBlockTrackedPrs)
+        if (draft.syncRoutineTemplateId != null && !draft.syncRoutineTemplateItems.isNullOrEmpty()) {
+            repo.updateDailyRoutineItems(draft.syncRoutineTemplateId, draft.syncRoutineTemplateItems)
+        }
         UserCloudSyncManager.uploadUserData(data.realRepository)
     }
 

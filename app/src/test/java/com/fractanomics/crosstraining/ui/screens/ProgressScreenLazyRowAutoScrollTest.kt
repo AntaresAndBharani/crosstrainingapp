@@ -19,28 +19,26 @@ import org.junit.Test
  */
 class ProgressScreenLazyRowAutoScrollTest {
 
-    // Helper simulating the derivation logic in ProgressScreen
-    private fun deriveAvailableModes(hasRoutines: Boolean, hasCycles: Boolean): List<ProgressMode> {
-        return listOfNotNull(
-            ProgressMode.BY_EXERCISE,
-            if (hasRoutines) ProgressMode.BY_ROUTINE else null,
-            if (hasCycles) ProgressMode.CYCLE_GOALS else null,
-            ProgressMode.BODY_WEIGHT
-        )
-    }
+    // Delegate directly to production ProgressScreen mode derivation helper
+    private fun deriveAvailableModes(hasRoutines: Boolean, hasCycles: Boolean): List<ProgressMode> =
+        deriveAvailableProgressModes(hasBlocks = hasRoutines, hasCycles = hasCycles)
 
     @Test
     fun scenario1_deriveAvailableModes_freshInstallWithZeroRoutinesAndZeroCycles() {
-        // Given fresh install: routines is empty, cycles is empty
+        // Given fresh install: blocks is empty, cycles is empty
         val modes = deriveAvailableModes(hasRoutines = false, hasCycles = false)
 
-        // Then only BY_EXERCISE and BODY_WEIGHT are available
-        assertEquals(listOf(ProgressMode.BY_EXERCISE, ProgressMode.BODY_WEIGHT), modes)
-        assertEquals(2, modes.size)
+        // Then BY_DAILY_ROUTINE, BY_EXERCISE, and BODY_WEIGHT are available
+        assertEquals(
+            listOf(ProgressMode.BY_DAILY_ROUTINE, ProgressMode.BY_EXERCISE, ProgressMode.BODY_WEIGHT),
+            modes
+        )
+        assertEquals(3, modes.size)
 
         // And their indices are strictly defined
-        assertEquals(0, modes.indexOf(ProgressMode.BY_EXERCISE))
-        assertEquals(1, modes.indexOf(ProgressMode.BODY_WEIGHT))
+        assertEquals(0, modes.indexOf(ProgressMode.BY_DAILY_ROUTINE))
+        assertEquals(1, modes.indexOf(ProgressMode.BY_EXERCISE))
+        assertEquals(2, modes.indexOf(ProgressMode.BODY_WEIGHT))
         assertEquals(-1, modes.indexOf(ProgressMode.BY_ROUTINE))
         assertEquals(-1, modes.indexOf(ProgressMode.CYCLE_GOALS))
     }
@@ -50,12 +48,18 @@ class ProgressScreenLazyRowAutoScrollTest {
         val modes = deriveAvailableModes(hasRoutines = true, hasCycles = false)
 
         assertEquals(
-            listOf(ProgressMode.BY_EXERCISE, ProgressMode.BY_ROUTINE, ProgressMode.BODY_WEIGHT),
+            listOf(
+                ProgressMode.BY_DAILY_ROUTINE,
+                ProgressMode.BY_ROUTINE,
+                ProgressMode.BY_EXERCISE,
+                ProgressMode.BODY_WEIGHT
+            ),
             modes
         )
-        assertEquals(0, modes.indexOf(ProgressMode.BY_EXERCISE))
+        assertEquals(0, modes.indexOf(ProgressMode.BY_DAILY_ROUTINE))
         assertEquals(1, modes.indexOf(ProgressMode.BY_ROUTINE))
-        assertEquals(2, modes.indexOf(ProgressMode.BODY_WEIGHT))
+        assertEquals(2, modes.indexOf(ProgressMode.BY_EXERCISE))
+        assertEquals(3, modes.indexOf(ProgressMode.BODY_WEIGHT))
     }
 
     @Test
@@ -63,12 +67,20 @@ class ProgressScreenLazyRowAutoScrollTest {
         val modes = deriveAvailableModes(hasRoutines = false, hasCycles = true)
 
         assertEquals(
-            listOf(ProgressMode.BY_EXERCISE, ProgressMode.CYCLE_GOALS, ProgressMode.BODY_WEIGHT),
+            listOf(
+                ProgressMode.BY_DAILY_ROUTINE,
+                ProgressMode.BY_EXERCISE,
+                ProgressMode.CYCLE_GOALS,
+                ProgressMode.FAT_LOSS,
+                ProgressMode.BODY_WEIGHT
+            ),
             modes
         )
-        assertEquals(0, modes.indexOf(ProgressMode.BY_EXERCISE))
-        assertEquals(1, modes.indexOf(ProgressMode.CYCLE_GOALS))
-        assertEquals(2, modes.indexOf(ProgressMode.BODY_WEIGHT))
+        assertEquals(0, modes.indexOf(ProgressMode.BY_DAILY_ROUTINE))
+        assertEquals(1, modes.indexOf(ProgressMode.BY_EXERCISE))
+        assertEquals(2, modes.indexOf(ProgressMode.CYCLE_GOALS))
+        assertEquals(3, modes.indexOf(ProgressMode.FAT_LOSS))
+        assertEquals(4, modes.indexOf(ProgressMode.BODY_WEIGHT))
     }
 
     @Test
@@ -77,18 +89,22 @@ class ProgressScreenLazyRowAutoScrollTest {
 
         assertEquals(
             listOf(
-                ProgressMode.BY_EXERCISE,
+                ProgressMode.BY_DAILY_ROUTINE,
                 ProgressMode.BY_ROUTINE,
+                ProgressMode.BY_EXERCISE,
                 ProgressMode.CYCLE_GOALS,
+                ProgressMode.FAT_LOSS,
                 ProgressMode.BODY_WEIGHT
             ),
             modes
         )
-        assertEquals(4, modes.size)
-        assertEquals(0, modes.indexOf(ProgressMode.BY_EXERCISE))
+        assertEquals(6, modes.size)
+        assertEquals(0, modes.indexOf(ProgressMode.BY_DAILY_ROUTINE))
         assertEquals(1, modes.indexOf(ProgressMode.BY_ROUTINE))
-        assertEquals(2, modes.indexOf(ProgressMode.CYCLE_GOALS))
-        assertEquals(3, modes.indexOf(ProgressMode.BODY_WEIGHT))
+        assertEquals(2, modes.indexOf(ProgressMode.BY_EXERCISE))
+        assertEquals(3, modes.indexOf(ProgressMode.CYCLE_GOALS))
+        assertEquals(4, modes.indexOf(ProgressMode.FAT_LOSS))
+        assertEquals(5, modes.indexOf(ProgressMode.BODY_WEIGHT))
     }
 
     @Test
@@ -96,13 +112,13 @@ class ProgressScreenLazyRowAutoScrollTest {
         // When athlete navigates to BODY_WEIGHT on fresh install
         val freshModes = deriveAvailableModes(hasRoutines = false, hasCycles = false)
         val freshTargetIndex = freshModes.indexOf(ProgressMode.BODY_WEIGHT)
-        assertEquals("Target index on fresh install for BODY_WEIGHT must be 1", 1, freshTargetIndex)
+        assertEquals("Target index on fresh install for BODY_WEIGHT must be 2", 2, freshTargetIndex)
         assertTrue("Index must be non-negative", freshTargetIndex >= 0)
 
         // When athlete navigates to BODY_WEIGHT on full setup
         val fullModes = deriveAvailableModes(hasRoutines = true, hasCycles = true)
         val fullTargetIndex = fullModes.indexOf(ProgressMode.BODY_WEIGHT)
-        assertEquals("Target index on full setup for BODY_WEIGHT must be 3", 3, fullTargetIndex)
+        assertEquals("Target index on full setup for BODY_WEIGHT must be 5", 5, fullTargetIndex)
         assertTrue("Index must be non-negative", fullTargetIndex >= 0)
 
         // Unknown mode safely yields -1 preventing out-of-bounds scroll

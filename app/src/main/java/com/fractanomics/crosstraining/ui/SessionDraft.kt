@@ -54,7 +54,9 @@ data class SessionDraft(
     val reconcileRepMaxes: Boolean = false,
     /** Prior session rep-max ids owned by the simplified block editor (`null` = all). */
     val managedRepMaxIds: Set<Long>? = null,
-    val inheritedBlockTrackedPrs: Map<Long, List<com.fractanomics.crosstraining.util.TrackedPrSlot>> = emptyMap()
+    val inheritedBlockTrackedPrs: Map<Long, List<com.fractanomics.crosstraining.util.TrackedPrSlot>> = emptyMap(),
+    val syncRoutineTemplateId: Long? = null,
+    val syncRoutineTemplateItems: List<com.fractanomics.crosstraining.util.DailyRoutineItem>? = null
 )
 
 /**

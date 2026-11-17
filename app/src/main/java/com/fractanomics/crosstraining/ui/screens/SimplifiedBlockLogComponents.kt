@@ -80,6 +80,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.Exercise
+import com.fractanomics.crosstraining.data.model.ExerciseCategory
+import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.ui.BlockDraft
@@ -89,8 +91,11 @@ import com.fractanomics.crosstraining.ui.trimmed
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.AvailableBlockExercise
+import com.fractanomics.crosstraining.util.DailyRoutine
+import com.fractanomics.crosstraining.util.DailyRoutineCodec
 import com.fractanomics.crosstraining.util.EvaluatedPrChip
 import com.fractanomics.crosstraining.util.HydratedAvailableBlockSeed
+import com.fractanomics.crosstraining.util.STANDALONE_EXERCISE_SESSION_FORMAT
 import com.fractanomics.crosstraining.util.STANDARD_RM_REPS
 import com.fractanomics.crosstraining.util.TrackedPrSlot
 import java.math.BigDecimal
@@ -100,6 +105,13 @@ import java.util.UUID
 private val PrEmeraldDark = Color(0xFF0B6E3F)
 private val PrEmeraldAccent = Color(0xFF2ECC71)
 private val PrEmeraldOnDarkContainer = Color(0xFFA7F3D0)
+private val BlockSkyLight = Color(0xFF0369A1)
+private val BlockSkyDark = Color(0xFF7DD3FC)
+
+internal enum class SessionItemKind {
+    BLOCK,
+    EXERCISE
+}
 
 internal fun normalizeWeight2dp(value: Double): BigDecimal =
     BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP)
@@ -150,7 +162,8 @@ internal class LoadedAvailableBlockState(
     val rawSection: String = "",
     val rawKind: BlockKind = BlockKind.STRENGTH,
     val rawIsCompleted: Boolean = true,
-    val uiKey: String = UUID.randomUUID().toString()
+    val uiKey: String = UUID.randomUUID().toString(),
+    val itemKind: SessionItemKind = SessionItemKind.BLOCK
 ) {
     val exerciseSections: SnapshotStateList<LoadedAvailableBlockExerciseState> = exerciseStates.toMutableStateList()
     val trackedPrSlots: SnapshotStateList<TrackedPrSlot> = initialTrackedPrs.toMutableStateList()
@@ -405,16 +418,18 @@ internal class LoadedAvailableBlockState(
         val matchedExerciseIds = exerciseSections.map { it.exerciseId }.filter { it > 0L }.toSet()
         val unmatchedPrs = activeSessionPrs.filter { it.movementId !in matchedExerciseIds }
 
+        val isStandaloneEx = itemKind == SessionItemKind.EXERCISE
+
         if (exerciseSections.isEmpty()) {
             return listOf(
                 BlockDraft(
                     name = block.title,
                     kind = rawKind,
-                    format = rawFormat,
+                    format = if (isStandaloneEx) STANDALONE_EXERCISE_SESSION_FORMAT else rawFormat,
                     scheme = rawScheme,
                     existingExerciseId = activeSessionPrs.firstOrNull()?.movementId,
                     newExerciseName = null,
-                    routineId = block.id.takeIf { it > 0L },
+                    routineId = if (isStandaloneEx) null else block.id.takeIf { it > 0L },
                     description = block.instructions,
                     resultText = "",
                     resultValue = null,
@@ -423,7 +438,7 @@ internal class LoadedAvailableBlockState(
                     newRepMaxWeight = null,
                     section = rawSection,
                     exerciseIdsCsv = "",
-                    subBlock = block.title,
+                    subBlock = if (isStandaloneEx) "" else block.title,
                     isCompleted = rawIsCompleted,
                     newRepMaxes = activeSessionPrs.map { RepMaxDraft(it.movementId, it.rmReps, it.candidateWeight) }
                 )
@@ -451,11 +466,11 @@ internal class LoadedAvailableBlockState(
             BlockDraft(
                 name = exState.exerciseName,
                 kind = exState.rawKind,
-                format = exState.rawFormat,
+                format = if (isStandaloneEx) STANDALONE_EXERCISE_SESSION_FORMAT else exState.rawFormat,
                 scheme = exState.rawScheme,
                 existingExerciseId = exState.exerciseId.takeIf { it > 0L },
                 newExerciseName = if (exState.exerciseId <= 0L) exState.exerciseName else null,
-                routineId = block.id.takeIf { it > 0L },
+                routineId = if (isStandaloneEx) null else block.id.takeIf { it > 0L },
                 description = block.instructions,
                 resultText = "",
                 resultValue = null,
@@ -464,7 +479,7 @@ internal class LoadedAvailableBlockState(
                 newRepMaxWeight = null,
                 section = exState.rawSection,
                 exerciseIdsCsv = exState.exerciseId.takeIf { it > 0L }?.toString().orEmpty(),
-                subBlock = block.title.ifBlank { exState.subBlockTitle },
+                subBlock = if (isStandaloneEx) "" else block.title.ifBlank { exState.subBlockTitle },
                 isCompleted = exState.rawIsCompleted,
                 newRepMaxes = prsForThis.map { RepMaxDraft(it.movementId, it.rmReps, it.candidateWeight) }
             )
@@ -472,7 +487,7 @@ internal class LoadedAvailableBlockState(
     }
 
     fun inheritedTrackedPrSlotsForParent(exercises: List<Exercise>): Pair<Long, List<TrackedPrSlot>>? {
-        if (block.id <= 0L || trackedPrSlots.isEmpty()) return null
+        if (itemKind == SessionItemKind.EXERCISE || block.id <= 0L || trackedPrSlots.isEmpty()) return null
         val byLowerName = exercises.associateBy { it.name.trim().lowercase() }
         val resolved = AvailableBlockCodec.normalizeTrackedPrSlots(
             trackedPrSlots.map { slot ->
@@ -510,7 +525,7 @@ internal fun buildLoadedAvailableBlockState(
         val dateBanner = if (!prevWeights.isNullOrEmpty() && lastSession != null) {
             "Pre-filled from last session (${lastSession.dateFormatted})"
         } else {
-            null
+            "First time logging — enter set weights"
         }
         LoadedAvailableBlockExerciseState(
             exerciseId = ex.id,
@@ -628,7 +643,76 @@ internal fun buildHydratedBlockState(
         rawScheme = seed.rawScheme,
         rawSection = seed.rawSection,
         rawKind = seed.rawKind,
-        rawIsCompleted = seed.rawIsCompleted
+        rawIsCompleted = seed.rawIsCompleted,
+        itemKind = if (seed.isStandaloneExercise) SessionItemKind.EXERCISE else SessionItemKind.BLOCK
+    )
+}
+
+internal fun buildLoadedStandaloneExerciseState(
+    exercise: Exercise,
+    note: String = "",
+    defaultTrackedPrs: List<TrackedPrSlot> = emptyList(),
+    sessions: List<SessionWithBlocks>,
+    repMaxes: List<RepMax>,
+    weightUnit: String = "kg",
+    isEditMode: Boolean = false,
+    editingSessionId: Long? = null
+): LoadedAvailableBlockState {
+    val last = DailyRoutineCodec.resolveLastExerciseSession(
+        exercise = exercise,
+        sessions = sessions,
+        weightUnit = weightUnit,
+        excludeSessionId = editingSessionId
+    )
+    val validLast = last?.takeIf { s -> s.weights.any { (it ?: 0.0) > 0.0 } }
+    val initialWeights = if (validLast != null) {
+        validLast.weights.map { w -> w?.takeIf { it > 0.0 }?.trimmed() ?: "" }
+    } else {
+        listOf("", "", "", "")
+    }
+    val dateBanner = if (validLast != null) {
+        "Pre-filled from last session (${validLast.dateFormatted})"
+    } else {
+        "First time logging — enter set weights"
+    }
+    val filteredRepMaxes = if (editingSessionId != null) {
+        repMaxes.filter { it.sessionId != editingSessionId }
+    } else {
+        repMaxes
+    }
+    val resolvedPrSlots = DailyRoutineCodec.resolveDefaultTrackedPrSlotsForExercise(
+        exercise = exercise,
+        defaultTrackedPrs = defaultTrackedPrs,
+        repMaxes = filteredRepMaxes
+    )
+    val exState = LoadedAvailableBlockExerciseState(
+        exerciseId = exercise.id,
+        exerciseName = exercise.name,
+        lastSessionDateLabel = dateBanner,
+        initialWeights = initialWeights,
+        rawFormat = STANDALONE_EXERCISE_SESSION_FORMAT
+    )
+    val backingBlock = AvailableBlock(
+        id = 0L,
+        title = exercise.name,
+        instructions = note.trim(),
+        exercises = listOf(
+            AvailableBlockExercise(
+                id = exercise.id,
+                name = exercise.name,
+                tracksRepMax = exercise.tracksRepMax || resolvedPrSlots.isNotEmpty()
+            )
+        ),
+        trackedPrs = resolvedPrSlots
+    )
+    return LoadedAvailableBlockState(
+        block = backingBlock,
+        exerciseStates = listOf(exState),
+        initialTrackedPrs = resolvedPrSlots,
+        isEditMode = isEditMode,
+        editingSessionId = editingSessionId,
+        rawFormat = STANDALONE_EXERCISE_SESSION_FORMAT,
+        itemKind = SessionItemKind.EXERCISE
     )
 }
 
@@ -643,12 +727,18 @@ internal fun SimplifiedBlockLogCard(
     onLaunchTimer: () -> Unit,
     onOpenPrPicker: () -> Unit,
     onRemoveTrackedPr: (TrackedPrSlot) -> Unit,
+    itemNumber: Int? = null,
     modifier: Modifier = Modifier
 ) {
     val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
     val fontScale = LocalConfiguration.current.fontScale
     val columns = if (fontScale >= 1.4f) 2 else 4
     val isDark = isSystemInDarkTheme()
+    val blockAccent = if (isDark) BlockSkyDark else BlockSkyLight
+    val headerText = buildString {
+        if (itemNumber != null) append("$itemNumber  ")
+        append("BLOCK: ${blockState.block.title.ifBlank { "Untitled Block" }}")
+    }
 
     ElevatedCard(
         modifier = modifier.fillMaxWidth(),
@@ -660,46 +750,14 @@ internal fun SimplifiedBlockLogCard(
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Card Header: BLOCK: {Title} + Timer + Remove
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "BLOCK: ${blockState.block.title.ifBlank { "Untitled Block" }}",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = onLaunchTimer,
-                        modifier = Modifier.minimumInteractiveComponentSize()
-                    ) {
-                        Icon(
-                            Icons.Filled.Timer,
-                            contentDescription = "Start timer for ${blockState.block.title}",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = onRemoveBlock,
-                        modifier = Modifier.minimumInteractiveComponentSize()
-                    ) {
-                        Icon(
-                            Icons.Filled.Delete,
-                            contentDescription = "Remove block ${blockState.block.title}",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-            }
+            SessionItemHeaderRow(
+                label = headerText,
+                titleColor = blockAccent,
+                timerContentDesc = "Start timer for ${blockState.block.title}",
+                removeContentDesc = "Remove block ${blockState.block.title}",
+                onLaunchTimer = onLaunchTimer,
+                onRemove = onRemoveBlock
+            )
 
             // Prescription Banner
             if (blockState.block.instructions.isNotBlank()) {
@@ -719,150 +777,323 @@ internal fun SimplifiedBlockLogCard(
 
             // Per-movement Set Tiles
             blockState.exerciseSections.forEach { exState ->
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                SessionExerciseSetTilesSection(
+                    exState = exState,
+                    blockState = blockState,
+                    weightUnit = weightUnit,
+                    columns = columns,
+                    showExerciseHeading = true
+                )
+            }
+
+            TrackedPrChipsFlowSection(
+                blockState = blockState,
+                evaluatedChips = evaluatedChips,
+                weightUnit = weightUnit,
+                isDark = isDark,
+                onOpenPrPicker = onOpenPrPicker,
+                onRemoveTrackedPr = onRemoveTrackedPr
+            )
+        }
+    }
+}
+
+@Composable
+internal fun SimplifiedExerciseLogCard(
+    blockState: LoadedAvailableBlockState,
+    exercises: List<Exercise>,
+    repMaxes: List<RepMax>,
+    weightUnit: String,
+    onRemoveBlock: () -> Unit,
+    onLaunchTimer: () -> Unit,
+    onOpenPrPicker: () -> Unit,
+    onRemoveTrackedPr: (TrackedPrSlot) -> Unit,
+    itemNumber: Int? = null,
+    modifier: Modifier = Modifier
+) {
+    val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
+    val fontScale = LocalConfiguration.current.fontScale
+    val columns = if (fontScale >= 1.4f) 2 else 4
+    val isDark = isSystemInDarkTheme()
+    val emeraldAccent = if (isDark) PrEmeraldAccent else PrEmeraldDark
+    val exSection = blockState.exerciseSections.firstOrNull()
+    val exerciseTitle = exSection?.exerciseName?.ifBlank { blockState.block.title }
+        ?: blockState.block.title.ifBlank { "Untitled Exercise" }
+    val headerText = buildString {
+        if (itemNumber != null) append("$itemNumber  ")
+        append("EXERCISE: $exerciseTitle")
+    }
+
+    ElevatedCard(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            SessionItemHeaderRow(
+                label = headerText,
+                titleColor = emeraldAccent,
+                timerContentDesc = "Start timer for $exerciseTitle",
+                removeContentDesc = "Remove exercise $exerciseTitle",
+                onLaunchTimer = onLaunchTimer,
+                onRemove = onRemoveBlock
+            )
+
+            // Optional Routine Note banner
+            if (blockState.block.instructions.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = emeraldAccent.copy(alpha = if (isDark) 0.14f else 0.08f),
+                    border = BorderStroke(1.dp, emeraldAccent.copy(alpha = 0.25f)),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = exState.exerciseName,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
+                        text = "Routine Note: ${blockState.block.instructions}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
                     )
-                    if (!exState.lastSessionDateLabel.isNullOrBlank()) {
-                        Text(
-                            text = exState.lastSessionDateLabel,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                        val spacing = 8.dp
-                        val tileWidth = (maxWidth - spacing * (columns - 1)) / columns
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(spacing),
-                            verticalArrangement = Arrangement.spacedBy(spacing),
-                            maxItemsInEachRow = columns
-                        ) {
-                            exState.weights.forEachIndexed { idx, w ->
-                                WeightOnlySetTile(
-                                    setNumber = idx + 1,
-                                    value = w,
-                                    unit = weightUnit,
-                                    canRemove = exState.weights.size > 1,
-                                    onValueChange = { updated -> blockState.updateSetWeight(exState, idx, updated) },
-                                    onRemove = { blockState.removeSet(exState, idx) },
-                                    modifier = Modifier.width(tileWidth)
-                                )
-                            }
-                        }
-                    }
-                    TextButton(
-                        onClick = { blockState.addSet(exState) },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .heightIn(min = 48.dp)
-                            .minimumInteractiveComponentSize()
-                    ) {
-                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Add Set", style = MaterialTheme.typography.labelLarge)
-                    }
                 }
             }
 
-            // Live PR Chips + "+ Record PR 🔥"
-            HorizontalDivider()
+            blockState.exerciseSections.forEach { section ->
+                SessionExerciseSetTilesSection(
+                    exState = section,
+                    blockState = blockState,
+                    weightUnit = weightUnit,
+                    columns = columns,
+                    showExerciseHeading = false
+                )
+            }
+
+            TrackedPrChipsFlowSection(
+                blockState = blockState,
+                evaluatedChips = evaluatedChips,
+                weightUnit = weightUnit,
+                isDark = isDark,
+                onOpenPrPicker = onOpenPrPicker,
+                onRemoveTrackedPr = onRemoveTrackedPr
+            )
+        }
+    }
+}
+
+@Composable
+private fun SessionItemHeaderRow(
+    label: String,
+    titleColor: Color,
+    timerContentDesc: String,
+    removeContentDesc: String,
+    onLaunchTimer: () -> Unit,
+    onRemove: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = titleColor,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(
+                onClick = onLaunchTimer,
+                modifier = Modifier.minimumInteractiveComponentSize()
+            ) {
+                Icon(
+                    Icons.Filled.Timer,
+                    contentDescription = timerContentDesc,
+                    tint = titleColor,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(
+                onClick = onRemove,
+                modifier = Modifier.minimumInteractiveComponentSize()
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = removeContentDesc,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SessionExerciseSetTilesSection(
+    exState: LoadedAvailableBlockExerciseState,
+    blockState: LoadedAvailableBlockState,
+    weightUnit: String,
+    columns: Int,
+    showExerciseHeading: Boolean
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (showExerciseHeading) {
+            Text(
+                text = exState.exerciseName,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        if (!exState.lastSessionDateLabel.isNullOrBlank()) {
+            Text(
+                text = exState.lastSessionDateLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val spacing = 8.dp
+            val tileWidth = (maxWidth - spacing * (columns - 1)) / columns
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(spacing),
+                verticalArrangement = Arrangement.spacedBy(spacing),
+                maxItemsInEachRow = columns
             ) {
-                evaluatedChips.forEach { (slot, chip) ->
-                    val slotKey = prSlotKey(chip.movementId, slot.movementName, chip.rmReps)
-                    val isPersistedOrExplicitPr = blockState.isTrackedSessionPrKey(slotKey) && chip.candidateWeight > 0.0
-                    val labelText = when {
-                        chip.isNewPr ->
-                            "🏆 NEW PR: ${chip.rmReps}RM ${chip.movementName} · ${chip.candidateWeight.trimmed()} $weightUnit"
-                        isPersistedOrExplicitPr ->
-                            "🔥 ${chip.rmReps}RM ${chip.movementName} · ${chip.candidateWeight.trimmed()} $weightUnit"
-                        chip.storedBestWeight > 0.0 ->
-                            "${chip.rmReps}RM ${chip.movementName} · Current Best: ${chip.storedBestWeight.trimmed()} $weightUnit"
-                        else ->
-                            "${chip.rmReps}RM ${chip.movementName} · Best: —"
-                    }
-                    val semanticLabel = when {
-                        chip.isNewPr ->
-                            "New personal record, ${chip.rmReps} rep max ${chip.movementName}, ${chip.candidateWeight.trimmed()} $weightUnit"
-                        isPersistedOrExplicitPr ->
-                            "Session personal record, ${chip.rmReps} rep max ${chip.movementName}, ${chip.candidateWeight.trimmed()} $weightUnit"
-                        chip.storedBestWeight > 0.0 ->
-                            "${chip.rmReps} rep max ${chip.movementName}, current best ${chip.storedBestWeight.trimmed()} $weightUnit"
-                        else ->
-                            "${chip.rmReps} rep max ${chip.movementName}, no recorded best yet"
-                    }
-                    val isHighlightedPr = chip.isNewPr || isPersistedOrExplicitPr
-                    val containerColor = when {
-                        isHighlightedPr && isDark -> PrEmeraldDark.copy(alpha = 0.28f)
-                        isHighlightedPr -> PrEmeraldAccent.copy(alpha = 0.16f)
-                        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
-                    }
-                    val contentColor = when {
-                        isHighlightedPr && isDark -> PrEmeraldOnDarkContainer
-                        isHighlightedPr -> PrEmeraldDark
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                    val borderColor = when {
-                        chip.isNewPr -> PrEmeraldAccent
-                        isPersistedOrExplicitPr -> PrEmeraldDark.copy(alpha = 0.75f)
-                        else -> MaterialTheme.colorScheme.outlineVariant
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = containerColor,
-                        contentColor = contentColor,
-                        border = BorderStroke(1.dp, borderColor),
-                        modifier = Modifier
-                            .heightIn(min = 48.dp)
-                            .semantics(mergeDescendants = true) {
-                                contentDescription = "$semanticLabel. Tap to edit tracked PR."
-                            }
-                            .clickable(onClick = onOpenPrPicker)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
-                        ) {
-                            Text(
-                                text = labelText,
-                                style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
-                                fontWeight = if (isHighlightedPr) FontWeight.Bold else FontWeight.Medium,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            IconButton(
-                                onClick = { onRemoveTrackedPr(slot) },
-                                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                            ) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "Remove tracked PR ${chip.rmReps}RM ${chip.movementName}",
-                                    modifier = Modifier.size(16.dp),
-                                    tint = contentColor
-                                )
-                            }
-                        }
-                    }
-                }
-
-                OutlinedButton(
-                    onClick = onOpenPrPicker,
-                    shape = RoundedCornerShape(18.dp),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                    modifier = Modifier.heightIn(min = 48.dp)
-                ) {
-                    Text("+ Record PR 🔥", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                exState.weights.forEachIndexed { idx, w ->
+                    WeightOnlySetTile(
+                        setNumber = idx + 1,
+                        value = w,
+                        unit = weightUnit,
+                        canRemove = exState.weights.size > 1,
+                        onValueChange = { updated -> blockState.updateSetWeight(exState, idx, updated) },
+                        onRemove = { blockState.removeSet(exState, idx) },
+                        modifier = Modifier.width(tileWidth)
+                    )
                 }
             }
+        }
+        TextButton(
+            onClick = { blockState.addSet(exState) },
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .minimumInteractiveComponentSize()
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Add Set", style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TrackedPrChipsFlowSection(
+    blockState: LoadedAvailableBlockState,
+    evaluatedChips: List<Pair<TrackedPrSlot, EvaluatedPrChip>>,
+    weightUnit: String,
+    isDark: Boolean,
+    onOpenPrPicker: () -> Unit,
+    onRemoveTrackedPr: (TrackedPrSlot) -> Unit
+) {
+    HorizontalDivider()
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        evaluatedChips.forEach { (slot, chip) ->
+            val slotKey = prSlotKey(chip.movementId, slot.movementName, chip.rmReps)
+            val isPersistedOrExplicitPr = blockState.isTrackedSessionPrKey(slotKey) && chip.candidateWeight > 0.0
+            val labelText = when {
+                chip.isNewPr ->
+                    "🏆 NEW PR: ${chip.rmReps}RM ${chip.movementName} · ${chip.candidateWeight.trimmed()} $weightUnit"
+                isPersistedOrExplicitPr ->
+                    "🔥 ${chip.rmReps}RM ${chip.movementName} · ${chip.candidateWeight.trimmed()} $weightUnit"
+                chip.storedBestWeight > 0.0 ->
+                    "${chip.rmReps}RM ${chip.movementName} · Current Best: ${chip.storedBestWeight.trimmed()} $weightUnit"
+                else ->
+                    "${chip.rmReps}RM ${chip.movementName} · Best: —"
+            }
+            val semanticLabel = when {
+                chip.isNewPr ->
+                    "New personal record, ${chip.rmReps} rep max ${chip.movementName}, ${chip.candidateWeight.trimmed()} $weightUnit"
+                isPersistedOrExplicitPr ->
+                    "Session personal record, ${chip.rmReps} rep max ${chip.movementName}, ${chip.candidateWeight.trimmed()} $weightUnit"
+                chip.storedBestWeight > 0.0 ->
+                    "${chip.rmReps} rep max ${chip.movementName}, current best ${chip.storedBestWeight.trimmed()} $weightUnit"
+                else ->
+                    "${chip.rmReps} rep max ${chip.movementName}, no recorded best yet"
+            }
+            val isHighlightedPr = chip.isNewPr || isPersistedOrExplicitPr
+            val containerColor = when {
+                isHighlightedPr && isDark -> PrEmeraldDark.copy(alpha = 0.28f)
+                isHighlightedPr -> PrEmeraldAccent.copy(alpha = 0.16f)
+                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+            }
+            val contentColor = when {
+                isHighlightedPr && isDark -> PrEmeraldOnDarkContainer
+                isHighlightedPr -> PrEmeraldDark
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            val borderColor = when {
+                chip.isNewPr -> PrEmeraldAccent
+                isPersistedOrExplicitPr -> PrEmeraldDark.copy(alpha = 0.75f)
+                else -> MaterialTheme.colorScheme.outlineVariant
+            }
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = containerColor,
+                contentColor = contentColor,
+                border = BorderStroke(1.dp, borderColor),
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = "$semanticLabel. Tap to edit tracked PR."
+                    }
+                    .clickable(onClick = onOpenPrPicker)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
+                ) {
+                    Text(
+                        text = labelText,
+                        style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                        fontWeight = if (isHighlightedPr) FontWeight.Bold else FontWeight.Medium,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    IconButton(
+                        onClick = { onRemoveTrackedPr(slot) },
+                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Remove tracked PR ${chip.rmReps}RM ${chip.movementName}",
+                            modifier = Modifier.size(16.dp),
+                            tint = contentColor
+                        )
+                    }
+                }
+            }
+        }
+
+        OutlinedButton(
+            onClick = onOpenPrPicker,
+            shape = RoundedCornerShape(18.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.heightIn(min = 48.dp)
+        ) {
+            Text("+ Record PR 🔥", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -1808,6 +2039,351 @@ internal fun MultiMovementPrPickerSheet(
                     }
                 ) {
                     Text("Apply PRs")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Modal bottom sheet for selecting a saved composite [DailyRoutine] in Log/Edit Session.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+internal fun LoadDailyRoutineSheet(
+    dailyRoutines: List<DailyRoutine>,
+    sessions: List<SessionWithBlocks>,
+    onDismiss: () -> Unit,
+    onSelectRoutine: (DailyRoutine) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(dailyRoutines, query) {
+        DailyRoutineCodec.filterDailyRoutines(dailyRoutines, query)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Load Daily Routine",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("Search routines, blocks, or exercises...") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                trailingIcon = if (query.isNotEmpty()) {
+                    {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear routine search")
+                        }
+                    }
+                } else null,
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 380.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (filtered.isEmpty()) {
+                    Text(
+                        text = if (dailyRoutines.isEmpty()) {
+                            "No Daily Routines yet — create one in Library → Routines."
+                        } else {
+                            "No Daily Routines matching \"$query\"."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                } else {
+                    filtered.forEach { routine ->
+                        val lastDate = DailyRoutineCodec.resolveLastDailyRoutineSessionDate(routine, sessions)
+                        val subtitle = buildString {
+                            append("${routine.blockCount} ")
+                            append(if (routine.blockCount == 1) "Block" else "Blocks")
+                            append(" · ${routine.exerciseCount} ")
+                            append(if (routine.exerciseCount == 1) "Exercise" else "Exercises")
+                            append(" · ")
+                            append(if (lastDate != null) "Last: $lastDate" else "Not logged yet")
+                        }
+                        OutlinedCard(
+                            onClick = { onSelectRoutine(routine) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = routine.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = subtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (routine.items.isNotEmpty()) {
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        routine.items.take(4).forEach { item ->
+                                            val label = when (item) {
+                                                is com.fractanomics.crosstraining.util.DailyRoutineItem.BlockRef ->
+                                                    "BLOCK: ${item.blockTitle}"
+                                                is com.fractanomics.crosstraining.util.DailyRoutineItem.StandaloneExercise ->
+                                                    "EX: ${item.exerciseName}"
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                                            ) {
+                                                Text(
+                                                    text = label,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                                )
+                                            }
+                                        }
+                                        if (routine.items.size > 4) {
+                                            Text(
+                                                text = "+${routine.items.size - 4} more",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.align(Alignment.CenterVertically)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Close")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Modal bottom sheet for adding a standalone [Exercise] card (`EXERCISE: ...`) to a session
+ * with search, category filter, optional note, and inline weighted exercise quick-create.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+internal fun AddExerciseToSessionSheet(
+    exercises: List<Exercise>,
+    onDismiss: () -> Unit,
+    onCreateExercise: (name: String, onCreated: (Exercise) -> Unit) -> Unit,
+    onSelectExercise: (exercise: Exercise, note: String) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var query by remember { mutableStateOf("") }
+    var selectedCategory by remember { mutableStateOf<ExerciseCategory?>(null) }
+    var noteText by remember { mutableStateOf("") }
+    var isCreating by remember { mutableStateOf(false) }
+
+    val filtered = remember(exercises, query, selectedCategory) {
+        val q = query.trim().lowercase()
+        exercises
+            .asSequence()
+            .filter { selectedCategory == null || it.category == selectedCategory }
+            .filter { q.isEmpty() || it.name.lowercase().contains(q) }
+            .sortedWith(
+                compareByDescending<Exercise> { it.metricType == MetricType.WEIGHT }
+                    .thenBy { it.name.lowercase() }
+            )
+            .toList()
+    }
+    val exactMatch = remember(exercises, query) {
+        val clean = query.trim().lowercase()
+        clean.isNotEmpty() && exercises.any { it.name.trim().lowercase() == clean }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Add Exercise",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("Search or type new exercise name...") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                trailingIcon = if (query.isNotEmpty()) {
+                    {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear exercise search")
+                        }
+                    }
+                } else null,
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                FilterChip(
+                    selected = selectedCategory == null,
+                    onClick = { selectedCategory = null },
+                    label = { Text("All", maxLines = 1, softWrap = false) }
+                )
+                ExerciseCategory.entries.forEach { cat ->
+                    FilterChip(
+                        selected = selectedCategory == cat,
+                        onClick = { selectedCategory = if (selectedCategory == cat) null else cat },
+                        label = { Text(cat.label, maxLines = 1, softWrap = false) }
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = noteText,
+                onValueChange = { noteText = it },
+                label = { Text("Note / cue (optional)") },
+                placeholder = { Text("e.g. Tempo 3010 · RIR 2") },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            if (query.trim().isNotEmpty() && !exactMatch) {
+                OutlinedButton(
+                    onClick = {
+                        val trimmed = query.trim()
+                        if (trimmed.isNotEmpty() && !isCreating) {
+                            isCreating = true
+                            onCreateExercise(trimmed) { created ->
+                                isCreating = false
+                                onSelectExercise(created, noteText.trim())
+                            }
+                        }
+                    },
+                    enabled = !isCreating,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Create \"${query.trim()}\" & Add")
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 280.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (filtered.isEmpty()) {
+                    Text(
+                        text = if (exercises.isEmpty()) {
+                            "No exercises yet — type a name above to create one."
+                        } else {
+                            "No exercises matching \"$query\"."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    filtered.forEach { ex ->
+                        OutlinedCard(
+                            onClick = { onSelectExercise(ex, noteText.trim()) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = ex.name,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = ex.category.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Cancel")
                 }
             }
         }

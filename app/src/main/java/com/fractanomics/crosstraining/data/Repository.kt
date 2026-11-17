@@ -27,6 +27,9 @@ import com.fractanomics.crosstraining.util.AVAILABLE_BLOCK_FORMAT
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.AvailableBlockExercise
+import com.fractanomics.crosstraining.util.DailyRoutine
+import com.fractanomics.crosstraining.util.DailyRoutineCodec
+import com.fractanomics.crosstraining.util.DailyRoutineItem
 import com.fractanomics.crosstraining.util.RoutineTargetCodec
 import com.fractanomics.crosstraining.util.TrackedPrSlot
 import kotlinx.coroutines.Dispatchers
@@ -265,7 +268,10 @@ class Repository(
     suspend fun saveRoutine(routine: Routine): Long =
         if (routine.id == 0L) {
             val trimmed = routine.name.trim()
-            val existing = routineDao.byName(trimmed)
+            val targetKey = DailyRoutineCodec.routineNaturalKey(trimmed, routine.defaultFormat)
+            val existing = routineDao.getAllOnce().firstOrNull {
+                DailyRoutineCodec.routineNaturalKey(it) == targetKey
+            }
             if (existing != null) {
                 val updated = routine.copy(id = existing.id, name = trimmed)
                 routineDao.update(updated)
@@ -279,7 +285,14 @@ class Repository(
 
     suspend fun saveRoutineWithBlocks(routine: Routine, blocks: List<RoutineBlock>): Long =
         withDatabaseTransaction {
-            val existing = if (routine.id == 0L) routineDao.byName(routine.name.trim()) else null
+            val existing = if (routine.id == 0L) {
+                val targetKey = DailyRoutineCodec.routineNaturalKey(routine)
+                routineDao.getAllOnce().firstOrNull {
+                    DailyRoutineCodec.routineNaturalKey(it) == targetKey
+                }
+            } else {
+                null
+            }
             val targetRoutine = if (existing != null) routine.copy(id = existing.id) else routine
             val routineId = if (targetRoutine.id == 0L) routineDao.insert(targetRoutine) else {
                 routineDao.update(targetRoutine)
@@ -293,6 +306,37 @@ class Repository(
             }
             routineId
         }
+
+    /**
+     * Persists a composite [DailyRoutine] (`SPEC-025`) into `routines` / `routine_blocks`
+     * with `defaultFormat = DAILY_ROUTINE` (`DR_BLOCK` & `DR_EXERCISE` item encodings).
+     */
+    suspend fun saveDailyRoutine(routine: DailyRoutine): Long {
+        val rw = DailyRoutineCodec.toRoutineWithBlocks(routine)
+        return saveRoutineWithBlocks(rw.routine, rw.blocks)
+    }
+
+    /**
+     * Updates only the ordered items of an existing [DailyRoutine] identified by [routineId]
+     * while preserving its title and notes (`SPEC-ROUTINE-SESSION-TRACK-01` template sync).
+     */
+    suspend fun updateDailyRoutineItems(
+        routineId: Long,
+        items: List<DailyRoutineItem>
+    ): Long? {
+        if (routineId <= 0L) return null
+        val existing = getAllRoutinesWithBlocksOnce()
+            .firstOrNull { it.routine.id == routineId && DailyRoutineCodec.isDailyRoutine(it) }
+            ?: return null
+        val updated = DailyRoutine(
+            id = existing.routine.id,
+            title = existing.routine.name,
+            notes = RoutineTargetCodec.extractCleanNotes(existing.routine.description),
+            items = items,
+            rawRoutine = existing
+        )
+        return saveDailyRoutine(updated)
+    }
 
     /**
      * Persists an [AvailableBlock] (`SPEC-021`) into `routines` / `routine_blocks`
@@ -609,7 +653,7 @@ class Repository(
 
     private suspend fun cleanupDuplicateRoutinesInternal() {
         val allRoutines = routineDao.getAllWithBlocksOnce()
-        val grouped = allRoutines.groupBy { it.routine.name.trim().lowercase() }
+        val grouped = allRoutines.groupBy { DailyRoutineCodec.routineNaturalKey(it) }
         grouped.forEach { (_, list) ->
             if (list.size > 1) {
                 val sorted = list.sortedWith(

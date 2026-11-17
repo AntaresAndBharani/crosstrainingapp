@@ -11,15 +11,19 @@ import {
   DeleteAvailableBlockInputSchema,
   DeleteCycleGoalInputSchema,
   DeleteDailyLogInputSchema,
+  DeleteDailyRoutineInputSchema,
   DeleteRoutineInputSchema,
   DeleteSessionInputSchema,
   DeleteWeightEntryInputSchema,
+  GetDailyRoutineProgressInputSchema,
   GetWeightMomentumAnalyticsInputSchema,
   ListAvailableBlocksInputSchema,
   ListCycleGoalsInputSchema,
+  ListDailyRoutinesInputSchema,
   ListExercisesInputSchema,
   ListSessionsInputSchema,
   LogBlockSessionInputSchema,
+  LogDailyRoutineSessionInputSchema,
   makeListDateRangeInputSchema,
   ManageCycleGoalsInputSchema,
   RecordRepMaxInputSchema,
@@ -27,6 +31,7 @@ import {
   UpsertAvailableBlockInputSchema,
   UpsertCycleGoalInputSchema,
   UpsertDailyLogInputSchema,
+  UpsertDailyRoutineInputSchema,
   UpsertExerciseInputSchema,
   UpsertRoutineInputSchema,
   UpsertSessionInputSchema,
@@ -60,6 +65,7 @@ export const CROSSTRAINING_MCP_INSTRUCTIONS = [
   "1. ACTIVE CYCLE: Never assume Cycle 1 is the active cycle. Call `get_active_cycle` (or `get_workout_summary`) when the user asks for their current/active cycle or goals. Whenever `cycleId` is omitted on goal, session, or rep-max mutations, the server automatically targets the user's resolved active cycle.",
   "2. BATCH MULTI-ORDER PROMPTS IN ONE CALL: When a user message contains multiple orders (e.g. changing 2RM Snatch to 3RM Snatch AND adding several new goals, or logging multiple exercises, PRs, weigh-ins, or daily logs), ALWAYS combine them into a single batch tool call (`manage_cycle_goals`, `batch_upsert_available_blocks`, `batch_upsert_exercises`, `batch_record_rep_maxes`, `batch_upsert_weight_entries`, `batch_upsert_daily_logs`) instead of chaining multiple single-item tool calls. In `manage_cycle_goals`, set `previousTargetReps` on an upsert item to convert an RM goal (such as 2RM -> 3RM) in one atomic step.",
   "3. AVAILABLE BLOCKS & WEIGHT-ONLY SESSION LOGGING: Prefer `list_available_blocks`, `upsert_available_block`, `batch_upsert_available_blocks`, and `delete_available_block` when managing standalone Available Block cards (`[ab_prs=...]` tracked PR slots and free-form instructions), use `log_block_session` when logging weight-only block sets (pass `weights: []` for unloaded/bodyweight movements) along with optional `recordedPrs` that auto-link to the session/block and persist on the block template, and use `update_block_session_log` when editing an existing logged block session (updating set weights/counts, notes, date, or tracked PRs while reconciling/tombstoning replaced or removed session PRs).",
+  "4. COMPOSITE DAILY ROUTINES (BLOCKS + STANDALONE EXERCISES): Use `list_daily_routines`, `upsert_daily_routine`, and `delete_daily_routine` to compose reusable workout-day templates (`defaultFormat: 'DAILY_ROUTINE'`) made of ordered Saved Available Blocks (`item_type: 'BLOCK'`) and standalone Exercises (`item_type: 'EXERCISE'`) with optional notes and default PR slots. Use `log_daily_routine_session` to log a mixed Block + standalone Exercise (`STANDALONE_EXERCISE`) workout in one atomic call (pass `update_routine_template: true` if the user adds/reorders items and wants the template updated), and use `get_daily_routine_progress` for unified constituent trends, PRs, charts, and set history across all historical sessions.",
 ].join("\n");
 
 function jsonResult(data: unknown) {
@@ -705,6 +711,95 @@ export function createCrossTrainingMcpServer(
         tombstonedRepMaxIds: res.tombstonedRepMaxIds,
         updatedTrackedPrs: res.updatedTrackedPrs,
       });
+    }
+  );
+
+  // ==========================================================================
+  // 8. Composite Daily Routines (Blocks + Standalone Exercises)
+  // ==========================================================================
+
+  server.registerTool(
+    "list_daily_routines",
+    {
+      title: "List Daily Routines",
+      description:
+        "List composite Daily Routines (`defaultFormat: 'DAILY_ROUTINE'`) made of ordered Saved Available Blocks and standalone Exercises, including constituent metadata, tracked PR counts, and last logged session date.",
+      inputSchema: ListDailyRoutinesInputSchema,
+      annotations: READ_ONLY_ANNOTATIONS,
+    },
+    async (args) => {
+      const dailyRoutines = await domain.listDailyRoutines(getUserContext(), args);
+      return jsonResult({ count: dailyRoutines.length, dailyRoutines });
+    }
+  );
+
+  server.registerTool(
+    "upsert_daily_routine",
+    {
+      title: "Upsert Daily Routine",
+      description:
+        "Create or update a composite Daily Routine (`defaultFormat: 'DAILY_ROUTINE'`) with ordered Saved Available Blocks (`item_type: 'BLOCK'`) and standalone Exercises (`item_type: 'EXERCISE'`, optional `note` and `default_tracked_prs`). Auto-creates missing exercises.",
+      inputSchema: UpsertDailyRoutineInputSchema,
+      annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
+    },
+    async (args) => {
+      const dailyRoutine = await domain.upsertDailyRoutine(getUserContext(), args);
+      return jsonResult({ status: "ok", dailyRoutine });
+    }
+  );
+
+  server.registerTool(
+    "delete_daily_routine",
+    {
+      title: "Delete Daily Routine",
+      description:
+        "Tombstone/delete a composite Daily Routine by `routine_id` or exact `title` while preserving all historical logged workout sessions, Available Blocks, and PRs.",
+      inputSchema: DeleteDailyRoutineInputSchema,
+      annotations: DELETE_ANNOTATIONS,
+    },
+    async (args) => {
+      const res = await domain.deleteDailyRoutine(getUserContext(), args);
+      return jsonResult({
+        status: res.deleted ? "deleted" : "not_found",
+        deletedCount: res.deletedCount,
+        deletedTitles: res.deletedTitles,
+      });
+    }
+  );
+
+  server.registerTool(
+    "log_daily_routine_session",
+    {
+      title: "Log Daily Routine Session",
+      description:
+        "Log an ordered mixed workout of Saved Available Blocks (`item_type: 'BLOCK'`) and standalone Exercises (`item_type: 'EXERCISE'`, `STANDALONE_EXERCISE`), recording `achieved_prs` into `rep_maxes` and optionally updating the Daily Routine template (`update_routine_template: true`).",
+      inputSchema: LogDailyRoutineSessionInputSchema,
+      annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
+    },
+    async (args) => {
+      const res = await domain.logDailyRoutineSession(getUserContext(), args);
+      return jsonResult({
+        status: "ok",
+        session: res.session,
+        recordedPrsCount: res.recordedPrs.length,
+        recordedPrs: res.recordedPrs,
+        updatedRoutineTemplate: res.updatedRoutineTemplate,
+      });
+    }
+  );
+
+  server.registerTool(
+    "get_daily_routine_progress",
+    {
+      title: "Get Daily Routine Progress",
+      description:
+        "Compute unified constituent progress (All-Time Top, Last Top, Last Average, Last Volume, Top Delta trend, Tracked PRs, chart points, and recent sessions) for every Block and Exercise inside a Daily Routine.",
+      inputSchema: GetDailyRoutineProgressInputSchema,
+      annotations: READ_ONLY_ANNOTATIONS,
+    },
+    async (args) => {
+      const progress = await domain.getDailyRoutineProgress(getUserContext(), args);
+      return jsonResult(progress);
     }
   );
 
