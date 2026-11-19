@@ -233,4 +233,27 @@ class RoutineTargetCodecTest {
         assertEquals(10L to slots[1], decodedSlots[1])
         assertEquals(12L to slots[2], decodedSlots[2])
     }
+
+    @Test
+    fun `log_metric and multi-line leading metadata headers decode cleanly in any order`() {
+        val logNotes = RoutineTargetCodec.encodeNotesWithLogMetric("Stay smooth", ExerciseTargetMetric.CALORIES)
+        assertEquals("[log_metric=CALORIES]\nStay smooth", logNotes)
+        assertEquals(ExerciseTargetMetric.CALORIES, RoutineTargetCodec.decodeLogMetricHeader(logNotes))
+        assertEquals("Stay smooth", RoutineTargetCodec.extractCleanNotes(logNotes))
+
+        val reorderedNotes = """
+            [dr_item=EXERCISE:id=11:name=Air+Bike]
+            [ab_prs=Back+Squat:5]
+            [rb_v2=CALORIES:PER_SET:15:15.15.12.0]
+            [log_metric=CALORIES]
+            Sprint intervals
+        """.trimIndent()
+        assertTrue(RoutineTargetCodec.hasStructuredHeader(reorderedNotes))
+        val slots = RoutineTargetCodec.decodeHeaderSlots(reorderedNotes, 4)!!
+        assertEquals(1, slots.size)
+        assertEquals(ExerciseTargetMetric.CALORIES, slots[0].metric)
+        assertEquals(TargetMode.PER_SET, slots[0].mode)
+        assertEquals(listOf(15, 15, 12, 0), slots[0].perSetValues)
+        assertEquals("Sprint intervals", RoutineTargetCodec.extractCleanNotes(reorderedNotes))
+    }
 }

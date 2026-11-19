@@ -299,4 +299,195 @@ class DailyRoutineCodecTest {
         assertEquals(ConstituentTrendDirection.NONE, unloggedPullups.trendDirection)
         assertTrue(unloggedPullups.performances.isEmpty())
     }
+
+    @Test
+    fun `toRoutineWithBlocks and fromRoutineWithBlocks round-trip optional multi-metric targets on Exercise and Block items while keeping unset clean`() {
+        val airBike = Exercise(4L, "Air Bike", ExerciseCategory.MACHINE, MetricType.CALORIES, "cal", false)
+        val routine = DailyRoutine(
+            id = 88L,
+            title = "Engine + Snatch",
+            notes = "Target routine",
+            items = listOf(
+                DailyRoutineItem.BlockRef(
+                    blockId = snatchComplexBlock.id,
+                    blockTitle = snatchComplexBlock.title,
+                    resolvedBlock = snatchComplexBlock,
+                    targetSetsCount = 5,
+                    exerciseTargets = mapOf(
+                        snatch.id to RoutineExerciseTargetSpec(
+                            metric = ExerciseTargetMetric.REPS,
+                            mode = TargetMode.FIXED,
+                            fixedValue = 3,
+                            perSetValues = listOf(3, 3, 3, 3, 3)
+                        )
+                    ),
+                    exerciseTargetsByName = mapOf(
+                        "snatch" to RoutineExerciseTargetSpec(
+                            metric = ExerciseTargetMetric.REPS,
+                            mode = TargetMode.FIXED,
+                            fixedValue = 3,
+                            perSetValues = listOf(3, 3, 3, 3, 3)
+                        )
+                    )
+                ),
+                DailyRoutineItem.StandaloneExercise(
+                    exerciseId = airBike.id,
+                    exerciseName = airBike.name,
+                    note = "Hold steady wattage",
+                    defaultTrackedPrs = emptyList(),
+                    resolvedExercise = airBike,
+                    targetSetsCount = 4,
+                    targetSpec = RoutineExerciseTargetSpec(
+                        metric = ExerciseTargetMetric.CALORIES,
+                        mode = TargetMode.PER_SET,
+                        fixedValue = 15,
+                        perSetValues = listOf(15, 15, 12, 0)
+                    )
+                ),
+                DailyRoutineItem.StandaloneExercise(
+                    exerciseId = pullUps.id,
+                    exerciseName = pullUps.name,
+                    note = "Unset targets",
+                    defaultTrackedPrs = emptyList(),
+                    resolvedExercise = pullUps
+                )
+            )
+        )
+
+        val rwb = DailyRoutineCodec.toRoutineWithBlocks(routine)
+        assertEquals(5, rwb.blocks[0].setsCount)
+        assertEquals("3", rwb.blocks[0].targetRepsScheme)
+        assertTrue(RoutineTargetCodec.hasStructuredHeader(rwb.blocks[0].notes))
+
+        assertEquals(4, rwb.blocks[1].setsCount)
+        assertEquals("15-15-12-0 cal", rwb.blocks[1].targetRepsScheme)
+        assertTrue(RoutineTargetCodec.hasStructuredHeader(rwb.blocks[1].notes))
+        assertEquals("Hold steady wattage", RoutineTargetCodec.extractCleanNotes(rwb.blocks[1].notes))
+
+        // Unset item omits [rb_v2=...] completely
+        assertEquals(1, rwb.blocks[2].setsCount)
+        assertEquals("", rwb.blocks[2].targetRepsScheme)
+        assertFalse(RoutineTargetCodec.hasStructuredHeader(rwb.blocks[2].notes))
+
+        val decoded = DailyRoutineCodec.fromRoutineWithBlocks(
+            rwb = rwb,
+            availableBlocks = listOf(snatchComplexBlock),
+            exercises = listOf(snatch, backSquat, pullUps, airBike)
+        )
+        val decBlock = decoded.items[0] as DailyRoutineItem.BlockRef
+        assertTrue(decBlock.hasConfiguredTargets)
+        assertEquals(5, decBlock.targetSetsCount)
+        assertEquals(3, decBlock.exerciseTargets[snatch.id]!!.fixedValue)
+
+        val decBike = decoded.items[1] as DailyRoutineItem.StandaloneExercise
+        assertTrue(decBike.hasConfiguredTarget)
+        assertEquals(4, decBike.targetSetsCount)
+        assertEquals(ExerciseTargetMetric.CALORIES, decBike.targetSpec!!.metric)
+        assertEquals(listOf(15, 15, 12, 0), decBike.targetSpec!!.perSetValues)
+        assertEquals("Hold steady wattage", decBike.note)
+
+        val decPullUps = decoded.items[2] as DailyRoutineItem.StandaloneExercise
+        assertFalse(decPullUps.hasConfiguredTarget)
+        assertNull(decPullUps.targetSetsCount)
+        assertNull(decPullUps.targetSpec)
+    }
+
+    @Test
+    fun `resolveLastExerciseSession and computeDailyRoutineProgress handle bodyweight reps and conditioning metrics`() {
+        val airBike = Exercise(4L, "Air Bike", ExerciseCategory.MACHINE, MetricType.CALORIES, "cal", false)
+        val routine = DailyRoutine(
+            id = 99L,
+            title = "Mixed Engine",
+            notes = "",
+            items = listOf(
+                DailyRoutineItem.StandaloneExercise(pullUps.id, pullUps.name, resolvedExercise = pullUps),
+                DailyRoutineItem.StandaloneExercise(airBike.id, airBike.name, resolvedExercise = airBike)
+            )
+        )
+
+        val d1 = LocalDate.of(2026, 11, 10)
+        val d2 = LocalDate.of(2026, 11, 14)
+        val s1 = SessionWithBlocks(
+            session = Session(id = 1L, cycleId = 1L, date = d1, title = "Day 1"),
+            blocks = listOf(
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 10L, sessionId = 1L, position = 0, name = "Pull-ups",
+                        format = STANDALONE_EXERCISE_SESSION_FORMAT, mainExerciseId = pullUps.id,
+                        notes = "[log_metric=REPS]"
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 10L, position = 0, reps = 10, weight = null),
+                        BlockSet(blockId = 10L, position = 1, reps = 12, weight = null)
+                    )
+                ),
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 11L, sessionId = 1L, position = 1, name = "Air Bike",
+                        format = STANDALONE_EXERCISE_SESSION_FORMAT, mainExerciseId = airBike.id,
+                        notes = "[log_metric=CALORIES]"
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 11L, position = 0, reps = 1, metricValue = 15.0)
+                    )
+                )
+            )
+        )
+        val s2 = SessionWithBlocks(
+            session = Session(id = 2L, cycleId = 1L, date = d2, title = "Day 2"),
+            blocks = listOf(
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 20L, sessionId = 2L, position = 0, name = "Pull-ups",
+                        format = STANDALONE_EXERCISE_SESSION_FORMAT, mainExerciseId = pullUps.id,
+                        notes = "[log_metric=REPS]"
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 20L, position = 0, reps = 14, weight = null),
+                        BlockSet(blockId = 20L, position = 1, reps = 15, weight = null)
+                    )
+                ),
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 21L, sessionId = 2L, position = 1, name = "Air Bike",
+                        format = STANDALONE_EXERCISE_SESSION_FORMAT, mainExerciseId = airBike.id,
+                        notes = "[log_metric=CALORIES]"
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 21L, position = 0, reps = 1, metricValue = 20.0),
+                        BlockSet(blockId = 21L, position = 1, reps = 1, metricValue = 18.0)
+                    )
+                )
+            )
+        )
+
+        val lastPullUps = DailyRoutineCodec.resolveLastExerciseSession(pullUps, listOf(s1, s2), "kg")!!
+        assertEquals(ExerciseTargetMetric.REPS, lastPullUps.loggedMetric)
+        assertEquals(listOf(14, 15), lastPullUps.reps)
+        assertEquals(15.0, lastPullUps.topWeight!!, 0.001)
+        assertEquals("14 · 15 reps", lastPullUps.setWeightsSummary)
+
+        val lastBike = DailyRoutineCodec.resolveLastExerciseSession(airBike, listOf(s1, s2), "kg")!!
+        assertEquals(ExerciseTargetMetric.CALORIES, lastBike.loggedMetric)
+        assertEquals(listOf(20.0, 18.0), lastBike.metricValues)
+        assertEquals(20.0, lastBike.topWeight!!, 0.001)
+        assertEquals("20 · 18 cal", lastBike.setWeightsSummary)
+
+        val summaries = DailyRoutineCodec.computeDailyRoutineProgress(
+            routine = routine,
+            sessions = listOf(s1, s2),
+            repMaxes = emptyList(),
+            exercises = listOf(pullUps, airBike),
+            weightUnit = "kg"
+        )
+        assertEquals("reps", summaries[0].unit)
+        assertEquals(15.0, summaries[0].lastTop!!, 0.001)
+        assertEquals(3.0, summaries[0].topDelta!!, 0.001)
+        assertEquals(ConstituentTrendDirection.UP, summaries[0].trendDirection)
+
+        assertEquals("cal", summaries[1].unit)
+        assertEquals(20.0, summaries[1].lastTop!!, 0.001)
+        assertEquals(5.0, summaries[1].topDelta!!, 0.001)
+        assertEquals(ConstituentTrendDirection.UP, summaries[1].trendDirection)
+    }
 }

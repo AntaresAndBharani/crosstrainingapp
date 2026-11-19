@@ -42,7 +42,8 @@ data class BlockDraft(
     val exerciseIdsCsv: String = "",
     val subBlock: String = "",
     val isCompleted: Boolean = false,
-    val newRepMaxes: List<RepMaxDraft> = emptyList()
+    val newRepMaxes: List<RepMaxDraft> = emptyList(),
+    val notes: String = ""
 )
 
 data class SessionDraft(

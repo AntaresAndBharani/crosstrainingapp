@@ -12,6 +12,7 @@ import {
   decodeAvailableBlockTrackedPrs,
   decodeDailyRoutineItemHeader,
   decodeLegacyRoutineSlots,
+  decodeLogMetricHeader,
   decodeRoutineHeaderSlots,
   defaultFixedForRoutineMetric,
   defaultSetsForRoutineFormat,
@@ -19,6 +20,7 @@ import {
   encodeCycleGoalMetadata,
   encodeDailyRoutineBlockHeader,
   encodeDailyRoutineExerciseHeader,
+  encodeNotesWithLogMetric,
   encodeRoutineBlockTargets,
   extractCleanRoutineNotes,
   formatRoutineBlockTargetSummary,
@@ -30,6 +32,8 @@ import {
   parseCycleGoalMetadata,
   replaceAvailableBlockTrackedPrHeader,
   resizeRoutinePerSetValues,
+  resolveSessionBlockMetric,
+  routineMetricCompactUnit,
   stripAvailableBlockTrackedPrHeaders,
 } from "./schemas.js";
 
@@ -203,9 +207,13 @@ export interface UpdateBlockSessionLogInput {
     exerciseId?: number;
     exerciseName: string;
     weights?: number[];
+    metric?: RoutineTargetMetric;
     sets?: Array<{
-      weight: number;
+      weight?: number;
+      weight_kg?: number;
       reps?: number;
+      metric_value?: number;
+      group_index?: number;
     }>;
   }>;
   trackedPrs?: Array<{
@@ -271,7 +279,15 @@ export interface LogBlockSessionInput {
   notes?: string;
   exerciseLogs: Array<{
     exerciseName: string;
-    weights: number[];
+    weights?: number[];
+    metric?: RoutineTargetMetric;
+    sets?: Array<{
+      reps?: number;
+      weight_kg?: number;
+      weight?: number;
+      metric_value?: number;
+      group_index?: number;
+    }>;
     setCountForEmpty?: number;
   }>;
   recordedPrs?: Array<{
@@ -280,6 +296,12 @@ export interface LogBlockSessionInput {
     weight: number;
   }>;
   updateTrackedPrLinks?: boolean;
+}
+
+export interface DailyRoutineBlockExerciseTargetRecord {
+  exerciseId: number | null;
+  exerciseName: string;
+  target: RoutineExerciseTargetSlot;
 }
 
 export interface DailyRoutineItemRecord {
@@ -292,6 +314,9 @@ export interface DailyRoutineItemRecord {
   exerciseName: string | null;
   note: string;
   defaultTrackedPrs: TrackedPrSlotRecord[];
+  setsCount: number | null;
+  targetSpec: RoutineExerciseTargetSlot | null;
+  exerciseTargets: DailyRoutineBlockExerciseTargetRecord[];
   missingBlock?: boolean;
 }
 
@@ -324,6 +349,18 @@ export interface UpsertDailyRoutineInput {
       rm_reps?: number;
       rmReps?: number;
     }>;
+    sets_count?: number;
+    target_metric?: RoutineTargetMetric;
+    target_mode?: RoutineTargetMode;
+    fixed_value?: number;
+    per_set_values?: number[];
+    exercise_targets?: Array<{
+      exercise_name: string;
+      target_metric: RoutineTargetMetric;
+      target_mode?: RoutineTargetMode;
+      fixed_value?: number;
+      per_set_values?: number[];
+    }>;
   }>;
 }
 
@@ -342,10 +379,26 @@ export interface LogDailyRoutineSessionInput {
     exercise_name?: string;
     note?: string;
     set_weights_kg?: number[];
+    metric?: RoutineTargetMetric;
+    sets?: Array<{
+      reps?: number;
+      weight_kg?: number;
+      weight?: number;
+      metric_value?: number;
+      group_index?: number;
+    }>;
     exercise_logs?: Array<{
       exercise_name?: string;
       exerciseName?: string;
-      weights: number[];
+      weights?: number[];
+      metric?: RoutineTargetMetric;
+      sets?: Array<{
+        reps?: number;
+        weight_kg?: number;
+        weight?: number;
+        metric_value?: number;
+        group_index?: number;
+      }>;
       set_count_for_empty?: number;
       setCountForEmpty?: number;
     }>;
@@ -361,9 +414,16 @@ export interface DailyRoutineConstituentProgressRecord {
   itemType: "BLOCK" | "EXERCISE";
   title: string;
   subtitle: string;
+  unit: "kg" | "reps" | "cal" | "s" | "m";
+  allTimeTop: number | null;
+  lastTop: number | null;
+  lastTopDate: string | null;
+  lastAverage: number | null;
+  lastVolume: number | null;
+  topDelta: number | null;
+  lastSets: number[];
   allTimeTopKg: number | null;
   lastTopKg: number | null;
-  lastTopDate: string | null;
   lastAverageKg: number | null;
   lastVolumeKg: number | null;
   topDeltaKg: number | null;
@@ -376,6 +436,9 @@ export interface DailyRoutineConstituentProgressRecord {
   }>;
   chartPoints: Array<{
     date: string;
+    top: number;
+    average: number;
+    volume: number;
     topKg: number;
     averageKg: number;
     volumeKg: number;
@@ -384,6 +447,9 @@ export interface DailyRoutineConstituentProgressRecord {
     sessionId: number;
     date: string;
     sessionTitle: string;
+    unit: "kg" | "reps" | "cal" | "s" | "m";
+    top: number | null;
+    values: number[];
     topKg: number | null;
     weightsKg: number[];
   }>;
@@ -2126,36 +2192,15 @@ export class WorkoutDomainService {
         const blocks: SessionBlockEntryRecord[] = input.exerciseLogs.map((log, bIdx) => {
           const ex = exerciseMap.get(log.exerciseName.trim().toLowerCase()) ?? null;
           const blockId = ++maxBlockId;
-          const weightsList = log.weights ?? [];
-          const sets: SessionSetRecord[] =
-            weightsList.length > 0
-              ? weightsList.map((w, sIdx) => ({
-                  id: ++maxSetId,
-                  blockId,
-                  position: sIdx,
-                  groupIndex: 0,
-                  reps: 1,
-                  weight: Number(w) > 0 ? Number(w) : 0.0,
-                  metricValue: 0.0,
-                  isWarmup: false,
-                  isFailed: false,
-                  notes: "",
-                }))
-              : Array.from(
-                  { length: Math.max(1, Math.trunc(log.setCountForEmpty ?? 1)) },
-                  (_, sIdx) => ({
-                    id: ++maxSetId,
-                    blockId,
-                    position: sIdx,
-                    groupIndex: 0,
-                    reps: 1,
-                    weight: 0.0,
-                    metricValue: 0.0,
-                    isWarmup: false,
-                    isFailed: false,
-                    notes: "",
-                  })
-                );
+          const { sets, notes: blockNotes } = this.buildLoggedSessionSetsAndNotes({
+            blockId,
+            nextSetIdFn: () => ++maxSetId,
+            metric: log.metric,
+            sets: log.sets,
+            weights: log.weights,
+            setCountForEmpty: log.setCountForEmpty ?? 1,
+            exerciseMetricType: ex?.metricType,
+          });
 
           return {
             block: {
@@ -2173,7 +2218,7 @@ export class WorkoutDomainService {
               description: blockInstructions,
               resultText: "",
               resultValue: null,
-              notes: "",
+              notes: blockNotes,
               section: "",
               subBlock: resolvedBlockTitle,
               exerciseIdsCsv: ex ? String(ex.id) : "",
@@ -2593,52 +2638,16 @@ export class WorkoutDomainService {
                     log.exerciseName.trim().toLowerCase()
               );
               const blockId = ++maxBlockId;
-              const explicitSets = log.sets ?? [];
-              const rawWeights = log.weights ?? [];
-              const sets: SessionSetRecord[] =
-                explicitSets.length > 0
-                  ? explicitSets.map((st, sIdx) => ({
-                      id: ++maxSetId,
-                      blockId,
-                      position: sIdx,
-                      groupIndex: 0,
-                      reps:
-                        st.reps !== undefined && Number.isFinite(st.reps) && st.reps >= 1
-                          ? Math.trunc(st.reps)
-                          : 1,
-                      weight: Number(st.weight) > 0 ? Number(st.weight) : 0.0,
-                      metricValue: 0.0,
-                      isWarmup: false,
-                      isFailed: false,
-                      notes: "",
-                    }))
-                  : rawWeights.length > 0
-                    ? rawWeights.map((w, sIdx) => ({
-                        id: ++maxSetId,
-                        blockId,
-                        position: sIdx,
-                        groupIndex: 0,
-                        reps: 1,
-                        weight: Number(w) > 0 ? Number(w) : 0.0,
-                        metricValue: 0.0,
-                        isWarmup: false,
-                        isFailed: false,
-                        notes: "",
-                      }))
-                    : [
-                        {
-                          id: ++maxSetId,
-                          blockId,
-                          position: 0,
-                          groupIndex: 0,
-                          reps: 1,
-                          weight: 0.0,
-                          metricValue: 0.0,
-                          isWarmup: false,
-                          isFailed: false,
-                          notes: "",
-                        },
-                      ];
+              const { sets, notes: blockNotes } = this.buildLoggedSessionSetsAndNotes({
+                blockId,
+                nextSetIdFn: () => ++maxSetId,
+                metric: log.metric,
+                sets: log.sets,
+                weights: log.weights,
+                setCountForEmpty: 1,
+                exerciseMetricType: ex?.metricType,
+                priorNotes: priorMatchingBlock?.block.notes ?? "",
+              });
 
               return {
                 block: {
@@ -2656,7 +2665,7 @@ export class WorkoutDomainService {
                   description: resolvedDescription,
                   resultText: priorMatchingBlock?.block.resultText ?? "",
                   resultValue: priorMatchingBlock?.block.resultValue ?? null,
-                  notes: priorMatchingBlock?.block.notes ?? "",
+                  notes: blockNotes,
                   section: priorMatchingBlock?.block.section ?? "",
                   subBlock: resolvedBlockTitle,
                   exerciseIdsCsv: ex ? String(ex.id) : "",
@@ -3856,6 +3865,189 @@ export class WorkoutDomainService {
     return Math.round(value * 100) / 100;
   }
 
+  private parseAndValidateTargetSlot(
+    raw: {
+      target_metric?: RoutineTargetMetric;
+      target_mode?: RoutineTargetMode;
+      fixed_value?: number;
+      per_set_values?: number[];
+    },
+    setsCount: number,
+    label: string
+  ): RoutineExerciseTargetSlot {
+    const normalizedSets = Math.max(1, Math.min(100, Math.trunc(setsCount)));
+    const metric: RoutineTargetMetric = raw.target_metric ?? "REPS";
+    const mode: RoutineTargetMode =
+      raw.target_mode ??
+      (raw.per_set_values && raw.per_set_values.length > 0 ? "PER_SET" : "FIXED");
+
+    if (mode === "FIXED") {
+      const fixedValue =
+        raw.fixed_value !== undefined
+          ? Math.trunc(raw.fixed_value)
+          : defaultFixedForRoutineMetric(metric);
+      if (fixedValue <= 0) {
+        throw new Error(
+          `Invalid target for '${label}': fixed_value must be greater than 0.`
+        );
+      }
+      return {
+        metric,
+        mode: "FIXED",
+        fixedValue,
+        perSetValues: Array.from({ length: normalizedSets }, () => fixedValue),
+      };
+    }
+
+    const fallback =
+      raw.fixed_value !== undefined && Math.trunc(raw.fixed_value) > 0
+        ? Math.trunc(raw.fixed_value)
+        : defaultFixedForRoutineMetric(metric);
+    const explicitPerSet = raw.per_set_values;
+    if (explicitPerSet !== undefined) {
+      const cleanRaw = explicitPerSet.map((v) => Math.max(0, Math.trunc(v)));
+      const normalized = resizeRoutinePerSetValues(
+        cleanRaw.length > 0 ? cleanRaw : [0],
+        0,
+        normalizedSets
+      );
+      if (!normalized.some((v) => v > 0)) {
+        throw new Error(
+          `Invalid target for '${label}': at least one per-set value must be greater than 0.`
+        );
+      }
+      return {
+        metric,
+        mode: "PER_SET",
+        fixedValue: normalized.find((v) => v > 0) ?? fallback,
+        perSetValues: normalized,
+      };
+    }
+
+    return {
+      metric,
+      mode: "PER_SET",
+      fixedValue: fallback,
+      perSetValues: Array.from({ length: normalizedSets }, () => fallback),
+    };
+  }
+
+  private buildLoggedSessionSetsAndNotes(params: {
+    blockId: number;
+    nextSetIdFn: () => number;
+    metric?: RoutineTargetMetric;
+    sets?: Array<{
+      reps?: number;
+      weight_kg?: number;
+      weight?: number;
+      metric_value?: number;
+      group_index?: number;
+    }>;
+    weights?: number[];
+    setCountForEmpty?: number;
+    exerciseMetricType?: string;
+    priorNotes?: string;
+  }): { sets: SessionSetRecord[]; notes: string } {
+    const cleanPrior = (params.priorNotes ?? "")
+      .replace(/\[log_metric=[^\]]*\](?:\r?\n)?/gi, "")
+      .trim();
+    const explicitSets = params.sets ?? [];
+
+    if (explicitSets.length > 0) {
+      const mappedSets: SessionSetRecord[] = explicitSets.map((st, sIdx) => {
+        const repsVal =
+          st.reps !== undefined && Number.isFinite(Number(st.reps)) && Number(st.reps) >= 1
+            ? Math.trunc(Number(st.reps))
+            : 1;
+        const rawWeight = st.weight_kg ?? st.weight ?? 0;
+        const weightVal =
+          Number.isFinite(Number(rawWeight)) && Number(rawWeight) > 0
+            ? Number(rawWeight)
+            : 0.0;
+        const metricVal =
+          st.metric_value !== undefined &&
+          Number.isFinite(Number(st.metric_value)) &&
+          Number(st.metric_value) > 0
+            ? Number(st.metric_value)
+            : 0.0;
+        const groupIdxVal =
+          st.group_index !== undefined &&
+          Number.isFinite(Number(st.group_index)) &&
+          Number(st.group_index) > 0
+            ? Math.trunc(Number(st.group_index))
+            : 0;
+        return {
+          id: params.nextSetIdFn(),
+          blockId: params.blockId,
+          position: sIdx,
+          groupIndex: groupIdxVal,
+          reps: repsVal,
+          weight: weightVal,
+          metricValue: metricVal,
+          isWarmup: false,
+          isFailed: false,
+          notes: "",
+        };
+      });
+
+      const hasPositiveMetricValue = mappedSets.some((s) => s.metricValue > 0);
+      const hasBodyweightReps = mappedSets.some(
+        (s, idx) =>
+          s.weight <= 0 &&
+          s.metricValue <= 0 &&
+          (explicitSets[idx]?.reps !== undefined || s.reps > 1)
+      );
+      let metricToEncode: RoutineTargetMetric | null = params.metric ?? null;
+      if (!metricToEncode && hasPositiveMetricValue) {
+        const inferred = inferRoutineTargetMetricFromLibraryMetric(params.exerciseMetricType);
+        metricToEncode = inferred === "REPS" ? "CALORIES" : inferred;
+      } else if (!metricToEncode && hasBodyweightReps) {
+        metricToEncode = "REPS";
+      }
+
+      const notes = metricToEncode
+        ? encodeNotesWithLogMetric(cleanPrior, metricToEncode)
+        : cleanPrior;
+      return { sets: mappedSets, notes };
+    }
+
+    const weightsList = params.weights ?? [];
+    const sets: SessionSetRecord[] =
+      weightsList.length > 0
+        ? weightsList.map((w, sIdx) => ({
+            id: params.nextSetIdFn(),
+            blockId: params.blockId,
+            position: sIdx,
+            groupIndex: 0,
+            reps: 1,
+            weight: Number(w) > 0 ? Number(w) : 0.0,
+            metricValue: 0.0,
+            isWarmup: false,
+            isFailed: false,
+            notes: "",
+          }))
+        : Array.from(
+            { length: Math.max(1, Math.trunc(params.setCountForEmpty ?? 1)) },
+            (_, sIdx) => ({
+              id: params.nextSetIdFn(),
+              blockId: params.blockId,
+              position: sIdx,
+              groupIndex: 0,
+              reps: 1,
+              weight: 0.0,
+              metricValue: 0.0,
+              isWarmup: false,
+              isFailed: false,
+              notes: "",
+            })
+          );
+
+    const notes = params.metric
+      ? encodeNotesWithLogMetric(cleanPrior, params.metric)
+      : cleanPrior;
+    return { sets, notes };
+  }
+
   private buildDailyRoutineRecord(
     rwb: RoutineWithBlocksRecord,
     availableBlocksById: Map<number, AvailableBlockRecord>,
@@ -3876,6 +4068,8 @@ export class WorkoutDomainService {
         ((rb.format ?? "").trim().toUpperCase() === DAILY_ROUTINE_BLOCK_ITEM_FORMAT
           ? "BLOCK"
           : "EXERCISE");
+      const rbSetsCount = Math.max(1, Math.trunc(rb.setsCount || 1));
+      const headerSlots = decodeRoutineHeaderSlots(rb.notes, rbSetsCount);
 
       if (effectiveType === "BLOCK") {
         const refId = decoded?.refId ?? 0;
@@ -3888,6 +4082,32 @@ export class WorkoutDomainService {
               byId;
 
         if (resolvedBlock) {
+          const csvIds = (rb.exerciseIdsCsv ?? "")
+            .split(",")
+            .map((s) => Number.parseInt(s.trim(), 10))
+            .filter((n) => Number.isFinite(n) && n > 0);
+          const exerciseTargets: DailyRoutineBlockExerciseTargetRecord[] = [];
+          if (headerSlots && headerSlots.length > 0) {
+            const alignedIds =
+              csvIds.length > 0 ? csvIds : resolvedBlock.exercises.map((e) => e.id);
+            headerSlots.forEach((slot, slotIdx) => {
+              const exId = alignedIds[slotIdx];
+              const abEx =
+                (exId !== undefined
+                  ? resolvedBlock.exercises.find((e) => e.id === exId)
+                  : undefined) ?? resolvedBlock.exercises[slotIdx];
+              const finalId = exId && exId > 0 ? exId : abEx?.id ?? null;
+              const finalName =
+                abEx?.name ??
+                (finalId ? exercisesById.get(finalId)?.name : undefined) ??
+                `Exercise ${slotIdx + 1}`;
+              exerciseTargets.push({
+                exerciseId: finalId,
+                exerciseName: finalName,
+                target: slot,
+              });
+            });
+          }
           items.push({
             itemType: "BLOCK",
             position: idx,
@@ -3898,6 +4118,9 @@ export class WorkoutDomainService {
             exerciseName: null,
             note: "",
             defaultTrackedPrs: resolvedBlock.trackedPrs,
+            setsCount: exerciseTargets.length > 0 ? rbSetsCount : null,
+            targetSpec: null,
+            exerciseTargets,
             missingBlock: false,
           });
         } else {
@@ -3924,6 +4147,7 @@ export class WorkoutDomainService {
             rmReps: slot.rmReps,
           };
         });
+        const targetSpec = headerSlots && headerSlots.length > 0 ? headerSlots[0] : null;
         items.push({
           itemType: "EXERCISE",
           position: idx,
@@ -3934,6 +4158,9 @@ export class WorkoutDomainService {
           exerciseName: resolvedEx?.name ?? (refName || "Exercise"),
           note: cleanNote,
           defaultTrackedPrs: decodedPrs,
+          setsCount: targetSpec ? rbSetsCount : null,
+          targetSpec,
+          exerciseTargets: [],
           missingBlock: false,
         });
       }
@@ -4062,6 +4289,13 @@ export class WorkoutDomainService {
       resolvedExercise?: ExerciseRecord;
       note?: string;
       defaultTrackedPrs?: TrackedPrSlotSpec[];
+      targetSetsCount?: number;
+      targetSpec?: RoutineExerciseTargetSlot | null;
+      blockExerciseTargets?: Array<{
+        exerciseId: number;
+        exerciseName: string;
+        slot: RoutineExerciseTargetSlot;
+      }>;
     }>,
     nextBlockIdFn: () => number
   ): RoutineBlockRecord[] {
@@ -4079,6 +4313,34 @@ export class WorkoutDomainService {
               )
           )
         );
+        const drHeader = encodeDailyRoutineBlockHeader(blk.routine.id, blk.routine.name);
+        const blockTargets = item.blockExerciseTargets ?? [];
+        if (blockTargets.length > 0) {
+          const setsCount = Math.max(1, Math.trunc(item.targetSetsCount ?? 4));
+          const slots = blockTargets.map((t) => t.slot);
+          const rbHeader = encodeRoutineBlockTargets("", slots, setsCount);
+          const summary = formatRoutineBlockTargetSummary(slots, setsCount);
+          const targetCsv =
+            blockTargets
+              .map((t) => t.exerciseId)
+              .filter((id) => id > 0)
+              .join(",") || blkExIds.join(",");
+          return {
+            id: nextBlockIdFn(),
+            routineId,
+            position: idx,
+            name: blk.routine.name,
+            kind: "COMPLEX",
+            format: DAILY_ROUTINE_BLOCK_ITEM_FORMAT,
+            setsCount,
+            targetRepsScheme: summary,
+            exerciseIdsCsv: targetCsv,
+            exerciseNamesCsv: "",
+            notes: rbHeader ? `${rbHeader}\n${drHeader}` : drHeader,
+            section: "",
+            subBlock: blk.routine.name,
+          };
+        }
         return {
           id: nextBlockIdFn(),
           routineId,
@@ -4090,7 +4352,7 @@ export class WorkoutDomainService {
           targetRepsScheme: "",
           exerciseIdsCsv: blkExIds.join(","),
           exerciseNamesCsv: "",
-          notes: encodeDailyRoutineBlockHeader(blk.routine.id, blk.routine.name),
+          notes: drHeader,
           section: "",
           subBlock: blk.routine.name,
         };
@@ -4102,6 +4364,29 @@ export class WorkoutDomainService {
         (item.note ?? "").trim(),
         item.defaultTrackedPrs ?? []
       );
+      if (item.targetSpec) {
+        const setsCount = Math.max(1, Math.trunc(item.targetSetsCount ?? 4));
+        const rbHeader = encodeRoutineBlockTargets("", [item.targetSpec], setsCount);
+        const summary = formatRoutineBlockTargetSummary([item.targetSpec], setsCount);
+        const fullNotes = [rbHeader, drHeader, noteAndPrs]
+          .filter((part) => part.length > 0)
+          .join("\n");
+        return {
+          id: nextBlockIdFn(),
+          routineId,
+          position: idx,
+          name: ex.name,
+          kind: "STRENGTH",
+          format: DAILY_ROUTINE_EXERCISE_ITEM_FORMAT,
+          setsCount,
+          targetRepsScheme: summary,
+          exerciseIdsCsv: String(ex.id),
+          exerciseNamesCsv: ex.name,
+          notes: fullNotes,
+          section: "",
+          subBlock: "",
+        };
+      }
       const fullNotes = noteAndPrs ? `${drHeader}\n${noteAndPrs}` : drHeader;
       return {
         id: nextBlockIdFn(),
@@ -4141,7 +4426,13 @@ export class WorkoutDomainService {
           if (!cleanEx) {
             throw new Error("Each item with item_type='EXERCISE' must specify exercise_name.");
           }
-          exerciseReqs.push({ name: cleanEx, metricType: "WEIGHT", tracksRepMax: true });
+          exerciseReqs.push({
+            name: cleanEx,
+            metricType: item.target_metric
+              ? inferLibraryMetricTypeFromRoutineTarget(item.target_metric)
+              : "WEIGHT",
+            tracksRepMax: !item.target_metric || item.target_metric === "REPS",
+          });
           for (const pr of item.default_tracked_prs ?? []) {
             const mvName = (pr.movement_name ?? pr.movementName ?? "").trim();
             if (mvName) {
@@ -4149,6 +4440,17 @@ export class WorkoutDomainService {
                 name: mvName,
                 metricType: "WEIGHT",
                 tracksRepMax: true,
+              });
+            }
+          }
+        } else {
+          for (const bt of item.exercise_targets ?? []) {
+            const btName = (bt.exercise_name ?? "").trim();
+            if (btName) {
+              exerciseReqs.push({
+                name: btName,
+                metricType: inferLibraryMetricTypeFromRoutineTarget(bt.target_metric),
+                tracksRepMax: bt.target_metric === "REPS",
               });
             }
           }
@@ -4177,6 +4479,13 @@ export class WorkoutDomainService {
         resolvedExercise?: ExerciseRecord;
         note?: string;
         defaultTrackedPrs?: TrackedPrSlotSpec[];
+        targetSetsCount?: number;
+        targetSpec?: RoutineExerciseTargetSlot | null;
+        blockExerciseTargets?: Array<{
+          exerciseId: number;
+          exerciseName: string;
+          slot: RoutineExerciseTargetSlot;
+        }>;
       }> = [];
 
       for (const item of input.items) {
@@ -4196,7 +4505,117 @@ export class WorkoutDomainService {
               `Referenced Available Block not found (${item.block_id ?? item.block_title ?? "unspecified"}).`
             );
           }
-          resolvedItems.push({ itemType: "BLOCK", resolvedBlock: matchedBlock });
+
+          let targetSetsCount: number | undefined;
+          let blockExerciseTargets:
+            | Array<{
+                exerciseId: number;
+                exerciseName: string;
+                slot: RoutineExerciseTargetSlot;
+              }>
+            | undefined;
+
+          const decodedAb = this.buildAvailableBlockRecord(
+            matchedBlock,
+            exercisesById,
+            exercisesByLowerName,
+            [],
+            false
+          );
+          const rawTargets = item.exercise_targets ?? [];
+          if (rawTargets.length > 0 || item.sets_count !== undefined) {
+            targetSetsCount = Math.max(1, Math.min(100, Math.trunc(item.sets_count ?? 4)));
+            if (rawTargets.length > 0) {
+              const validatedByLower = new Map<
+                string,
+                { exerciseId: number; exerciseName: string; slot: RoutineExerciseTargetSlot }
+              >();
+              for (const bt of rawTargets) {
+                const btName = bt.exercise_name.trim();
+                const resolvedBtEx =
+                  exerciseMap.get(btName.toLowerCase()) ??
+                  exercisesByLowerName.get(btName.toLowerCase());
+                const slot = this.parseAndValidateTargetSlot(
+                  bt,
+                  targetSetsCount,
+                  `${matchedBlock.routine.name} · ${btName}`
+                );
+                validatedByLower.set(btName.toLowerCase(), {
+                  exerciseId: resolvedBtEx?.id ?? 0,
+                  exerciseName: resolvedBtEx?.name ?? btName,
+                  slot,
+                });
+              }
+
+              const orderedTargets: Array<{
+                exerciseId: number;
+                exerciseName: string;
+                slot: RoutineExerciseTargetSlot;
+              }> = [];
+              const consumedLower = new Set<string>();
+              for (const abEx of decodedAb.exercises) {
+                const lower = abEx.name.trim().toLowerCase();
+                const explicitTarget = validatedByLower.get(lower);
+                if (explicitTarget) {
+                  orderedTargets.push({
+                    exerciseId: abEx.id || explicitTarget.exerciseId,
+                    exerciseName: abEx.name,
+                    slot: explicitTarget.slot,
+                  });
+                  consumedLower.add(lower);
+                } else {
+                  const defaultMetric = inferRoutineTargetMetricFromLibraryMetric(
+                    abEx.metricType
+                  );
+                  const defaultVal = defaultFixedForRoutineMetric(defaultMetric);
+                  orderedTargets.push({
+                    exerciseId: abEx.id,
+                    exerciseName: abEx.name,
+                    slot: {
+                      metric: defaultMetric,
+                      mode: "FIXED",
+                      fixedValue: defaultVal,
+                      perSetValues: Array.from(
+                        { length: targetSetsCount },
+                        () => defaultVal
+                      ),
+                    },
+                  });
+                }
+              }
+              for (const [lower, val] of validatedByLower.entries()) {
+                if (!consumedLower.has(lower)) {
+                  orderedTargets.push(val);
+                }
+              }
+              blockExerciseTargets = orderedTargets;
+            } else if (decodedAb.exercises.length > 0) {
+              blockExerciseTargets = decodedAb.exercises.map((abEx) => {
+                const metric = inferRoutineTargetMetricFromLibraryMetric(abEx.metricType);
+                const fixedVal = defaultFixedForRoutineMetric(metric);
+                return {
+                  exerciseId: abEx.id,
+                  exerciseName: abEx.name,
+                  slot: {
+                    metric,
+                    mode: "FIXED",
+                    fixedValue: fixedVal,
+                    perSetValues: Array.from(
+                      { length: targetSetsCount! },
+                      () => fixedVal
+                    ),
+                  },
+                };
+              });
+            }
+          }
+
+          resolvedItems.push({
+            itemType: "BLOCK",
+            resolvedBlock: matchedBlock,
+            targetSetsCount,
+            blockExerciseTargets,
+          });
         } else {
           const cleanName = (item.exercise_name ?? "").trim();
           const ex =
@@ -4216,11 +4635,39 @@ export class WorkoutDomainService {
               };
             })
           );
+
+          let targetSetsCount: number | undefined;
+          let targetSpec: RoutineExerciseTargetSlot | null = null;
+          const hasAnyTargetInput =
+            item.sets_count !== undefined ||
+            item.target_metric !== undefined ||
+            item.target_mode !== undefined ||
+            item.fixed_value !== undefined ||
+            item.per_set_values !== undefined;
+          if (hasAnyTargetInput) {
+            targetSetsCount = Math.max(1, Math.min(100, Math.trunc(item.sets_count ?? 4)));
+            const resolvedMetric =
+              item.target_metric ??
+              inferRoutineTargetMetricFromLibraryMetric(ex.metricType);
+            targetSpec = this.parseAndValidateTargetSlot(
+              {
+                target_metric: resolvedMetric,
+                target_mode: item.target_mode,
+                fixed_value: item.fixed_value,
+                per_set_values: item.per_set_values,
+              },
+              targetSetsCount,
+              ex.name
+            );
+          }
+
           resolvedItems.push({
             itemType: "EXERCISE",
             resolvedExercise: ex,
             note: extractCleanRoutineNotes(item.note ?? ""),
             defaultTrackedPrs: normalizedPrs,
+            targetSetsCount,
+            targetSpec,
           });
         }
       }
@@ -4406,8 +4853,10 @@ export class WorkoutDomainService {
           if (item.exercise_name?.trim()) {
             exReqs.push({
               name: item.exercise_name.trim(),
-              metricType: "WEIGHT",
-              tracksRepMax: true,
+              metricType: item.metric
+                ? inferLibraryMetricTypeFromRoutineTarget(item.metric)
+                : "WEIGHT",
+              tracksRepMax: !item.metric || item.metric === "REPS",
             });
           }
           for (const log of item.exercise_logs ?? []) {
@@ -4415,8 +4864,10 @@ export class WorkoutDomainService {
             if (logName) {
               exReqs.push({
                 name: logName,
-                metricType: "WEIGHT",
-                tracksRepMax: true,
+                metricType: log.metric
+                  ? inferLibraryMetricTypeFromRoutineTarget(log.metric)
+                  : "WEIGHT",
+                tracksRepMax: !log.metric || log.metric === "REPS",
               });
             }
           }
@@ -4438,6 +4889,32 @@ export class WorkoutDomainService {
         const exercisesByLowerName = new Map<string, ExerciseRecord>(
           allExercises.map((e) => [e.name.trim().toLowerCase(), e])
         );
+
+        const nonDailyAbRecords = nonDailyRoutines.map((r) =>
+          this.buildAvailableBlockRecord(
+            r,
+            exercisesById,
+            exercisesByLowerName,
+            [],
+            false
+          )
+        );
+        const nonDailyAbById = new Map<number, AvailableBlockRecord>(
+          nonDailyAbRecords.map((b) => [b.id, b])
+        );
+        const nonDailyAbByLowerTitle = new Map<string, AvailableBlockRecord>(
+          nonDailyAbRecords.map((b) => [b.title.trim().toLowerCase(), b])
+        );
+        const priorDailyRoutine = matchedDr
+          ? this.buildDailyRoutineRecord(
+              matchedDr,
+              nonDailyAbById,
+              nonDailyAbByLowerTitle,
+              exercisesById,
+              exercisesByLowerName,
+              []
+            )
+          : null;
 
         const resolvedSessionTitle =
           input.session_title?.trim() ||
@@ -4492,6 +4969,13 @@ export class WorkoutDomainService {
           resolvedExercise?: ExerciseRecord;
           note?: string;
           defaultTrackedPrs?: TrackedPrSlotSpec[];
+          targetSetsCount?: number;
+          targetSpec?: RoutineExerciseTargetSlot | null;
+          blockExerciseTargets?: Array<{
+            exerciseId: number;
+            exerciseName: string;
+            slot: RoutineExerciseTargetSlot;
+          }>;
         }> = [];
 
         for (const item of input.logged_items) {
@@ -4521,35 +5005,50 @@ export class WorkoutDomainService {
 
             const movementLogs: Array<{
               exerciseName: string;
-              weights: number[];
+              weights?: number[];
+              metric?: RoutineTargetMetric;
+              sets?: Array<{
+                reps?: number;
+                weight_kg?: number;
+                weight?: number;
+                metric_value?: number;
+                group_index?: number;
+              }>;
               setCountForEmpty?: number;
             }> =
               item.exercise_logs && item.exercise_logs.length > 0
-                ? item.exercise_logs
-                    .map((l) => ({
-                      exerciseName: (l.exercise_name ?? l.exerciseName ?? "").trim() || resolvedBlockTitle,
-                      weights: l.weights ?? [],
-                      setCountForEmpty: l.set_count_for_empty ?? l.setCountForEmpty,
-                    }))
-                : item.set_weights_kg !== undefined &&
+                ? item.exercise_logs.map((l) => ({
+                    exerciseName:
+                      (l.exercise_name ?? l.exerciseName ?? "").trim() || resolvedBlockTitle,
+                    weights: l.weights,
+                    metric: l.metric,
+                    sets: l.sets,
+                    setCountForEmpty: l.set_count_for_empty ?? l.setCountForEmpty,
+                  }))
+                : (item.set_weights_kg !== undefined || item.sets !== undefined) &&
                     (decodedAb?.exercises.length ?? 0) <= 1
                   ? [
                       {
                         exerciseName:
                           decodedAb?.exercises[0]?.name || resolvedBlockTitle,
                         weights: item.set_weights_kg,
+                        metric: item.metric,
+                        sets: item.sets,
                       },
                     ]
                   : decodedAb && decodedAb.exercises.length > 0
                     ? decodedAb.exercises.map((e) => ({
                         exerciseName: e.name,
                         weights: item.set_weights_kg ?? [],
+                        metric: item.metric,
                         setCountForEmpty: 3,
                       }))
                     : [
                         {
                           exerciseName: resolvedBlockTitle,
                           weights: item.set_weights_kg ?? [],
+                          metric: item.metric,
+                          sets: item.sets,
                           setCountForEmpty: 1,
                         },
                       ];
@@ -4567,36 +5066,15 @@ export class WorkoutDomainService {
               if (ex) {
                 exIdsForBlock.push({ exId: ex.id, sessionBlockId: blockId });
               }
-              const weightsList = mLog.weights ?? [];
-              const sets: SessionSetRecord[] =
-                weightsList.length > 0
-                  ? weightsList.map((w, sIdx) => ({
-                      id: ++maxSetId,
-                      blockId,
-                      position: sIdx,
-                      groupIndex: 0,
-                      reps: 1,
-                      weight: Number(w) > 0 ? Number(w) : 0.0,
-                      metricValue: 0.0,
-                      isWarmup: false,
-                      isFailed: false,
-                      notes: "",
-                    }))
-                  : Array.from(
-                      { length: Math.max(1, Math.trunc(mLog.setCountForEmpty ?? 1)) },
-                      (_, sIdx) => ({
-                        id: ++maxSetId,
-                        blockId,
-                        position: sIdx,
-                        groupIndex: 0,
-                        reps: 1,
-                        weight: 0.0,
-                        metricValue: 0.0,
-                        isWarmup: false,
-                        isFailed: false,
-                        notes: "",
-                      })
-                    );
+              const { sets, notes: blockNotes } = this.buildLoggedSessionSetsAndNotes({
+                blockId,
+                nextSetIdFn: () => ++maxSetId,
+                metric: mLog.metric,
+                sets: mLog.sets,
+                weights: mLog.weights,
+                setCountForEmpty: mLog.setCountForEmpty ?? 1,
+                exerciseMetricType: ex?.metricType,
+              });
 
               createdBlocks.push({
                 block: {
@@ -4614,7 +5092,7 @@ export class WorkoutDomainService {
                   description: instructions,
                   resultText: "",
                   resultValue: null,
-                  notes: "",
+                  notes: blockNotes,
                   section: "",
                   subBlock: resolvedBlockTitle,
                   exerciseIdsCsv: ex ? String(ex.id) : "",
@@ -4626,9 +5104,25 @@ export class WorkoutDomainService {
             }
 
             if (matchedAb) {
+              const priorBlockItem = priorDailyRoutine?.items.find(
+                (pi) =>
+                  pi.itemType === "BLOCK" &&
+                  (pi.blockId === matchedAb.routine.id ||
+                    (pi.blockTitle ?? "").trim().toLowerCase() ===
+                      matchedAb.routine.name.trim().toLowerCase())
+              );
               templateItemsForUpdate.push({
                 itemType: "BLOCK",
                 resolvedBlock: matchedAb,
+                targetSetsCount: priorBlockItem?.setsCount ?? undefined,
+                blockExerciseTargets:
+                  priorBlockItem && priorBlockItem.exerciseTargets.length > 0
+                    ? priorBlockItem.exerciseTargets.map((et) => ({
+                        exerciseId: et.exerciseId ?? 0,
+                        exerciseName: et.exerciseName,
+                        slot: et.target,
+                      }))
+                    : undefined,
               });
             }
 
@@ -4661,34 +5155,16 @@ export class WorkoutDomainService {
             }
             const blockId = ++maxBlockId;
             const cleanNote = (item.note ?? "").trim();
-            const rawWeights =
-              item.set_weights_kg ?? item.exercise_logs?.[0]?.weights ?? [];
-            const sets: SessionSetRecord[] =
-              rawWeights.length > 0
-                ? rawWeights.map((w, sIdx) => ({
-                    id: ++maxSetId,
-                    blockId,
-                    position: sIdx,
-                    groupIndex: 0,
-                    reps: 1,
-                    weight: Number(w) > 0 ? Number(w) : 0.0,
-                    metricValue: 0.0,
-                    isWarmup: false,
-                    isFailed: false,
-                    notes: "",
-                  }))
-                : Array.from({ length: 4 }, (_, sIdx) => ({
-                    id: ++maxSetId,
-                    blockId,
-                    position: sIdx,
-                    groupIndex: 0,
-                    reps: 1,
-                    weight: 0.0,
-                    metricValue: 0.0,
-                    isWarmup: false,
-                    isFailed: false,
-                    notes: "",
-                  }));
+            const firstLog = item.exercise_logs?.[0];
+            const { sets, notes: blockNotes } = this.buildLoggedSessionSetsAndNotes({
+              blockId,
+              nextSetIdFn: () => ++maxSetId,
+              metric: item.metric ?? firstLog?.metric,
+              sets: item.sets ?? firstLog?.sets,
+              weights: item.set_weights_kg ?? firstLog?.weights,
+              setCountForEmpty: 4,
+              exerciseMetricType: ex.metricType,
+            });
 
             createdBlocks.push({
               block: {
@@ -4706,7 +5182,7 @@ export class WorkoutDomainService {
                 description: cleanNote,
                 resultText: "",
                 resultValue: null,
-                notes: "",
+                notes: blockNotes,
                 section: "",
                 subBlock: "",
                 exerciseIdsCsv: String(ex.id),
@@ -4726,11 +5202,26 @@ export class WorkoutDomainService {
                   rmReps: p.rm_reps,
                 }))
             );
+            const priorExItem = priorDailyRoutine?.items.find(
+              (pi) =>
+                pi.itemType === "EXERCISE" &&
+                (pi.exerciseId === ex.id ||
+                  (pi.exerciseName ?? "").trim().toLowerCase() ===
+                    ex.name.trim().toLowerCase())
+            );
             templateItemsForUpdate.push({
               itemType: "EXERCISE",
               resolvedExercise: ex,
               note: cleanNote,
-              defaultTrackedPrs: itemPrSlots,
+              defaultTrackedPrs:
+                itemPrSlots.length > 0
+                  ? itemPrSlots
+                  : (priorExItem?.defaultTrackedPrs ?? []).map((p) => ({
+                      movementName: p.movementName,
+                      rmReps: p.rmReps,
+                    })),
+              targetSetsCount: priorExItem?.setsCount ?? undefined,
+              targetSpec: priorExItem?.targetSpec ?? null,
             });
 
             for (const pr of item.achieved_prs ?? []) {
@@ -5003,11 +5494,19 @@ export class WorkoutDomainService {
           sessionId: number;
           date: string;
           sessionTitle: string;
+          values: number[];
           weightsKg: number[];
+          volume: number;
           volumeKg: number;
+          hasAnyPositiveWeight: boolean;
+          lastMetricBlock: SessionBlockEntryRecord | null;
         }> = [];
 
         const ascSessions = [...activeSessions].reverse();
+        let anyPositiveWeightAllSessions = false;
+        let lastMetricBlockOverall: SessionBlockEntryRecord | null = null;
+        let lastValuesKind: "WEIGHT" | "METRIC" | "REPS" | null = null;
+
         for (const sw of ascSessions) {
           const matchingBlocks = (sw.blocks ?? []).filter((entry) => {
             const blk = entry.block;
@@ -5040,40 +5539,161 @@ export class WorkoutDomainService {
 
           if (matchingBlocks.length === 0) continue;
 
+          const values: number[] = [];
           const weightsKg: number[] = [];
+          let volume = 0;
           let volumeKg = 0;
+          let entryHasWeight = false;
+          let entryLastMetricBlock: SessionBlockEntryRecord | null = null;
+
           for (const entry of matchingBlocks) {
             const workingSets = (entry.sets ?? []).filter(
               (st) => !st.isWarmup && !st.isFailed
             );
             const targetSets =
               workingSets.length > 0 ? workingSets : entry.sets ?? [];
-            for (const st of targetSets) {
-              const w = Number(st.weight);
-              if (Number.isFinite(w) && w > 0) {
-                weightsKg.push(w);
-                volumeKg += w * Math.max(1, Number(st.reps) || 1);
+            if (targetSets.length === 0) continue;
+
+            const hasWeight = targetSets.some((st) => Number(st.weight) > 0);
+            const hasMetricVal = targetSets.some((st) => Number(st.metricValue) > 0);
+            const explicitReps = decodeLogMetricHeader(entry.block.notes) === "REPS";
+            const isSingleBlank =
+              targetSets.length === 1 &&
+              Number(targetSets[0].reps) <= 1 &&
+              !explicitReps;
+
+            if (hasWeight) {
+              anyPositiveWeightAllSessions = true;
+              entryHasWeight = true;
+              lastValuesKind = "WEIGHT";
+              for (const st of targetSets) {
+                const w = Number(st.weight);
+                if (Number.isFinite(w) && w > 0) {
+                  values.push(w);
+                  weightsKg.push(w);
+                  const mult = Math.max(1, Number(st.reps) || 1);
+                  volume += w * mult;
+                  volumeKg += w * mult;
+                }
+              }
+            } else if (hasMetricVal) {
+              entryLastMetricBlock = entry;
+              lastMetricBlockOverall = entry;
+              lastValuesKind = "METRIC";
+              for (const st of targetSets) {
+                const mv = Number(st.metricValue);
+                if (Number.isFinite(mv) && mv > 0) {
+                  values.push(mv);
+                  volume += mv;
+                }
+              }
+            } else if (!isSingleBlank) {
+              entryLastMetricBlock = entry;
+              lastMetricBlockOverall = entry;
+              lastValuesKind = "REPS";
+              for (const st of targetSets) {
+                const r = Math.trunc(Number(st.reps));
+                if (Number.isFinite(r) && r > 0) {
+                  values.push(r);
+                  volume += r;
+                }
               }
             }
           }
-          if (weightsKg.length > 0) {
+
+          if (values.length > 0) {
             matchedEntries.push({
               sessionId: sw.session.id,
               date: sw.session.date,
               sessionTitle: sw.session.title,
+              values,
               weightsKg,
+              volume: this.round2dp(volume),
               volumeKg: this.round2dp(volumeKg),
+              hasAnyPositiveWeight: entryHasWeight,
+              lastMetricBlock: entryLastMetricBlock,
             });
           }
         }
 
+        const ab = item.blockId ? abById.get(item.blockId) : undefined;
+        const fallbackMetric: RoutineTargetMetric | null =
+          item.itemType === "BLOCK"
+            ? item.exerciseTargets[0]?.target.metric ?? null
+            : item.targetSpec?.metric ?? null;
+        const fallbackEx: ExerciseRecord | undefined =
+          item.itemType === "BLOCK"
+            ? (ab?.exercises[0]?.id ? exercisesById.get(ab.exercises[0].id) : undefined)
+            : (item.exerciseId ? exercisesById.get(item.exerciseId) : undefined) ??
+              exercisesByLowerName.get(itemTitle.trim().toLowerCase());
+
+        let unit: "kg" | "reps" | "cal" | "s" | "m" = "kg";
+        if (anyPositiveWeightAllSessions) {
+          unit = "kg";
+        } else if (lastMetricBlockOverall) {
+          const working = (lastMetricBlockOverall.sets ?? []).filter(
+            (st) => !st.isWarmup && !st.isFailed
+          );
+          const target = working.length > 0 ? working : lastMetricBlockOverall.sets ?? [];
+          const blkEx = lastMetricBlockOverall.block.mainExerciseId
+            ? exercisesById.get(lastMetricBlockOverall.block.mainExerciseId)
+            : fallbackEx;
+          if (target.some((st) => Number(st.metricValue) > 0)) {
+            const decoded = resolveSessionBlockMetric(
+              lastMetricBlockOverall.block.notes,
+              target,
+              blkEx?.metricType
+            );
+            const eff =
+              decoded === "REPS" && fallbackMetric && fallbackMetric !== "REPS"
+                ? fallbackMetric
+                : decoded;
+            unit = routineMetricCompactUnit(eff);
+          } else if (lastValuesKind === "REPS" || target.some((st) => Number(st.reps) > 0)) {
+            unit = "reps";
+          }
+        } else if (fallbackMetric) {
+          unit =
+            fallbackMetric === "REPS"
+              ? (fallbackEx?.metricType ?? "").toUpperCase() === "REPS"
+                ? "reps"
+                : "kg"
+              : routineMetricCompactUnit(fallbackMetric);
+        } else if (fallbackEx) {
+          switch ((fallbackEx.metricType ?? "").toUpperCase()) {
+            case "CALORIES":
+              unit = "cal";
+              break;
+            case "TIME":
+              unit = "s";
+              break;
+            case "DISTANCE":
+              unit = "m";
+              break;
+            case "REPS":
+              unit = "reps";
+              break;
+            default:
+              unit = "kg";
+              break;
+          }
+        }
+
+        const isKgUnit = unit === "kg";
         const byDate = new Map<
           string,
-          { weights: number[]; volumeKg: number }
+          { values: number[]; weightsKg: number[]; volume: number; volumeKg: number }
         >();
         for (const m of matchedEntries) {
-          const cur = byDate.get(m.date) ?? { weights: [], volumeKg: 0 };
-          cur.weights.push(...m.weightsKg);
+          const cur = byDate.get(m.date) ?? {
+            values: [],
+            weightsKg: [],
+            volume: 0,
+            volumeKg: 0,
+          };
+          cur.values.push(...m.values);
+          cur.weightsKg.push(...m.weightsKg);
+          cur.volume = this.round2dp(cur.volume + m.volume);
           cur.volumeKg = this.round2dp(cur.volumeKg + m.volumeKg);
           byDate.set(m.date, cur);
         }
@@ -5081,34 +5701,50 @@ export class WorkoutDomainService {
         const chartPoints = Array.from(byDate.entries())
           .sort((a, b) => a[0].localeCompare(b[0]))
           .map(([date, agg]) => {
-            const topKg = Math.max(...agg.weights);
-            const avg =
-              agg.weights.reduce((s, w) => s + w, 0) / agg.weights.length;
+            const top = Math.max(...agg.values);
+            const avg = agg.values.reduce((s, v) => s + v, 0) / agg.values.length;
+            const topKg =
+              agg.weightsKg.length > 0 ? this.round2dp(Math.max(...agg.weightsKg)) : 0;
+            const avgKg =
+              agg.weightsKg.length > 0
+                ? this.round2dp(
+                    agg.weightsKg.reduce((s, w) => s + w, 0) / agg.weightsKg.length
+                  )
+                : 0;
             return {
               date,
-              topKg: this.round2dp(topKg),
-              averageKg: this.round2dp(avg),
+              top: this.round2dp(top),
+              average: this.round2dp(avg),
+              volume: agg.volume,
+              topKg,
+              averageKg: avgKg,
               volumeKg: agg.volumeKg,
             };
           });
 
-        const allTimeTopKg =
+        const allTimeTop =
           chartPoints.length > 0
-            ? this.round2dp(Math.max(...chartPoints.map((c) => c.topKg)))
+            ? this.round2dp(Math.max(...chartPoints.map((c) => c.top)))
             : null;
         const latestDay =
           chartPoints.length > 0 ? chartPoints[chartPoints.length - 1] : null;
         const prevDay =
           chartPoints.length > 1 ? chartPoints[chartPoints.length - 2] : null;
-        const topDeltaKg =
+        const topDelta =
           latestDay && prevDay
-            ? this.round2dp(latestDay.topKg - prevDay.topKg)
+            ? this.round2dp(latestDay.top - prevDay.top)
             : null;
-        const lastSetsKg = latestDay
-          ? byDate.get(latestDay.date)?.weights ?? []
+        const lastSets = latestDay
+          ? byDate.get(latestDay.date)?.values ?? []
           : [];
 
-        const ab = item.blockId ? abById.get(item.blockId) : undefined;
+        const allTimeTopKg = isKgUnit ? allTimeTop : null;
+        const lastTopKg = isKgUnit ? (latestDay?.top ?? null) : null;
+        const lastAverageKg = isKgUnit ? (latestDay?.average ?? null) : null;
+        const lastVolumeKg = isKgUnit ? (latestDay?.volume ?? null) : null;
+        const topDeltaKg = isKgUnit ? topDelta : null;
+        const lastSetsKg = isKgUnit ? lastSets : [];
+
         const targetExIds = new Set<number>();
         if (item.itemType === "BLOCK" && ab) {
           for (const ex of ab.exercises) targetExIds.add(ex.id);
@@ -5151,6 +5787,12 @@ export class WorkoutDomainService {
             sessionId: m.sessionId,
             date: m.date,
             sessionTitle: m.sessionTitle,
+            unit,
+            top:
+              m.values.length > 0
+                ? this.round2dp(Math.max(...m.values))
+                : null,
+            values: m.values,
             topKg:
               m.weightsKg.length > 0
                 ? this.round2dp(Math.max(...m.weightsKg))
@@ -5162,11 +5804,18 @@ export class WorkoutDomainService {
           itemType: item.itemType,
           title: itemTitle,
           subtitle,
-          allTimeTopKg,
-          lastTopKg: latestDay?.topKg ?? null,
+          unit,
+          allTimeTop,
+          lastTop: latestDay?.top ?? null,
           lastTopDate: latestDay?.date ?? null,
-          lastAverageKg: latestDay?.averageKg ?? null,
-          lastVolumeKg: latestDay?.volumeKg ?? null,
+          lastAverage: latestDay?.average ?? null,
+          lastVolume: latestDay?.volume ?? null,
+          topDelta,
+          lastSets,
+          allTimeTopKg,
+          lastTopKg,
+          lastAverageKg,
+          lastVolumeKg,
           topDeltaKg,
           lastSetsKg,
           trackedPrs,

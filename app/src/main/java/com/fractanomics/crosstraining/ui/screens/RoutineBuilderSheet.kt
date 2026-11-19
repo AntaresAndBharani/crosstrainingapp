@@ -2429,7 +2429,7 @@ private fun ExerciseAccordionCard(
 }
 
 @Composable
-private fun PerSetValueCard(
+internal fun PerSetValueCard(
     setNumber: Int,
     metric: ExerciseTargetMetric,
     value: Int,

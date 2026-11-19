@@ -11,6 +11,7 @@ import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.Session
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
+import com.fractanomics.crosstraining.ui.formatBlockSetToken
 import com.fractanomics.crosstraining.util.AVAILABLE_BLOCK_FORMAT
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockExercise
@@ -214,5 +215,30 @@ class DailyRoutineProgressTest {
         assertEquals(DailyRoutineItemType.EXERCISE, summaries[2].itemType)
         assertEquals(ConstituentTrendDirection.NONE, summaries[2].trendDirection)
         assertNull(summaries[2].lastTop)
+    }
+
+    @Test
+    fun `formatBlockSetToken formats weighted reps bodyweight reps and metric values cleanly`() {
+        val bike = Exercise(10L, "Air Bike", ExerciseCategory.MACHINE, MetricType.CALORIES, "cal", false)
+        assertEquals(
+            "80×8",
+            formatBlockSetToken(BlockSet(blockId = 1L, position = 0, reps = 8, weight = 80.0))
+        )
+        assertEquals(
+            "12 reps",
+            formatBlockSetToken(BlockSet(blockId = 1L, position = 0, reps = 12, weight = null), "[log_metric=REPS]")
+        )
+        assertEquals(
+            "15 cal",
+            formatBlockSetToken(BlockSet(blockId = 1L, position = 0, reps = 1, metricValue = 15.0), "[log_metric=CALORIES]", bike)
+        )
+        assertEquals(
+            "45s",
+            formatBlockSetToken(BlockSet(blockId = 1L, position = 0, reps = 1, metricValue = 45.0), "[log_metric=TIME_SECONDS]")
+        )
+        assertEquals(
+            "250m",
+            formatBlockSetToken(BlockSet(blockId = 1L, position = 0, reps = 1, metricValue = 250.0), "[log_metric=METERS]")
+        )
     }
 }

@@ -6,6 +6,11 @@ import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -42,6 +47,8 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
@@ -88,6 +95,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -125,7 +133,10 @@ import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.DailyRoutine
 import com.fractanomics.crosstraining.util.DailyRoutineCodec
 import com.fractanomics.crosstraining.util.DailyRoutineItem
+import com.fractanomics.crosstraining.util.ExerciseTargetMetric
+import com.fractanomics.crosstraining.util.RoutineExerciseTargetSpec
 import com.fractanomics.crosstraining.util.RoutineTargetCodec
+import com.fractanomics.crosstraining.util.TargetMode
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.util.UUID
@@ -143,11 +154,37 @@ internal fun formatLibraryTabLabels(
 )
 
 internal fun formatDailyRoutineItemChipLabel(item: DailyRoutineItem): String = when (item) {
-    is DailyRoutineItem.BlockRef -> "BLOCK: ${item.blockTitle}"
-    is DailyRoutineItem.StandaloneExercise -> if (item.note.isNotBlank()) {
-        "EX: ${item.exerciseName} (${item.note})"
-    } else {
-        "EX: ${item.exerciseName}"
+    is DailyRoutineItem.BlockRef -> {
+        if (!item.hasConfiguredTargets) {
+            "BLOCK: ${item.blockTitle}"
+        } else {
+            val sets = (item.targetSetsCount ?: 1).coerceAtLeast(1)
+            val resolvedSpecs = item.resolvedBlock?.exercises.orEmpty().mapNotNull { ex ->
+                resolveBlockExerciseTargetSpec(ex, item.exerciseTargets, item.exerciseTargetsByName)
+            }
+            val singleSpec = resolvedSpecs.singleOrNull()
+                ?: item.exerciseTargets.values.singleOrNull()
+                ?: item.exerciseTargetsByName.values.singleOrNull()
+            if (singleSpec != null) {
+                "BLOCK: ${item.blockTitle} (${formatCompactChipTargetSummary(sets, singleSpec)})"
+            } else {
+                "BLOCK: ${item.blockTitle} (${sets} sets)"
+            }
+        }
+    }
+    is DailyRoutineItem.StandaloneExercise -> {
+        val targetPart = if (item.hasConfiguredTarget && item.targetSpec != null) {
+            formatCompactChipTargetSummary(item.targetSetsCount ?: 1, item.targetSpec)
+        } else {
+            null
+        }
+        val notePart = item.note.takeIf { it.isNotBlank() }
+        val details = listOfNotNull(targetPart, notePart).joinToString(" · ")
+        if (details.isNotEmpty()) {
+            "EX: ${item.exerciseName} ($details)"
+        } else {
+            "EX: ${item.exerciseName}"
+        }
     }
 }
 
@@ -185,15 +222,22 @@ internal class DailyRoutineComposerState(
     var notes by mutableStateOf(initialNotes)
     val items = initialItems.map { ComposerRoutineItem(item = it) }.toMutableStateList()
     var attemptedSubmit by mutableStateOf(false)
+    val expandedTargetUids = mutableStateMapOf<String, Boolean>()
+    val expandedBlockExerciseKeys = mutableStateMapOf<String, String?>()
+    private val exerciseMetricCaches = mutableMapOf<String, MutableMap<ExerciseTargetMetric, MetricValueCache>>()
+
+    val hasInvalidTargets: Boolean
+        get() = items.any { !isDailyRoutineItemTargetValid(it.item) }
 
     val canSave: Boolean
-        get() = title.trim().isNotEmpty() && items.isNotEmpty()
+        get() = title.trim().isNotEmpty() && items.isNotEmpty() && !hasInvalidTargets
 
     val validationErrorMessage: String?
-        get() = if (attemptedSubmit && !canSave) {
-            "Add a routine title and at least 1 block or exercise."
-        } else {
-            null
+        get() = when {
+            hasInvalidTargets -> DAILY_ROUTINE_ALL_ZERO_TARGET_ERROR
+            attemptedSubmit && (title.trim().isEmpty() || items.isEmpty()) ->
+                "Add a routine title and at least 1 block or exercise."
+            else -> null
         }
 
     fun addBlock(block: AvailableBlock) {
@@ -230,6 +274,265 @@ internal class DailyRoutineComposerState(
         items[idx] = current.copy(item = payload.copy(note = newNote))
     }
 
+    fun toggleTargetExpanded(uid: String) {
+        expandedTargetUids[uid] = !(expandedTargetUids[uid] ?: false)
+    }
+
+    fun toggleBlockExerciseExpanded(uid: String, exKey: String) {
+        expandedBlockExerciseKeys[uid] = if (expandedBlockExerciseKeys[uid] == exKey) null else exKey
+    }
+
+    fun enableExerciseTargets(uid: String, defaultSetsCount: Int = 4) {
+        val idx = items.indexOfFirst { it.uid == uid }
+        if (idx < 0) return
+        val current = items[idx]
+        val payload = current.item as? DailyRoutineItem.StandaloneExercise ?: return
+        if (!payload.hasConfiguredTarget) {
+            val sets = defaultSetsCount.coerceAtLeast(1)
+            val defaultMetric = payload.resolvedExercise?.let {
+                ExerciseTargetMetric.fromLibraryMetricType(it.metricType)
+            } ?: ExerciseTargetMetric.REPS
+            items[idx] = current.copy(
+                item = payload.copy(
+                    targetSetsCount = sets,
+                    targetSpec = defaultTargetSpecForMetric(defaultMetric, sets)
+                )
+            )
+        }
+        expandedTargetUids[uid] = true
+    }
+
+    fun clearExerciseTargets(uid: String) {
+        val idx = items.indexOfFirst { it.uid == uid }
+        if (idx < 0) return
+        val current = items[idx]
+        val payload = current.item as? DailyRoutineItem.StandaloneExercise ?: return
+        items[idx] = current.copy(
+            item = payload.copy(targetSetsCount = null, targetSpec = null)
+        )
+        expandedTargetUids.remove(uid)
+        exerciseMetricCaches.remove(uid)
+    }
+
+    fun updateExerciseSetsCount(uid: String, newSetsCount: Int) {
+        val idx = items.indexOfFirst { it.uid == uid }
+        if (idx < 0) return
+        val current = items[idx]
+        val payload = current.item as? DailyRoutineItem.StandaloneExercise ?: return
+        val spec = payload.targetSpec ?: return
+        val cleanSets = newSetsCount.coerceIn(1, 50)
+        items[idx] = current.copy(
+            item = payload.copy(
+                targetSetsCount = cleanSets,
+                targetSpec = resizeTargetSpecSetsCount(spec, cleanSets)
+            )
+        )
+    }
+
+    private inline fun transformStandaloneSpec(
+        uid: String,
+        transform: (setsCount: Int, spec: RoutineExerciseTargetSpec) -> RoutineExerciseTargetSpec
+    ) {
+        val idx = items.indexOfFirst { it.uid == uid }
+        if (idx < 0) return
+        val current = items[idx]
+        val payload = current.item as? DailyRoutineItem.StandaloneExercise ?: return
+        val spec = payload.targetSpec ?: return
+        val sets = (payload.targetSetsCount ?: 4).coerceAtLeast(1)
+        items[idx] = current.copy(
+            item = payload.copy(
+                targetSetsCount = sets,
+                targetSpec = transform(sets, spec)
+            )
+        )
+    }
+
+    fun updateExerciseMetric(uid: String, newMetric: ExerciseTargetMetric) {
+        val cache = exerciseMetricCaches.getOrPut(uid) { mutableMapOf() }
+        transformStandaloneSpec(uid) { sets, spec ->
+            switchSpecMetricWithCache(spec, newMetric, sets, cache)
+        }
+    }
+
+    fun updateExerciseTargetMode(uid: String, newMode: TargetMode) {
+        transformStandaloneSpec(uid) { sets, spec -> switchSpecMode(spec, newMode, sets) }
+    }
+
+    fun updateExerciseFixedValue(uid: String, newValue: Int) {
+        transformStandaloneSpec(uid) { sets, spec -> updateSpecFixedValue(spec, newValue, sets) }
+    }
+
+    fun updateExercisePerSetValue(uid: String, setIndex: Int, newValue: Int) {
+        transformStandaloneSpec(uid) { sets, spec -> updateSpecPerSetValue(spec, setIndex, newValue, sets) }
+    }
+
+    fun applyExercisePattern(uid: String, pattern: ExerciseSetPattern) {
+        transformStandaloneSpec(uid) { sets, spec -> applyPatternToTargetSpec(spec, pattern, sets) }
+    }
+
+    fun enableBlockTargets(
+        uid: String,
+        exercisesById: Map<Long, Exercise> = emptyMap(),
+        defaultSetsCount: Int = 4
+    ) {
+        val idx = items.indexOfFirst { it.uid == uid }
+        if (idx < 0) return
+        val current = items[idx]
+        val payload = current.item as? DailyRoutineItem.BlockRef ?: return
+        val blockExercises = payload.resolvedBlock?.exercises.orEmpty()
+        if (blockExercises.isEmpty()) return
+
+        if (!payload.hasConfiguredTargets) {
+            val sets = defaultSetsCount.coerceAtLeast(1)
+            val byId = linkedMapOf<Long, RoutineExerciseTargetSpec>()
+            val byName = linkedMapOf<String, RoutineExerciseTargetSpec>()
+            blockExercises.forEach { abEx ->
+                val metric = exercisesById[abEx.id]?.let {
+                    ExerciseTargetMetric.fromLibraryMetricType(it.metricType)
+                } ?: ExerciseTargetMetric.REPS
+                val spec = defaultTargetSpecForMetric(metric, sets)
+                if (abEx.id > 0L) byId[abEx.id] = spec
+                val lower = abEx.name.trim().lowercase()
+                if (lower.isNotEmpty()) byName[lower] = spec
+            }
+            items[idx] = current.copy(
+                item = payload.copy(
+                    targetSetsCount = sets,
+                    exerciseTargets = byId,
+                    exerciseTargetsByName = byName
+                )
+            )
+            val firstEx = blockExercises.first()
+            expandedBlockExerciseKeys[uid] = if (firstEx.id > 0L) "id:${firstEx.id}" else "name:${firstEx.name.trim().lowercase()}"
+        }
+        expandedTargetUids[uid] = true
+    }
+
+    fun clearBlockTargets(uid: String) {
+        val idx = items.indexOfFirst { it.uid == uid }
+        if (idx < 0) return
+        val current = items[idx]
+        val payload = current.item as? DailyRoutineItem.BlockRef ?: return
+        items[idx] = current.copy(
+            item = payload.copy(
+                targetSetsCount = null,
+                exerciseTargets = emptyMap(),
+                exerciseTargetsByName = emptyMap()
+            )
+        )
+        expandedTargetUids.remove(uid)
+        expandedBlockExerciseKeys.remove(uid)
+        exerciseMetricCaches.keys.filter { it.startsWith("$uid#") }.toList().forEach {
+            exerciseMetricCaches.remove(it)
+        }
+    }
+
+    fun updateBlockSetsCount(uid: String, newSetsCount: Int) {
+        val idx = items.indexOfFirst { it.uid == uid }
+        if (idx < 0) return
+        val current = items[idx]
+        val payload = current.item as? DailyRoutineItem.BlockRef ?: return
+        val cleanSets = newSetsCount.coerceIn(1, 50)
+        items[idx] = current.copy(
+            item = payload.copy(
+                targetSetsCount = cleanSets,
+                exerciseTargets = payload.exerciseTargets.mapValues { (_, s) ->
+                    resizeTargetSpecSetsCount(s, cleanSets)
+                },
+                exerciseTargetsByName = payload.exerciseTargetsByName.mapValues { (_, s) ->
+                    resizeTargetSpecSetsCount(s, cleanSets)
+                }
+            )
+        )
+    }
+
+    private inline fun transformBlockExerciseSpec(
+        uid: String,
+        exerciseId: Long,
+        exerciseName: String,
+        transform: (setsCount: Int, spec: RoutineExerciseTargetSpec) -> RoutineExerciseTargetSpec
+    ) {
+        val idx = items.indexOfFirst { it.uid == uid }
+        if (idx < 0) return
+        val current = items[idx]
+        val payload = current.item as? DailyRoutineItem.BlockRef ?: return
+        val sets = (payload.targetSetsCount ?: 4).coerceAtLeast(1)
+        val lower = exerciseName.trim().lowercase()
+        val existingSpec = (if (exerciseId > 0L) payload.exerciseTargets[exerciseId] else null)
+            ?: payload.exerciseTargetsByName[lower]
+            ?: defaultTargetSpecForMetric(ExerciseTargetMetric.REPS, sets)
+        val updatedSpec = transform(sets, existingSpec)
+        val nextById = payload.exerciseTargets.toMutableMap()
+        val nextByName = payload.exerciseTargetsByName.toMutableMap()
+        if (exerciseId > 0L) nextById[exerciseId] = updatedSpec
+        if (lower.isNotEmpty()) nextByName[lower] = updatedSpec
+        items[idx] = current.copy(
+            item = payload.copy(
+                targetSetsCount = sets,
+                exerciseTargets = nextById,
+                exerciseTargetsByName = nextByName
+            )
+        )
+    }
+
+    fun updateBlockExerciseMetric(
+        uid: String,
+        exerciseId: Long,
+        exerciseName: String,
+        newMetric: ExerciseTargetMetric
+    ) {
+        val cacheKey = if (exerciseId > 0L) "$uid#id:$exerciseId" else "$uid#name:${exerciseName.trim().lowercase()}"
+        val cache = exerciseMetricCaches.getOrPut(cacheKey) { mutableMapOf() }
+        transformBlockExerciseSpec(uid, exerciseId, exerciseName) { sets, spec ->
+            switchSpecMetricWithCache(spec, newMetric, sets, cache)
+        }
+    }
+
+    fun updateBlockExerciseTargetMode(
+        uid: String,
+        exerciseId: Long,
+        exerciseName: String,
+        newMode: TargetMode
+    ) {
+        transformBlockExerciseSpec(uid, exerciseId, exerciseName) { sets, spec ->
+            switchSpecMode(spec, newMode, sets)
+        }
+    }
+
+    fun updateBlockExerciseFixedValue(
+        uid: String,
+        exerciseId: Long,
+        exerciseName: String,
+        newValue: Int
+    ) {
+        transformBlockExerciseSpec(uid, exerciseId, exerciseName) { sets, spec ->
+            updateSpecFixedValue(spec, newValue, sets)
+        }
+    }
+
+    fun updateBlockExercisePerSetValue(
+        uid: String,
+        exerciseId: Long,
+        exerciseName: String,
+        setIndex: Int,
+        newValue: Int
+    ) {
+        transformBlockExerciseSpec(uid, exerciseId, exerciseName) { sets, spec ->
+            updateSpecPerSetValue(spec, setIndex, newValue, sets)
+        }
+    }
+
+    fun applyBlockExercisePattern(
+        uid: String,
+        exerciseId: Long,
+        exerciseName: String,
+        pattern: ExerciseSetPattern
+    ) {
+        transformBlockExerciseSpec(uid, exerciseId, exerciseName) { sets, spec ->
+            applyPatternToTargetSpec(spec, pattern, sets)
+        }
+    }
+
     fun moveUp(index: Int) {
         if (index <= 0 || index >= items.size) return
         val item = items.removeAt(index)
@@ -244,7 +547,13 @@ internal class DailyRoutineComposerState(
 
     fun removeAt(index: Int) {
         if (index !in items.indices) return
-        items.removeAt(index)
+        val removed = items.removeAt(index)
+        expandedTargetUids.remove(removed.uid)
+        expandedBlockExerciseKeys.remove(removed.uid)
+        exerciseMetricCaches.remove(removed.uid)
+        exerciseMetricCaches.keys.filter { it.startsWith("${removed.uid}#") }.toList().forEach {
+            exerciseMetricCaches.remove(it)
+        }
     }
 
     fun toDailyRoutineItems(): List<DailyRoutineItem> =
@@ -1462,8 +1771,159 @@ private fun DailyRoutineComposerSheet(
                                                         overflow = TextOverflow.Ellipsis
                                                     )
                                                 }
+                                                val blockExercises = p.resolvedBlock?.exercises.orEmpty()
+                                                if (blockExercises.isNotEmpty()) {
+                                                    val exercisesById = remember(allExercises) { allExercises.associateBy { it.id } }
+                                                    val isInvalid = !isDailyRoutineItemTargetValid(p)
+                                                    val isTargetExpanded = state.expandedTargetUids[entry.uid] == true || isInvalid
+                                                    if (!p.hasConfiguredTargets) {
+                                                        TextButton(
+                                                            onClick = { state.enableBlockTargets(entry.uid, exercisesById) },
+                                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                            modifier = Modifier.heightIn(min = 48.dp)
+                                                        ) {
+                                                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                            Spacer(Modifier.width(4.dp))
+                                                            Text("Set targets (optional)", style = MaterialTheme.typography.labelLarge)
+                                                        }
+                                                    } else {
+                                                        val summaryText = formatBlockRoutineTargetsSummary(
+                                                            setsCount = p.targetSetsCount ?: 4,
+                                                            exercises = blockExercises,
+                                                            targetsById = p.exerciseTargets,
+                                                            targetsByName = p.exerciseTargetsByName
+                                                        )
+                                                        Surface(
+                                                            shape = RoundedCornerShape(10.dp),
+                                                            color = if (isInvalid) {
+                                                                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+                                                            } else {
+                                                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                                                            },
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .clickable { state.toggleTargetExpanded(entry.uid) }
+                                                        ) {
+                                                            Row(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .heightIn(min = 48.dp)
+                                                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.SpaceBetween
+                                                            ) {
+                                                                Text(
+                                                                    text = "Targets: $summaryText",
+                                                                    style = MaterialTheme.typography.labelMedium,
+                                                                    fontWeight = FontWeight.SemiBold,
+                                                                    color = if (isInvalid) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                                                    maxLines = 2,
+                                                                    overflow = TextOverflow.Ellipsis,
+                                                                    modifier = Modifier.weight(1f)
+                                                                )
+                                                                Icon(
+                                                                    imageVector = if (isTargetExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                                                    contentDescription = if (isTargetExpanded) "Collapse targets" else "Expand targets"
+                                                                )
+                                                            }
+                                                        }
+                                                        AnimatedVisibility(
+                                                            visible = isTargetExpanded,
+                                                            enter = expandVertically() + fadeIn(),
+                                                            exit = shrinkVertically() + fadeOut()
+                                                        ) {
+                                                            InlineBlockTargetsConfigPanel(
+                                                                setsCount = p.targetSetsCount ?: 4,
+                                                                exercises = blockExercises,
+                                                                targetsById = p.exerciseTargets,
+                                                                targetsByName = p.exerciseTargetsByName,
+                                                                expandedExerciseKey = state.expandedBlockExerciseKeys[entry.uid],
+                                                                onToggleExerciseExpanded = { exKey -> state.toggleBlockExerciseExpanded(entry.uid, exKey) },
+                                                                onUpdateSetsCount = { count -> state.updateBlockSetsCount(entry.uid, count) },
+                                                                onSelectMetric = { exId, exName, m -> state.updateBlockExerciseMetric(entry.uid, exId, exName, m) },
+                                                                onSelectMode = { exId, exName, mode -> state.updateBlockExerciseTargetMode(entry.uid, exId, exName, mode) },
+                                                                onUpdateFixed = { exId, exName, v -> state.updateBlockExerciseFixedValue(entry.uid, exId, exName, v) },
+                                                                onUpdatePerSet = { exId, exName, setIdx, v -> state.updateBlockExercisePerSetValue(entry.uid, exId, exName, setIdx, v) },
+                                                                onApplyPattern = { exId, exName, pat -> state.applyBlockExercisePattern(entry.uid, exId, exName, pat) },
+                                                                onClearTargets = { state.clearBlockTargets(entry.uid) },
+                                                                onDone = { state.expandedTargetUids[entry.uid] = false }
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                             }
                                             is DailyRoutineItem.StandaloneExercise -> {
+                                                val isInvalid = !isDailyRoutineItemTargetValid(p)
+                                                val isTargetExpanded = state.expandedTargetUids[entry.uid] == true || isInvalid
+                                                if (!p.hasConfiguredTarget || p.targetSpec == null) {
+                                                    TextButton(
+                                                        onClick = { state.enableExerciseTargets(entry.uid) },
+                                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                        modifier = Modifier.heightIn(min = 48.dp)
+                                                    ) {
+                                                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                        Spacer(Modifier.width(4.dp))
+                                                        Text("Set targets (optional)", style = MaterialTheme.typography.labelLarge)
+                                                    }
+                                                } else {
+                                                    val summaryText = formatDailyRoutineTargetSummary(
+                                                        setsCount = p.targetSetsCount ?: 4,
+                                                        spec = p.targetSpec
+                                                    )
+                                                    Surface(
+                                                        shape = RoundedCornerShape(10.dp),
+                                                        color = if (isInvalid) {
+                                                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+                                                        } else {
+                                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                                                        },
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clickable { state.toggleTargetExpanded(entry.uid) }
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .heightIn(min = 48.dp)
+                                                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.SpaceBetween
+                                                        ) {
+                                                            Text(
+                                                                text = summaryText,
+                                                                style = MaterialTheme.typography.labelMedium,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                color = if (isInvalid) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                                                maxLines = 2,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                                modifier = Modifier.weight(1f)
+                                                            )
+                                                            Icon(
+                                                                imageVector = if (isTargetExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                                                contentDescription = if (isTargetExpanded) "Collapse targets" else "Expand targets"
+                                                            )
+                                                        }
+                                                    }
+                                                    AnimatedVisibility(
+                                                        visible = isTargetExpanded,
+                                                        enter = expandVertically() + fadeIn(),
+                                                        exit = shrinkVertically() + fadeOut()
+                                                    ) {
+                                                        InlineExerciseTargetConfigPanel(
+                                                            setsCount = p.targetSetsCount ?: 4,
+                                                            spec = p.targetSpec,
+                                                            showSetsControl = true,
+                                                            onUpdateSetsCount = { count -> state.updateExerciseSetsCount(entry.uid, count) },
+                                                            onSelectMetric = { m -> state.updateExerciseMetric(entry.uid, m) },
+                                                            onSelectMode = { mode -> state.updateExerciseTargetMode(entry.uid, mode) },
+                                                            onUpdateFixed = { v -> state.updateExerciseFixedValue(entry.uid, v) },
+                                                            onUpdatePerSet = { setIdx, v -> state.updateExercisePerSetValue(entry.uid, setIdx, v) },
+                                                            onApplyPattern = { pat -> state.applyExercisePattern(entry.uid, pat) },
+                                                            onClearTargets = { state.clearExerciseTargets(entry.uid) },
+                                                            onDone = { state.expandedTargetUids[entry.uid] = false }
+                                                        )
+                                                    }
+                                                }
                                                 OutlinedTextField(
                                                     value = p.note,
                                                     onValueChange = { state.updateExerciseNote(entry.uid, it) },

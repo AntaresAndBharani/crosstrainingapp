@@ -1,11 +1,13 @@
 package com.fractanomics.crosstraining.util
 
 import com.fractanomics.crosstraining.data.model.BlockKind
+import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
 import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RoutineBlock
 import com.fractanomics.crosstraining.ui.WORKOUT_FORMATS
+import com.fractanomics.crosstraining.ui.trimmed
 
 data class TargetPreset(
     val label: String,
@@ -160,15 +162,21 @@ data class RoutineExerciseTargetSpec(
 object RoutineTargetCodec {
 
     private const val HEADER_PREFIX = "[rb_v2="
+    private const val LOG_METRIC_HEADER_PREFIX = "[log_metric="
     /** Anchored `[rb_v2=...]` header used for structured target decoding only. */
     private val HEADER_LINE_REGEX = Regex("""^\[rb_v2=([^\]]*)]\s*\r?\n?""", RegexOption.IGNORE_CASE)
+    private val LOG_METRIC_REGEX = Regex("""\[log_metric=([^\]]*)]""", RegexOption.IGNORE_CASE)
 
     /**
-     * Any machine-readable metadata header line (`[rb_v2=...]`, Available Block `[ab_prs=...]`, or
-     * Daily Routine item `[dr_item=...]`) stripped from human-visible notes. Kept separate from
-     * [HEADER_LINE_REGEX] so non-`rb_v2` payloads are never decoded as `rb_v2` target slots.
+     * Any machine-readable metadata header line (`[rb_v2=...]`, Available Block `[ab_prs=...]`,
+     * Daily Routine item `[dr_item=...]`, or session `[log_metric=...]`) stripped from human-visible
+     * notes. Kept separate from [HEADER_LINE_REGEX] so non-`rb_v2` payloads are never decoded as
+     * `rb_v2` target slots.
      */
-    private val METADATA_HEADER_LINE_REGEX = Regex("""^\[(?:rb_v2|ab_prs|dr_item)=([^\]]*)]\s*\r?\n?""", RegexOption.IGNORE_CASE)
+    private val METADATA_HEADER_LINE_REGEX = Regex(
+        """^\[(?:rb_v2|ab_prs|dr_item|log_metric)=([^\]]*)]\s*\r?\n?""",
+        RegexOption.IGNORE_CASE
+    )
 
     val PRIMARY_BLOCK_KINDS: List<BlockKind> = listOf(
         BlockKind.WEIGHTLIFTING,
@@ -189,9 +197,35 @@ object RoutineTargetCodec {
         "time cap"
     )
 
-    fun hasStructuredHeader(notes: String?): Boolean {
-        if (notes.isNullOrBlank()) return false
-        return notes.trimStart().startsWith(HEADER_PREFIX, ignoreCase = true)
+    private fun findLeadingHeaderLineMatch(notes: String?): MatchResult? {
+        if (notes.isNullOrBlank()) return null
+        var remaining = notes.trimStart()
+        while (remaining.isNotEmpty()) {
+            HEADER_LINE_REGEX.find(remaining)?.let { return it }
+            val metaMatch = METADATA_HEADER_LINE_REGEX.find(remaining) ?: break
+            remaining = remaining.substring(metaMatch.range.last + 1).trimStart()
+        }
+        return null
+    }
+
+    fun hasStructuredHeader(notes: String?): Boolean = findLeadingHeaderLineMatch(notes) != null
+
+    fun encodeLogMetricHeader(metric: ExerciseTargetMetric): String =
+        "$LOG_METRIC_HEADER_PREFIX${metric.name}]"
+
+    fun decodeLogMetricHeader(notes: String?): ExerciseTargetMetric? {
+        if (notes.isNullOrBlank()) return null
+        val match = LOG_METRIC_REGEX.find(notes) ?: return null
+        val token = match.groupValues.getOrNull(1).orEmpty().trim()
+        if (token.isEmpty()) return null
+        return ExerciseTargetMetric.fromTokenOrNull(token)
+    }
+
+    fun encodeNotesWithLogMetric(cleanNotes: String, metric: ExerciseTargetMetric?): String {
+        val sanitized = extractCleanNotes(cleanNotes)
+        if (metric == null) return sanitized
+        val header = encodeLogMetricHeader(metric)
+        return if (sanitized.isBlank()) header else "$header\n$sanitized"
     }
 
     fun extractCleanNotes(notes: String?): String {
@@ -230,13 +264,12 @@ object RoutineTargetCodec {
             }
             "${slot.metric.name}:${slot.mode.name}:$cleanFixed:${values.joinToString(".")}"
         }
-        val header = "[rb_v2=$encodedSlots]"
+        val header = "$HEADER_PREFIX$encodedSlots]"
         return if (sanitizedNotes.isBlank()) header else "$header\n$sanitizedNotes"
     }
 
     fun decodeHeaderSlots(notes: String?, setsCount: Int): List<RoutineExerciseTargetSpec>? {
-        if (notes.isNullOrBlank()) return null
-        val match = HEADER_LINE_REGEX.find(notes.trimStart()) ?: return null
+        val match = findLeadingHeaderLineMatch(notes) ?: return null
         val payload = match.groupValues[1].trim()
         if (payload.isEmpty()) return emptyList()
         val normalizedSets = setsCount.coerceAtLeast(1)
@@ -587,5 +620,78 @@ object RoutineTargetCodec {
             }
         }
         return if (raw.length <= 190) raw else raw.take(187) + "..."
+    }
+
+    /**
+     * Resolves the effective logging metric of a persisted `SessionBlock` from its `[log_metric=...]`
+     * notes tag, recorded `metricValue`/`weight` set payloads, or the linked library [Exercise].
+     */
+    fun resolveSessionBlockMetric(
+        blockNotes: String?,
+        sets: List<BlockSet>,
+        exercise: Exercise?
+    ): ExerciseTargetMetric {
+        decodeLogMetricHeader(blockNotes)?.let { return it }
+        val hasPositiveMetricValue = sets.any { (it.metricValue ?: 0.0) > 0.0 }
+        val hasPositiveWeight = sets.any { (it.weight ?: 0.0) > 0.0 }
+        if (hasPositiveMetricValue && !hasPositiveWeight) {
+            return when (exercise?.metricType) {
+                MetricType.CALORIES -> ExerciseTargetMetric.CALORIES
+                MetricType.TIME -> ExerciseTargetMetric.TIME_SECONDS
+                MetricType.DISTANCE -> ExerciseTargetMetric.METERS
+                else -> ExerciseTargetMetric.CALORIES
+            }
+        }
+        if (hasPositiveWeight) return ExerciseTargetMetric.REPS
+        if (exercise != null) return ExerciseTargetMetric.fromLibraryMetricType(exercise.metricType)
+        return ExerciseTargetMetric.REPS
+    }
+
+    /**
+     * True when [workingSets] carry real logged data (positive weight, positive metric value,
+     * multiple rep sets, `reps > 1`, or explicit `[log_metric=REPS]`), rather than a single
+     * empty placeholder `BlockSet(reps = 1, weight = null, metricValue = null)`.
+     */
+    fun hasMeaningfulLoggedValues(blockNotes: String?, workingSets: List<BlockSet>): Boolean {
+        if (workingSets.isEmpty()) return false
+        if (workingSets.any { (it.weight ?: 0.0) > 0.0 || (it.metricValue ?: 0.0) > 0.0 }) return true
+        val explicitReps = decodeLogMetricHeader(blockNotes) == ExerciseTargetMetric.REPS
+        val isSingleBlank = workingSets.size == 1 && workingSets[0].reps <= 1 && !explicitReps
+        return !isSingleBlank && workingSets.any { it.reps > 0 }
+    }
+
+    /** Formats a compact display summary of up to 4 working sets respecting weights, metrics, or bodyweight reps. */
+    fun formatLoggedSetsSummary(
+        workingSets: List<BlockSet>,
+        metric: ExerciseTargetMetric,
+        weightUnit: String
+    ): String {
+        val positiveWeightSets = workingSets.filter { (it.weight ?: 0.0) > 0.0 }
+        if (positiveWeightSets.isNotEmpty()) {
+            val hasExplicitReps = positiveWeightSets.any { it.reps > 1 }
+            val tokens = positiveWeightSets.take(4).map { s ->
+                val wText = checkNotNull(s.weight).trimmed()
+                if (hasExplicitReps) "$wText×${s.reps}" else wText
+            }
+            return "${tokens.joinToString(" · ")} $weightUnit"
+        }
+        val positiveMetricSets = workingSets.filter { (it.metricValue ?: 0.0) > 0.0 }
+        if (positiveMetricSets.isNotEmpty()) {
+            val unitSuffix = when (metric) {
+                ExerciseTargetMetric.CALORIES -> " cal"
+                ExerciseTargetMetric.TIME_SECONDS -> "s"
+                ExerciseTargetMetric.METERS -> "m"
+                ExerciseTargetMetric.REPS -> ""
+            }
+            val joined = positiveMetricSets.take(4).joinToString(" · ") { checkNotNull(it.metricValue).trimmed() }
+            return "$joined$unitSuffix"
+        }
+        if (hasMeaningfulLoggedValues(null, workingSets)) {
+            val positiveReps = workingSets.filter { it.reps > 0 }
+            if (positiveReps.isNotEmpty()) {
+                return positiveReps.take(4).joinToString(" · ") { it.reps.toString() } + " reps"
+            }
+        }
+        return ""
     }
 }

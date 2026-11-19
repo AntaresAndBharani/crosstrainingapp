@@ -19,7 +19,11 @@ import com.fractanomics.crosstraining.util.AvailableBlockExercise
 import com.fractanomics.crosstraining.util.DailyRoutine
 import com.fractanomics.crosstraining.util.DailyRoutineCodec
 import com.fractanomics.crosstraining.util.DailyRoutineItem
+import com.fractanomics.crosstraining.util.ExerciseTargetMetric
+import com.fractanomics.crosstraining.util.RoutineExerciseTargetSpec
+import com.fractanomics.crosstraining.util.RoutineTargetCodec
 import com.fractanomics.crosstraining.util.STANDALONE_EXERCISE_SESSION_FORMAT
+import com.fractanomics.crosstraining.util.TargetMode
 import com.fractanomics.crosstraining.util.TrackedPrSlot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -292,5 +296,143 @@ class SessionEditorDailyRoutineAndExerciseTest {
         )
         assertNull(deriveRoutineItemsFromSessionStates(states))
         assertTrue(hasStructuralDiffFromRoutine(initialSig, states))
+    }
+
+    @Test
+    fun `expandDailyRoutineForSession pre-fills targets omits 0 Skip preserves weights rounds metric switch cache and Edit hydration`() {
+        val airBike = Exercise(
+            id = 4L,
+            name = "Air Bike",
+            category = ExerciseCategory.MACHINE,
+            metricType = MetricType.CALORIES,
+            unit = "cal",
+            tracksRepMax = false
+        )
+        val pullUps = Exercise(
+            id = 5L,
+            name = "Pull-ups",
+            category = ExerciseCategory.GYMNASTICS,
+            metricType = MetricType.REPS,
+            unit = "reps",
+            tracksRepMax = false
+        )
+        val allEx = exercises + airBike + pullUps
+        val priorDate = LocalDate.of(2026, 11, 12)
+        val priorSession = SessionWithBlocks(
+            session = Session(id = 9L, cycleId = 1L, date = priorDate, title = "Prior"),
+            blocks = listOf(
+                BlockWithSets(
+                    block = SessionBlock(
+                        id = 91L,
+                        sessionId = 9L,
+                        position = 0,
+                        name = "Back Squat",
+                        mainExerciseId = 1L,
+                        routineId = 10L,
+                        subBlock = "Squat Wave"
+                    ),
+                    sets = listOf(
+                        BlockSet(blockId = 91L, position = 0, reps = 8, weight = 90.0),
+                        BlockSet(blockId = 91L, position = 1, reps = 8, weight = 95.0)
+                    )
+                )
+            )
+        )
+
+        val routine = DailyRoutine(
+            id = 70L,
+            title = "Engine + Strength",
+            notes = "",
+            items = listOf(
+                DailyRoutineItem.BlockRef(
+                    blockId = squatBlock.id,
+                    blockTitle = squatBlock.title,
+                    resolvedBlock = squatBlock,
+                    targetSetsCount = 3,
+                    exerciseTargets = mapOf(
+                        backSquat.id to RoutineExerciseTargetSpec(
+                            metric = ExerciseTargetMetric.REPS,
+                            mode = TargetMode.FIXED,
+                            fixedValue = 8,
+                            perSetValues = listOf(8, 8, 8)
+                        )
+                    )
+                ),
+                DailyRoutineItem.StandaloneExercise(
+                    exerciseId = airBike.id,
+                    exerciseName = airBike.name,
+                    note = "Sprint",
+                    resolvedExercise = airBike,
+                    targetSetsCount = 4,
+                    targetSpec = RoutineExerciseTargetSpec(
+                        metric = ExerciseTargetMetric.CALORIES,
+                        mode = TargetMode.PER_SET,
+                        fixedValue = 15,
+                        perSetValues = listOf(15, 15, 0, 12)
+                    )
+                ),
+                DailyRoutineItem.StandaloneExercise(
+                    exerciseId = pullUps.id,
+                    exerciseName = pullUps.name,
+                    note = "Bodyweight",
+                    resolvedExercise = pullUps,
+                    targetSetsCount = 3,
+                    targetSpec = RoutineExerciseTargetSpec(
+                        metric = ExerciseTargetMetric.REPS,
+                        mode = TargetMode.FIXED,
+                        fixedValue = 10,
+                        perSetValues = listOf(10, 10, 10)
+                    )
+                )
+            )
+        )
+
+        val expanded = expandDailyRoutineForSession(
+            routine = routine,
+            availableBlocks = listOf(squatBlock),
+            sessions = listOf(priorSession),
+            exercises = allEx,
+            repMaxes = emptyList(),
+            weightUnit = "kg"
+        )
+        assertEquals(3, expanded.size)
+
+        // BlockRef: target reps (8, 8, 8) + historical weights (90, 95, "")
+        val squatSection = expanded[0].exerciseSections.single()
+        assertEquals(ExerciseTargetMetric.REPS, squatSection.activeMetric)
+        assertEquals(listOf("8", "8", "8"), squatSection.repsInputs.toList())
+        assertEquals(listOf("90", "95", ""), squatSection.weights.toList())
+
+        // Air Bike: 0 (Skip) on round 3 omitted -> 3 active tiles with groupIndices [1, 2, 4]
+        val bikeState = expanded[1]
+        val bikeSection = bikeState.exerciseSections.single()
+        assertEquals(ExerciseTargetMetric.CALORIES, bikeSection.activeMetric)
+        assertEquals(listOf("15", "15", "12"), bikeSection.metricInputs.toList())
+        assertEquals(listOf(1, 2, 4), bikeSection.groupIndices.toList())
+
+        // Switch Air Bike to Time, type 45, switch back to Calories -> cached [15, 15, 12] restored!
+        bikeState.switchExerciseMetric(bikeSection, ExerciseTargetMetric.TIME_SECONDS)
+        bikeState.updateSetMetricValue(bikeSection, 0, "45")
+        assertEquals(listOf("45", "", ""), bikeSection.metricInputs.toList())
+        bikeState.switchExerciseMetric(bikeSection, ExerciseTargetMetric.CALORIES)
+        assertEquals(listOf("15", "15", "12"), bikeSection.metricInputs.toList())
+
+        val bikeDraft = bikeState.toBlockDrafts(allEx, emptyList()).single()
+        assertEquals("[log_metric=CALORIES]", bikeDraft.notes)
+        assertEquals(listOf(15.0, 15.0, 12.0), bikeDraft.sets.map { it.metricValue })
+        assertEquals(listOf(1, 2, 4), bikeDraft.sets.map { it.groupIndex })
+
+        // Pull-ups bodyweight rep-only save (no weight -> no PRs, reps = 10, 10, 10)
+        val pullUpDraft = expanded[2].toBlockDrafts(allEx, emptyList()).single()
+        assertEquals("[log_metric=REPS]", pullUpDraft.notes)
+        assertEquals(listOf(10, 10, 10), pullUpDraft.sets.map { it.reps })
+        assertTrue(pullUpDraft.sets.all { it.weight == null })
+        assertTrue(pullUpDraft.newRepMaxes.isEmpty())
+
+        // deriveRoutineItemsFromSessionStates preserves configured targets on surviving items
+        val derived = deriveRoutineItemsFromSessionStates(expanded)!!
+        val derivedBike = derived[1] as DailyRoutineItem.StandaloneExercise
+        assertTrue(derivedBike.hasConfiguredTarget)
+        assertEquals(listOf(15, 15, 0, 12), derivedBike.targetSpec!!.perSetValues)
     }
 }

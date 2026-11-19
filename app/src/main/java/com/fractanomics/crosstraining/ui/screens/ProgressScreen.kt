@@ -4371,8 +4371,8 @@ private fun DailyRoutineConstituentDrillDown(
     }
 
     if (item.dayPerformances.isNotEmpty()) {
-        KpiRows(item.performances, item.dayPerformances, weightUnit)
-        EvolutionCards(item.dayPerformances, weightUnit, titlePrefix = item.title)
+        KpiRows(item.performances, item.dayPerformances, item.unit)
+        EvolutionCards(item.dayPerformances, item.unit, titlePrefix = item.title)
     }
 
     if (item.bestPrBadges.isNotEmpty()) {
@@ -4399,7 +4399,7 @@ private fun DailyRoutineConstituentDrillDown(
 
     BlockHistoryCard(
         blocks = item.performances,
-        unit = weightUnit,
+        unit = item.unit,
         selectionKey = "daily-routine-${item.key}",
         emptyMessage = "No sessions logged for ${item.title} yet.",
         repMaxes = repMaxes,
@@ -4814,15 +4814,6 @@ private fun TableHeader(c1: String, c2: String, c3: String, c4: String) {
     }
 }
 
-/** "60×3" with optional warm-up prefix and failed mark. */
-private fun setToken(set: BlockSet): String {
-    val v = set.weight ?: set.metricValue
-    val core = if (v != null) "${v.trimmed()}×${set.reps}" else "${set.reps}"
-    val prefix = if (set.isWarmup) "wu " else ""
-    val suffix = if (set.isFailed) " ✗" else ""
-    return "$prefix$core$suffix"
-}
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BlockHistoryRow(
@@ -4911,8 +4902,11 @@ private fun BlockHistoryRow(
             ).joinToString(" · ")
             if (meta.isNotBlank()) SubText(meta)
             if (bp.sets.isNotEmpty()) {
+                val blockEx = b.mainExerciseId?.let { id -> exercises.firstOrNull { ex -> ex.id == id } }
                 Text(
-                    "Sets: " + bp.sets.joinToString("   ") { setToken(it) },
+                    "Sets: " + bp.sets.joinToString("   ") {
+                        com.fractanomics.crosstraining.ui.formatBlockSetToken(it, b.notes, blockEx)
+                    },
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
