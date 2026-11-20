@@ -2,6 +2,7 @@ package com.fractanomics.crosstraining.util
 
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.Exercise
+import com.fractanomics.crosstraining.data.model.MetricType
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.RoutineBlock
@@ -46,9 +47,16 @@ sealed class DailyRoutineItem {
     data class BlockRef(
         val blockId: Long,
         val blockTitle: String,
-        val resolvedBlock: AvailableBlock? = null
+        val resolvedBlock: AvailableBlock? = null,
+        val targetSetsCount: Int? = null,
+        val exerciseTargets: Map<Long, RoutineExerciseTargetSpec> = emptyMap(),
+        val exerciseTargetsByName: Map<String, RoutineExerciseTargetSpec> = emptyMap()
     ) : DailyRoutineItem() {
         override val itemType: DailyRoutineItemType = DailyRoutineItemType.BLOCK
+
+        val hasConfiguredTargets: Boolean
+            get() = targetSetsCount != null &&
+                (exerciseTargets.isNotEmpty() || exerciseTargetsByName.isNotEmpty())
     }
 
     data class StandaloneExercise(
@@ -56,9 +64,14 @@ sealed class DailyRoutineItem {
         val exerciseName: String,
         val note: String = "",
         val defaultTrackedPrs: List<TrackedPrSlot> = emptyList(),
-        val resolvedExercise: Exercise? = null
+        val resolvedExercise: Exercise? = null,
+        val targetSetsCount: Int? = null,
+        val targetSpec: RoutineExerciseTargetSpec? = null
     ) : DailyRoutineItem() {
         override val itemType: DailyRoutineItemType = DailyRoutineItemType.EXERCISE
+
+        val hasConfiguredTarget: Boolean
+            get() = targetSetsCount != null && targetSpec != null
     }
 }
 
@@ -94,7 +107,11 @@ data class LastExerciseSessionSummary(
     val weights: List<Double?>,
     val topWeight: Double?,
     val averageWeight: Double?,
-    val setWeightsSummary: String
+    val setWeightsSummary: String,
+    val reps: List<Int> = emptyList(),
+    val metricValues: List<Double?> = emptyList(),
+    val groupIndices: List<Int?> = emptyList(),
+    val loggedMetric: ExerciseTargetMetric? = null
 )
 
 data class ConstituentProgressSummary(
@@ -218,25 +235,67 @@ object DailyRoutineCodec {
                 is DailyRoutineItem.BlockRef -> {
                     val cleanBlockTitle = item.blockTitle.trim().ifEmpty { item.resolvedBlock?.title ?: "Block" }
                     val resolvedId = item.blockId.takeIf { it > 0L } ?: item.resolvedBlock?.id ?: 0L
-                    val csv = item.resolvedBlock?.exercises
+                    val defaultCsv = item.resolvedBlock?.exercises
                         ?.map { it.id }
                         ?.filter { it > 0L }
                         ?.distinct()
                         ?.joinToString(",")
                         .orEmpty()
-                    RoutineBlock(
-                        routineId = routine.id,
-                        position = idx,
-                        name = cleanBlockTitle,
-                        kind = BlockKind.COMPLEX,
-                        format = DAILY_ROUTINE_BLOCK_ITEM_FORMAT,
-                        setsCount = 1,
-                        targetRepsScheme = "",
-                        exerciseIdsCsv = csv,
-                        notes = encodeBlockItemHeader(resolvedId, cleanBlockTitle),
-                        section = "",
-                        subBlock = cleanBlockTitle
-                    )
+                    val drHeader = encodeBlockItemHeader(resolvedId, cleanBlockTitle)
+
+                    val configuredPairs: List<Pair<Long, RoutineExerciseTargetSpec>> =
+                        if (item.hasConfiguredTargets) {
+                            val blockExercises = item.resolvedBlock?.exercises.orEmpty()
+                            if (blockExercises.isNotEmpty()) {
+                                blockExercises.mapNotNull { abEx ->
+                                    val spec = item.exerciseTargets[abEx.id]
+                                        ?: item.exerciseTargetsByName[abEx.name.trim().lowercase()]
+                                    spec?.let { abEx.id to it }
+                                }
+                            } else {
+                                item.exerciseTargets.entries.map { it.key to it.value }
+                            }
+                        } else {
+                            emptyList()
+                        }
+
+                    if (configuredPairs.isNotEmpty()) {
+                        val setsCount = (item.targetSetsCount ?: 4).coerceAtLeast(1)
+                        val slots = configuredPairs.map { it.second }
+                        val targetCsv = configuredPairs.map { it.first }
+                            .filter { it > 0L }
+                            .joinToString(",")
+                            .ifEmpty { defaultCsv }
+                        val rbHeader = RoutineTargetCodec.encodeNotesWithTargets("", slots, setsCount)
+                        val summary = RoutineTargetCodec.formatBlockTargetSummary(slots, setsCount)
+                        RoutineBlock(
+                            routineId = routine.id,
+                            position = idx,
+                            name = cleanBlockTitle,
+                            kind = BlockKind.COMPLEX,
+                            format = DAILY_ROUTINE_BLOCK_ITEM_FORMAT,
+                            setsCount = setsCount,
+                            targetRepsScheme = summary,
+                            exerciseIdsCsv = targetCsv,
+                            notes = if (rbHeader.isNotBlank()) "$rbHeader\n$drHeader" else drHeader,
+                            section = "",
+                            subBlock = cleanBlockTitle
+                        )
+                    } else {
+                        RoutineBlock(
+                            routineId = routine.id,
+                            position = idx,
+                            name = cleanBlockTitle,
+                            kind = BlockKind.COMPLEX,
+                            format = DAILY_ROUTINE_BLOCK_ITEM_FORMAT,
+                            setsCount = 1,
+                            targetRepsScheme = "",
+                            exerciseIdsCsv = defaultCsv,
+                            notes = drHeader,
+                            section = "",
+                            subBlock = cleanBlockTitle
+                        )
+                    }
                 }
 
                 is DailyRoutineItem.StandaloneExercise -> {
@@ -247,20 +306,43 @@ object DailyRoutineCodec {
                         cleanInstructions = item.note,
                         trackedPrs = item.defaultTrackedPrs
                     )
-                    val fullNotes = if (noteAndPrs.isBlank()) drHeader else "$drHeader\n$noteAndPrs"
-                    RoutineBlock(
-                        routineId = routine.id,
-                        position = idx,
-                        name = cleanExName,
-                        kind = BlockKind.STRENGTH,
-                        format = DAILY_ROUTINE_EXERCISE_ITEM_FORMAT,
-                        setsCount = 1,
-                        targetRepsScheme = "",
-                        exerciseIdsCsv = if (resolvedExId > 0L) resolvedExId.toString() else "",
-                        notes = fullNotes,
-                        section = "",
-                        subBlock = ""
-                    )
+                    val targetSpec = item.targetSpec
+                    if (item.hasConfiguredTarget && targetSpec != null) {
+                        val setsCount = (item.targetSetsCount ?: 4).coerceAtLeast(1)
+                        val rbHeader = RoutineTargetCodec.encodeNotesWithTargets("", listOf(targetSpec), setsCount)
+                        val summary = RoutineTargetCodec.formatBlockTargetSummary(listOf(targetSpec), setsCount)
+                        val fullNotes = listOf(rbHeader, drHeader, noteAndPrs)
+                            .filter { it.isNotBlank() }
+                            .joinToString("\n")
+                        RoutineBlock(
+                            routineId = routine.id,
+                            position = idx,
+                            name = cleanExName,
+                            kind = BlockKind.STRENGTH,
+                            format = DAILY_ROUTINE_EXERCISE_ITEM_FORMAT,
+                            setsCount = setsCount,
+                            targetRepsScheme = summary,
+                            exerciseIdsCsv = if (resolvedExId > 0L) resolvedExId.toString() else "",
+                            notes = fullNotes,
+                            section = "",
+                            subBlock = ""
+                        )
+                    } else {
+                        val fullNotes = if (noteAndPrs.isBlank()) drHeader else "$drHeader\n$noteAndPrs"
+                        RoutineBlock(
+                            routineId = routine.id,
+                            position = idx,
+                            name = cleanExName,
+                            kind = BlockKind.STRENGTH,
+                            format = DAILY_ROUTINE_EXERCISE_ITEM_FORMAT,
+                            setsCount = 1,
+                            targetRepsScheme = "",
+                            exerciseIdsCsv = if (resolvedExId > 0L) resolvedExId.toString() else "",
+                            notes = fullNotes,
+                            section = "",
+                            subBlock = ""
+                        )
+                    }
                 }
             }
         }
@@ -287,6 +369,8 @@ object DailyRoutineCodec {
                 rb.format.equals(DAILY_ROUTINE_EXERCISE_ITEM_FORMAT, ignoreCase = true) -> DailyRoutineItemType.EXERCISE
                 else -> DailyRoutineItemType.EXERCISE
             }
+            val setsCount = rb.setsCount.coerceAtLeast(1)
+            val headerSlots = RoutineTargetCodec.decodeHeaderSlots(rb.notes, setsCount)
 
             when (effectiveType) {
                 DailyRoutineItemType.BLOCK -> {
@@ -300,10 +384,33 @@ object DailyRoutineCodec {
                         else -> matchedById
                     }
                     if (resolvedBlock != null) {
+                        val csvIds = RoutineTargetCodec.parseExerciseIdsPreservingOrder(rb.exerciseIdsCsv)
+                        val targetMapById = linkedMapOf<Long, RoutineExerciseTargetSpec>()
+                        val targetMapByName = linkedMapOf<String, RoutineExerciseTargetSpec>()
+                        if (!headerSlots.isNullOrEmpty()) {
+                            val alignedIds = if (csvIds.isNotEmpty()) csvIds else resolvedBlock.exercises.map { it.id }
+                            headerSlots.forEachIndexed { slotIdx, spec ->
+                                val exId = alignedIds.getOrNull(slotIdx)
+                                val abEx = exId?.let { id -> resolvedBlock.exercises.firstOrNull { it.id == id } }
+                                    ?: resolvedBlock.exercises.getOrNull(slotIdx)
+                                val finalId = exId?.takeIf { it > 0L } ?: abEx?.id ?: 0L
+                                val finalName = (abEx?.name ?: exercisesById[finalId]?.name).orEmpty().trim().lowercase()
+                                if (finalId > 0L) {
+                                    targetMapById[finalId] = spec
+                                }
+                                if (finalName.isNotEmpty()) {
+                                    targetMapByName[finalName] = spec
+                                }
+                            }
+                        }
+                        val hasTargets = targetMapById.isNotEmpty() || targetMapByName.isNotEmpty()
                         activeItems += DailyRoutineItem.BlockRef(
                             blockId = resolvedBlock.id,
                             blockTitle = resolvedBlock.title,
-                            resolvedBlock = resolvedBlock
+                            resolvedBlock = resolvedBlock,
+                            targetSetsCount = if (hasTargets) setsCount else null,
+                            exerciseTargets = targetMapById,
+                            exerciseTargetsByName = targetMapByName
                         )
                     } else {
                         missingBlocks += 1
@@ -329,12 +436,15 @@ object DailyRoutineCodec {
                         exercisesById = exercisesById,
                         exercisesByLowerName = exercisesByLowerName
                     )
+                    val targetSpec = headerSlots?.firstOrNull()
                     activeItems += DailyRoutineItem.StandaloneExercise(
                         exerciseId = finalExId,
                         exerciseName = finalExName,
                         note = cleanNote,
                         defaultTrackedPrs = trackedPrs,
-                        resolvedExercise = resolvedExercise
+                        resolvedExercise = resolvedExercise,
+                        targetSetsCount = if (targetSpec != null) setsCount else null,
+                        targetSpec = targetSpec
                     )
                 }
             }
@@ -431,20 +541,42 @@ object DailyRoutineCodec {
             if (matching.isEmpty()) continue
 
             val candidateBlock = matching.firstOrNull { bws ->
-                bws.sets.any { !it.isWarmup && !it.isFailed && (it.weight ?: 0.0) > 0.0 }
+                val working = bws.sets.filter { !it.isWarmup && !it.isFailed }.ifEmpty { bws.sets }
+                RoutineTargetCodec.hasMeaningfulLoggedValues(bws.block.notes, working)
             } ?: matching.firstOrNull { it.sets.isNotEmpty() } ?: continue
 
             val orderedSets = candidateBlock.sets.sortedBy { it.position }
             val workingSets = orderedSets.filter { !it.isWarmup && !it.isFailed }.ifEmpty { orderedSets }
+            val resolvedMetric = RoutineTargetCodec.resolveSessionBlockMetric(
+                blockNotes = candidateBlock.block.notes,
+                sets = workingSets,
+                exercise = exercise
+            )
             val weights = workingSets.map { s -> s.weight?.takeIf { it > 0.0 } }
+            val reps = workingSets.map { s -> s.reps.coerceAtLeast(0) }
+            val metricValues = workingSets.map { s -> s.metricValue?.takeIf { it > 0.0 } }
+            val groupIndices = workingSets.map { s -> s.groupIndex?.takeIf { it > 0 } }
             val positiveWeights = weights.filterNotNull()
-            val topWeight = positiveWeights.maxOrNull()
-            val averageWeight = positiveWeights.takeIf { it.isNotEmpty() }?.average()
-            val summaryText = if (positiveWeights.isNotEmpty()) {
-                positiveWeights.take(4).joinToString(" · ") { it.trimmed() } + " $weightUnit"
-            } else {
-                "Completed ${sw.session.date.formatShort()}"
+            val positiveMetrics = metricValues.filterNotNull()
+            val topWeight = when {
+                positiveWeights.isNotEmpty() -> positiveWeights.maxOrNull()
+                positiveMetrics.isNotEmpty() -> positiveMetrics.maxOrNull()
+                RoutineTargetCodec.hasMeaningfulLoggedValues(candidateBlock.block.notes, workingSets) ->
+                    workingSets.filter { it.reps > 0 }.maxOfOrNull { it.reps.toDouble() }
+                else -> null
             }
+            val averageWeight = when {
+                positiveWeights.isNotEmpty() -> positiveWeights.average()
+                positiveMetrics.isNotEmpty() -> positiveMetrics.average()
+                RoutineTargetCodec.hasMeaningfulLoggedValues(candidateBlock.block.notes, workingSets) ->
+                    workingSets.filter { it.reps > 0 }.map { it.reps.toDouble() }.takeIf { it.isNotEmpty() }?.average()
+                else -> null
+            }
+            val summaryText = RoutineTargetCodec.formatLoggedSetsSummary(
+                workingSets = workingSets,
+                metric = resolvedMetric,
+                weightUnit = weightUnit
+            ).ifBlank { "Completed ${sw.session.date.formatShort()}" }
 
             return LastExerciseSessionSummary(
                 dateIso = sw.session.date.toString(),
@@ -452,7 +584,11 @@ object DailyRoutineCodec {
                 weights = weights,
                 topWeight = topWeight,
                 averageWeight = averageWeight,
-                setWeightsSummary = summaryText
+                setWeightsSummary = summaryText,
+                reps = reps,
+                metricValues = metricValues,
+                groupIndices = groupIndices,
+                loggedMetric = resolvedMetric
             )
         }
         return null
@@ -548,6 +684,15 @@ object DailyRoutineCodec {
                             performances.mapNotNull { it.block.mainExerciseId }
                         ).filter { it > 0L }.toSet()
 
+                    val resolvedDisplayUnit = resolveProgressDisplayUnit(
+                        performances = performances,
+                        fallbackMetric = item.exerciseTargets.values.firstOrNull()?.metric
+                            ?: item.exerciseTargetsByName.values.firstOrNull()?.metric,
+                        fallbackExercise = block.exercises.firstOrNull()?.id?.let { exercisesById[it] },
+                        exercisesById = exercisesById,
+                        weightUnit = unit
+                    )
+
                     buildConstituentSummary(
                         itemType = DailyRoutineItemType.BLOCK,
                         key = "${idx}_block_${block.id}",
@@ -560,7 +705,8 @@ object DailyRoutineCodec {
                         preferredPrSlots = block.trackedPrs,
                         repMaxes = repMaxes,
                         exercisesById = exercisesById,
-                        unit = unit
+                        unit = resolvedDisplayUnit,
+                        weightUnit = unit
                     )
                 }
 
@@ -590,6 +736,13 @@ object DailyRoutineCodec {
                         weightUnit = unit
                     )
                     val targetExIds = setOfNotNull(ex.id.takeIf { it > 0L })
+                    val resolvedDisplayUnit = resolveProgressDisplayUnit(
+                        performances = performances,
+                        fallbackMetric = item.targetSpec?.metric,
+                        fallbackExercise = ex,
+                        exercisesById = exercisesById,
+                        weightUnit = unit
+                    )
 
                     buildConstituentSummary(
                         itemType = DailyRoutineItemType.EXERCISE,
@@ -603,9 +756,57 @@ object DailyRoutineCodec {
                         preferredPrSlots = item.defaultTrackedPrs,
                         repMaxes = repMaxes,
                         exercisesById = exercisesById,
-                        unit = unit
+                        unit = resolvedDisplayUnit,
+                        weightUnit = unit
                     )
                 }
+            }
+        }
+    }
+
+    private fun resolveProgressDisplayUnit(
+        performances: List<BlockPerformance>,
+        fallbackMetric: ExerciseTargetMetric?,
+        fallbackExercise: Exercise?,
+        exercisesById: Map<Long, Exercise>,
+        weightUnit: String
+    ): String {
+        val allWorkingSets = performances.flatMap { it.workingSets }
+        if (allWorkingSets.any { (it.weight ?: 0.0) > 0.0 }) return weightUnit
+
+        val lastWithValues = performances.lastOrNull { it.workingSetValues.isNotEmpty() }
+        if (lastWithValues != null) {
+            val working = lastWithValues.workingSets
+            val blockEx = lastWithValues.block.mainExerciseId?.let { exercisesById[it] } ?: fallbackExercise
+            if (working.any { (it.metricValue ?: 0.0) > 0.0 }) {
+                val decoded = RoutineTargetCodec.resolveSessionBlockMetric(
+                    blockNotes = lastWithValues.block.notes,
+                    sets = working,
+                    exercise = blockEx
+                )
+                return if (decoded == ExerciseTargetMetric.REPS && fallbackMetric != null && fallbackMetric != ExerciseTargetMetric.REPS) {
+                    fallbackMetric.compactUnit
+                } else {
+                    decoded.compactUnit
+                }
+            }
+            if (working.any { it.reps > 0 }) {
+                return "reps"
+            }
+        }
+
+        return when (fallbackMetric) {
+            ExerciseTargetMetric.CALORIES -> ExerciseTargetMetric.CALORIES.compactUnit
+            ExerciseTargetMetric.TIME_SECONDS -> ExerciseTargetMetric.TIME_SECONDS.compactUnit
+            ExerciseTargetMetric.METERS -> ExerciseTargetMetric.METERS.compactUnit
+            ExerciseTargetMetric.REPS ->
+                if (fallbackExercise?.metricType == MetricType.REPS) "reps" else weightUnit
+            null -> when (fallbackExercise?.metricType) {
+                MetricType.CALORIES -> ExerciseTargetMetric.CALORIES.compactUnit
+                MetricType.TIME -> ExerciseTargetMetric.TIME_SECONDS.compactUnit
+                MetricType.DISTANCE -> ExerciseTargetMetric.METERS.compactUnit
+                MetricType.REPS -> "reps"
+                else -> weightUnit
             }
         }
     }
@@ -622,7 +823,8 @@ object DailyRoutineCodec {
         preferredPrSlots: List<TrackedPrSlot>,
         repMaxes: List<RepMax>,
         exercisesById: Map<Long, Exercise>,
-        unit: String
+        unit: String,
+        weightUnit: String
     ): ConstituentProgressSummary {
         val allTimeTop = performances.mapNotNull { it.top }.maxOrNull()
         val latestDay = dayPerfs.lastOrNull()
@@ -655,19 +857,17 @@ object DailyRoutineCodec {
             .take(3)
             .map { (_, rm) ->
                 val exName = exercisesById[rm.exerciseId]?.name ?: title
-                "🔥 ${rm.reps}RM $exName: ${rm.weight.trimmed()} $unit"
+                "🔥 ${rm.reps}RM $exName: ${rm.weight.trimmed()} $weightUnit"
             }
 
         val resolvedLastSets = if (lastSetsSummary.isNotBlank()) {
             lastSetsSummary
         } else if (latestDay != null) {
-            val lastDayWeights = performances
-                .filter { it.date == latestDay.date }
-                .flatMap { it.workingSets }
-                .mapNotNull { it.weight ?: it.metricValue }
-                .filter { it > 0.0 }
-            if (lastDayWeights.isNotEmpty()) {
-                lastDayWeights.take(4).joinToString(" · ") { it.trimmed() } + " $unit"
+            val lastDayPerf = performances.lastOrNull { it.date == latestDay.date && it.workingSetValues.isNotEmpty() }
+            if (lastDayPerf != null) {
+                val dayValues = lastDayPerf.workingSetValues
+                val suffix = if (unit.isNotBlank()) " $unit" else ""
+                dayValues.take(4).joinToString(" · ") { it.trimmed() } + suffix
             } else {
                 "Logged ${latestDay.date.formatShort()}"
             }

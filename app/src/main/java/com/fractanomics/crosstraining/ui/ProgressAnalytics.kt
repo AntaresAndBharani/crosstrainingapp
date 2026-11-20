@@ -1,10 +1,12 @@
 package com.fractanomics.crosstraining.ui
 
 import com.fractanomics.crosstraining.data.model.BlockSet
+import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.data.model.Routine
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
+import com.fractanomics.crosstraining.util.ExerciseTargetMetric
 import com.fractanomics.crosstraining.util.RoutineTargetCodec
 import java.time.LocalDate
 
@@ -22,17 +24,29 @@ data class BlockPerformance(
     val sets: List<BlockSet>
 ) {
     val workingSets: List<BlockSet> = sets.filter { !it.isWarmup && !it.isFailed }
-    private val values: List<Double> = workingSets.mapNotNull { it.weight ?: it.metricValue }
+    val workingSetValues: List<Double> = run {
+        val primary = workingSets.mapNotNull { s ->
+            s.weight?.takeIf { it > 0.0 } ?: s.metricValue?.takeIf { it > 0.0 }
+        }
+        if (primary.isNotEmpty()) {
+            primary
+        } else {
+            val explicitRepsMetric = RoutineTargetCodec.decodeLogMetricHeader(block.notes) == ExerciseTargetMetric.REPS
+            val isSingleBlankPlaceholder = workingSets.size == 1 && workingSets[0].reps <= 1 && !explicitRepsMetric
+            if (isSingleBlankPlaceholder) emptyList()
+            else workingSets.filter { it.reps > 0 }.map { it.reps.toDouble() }
+        }
+    }
 
-    /** Heaviest working set (or best metric value). */
-    val top: Double? = values.maxOrNull()
+    /** Heaviest working set (or best metric/rep value). */
+    val top: Double? = workingSetValues.maxOrNull()
 
     /** Mean over working sets. */
-    val average: Double? = values.takeIf { it.isNotEmpty() }?.average()
+    val average: Double? = workingSetValues.takeIf { it.isNotEmpty() }?.average()
 
     /** Total load moved (Σ weight × reps) over working sets; null for unloaded blocks. */
     val volume: Double? = workingSets
-        .mapNotNull { s -> s.weight?.let { it * s.reps } }
+        .mapNotNull { s -> s.weight?.takeIf { it > 0.0 }?.let { it * s.reps } }
         .takeIf { it.isNotEmpty() }
         ?.sum()
 }
@@ -125,9 +139,7 @@ private fun List<SessionWithBlocks>.performances(
 fun List<BlockPerformance>.byDay(): List<DayPerformance> =
     groupBy { it.date }
         .mapNotNull { (date, blocks) ->
-            val values = blocks.flatMap { b ->
-                b.workingSets.mapNotNull { it.weight ?: it.metricValue }
-            }
+            val values = blocks.flatMap { it.workingSetValues }
             if (values.isEmpty()) return@mapNotNull null
             DayPerformance(
                 date = date,
@@ -137,3 +149,30 @@ fun List<BlockPerformance>.byDay(): List<DayPerformance> =
             )
         }
         .sortedBy { it.date }
+
+/** Formats a [BlockSet] badge token for History and Progress drill-down tables. */
+internal fun formatBlockSetToken(
+    set: BlockSet,
+    blockNotes: String? = null,
+    exercise: Exercise? = null
+): String {
+    val w = set.weight?.takeIf { it > 0.0 }
+    val m = set.metricValue?.takeIf { it > 0.0 }
+    val core = when {
+        w != null -> "${w.trimmed()}×${set.reps}"
+        m != null -> {
+            val resolved = RoutineTargetCodec.resolveSessionBlockMetric(blockNotes, listOf(set), exercise)
+            val unitSuffix = when (resolved) {
+                ExerciseTargetMetric.CALORIES -> " cal"
+                ExerciseTargetMetric.TIME_SECONDS -> "s"
+                ExerciseTargetMetric.METERS -> "m"
+                ExerciseTargetMetric.REPS -> ""
+            }
+            "${m.trimmed()}$unitSuffix"
+        }
+        else -> "${set.reps} reps"
+    }
+    val prefix = if (set.isWarmup) "wu " else ""
+    val suffix = if (set.isFailed) " ✗" else ""
+    return "$prefix$core$suffix"
+}

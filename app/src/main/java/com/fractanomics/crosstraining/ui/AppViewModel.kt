@@ -779,6 +779,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
                     description = bd.description,
                     resultText = bd.resultText,
                     resultValue = bd.resultValue,
+                    notes = bd.notes,
                     section = bd.section,
                     exerciseIdsCsv = bd.exerciseIdsCsv,
                     subBlock = bd.subBlock,

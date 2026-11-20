@@ -64,12 +64,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.data.model.BlockKind
-import com.fractanomics.crosstraining.data.model.BlockSet
 import com.fractanomics.crosstraining.data.model.BlockWithSets
+import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.ScreenList
+import com.fractanomics.crosstraining.ui.formatBlockSetToken
 import com.fractanomics.crosstraining.ui.formatLong
 import com.fractanomics.crosstraining.ui.trimmed
 import java.time.format.DateTimeFormatter
@@ -88,6 +89,7 @@ fun HistoryScreen(
     val cycles by viewModel.cycles.collectAsStateWithLifecycle()
 
     val exerciseNames = exercises.associate { it.id to it.name }
+    val exercisesById = exercises.associateBy { it.id }
     val cycleNames = cycles.associate { it.id to it.name }
 
     var searchQuery by remember { mutableStateOf("") }
@@ -182,6 +184,7 @@ fun HistoryScreen(
                         CompactSessionCard(
                             item = item,
                             exerciseNames = exerciseNames,
+                            exercisesById = exercisesById,
                             cycleName = cycleNames[item.session.cycleId],
                             onEdit = { onOpenEditor(item.session.id, false) },
                             onCopy = { onOpenEditor(item.session.id, true) },
@@ -192,15 +195,6 @@ fun HistoryScreen(
             }
         }
     }
-}
-
-/** "60×3" with optional warm-up prefix and failed mark. */
-private fun setToken(set: BlockSet): String {
-    val v = set.weight ?: set.metricValue
-    val core = if (v != null) "${v.trimmed()}×${set.reps}" else "${set.reps}"
-    val prefix = if (set.isWarmup) "wu " else ""
-    val suffix = if (set.isFailed) " ✗" else ""
-    return "$prefix$core$suffix"
 }
 
 internal sealed class HistoryBlockItem {
@@ -260,6 +254,7 @@ internal fun groupHistoryBlocks(blocks: List<BlockWithSets>): List<HistoryBlockI
 private fun CompactSessionCard(
     item: SessionWithBlocks,
     exerciseNames: Map<Long, String>,
+    exercisesById: Map<Long, Exercise>,
     cycleName: String?,
     onEdit: () -> Unit,
     onCopy: () -> Unit,
@@ -428,7 +423,8 @@ private fun CompactSessionCard(
                                 HistoryBlockCard(
                                     idx = hItem.index,
                                     bws = hItem.blockWithSets,
-                                    exerciseNames = exerciseNames
+                                    exerciseNames = exerciseNames,
+                                    exercisesById = exercisesById
                                 )
                             }
                             is HistoryBlockItem.SubBlockGroup -> {
@@ -511,7 +507,8 @@ private fun CompactSessionCard(
                                             HistoryBlockCard(
                                                 idx = childIdx,
                                                 bws = childBws,
-                                                exerciseNames = exerciseNames
+                                                exerciseNames = exerciseNames,
+                                                exercisesById = exercisesById
                                             )
                                         }
                                     }
@@ -561,10 +558,12 @@ private fun CompactSessionCard(
 private fun HistoryBlockCard(
     idx: Int,
     bws: BlockWithSets,
-    exerciseNames: Map<Long, String>
+    exerciseNames: Map<Long, String>,
+    exercisesById: Map<Long, Exercise>
 ) {
     val b = bws.block
-    val title = b.name.ifBlank { b.mainExerciseId?.let { exerciseNames[it] } ?: "Block ${idx + 1}" }
+    val blockEx = b.mainExerciseId?.let { exercisesById[it] }
+    val title = b.name.ifBlank { blockEx?.name ?: b.mainExerciseId?.let { exerciseNames[it] } ?: "Block ${idx + 1}" }
 
     Column(
         modifier = Modifier
@@ -600,6 +599,7 @@ private fun HistoryBlockCard(
         if (bws.sets.isNotEmpty()) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 bws.sets.sortedBy { it.position }.forEachIndexed { setIdx, st ->
+                    val setLabelNum = st.groupIndex?.takeIf { it > 0 } ?: (setIdx + 1)
                     Surface(
                         shape = RoundedCornerShape(6.dp),
                         color = when {
@@ -610,7 +610,7 @@ private fun HistoryBlockCard(
                         modifier = Modifier.padding(vertical = 2.dp)
                     ) {
                         Text(
-                            "#${setIdx + 1}: ${setToken(st)}",
+                            "#${setLabelNum}: ${formatBlockSetToken(st, b.notes, blockEx)}",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),

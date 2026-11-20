@@ -206,7 +206,11 @@ internal fun expandDailyRoutineForSession(
                     exercises = exercises,
                     weightUnit = weightUnit,
                     isEditMode = isEditMode,
-                    editingSessionId = editingSessionId
+                    editingSessionId = editingSessionId,
+                    routineTargetSetsCount = item.targetSetsCount,
+                    routineExerciseTargets = item.exerciseTargets,
+                    routineExerciseTargetsByName = item.exerciseTargetsByName,
+                    sourceRoutineItem = item
                 )
             }
 
@@ -223,7 +227,10 @@ internal fun expandDailyRoutineForSession(
                     repMaxes = repMaxes,
                     weightUnit = weightUnit,
                     isEditMode = isEditMode,
-                    editingSessionId = editingSessionId
+                    editingSessionId = editingSessionId,
+                    targetSetsCount = item.targetSetsCount,
+                    targetSpec = item.targetSpec,
+                    sourceRoutineItem = item
                 )
             }
         }
@@ -238,10 +245,14 @@ internal fun deriveRoutineItemsFromSessionStates(
         when (state.itemKind) {
             SessionItemKind.BLOCK -> {
                 if (state.block.id <= 0L) return null
+                val srcBlock = state.sourceRoutineItem as? DailyRoutineItem.BlockRef
                 items += DailyRoutineItem.BlockRef(
                     blockId = state.block.id,
                     blockTitle = state.block.title,
-                    resolvedBlock = state.block
+                    resolvedBlock = state.block,
+                    targetSetsCount = srcBlock?.targetSetsCount,
+                    exerciseTargets = srcBlock?.exerciseTargets.orEmpty(),
+                    exerciseTargetsByName = srcBlock?.exerciseTargetsByName.orEmpty()
                 )
             }
 
@@ -249,11 +260,15 @@ internal fun deriveRoutineItemsFromSessionStates(
                 val exSection = state.exerciseSections.firstOrNull()
                 val exId = exSection?.exerciseId ?: state.block.exercises.firstOrNull()?.id ?: 0L
                 val exName = exSection?.exerciseName?.ifBlank { state.block.title } ?: state.block.title
+                val srcExercise = state.sourceRoutineItem as? DailyRoutineItem.StandaloneExercise
                 items += DailyRoutineItem.StandaloneExercise(
                     exerciseId = exId,
                     exerciseName = exName,
                     note = state.block.instructions,
-                    defaultTrackedPrs = AvailableBlockCodec.normalizeTrackedPrSlots(state.trackedPrSlots.toList())
+                    defaultTrackedPrs = AvailableBlockCodec.normalizeTrackedPrSlots(state.trackedPrSlots.toList()),
+                    resolvedExercise = srcExercise?.resolvedExercise,
+                    targetSetsCount = srcExercise?.targetSetsCount,
+                    targetSpec = srcExercise?.targetSpec
                 )
             }
         }
@@ -1101,7 +1116,8 @@ fun SessionEditorBody(
                         buildCustomAvailableBlockState(
                             block = prepared,
                             isEditMode = isEditMode,
-                            editingSessionId = editingSessionId
+                            editingSessionId = editingSessionId,
+                            exercises = exercises
                         )
                     }
                     loadedAvailableBlocks.add(addedState)

@@ -633,6 +633,42 @@ export const DeleteAvailableBlockInputSchema = {
     .describe("Exact Available Block title to delete (provide `id` or `title`)"),
 };
 
+const makeMultiMetricSetInputSchema = () =>
+  z.object({
+    reps: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe("Optional repetition count for this set (1-500, defaults to 1)"),
+    weight_kg: z
+      .number()
+      .min(0)
+      .max(2000)
+      .optional()
+      .describe("Set load in kg (0 for bodyweight/unloaded sets)"),
+    weight: z
+      .number()
+      .min(0)
+      .max(2000)
+      .optional()
+      .describe("Alias for weight_kg"),
+    metric_value: z
+      .number()
+      .min(0)
+      .max(1000000)
+      .optional()
+      .describe("Numeric value for non-weight metrics (calories, seconds, or meters)"),
+    group_index: z
+      .number()
+      .int()
+      .min(0)
+      .max(500)
+      .optional()
+      .describe("Optional 1-based round number when skipped rounds omit sets (0 = sequential)"),
+  });
+
 const makeBlockExerciseLogInputSchema = () =>
   z.object({
     exerciseName: z
@@ -643,14 +679,24 @@ const makeBlockExerciseLogInputSchema = () =>
     weights: z
       .array(z.number().min(0).max(2000))
       .max(50)
-      .describe("Ordered set weights in kg; pass [] for bodyweight/unloaded movements"),
+      .optional()
+      .describe("Ordered set weights in kg; pass [] for bodyweight/unloaded movements (or supply `sets`)"),
+    metric: z
+      .enum(RoutineTargetMetricValues)
+      .optional()
+      .describe("Optional logging metric: REPS, CALORIES, TIME_SECONDS, or METERS"),
+    sets: z
+      .array(makeMultiMetricSetInputSchema())
+      .max(50)
+      .optional()
+      .describe("Optional ordered multi-metric sets (`reps`, `weight_kg`, `metric_value`, `group_index`)"),
     setCountForEmpty: z
       .number()
       .int()
       .min(1)
       .max(50)
       .optional()
-      .describe("Number of empty set slots recorded when `weights` is empty (default 1)"),
+      .describe("Number of empty set slots recorded when `weights` and `sets` are empty (default 1)"),
   });
 
 const makeBlockRecordedPrInputSchema = () =>
@@ -724,7 +770,14 @@ const makeUpdateBlockSetItemSchema = () =>
       .number()
       .min(0)
       .max(2000)
+      .optional()
       .describe("Set weight in kg (0 for bodyweight/unloaded sets)"),
+    weight_kg: z
+      .number()
+      .min(0)
+      .max(2000)
+      .optional()
+      .describe("Alias for weight in kg"),
     reps: z
       .number()
       .int()
@@ -732,6 +785,19 @@ const makeUpdateBlockSetItemSchema = () =>
       .max(500)
       .optional()
       .describe("Optional repetition count for this set (defaults to 1)"),
+    metric_value: z
+      .number()
+      .min(0)
+      .max(1000000)
+      .optional()
+      .describe("Numeric value for non-weight metrics (calories, seconds, or meters)"),
+    group_index: z
+      .number()
+      .int()
+      .min(0)
+      .max(500)
+      .optional()
+      .describe("Optional 1-based round number when skipped rounds omit sets"),
   });
 
 const makeUpdateBlockExerciseInputSchema = () =>
@@ -752,11 +818,15 @@ const makeUpdateBlockExerciseInputSchema = () =>
       .max(50)
       .optional()
       .describe("Flat ordered set weights in kg when editing weight-only tiles"),
+    metric: z
+      .enum(RoutineTargetMetricValues)
+      .optional()
+      .describe("Optional logging metric: REPS, CALORIES, TIME_SECONDS, or METERS"),
     sets: z
       .array(makeUpdateBlockSetItemSchema())
       .max(50)
       .optional()
-      .describe("Explicit ordered sets with weight and optional reps"),
+      .describe("Explicit ordered sets with weight, reps, metric_value, and/or group_index"),
   });
 
 const makeUpdateBlockTrackedPrInputSchema = () =>
@@ -907,14 +977,24 @@ const makeDailyRoutineBlockExerciseLogSchema = () =>
     weights: z
       .array(z.number().min(0).max(2000))
       .max(50)
-      .describe("Ordered working set weights in kg; pass [] for unloaded/bodyweight movements"),
+      .optional()
+      .describe("Ordered working set weights in kg; pass [] for unloaded/bodyweight movements (or supply `sets`)"),
+    metric: z
+      .enum(RoutineTargetMetricValues)
+      .optional()
+      .describe("Optional logging metric: REPS, CALORIES, TIME_SECONDS, or METERS"),
+    sets: z
+      .array(makeMultiMetricSetInputSchema())
+      .max(50)
+      .optional()
+      .describe("Optional ordered multi-metric sets (`reps`, `weight_kg`, `metric_value`, `group_index`)"),
     set_count_for_empty: z
       .number()
       .int()
       .min(1)
       .max(20)
       .optional()
-      .describe("Optional empty set tile count when weights is []"),
+      .describe("Optional empty set tile count when weights/sets are empty"),
     setCountForEmpty: z
       .number()
       .int()
@@ -922,6 +1002,34 @@ const makeDailyRoutineBlockExerciseLogSchema = () =>
       .max(20)
       .optional()
       .describe("Alias for set_count_for_empty"),
+  });
+
+const makeDailyRoutineBlockExerciseTargetSchema = () =>
+  z.object({
+    exercise_name: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("Movement name inside the referenced Available Block"),
+    target_metric: z
+      .enum(RoutineTargetMetricValues)
+      .describe("Target measurement unit: REPS, CALORIES, TIME_SECONDS, or METERS"),
+    target_mode: z
+      .enum(RoutineTargetModeValues)
+      .optional()
+      .describe("FIXED (same target per set) or PER_SET (explicit value per set, 0 = skip)"),
+    fixed_value: z
+      .number()
+      .int()
+      .min(0)
+      .max(100000)
+      .optional()
+      .describe("Target value per set when FIXED (must be > 0)"),
+    per_set_values: z
+      .array(z.number().int().min(0).max(100000))
+      .max(100)
+      .optional()
+      .describe("Ordered per-set values when PER_SET (0 = skip; at least one > 0)"),
   });
 
 const makeDailyRoutineItemInputSchema = () =>
@@ -946,7 +1054,7 @@ const makeDailyRoutineItemInputSchema = () =>
       .min(1)
       .max(200)
       .optional()
-      .describe("For item_type='EXERCISE': standalone exercise name (auto-created as WEIGHT if missing)"),
+      .describe("For item_type='EXERCISE': standalone exercise name (auto-created if missing)"),
     note: z
       .string()
       .max(1000)
@@ -957,6 +1065,38 @@ const makeDailyRoutineItemInputSchema = () =>
       .max(20)
       .optional()
       .describe("For item_type='EXERCISE': optional default tracked RM slots"),
+    sets_count: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Optional configured sets/rounds count (1-100); omit to leave routine targets unset"),
+    target_metric: z
+      .enum(RoutineTargetMetricValues)
+      .optional()
+      .describe("For item_type='EXERCISE': optional target metric (REPS, CALORIES, TIME_SECONDS, METERS)"),
+    target_mode: z
+      .enum(RoutineTargetModeValues)
+      .optional()
+      .describe("For item_type='EXERCISE': FIXED or PER_SET (defaults to FIXED, or PER_SET when per_set_values is passed)"),
+    fixed_value: z
+      .number()
+      .int()
+      .min(0)
+      .max(100000)
+      .optional()
+      .describe("For item_type='EXERCISE': target value per set when FIXED (must be > 0)"),
+    per_set_values: z
+      .array(z.number().int().min(0).max(100000))
+      .max(100)
+      .optional()
+      .describe("For item_type='EXERCISE': per-set target values when PER_SET (0 = skip; at least one > 0)"),
+    exercise_targets: z
+      .array(makeDailyRoutineBlockExerciseTargetSchema())
+      .max(30)
+      .optional()
+      .describe("For item_type='BLOCK': optional per-routine exercise target overrides (does not mutate underlying Available Block)"),
   });
 
 export const ListDailyRoutinesInputSchema = {
@@ -1066,6 +1206,15 @@ const makeDailyRoutineLoggedItemInputSchema = () =>
       .max(50)
       .optional()
       .describe("For item_type='EXERCISE' (or single-movement block): ordered weight-only sets in kg"),
+    metric: z
+      .enum(RoutineTargetMetricValues)
+      .optional()
+      .describe("For item_type='EXERCISE' (or single-movement block): optional logging metric (REPS, CALORIES, TIME_SECONDS, METERS)"),
+    sets: z
+      .array(makeMultiMetricSetInputSchema())
+      .max(50)
+      .optional()
+      .describe("For item_type='EXERCISE' (or single-movement block): ordered multi-metric sets (`reps`, `weight_kg`, `metric_value`, `group_index`)"),
     exercise_logs: z
       .array(makeDailyRoutineBlockExerciseLogSchema())
       .max(30)
@@ -1654,6 +1803,8 @@ const AB_PRS_HEADER_LINE_REGEX = /^\[ab_prs=([^\r\n\]]*)\](?:\r?\n)?/i;
 const AB_PRS_GLOBAL_REGEX = /\[ab_prs=([^\]]*)\]/gi;
 const DR_ITEM_HEADER_LINE_REGEX = /^\[dr_item=([^\r\n\]]*)\](?:\r?\n)?/i;
 const DR_ITEM_SEARCH_REGEX = /\[dr_item=([^\]]*)\]/i;
+const LOG_METRIC_HEADER_LINE_REGEX = /^\[log_metric=([^\r\n\]]*)\](?:\r?\n)?/i;
+const LOG_METRIC_SEARCH_REGEX = /\[log_metric=([^\]]*)\]/i;
 
 export function isDailyRoutineFormat(defaultFormat?: string | null): boolean {
   return (defaultFormat ?? "").trim().toUpperCase() === DAILY_ROUTINE_FORMAT;
@@ -1778,9 +1929,128 @@ export function resizeRoutinePerSetValues(
   return [...clean, ...Array.from({ length: targetCount - clean.length }, () => lastVal)];
 }
 
+export function normalizeRoutineTargetMetricToken(
+  raw?: string | null
+): RoutineTargetMetric | null {
+  const token = (raw ?? "").trim().toUpperCase();
+  if (token === "REPS" || token === "REP") return "REPS";
+  if (token === "CALORIES" || token === "CAL") return "CALORIES";
+  if (
+    token === "TIME_SECONDS" ||
+    token === "TIME" ||
+    token === "SECONDS" ||
+    token === "SEC" ||
+    token === "S"
+  ) {
+    return "TIME_SECONDS";
+  }
+  if (
+    token === "METERS" ||
+    token === "METER" ||
+    token === "DISTANCE" ||
+    token === "M"
+  ) {
+    return "METERS";
+  }
+  return null;
+}
+
+export function routineMetricCompactUnit(
+  metric: RoutineTargetMetric
+): "reps" | "cal" | "s" | "m" {
+  switch (metric) {
+    case "CALORIES":
+      return "cal";
+    case "TIME_SECONDS":
+      return "s";
+    case "METERS":
+      return "m";
+    case "REPS":
+    default:
+      return "reps";
+  }
+}
+
+export function encodeLogMetricHeader(metric: RoutineTargetMetric): string {
+  return `[log_metric=${metric}]`;
+}
+
+export function decodeLogMetricHeader(
+  notes?: string | null
+): RoutineTargetMetric | null {
+  if (!notes) return null;
+  const match = LOG_METRIC_SEARCH_REGEX.exec(notes);
+  if (!match) return null;
+  return normalizeRoutineTargetMetricToken(match[1]);
+}
+
+export function encodeNotesWithLogMetric(
+  rawNotes: string | undefined | null,
+  metric?: RoutineTargetMetric | null
+): string {
+  const clean = extractCleanRoutineNotes(rawNotes ?? "");
+  if (!metric) return clean;
+  const header = encodeLogMetricHeader(metric);
+  return clean.length === 0 ? header : `${header}\n${clean}`;
+}
+
+export function resolveSessionBlockMetric(
+  blockNotes: string | undefined | null,
+  sets: Array<{
+    reps?: number | null;
+    weight?: number | null;
+    metricValue?: number | null;
+  }>,
+  exerciseMetricType?: string | null
+): RoutineTargetMetric {
+  const explicit = decodeLogMetricHeader(blockNotes);
+  if (explicit) return explicit;
+  const hasPositiveMetricValue = sets.some((s) => Number(s.metricValue) > 0);
+  const hasPositiveWeight = sets.some((s) => Number(s.weight) > 0);
+  if (hasPositiveMetricValue && !hasPositiveWeight) {
+    switch ((exerciseMetricType ?? "").trim().toUpperCase()) {
+      case "CALORIES":
+        return "CALORIES";
+      case "TIME":
+        return "TIME_SECONDS";
+      case "DISTANCE":
+        return "METERS";
+      default:
+        return "CALORIES";
+    }
+  }
+  if (hasPositiveWeight) return "REPS";
+  if (exerciseMetricType) {
+    return inferRoutineTargetMetricFromLibraryMetric(exerciseMetricType);
+  }
+  return "REPS";
+}
+
+function findLeadingRbV2HeaderMatch(notes?: string): RegExpExecArray | null {
+  if (!notes) return null;
+  let remaining = notes.trimStart();
+  while (remaining.length > 0) {
+    const rbMatch = RB_V2_HEADER_LINE_REGEX.exec(remaining);
+    if (rbMatch) return rbMatch;
+    if (DR_ITEM_HEADER_LINE_REGEX.test(remaining)) {
+      remaining = remaining.replace(DR_ITEM_HEADER_LINE_REGEX, "").trimStart();
+      continue;
+    }
+    if (AB_PRS_HEADER_LINE_REGEX.test(remaining)) {
+      remaining = remaining.replace(AB_PRS_HEADER_LINE_REGEX, "").trimStart();
+      continue;
+    }
+    if (LOG_METRIC_HEADER_LINE_REGEX.test(remaining)) {
+      remaining = remaining.replace(LOG_METRIC_HEADER_LINE_REGEX, "").trimStart();
+      continue;
+    }
+    break;
+  }
+  return null;
+}
+
 export function hasStructuredRoutineHeader(notes?: string): boolean {
-  if (!notes) return false;
-  return RB_V2_HEADER_LINE_REGEX.test(notes.trimStart());
+  return findLeadingRbV2HeaderMatch(notes) !== null;
 }
 
 export function extractCleanRoutineNotes(notes?: string): string {
@@ -1797,6 +2067,10 @@ export function extractCleanRoutineNotes(notes?: string): string {
     }
     if (AB_PRS_HEADER_LINE_REGEX.test(remaining)) {
       remaining = remaining.replace(AB_PRS_HEADER_LINE_REGEX, "").trimStart();
+      continue;
+    }
+    if (LOG_METRIC_HEADER_LINE_REGEX.test(remaining)) {
+      remaining = remaining.replace(LOG_METRIC_HEADER_LINE_REGEX, "").trimStart();
       continue;
     }
     break;
@@ -1933,7 +2207,7 @@ export function decodeRoutineHeaderSlots(
   setsCount: number
 ): RoutineExerciseTargetSlot[] | null {
   if (!notes) return null;
-  const match = RB_V2_HEADER_LINE_REGEX.exec(notes.trimStart());
+  const match = findLeadingRbV2HeaderMatch(notes);
   if (!match) return null;
   const payload = (match[1] ?? "").trim();
   if (!payload) return [];

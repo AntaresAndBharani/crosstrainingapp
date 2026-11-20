@@ -8,8 +8,11 @@ import {
   computeWeightMomentumAnalytics,
   decodeAvailableBlockTrackedPrs,
   decodeLegacyRoutineSlots,
+  decodeLogMetricHeader,
+  decodeRoutineHeaderSlots,
   defaultSetsForRoutineFormat,
   encodeAvailableBlockTrackedPrs,
+  encodeNotesWithLogMetric,
   extractCleanRoutineNotes,
   formatRoutineBlockTargetSummary,
   replaceAvailableBlockTrackedPrHeader,
@@ -1979,5 +1982,275 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
 
     const remainingRoutines = await callTool("list_daily_routines", { query: "Lower Power" });
     assert.equal(remainingRoutines.count, 0);
+  });
+
+  it("SPEC-026 multi-metric codec & MCP parity: optional Daily Routine targets, all-zero rejection, multi-metric session logging/editing & progress", async () => {
+    // 1. Header order scanning & [log_metric=...] codec parity with Android RoutineTargetCodec
+    const rbFirst = "[rb_v2=CALORIES:PER_SET:15:15.0.20]\n[dr_item=EXERCISE:id=42:name=SkiErg]\nSprint crisp";
+    const drFirst = "[dr_item=EXERCISE:id=42:name=SkiErg]\n[rb_v2=CALORIES:PER_SET:15:15.0.20]\nSprint crisp";
+    assert.equal(extractCleanRoutineNotes(rbFirst), "Sprint crisp");
+    assert.equal(extractCleanRoutineNotes(drFirst), "Sprint crisp");
+    assert.deepEqual(decodeRoutineHeaderSlots(rbFirst, 3), decodeRoutineHeaderSlots(drFirst, 3));
+    const withLogMetric = encodeNotesWithLogMetric("[log_metric=TIME_SECONDS]\nHold hollow", "CALORIES");
+    assert.equal(withLogMetric, "[log_metric=CALORIES]\nHold hollow");
+    assert.equal(decodeLogMetricHeader(withLogMetric), "CALORIES");
+    assert.equal(extractCleanRoutineNotes(withLogMetric), "Hold hollow");
+
+    let msgId = 1100;
+    const callToolRaw = async (name: string, argumentsObj: Record<string, unknown>) => {
+      const id = msgId++;
+      const res = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: "Bearer dev-static-token-123",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: argumentsObj },
+        }),
+      });
+      assert.equal(res.status, 200);
+      const contentType = res.headers.get("content-type") || "";
+      return contentType.includes("text/event-stream")
+        ? JSON.parse(
+            (await res.text())
+              .split("\n")
+              .find((l) => l.startsWith("data: "))!
+              .slice(6)
+          )
+        : await res.json();
+    };
+    const callTool = async (name: string, argumentsObj: Record<string, unknown>) => {
+      const resp = await callToolRaw(name, argumentsObj);
+      assert.ok(!resp.error, `Tool ${name} returned JSON-RPC error: ${JSON.stringify(resp.error)}`);
+      assert.notEqual(resp.result?.isError, true, `Tool ${name} error: ${JSON.stringify(resp.result)}`);
+      return JSON.parse(resp.result.content[0].text);
+    };
+
+    // 2. Seed lightweight Available Block (no targets stored on Available Block itself)
+    const abPayload = await callTool("upsert_available_block", {
+      title: "Engine Couple 026",
+      instructions: "3 rounds alternating",
+      exercises: ["Row Erg", "Ring Dip"],
+    });
+    const abId = abPayload.availableBlock.id as number;
+
+    // 3. Reject all-zero Per-Set or 0 Fixed target in upsert_daily_routine
+    const invalidFixedResp = await callToolRaw("upsert_daily_routine", {
+      title: "Invalid Target Routine",
+      items: [
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Burpees",
+          sets_count: 3,
+          target_metric: "REPS",
+          target_mode: "FIXED",
+          fixed_value: 0,
+        },
+      ],
+    });
+    assert.equal(invalidFixedResp.result?.isError, true);
+
+    const invalidPerSetResp = await callToolRaw("upsert_daily_routine", {
+      title: "Invalid PerSet Routine",
+      items: [
+        {
+          item_type: "BLOCK",
+          block_id: abId,
+          sets_count: 3,
+          exercise_targets: [
+            {
+              exercise_name: "Row Erg",
+              target_metric: "METERS",
+              target_mode: "PER_SET",
+              per_set_values: [0, 0, 0],
+            },
+          ],
+        },
+      ],
+    });
+    assert.equal(invalidPerSetResp.result?.isError, true);
+
+    // 4. Create composite Daily Routine with optional targets + one unset item
+    const upsertRes = await callTool("upsert_daily_routine", {
+      title: "Conditioning + BW Mix 026",
+      notes: "Metric targets test",
+      items: [
+        {
+          item_type: "BLOCK",
+          block_id: abId,
+          sets_count: 3,
+          exercise_targets: [
+            {
+              exercise_name: "Row Erg",
+              target_metric: "CALORIES",
+              target_mode: "FIXED",
+              fixed_value: 20,
+            },
+            {
+              exercise_name: "Ring Dip",
+              target_metric: "REPS",
+              target_mode: "PER_SET",
+              per_set_values: [8, 0, 10],
+            },
+          ],
+        },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Strict Pull-Up 026",
+          note: "Dead hang start",
+          sets_count: 3,
+          target_metric: "REPS",
+          target_mode: "FIXED",
+          fixed_value: 10,
+        },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Shuttle Run 026",
+          note: "Per-round shuttle",
+          sets_count: 3,
+          target_metric: "METERS",
+          target_mode: "PER_SET",
+          per_set_values: [250, 0, 500],
+        },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Unset Mobility 026",
+          note: "2 min per side",
+        },
+      ],
+    });
+
+    const dr = upsertRes.dailyRoutine;
+    assert.equal(dr.items.length, 4);
+    assert.equal(dr.items[0].setsCount, 3);
+    assert.equal(dr.items[0].exerciseTargets.length, 2);
+    assert.equal(dr.items[0].exerciseTargets[0].target.metric, "CALORIES");
+    assert.equal(dr.items[0].exerciseTargets[0].target.fixedValue, 20);
+    assert.deepEqual(dr.items[0].exerciseTargets[1].target.perSetValues, [8, 0, 10]);
+
+    assert.equal(dr.items[1].setsCount, 3);
+    assert.equal(dr.items[1].targetSpec.metric, "REPS");
+    assert.equal(dr.items[1].targetSpec.fixedValue, 10);
+
+    assert.equal(dr.items[2].setsCount, 3);
+    assert.equal(dr.items[2].targetSpec.metric, "METERS");
+    assert.deepEqual(dr.items[2].targetSpec.perSetValues, [250, 0, 500]);
+
+    assert.equal(dr.items[3].setsCount, null);
+    assert.equal(dr.items[3].targetSpec, null);
+
+    // Underlying Available Block stays clean & unmodified
+    const abAfter = await callTool("list_available_blocks", { query: "Engine Couple 026" });
+    assert.equal(abAfter.availableBlocks[0].instructions, "3 rounds alternating");
+
+    // 5. Log Daily Routine session with multi-metric sets + update_routine_template=true preserving targets
+    const logRes = await callTool("log_daily_routine_session", {
+      date: "2026-11-18",
+      routine_id: dr.id,
+      update_routine_template: true,
+      logged_items: [
+        {
+          item_type: "BLOCK",
+          block_id: abId,
+          exercise_logs: [
+            {
+              exercise_name: "Row Erg",
+              metric: "CALORIES",
+              sets: [{ metric_value: 20 }, { metric_value: 25 }],
+            },
+            {
+              exercise_name: "Ring Dip",
+              metric: "REPS",
+              sets: [
+                { reps: 8, group_index: 1 },
+                { reps: 10, group_index: 3 },
+              ],
+            },
+          ],
+        },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Strict Pull-Up 026",
+          note: "Dead hang start",
+          metric: "REPS",
+          sets: [
+            { reps: 12, group_index: 1 },
+            { reps: 10, group_index: 3 },
+          ],
+        },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Shuttle Run 026",
+          note: "Per-round shuttle",
+          metric: "METERS",
+          sets: [
+            { metric_value: 250, group_index: 1 },
+            { metric_value: 500, group_index: 3 },
+          ],
+        },
+      ],
+    });
+
+    assert.equal(logRes.session.blocks[0].block.notes, "[log_metric=CALORIES]");
+    assert.equal(logRes.session.blocks[0].sets[1].metricValue, 25);
+    assert.equal(logRes.session.blocks[1].block.notes, "[log_metric=REPS]");
+    assert.equal(logRes.session.blocks[1].sets[1].groupIndex, 3);
+    assert.equal(logRes.session.blocks[2].sets[0].reps, 12);
+    assert.equal(logRes.session.blocks[3].block.notes, "[log_metric=METERS]");
+    assert.equal(logRes.session.blocks[3].sets[1].metricValue, 500);
+
+    // Template sync preserved configured targets on matched items
+    assert.equal(logRes.updatedRoutineTemplate.items[0].setsCount, 3);
+    assert.equal(logRes.updatedRoutineTemplate.items[0].exerciseTargets.length, 2);
+    assert.equal(logRes.updatedRoutineTemplate.items[1].targetSpec.fixedValue, 10);
+    assert.deepEqual(logRes.updatedRoutineTemplate.items[2].targetSpec.perSetValues, [250, 0, 500]);
+
+    // 6. get_daily_routine_progress computes unit-aware top/average/volume/recentSessions
+    const prog = await callTool("get_daily_routine_progress", { routine_id: dr.id });
+    const pullUpProg = prog.items.find((i: { title: string }) => i.title === "Strict Pull-Up 026");
+    assert.equal(pullUpProg.unit, "reps");
+    assert.equal(pullUpProg.allTimeTop, 12);
+    assert.equal(pullUpProg.lastVolume, 22);
+    assert.deepEqual(pullUpProg.lastSets, [12, 10]);
+
+    const shuttleProg = prog.items.find((i: { title: string }) => i.title === "Shuttle Run 026");
+    assert.equal(shuttleProg.unit, "m");
+    assert.equal(shuttleProg.allTimeTop, 500);
+    assert.equal(shuttleProg.lastVolume, 750);
+
+    // 7. log_block_session & update_block_session_log support multi-metric sets
+    const calBlockLog = await callTool("log_block_session", {
+      date: "2026-11-19",
+      blockId: abId,
+      exerciseLogs: [
+        {
+          exerciseName: "Row Erg",
+          metric: "CALORIES",
+          sets: [{ metric_value: 18 }, { metric_value: 20 }],
+        },
+      ],
+    });
+    const calSessionId = calBlockLog.session.session.id as number;
+    assert.equal(calBlockLog.session.blocks[0].block.notes, "[log_metric=CALORIES]");
+
+    const calBlockEdit = await callTool("update_block_session_log", {
+      sessionId: calSessionId,
+      blockId: abId,
+      exercises: [
+        {
+          exerciseName: "Row Erg",
+          metric: "TIME_SECONDS",
+          sets: [{ metric_value: 45, group_index: 1 }, { metric_value: 60, group_index: 2 }],
+        },
+      ],
+    });
+    assert.equal(calBlockEdit.session.blocks[0].block.notes, "[log_metric=TIME_SECONDS]");
+    assert.equal(calBlockEdit.session.blocks[0].sets[1].metricValue, 60);
+    assert.equal(calBlockEdit.session.blocks[0].sets[1].groupIndex, 2);
   });
 });

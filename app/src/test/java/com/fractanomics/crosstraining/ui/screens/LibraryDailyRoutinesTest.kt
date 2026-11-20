@@ -7,6 +7,9 @@ import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockExercise
 import com.fractanomics.crosstraining.util.DailyRoutine
 import com.fractanomics.crosstraining.util.DailyRoutineItem
+import com.fractanomics.crosstraining.util.ExerciseTargetMetric
+import com.fractanomics.crosstraining.util.RoutineExerciseTargetSpec
+import com.fractanomics.crosstraining.util.TargetMode
 import com.fractanomics.crosstraining.util.TrackedPrSlot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -110,5 +113,69 @@ class LibraryDailyRoutinesTest {
         )
         assertEquals("2 Blocks · 2 Exercises · Last: 14 Nov", formatDailyRoutineTelemetry(routine, "14 Nov"))
         assertEquals("2 Blocks · 2 Exercises · Not logged yet", formatDailyRoutineTelemetry(routine, null))
+    }
+
+    @Test
+    fun `DailyRoutineComposerState supports optional multi-metric targets clear metric cache and all-zero validation`() {
+        val airBike = Exercise(5L, "Air Bike", ExerciseCategory.MACHINE, MetricType.CALORIES, "cal", false)
+        val state = DailyRoutineComposerState()
+        state.title = "Conditioning + Strength"
+        state.addBlock(cleanBlock)
+        state.addExercise(airBike)
+
+        val blockUid = state.items[0].uid
+        val bikeUid = state.items[1].uid
+
+        // Targets start unset and routine is saveable without configuring targets
+        val initialItems = state.toDailyRoutineItems()
+        assertFalse((initialItems[0] as DailyRoutineItem.BlockRef).hasConfiguredTargets)
+        assertFalse((initialItems[1] as DailyRoutineItem.StandaloneExercise).hasConfiguredTarget)
+        assertTrue(state.canSave)
+
+        // Enable targets on Air Bike -> auto-defaults to Calories (15 cal, 4 sets)
+        state.enableExerciseTargets(bikeUid)
+        var bikeItem = state.items[1].item as DailyRoutineItem.StandaloneExercise
+        assertTrue(bikeItem.hasConfiguredTarget)
+        assertEquals(4, bikeItem.targetSetsCount)
+        assertEquals(ExerciseTargetMetric.CALORIES, bikeItem.targetSpec!!.metric)
+        assertEquals(15, bikeItem.targetSpec!!.fixedValue)
+
+        // Switch to Per-Set with a 0 (Skip) round, then switch to Time and back to Calories -> preserves cache
+        state.updateExerciseTargetMode(bikeUid, TargetMode.PER_SET)
+        state.updateExercisePerSetValue(bikeUid, setIndex = 2, newValue = 12)
+        state.updateExercisePerSetValue(bikeUid, setIndex = 3, newValue = 0)
+        state.updateExerciseMetric(bikeUid, ExerciseTargetMetric.TIME_SECONDS)
+        state.updateExerciseFixedValue(bikeUid, 45)
+        state.updateExerciseMetric(bikeUid, ExerciseTargetMetric.CALORIES)
+        bikeItem = state.items[1].item as DailyRoutineItem.StandaloneExercise
+        assertEquals(listOf(15, 15, 12, 0), bikeItem.targetSpec!!.perSetValues)
+        assertEquals("EX: Air Bike (15•15•12•0 cal)", formatDailyRoutineItemChipLabel(bikeItem))
+
+        // Setting all sets to 0 invalidates save with inline guidance
+        state.updateExercisePerSetValue(bikeUid, 0, 0)
+        state.updateExercisePerSetValue(bikeUid, 1, 0)
+        state.updateExercisePerSetValue(bikeUid, 2, 0)
+        assertTrue(state.hasInvalidTargets)
+        assertFalse(state.canSave)
+        assertEquals(DAILY_ROUTINE_ALL_ZERO_TARGET_ERROR, state.validationErrorMessage)
+
+        // Clearing targets restores unset saveable state
+        state.clearExerciseTargets(bikeUid)
+        bikeItem = state.items[1].item as DailyRoutineItem.StandaloneExercise
+        assertFalse(bikeItem.hasConfiguredTarget)
+        assertTrue(state.canSave)
+
+        // BlockRef per-routine target configuration + shared sets resize
+        state.enableBlockTargets(blockUid, mapOf(3L to Exercise(3L, "Clean", ExerciseCategory.BARBELL, MetricType.WEIGHT)))
+        state.updateBlockSetsCount(blockUid, 5)
+        state.updateBlockExerciseTargetMode(blockUid, 3L, "Clean", TargetMode.PER_SET)
+        state.applyBlockExercisePattern(blockUid, 3L, "Clean", ExerciseSetPattern.ALTERNATE_ZEROS)
+        val blockItem = state.items[0].item as DailyRoutineItem.BlockRef
+        assertTrue(blockItem.hasConfiguredTargets)
+        assertEquals(5, blockItem.targetSetsCount)
+        assertEquals(listOf(8, 0, 8, 0, 8), blockItem.exerciseTargets[3L]!!.perSetValues)
+
+        state.clearBlockTargets(blockUid)
+        assertFalse((state.items[0].item as DailyRoutineItem.BlockRef).hasConfiguredTargets)
     }
 }

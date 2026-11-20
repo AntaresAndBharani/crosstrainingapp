@@ -513,7 +513,15 @@ class AvailableBlockCodecTest {
     }
 
     @Test
-    fun `hydrateSessionBlocksForEditor keeps warm-up and unweighted rep-only blocks on the legacy editor`() {
+    fun `hydrateSessionBlocksForEditor keeps warm-up on legacy editor and hydrates unweighted rep-only metricValue and groupIndex sets into simplified cards`() {
+        val airBike = Exercise(
+            id = 4L,
+            name = "Air Bike",
+            category = ExerciseCategory.MACHINE,
+            metricType = MetricType.CALORIES,
+            unit = "cal",
+            tracksRepMax = false
+        )
         val session = SessionWithBlocks(
             session = Session(id = 40L, cycleId = 1L, date = LocalDate.of(2026, 11, 14), title = "Mixed"),
             blocks = listOf(
@@ -540,19 +548,25 @@ class AvailableBlockCodecTest {
                 BlockWithSets(
                     block = SessionBlock(
                         id = 403L, sessionId = 40L, position = 2, name = "Burpees",
-                        kind = BlockKind.STRENGTH, mainExerciseId = 3L
+                        kind = BlockKind.STRENGTH, mainExerciseId = 3L,
+                        notes = "[log_metric=REPS]"
                     ),
                     sets = listOf(
                         BlockSet(blockId = 403L, position = 0, reps = 10, weight = null),
-                        BlockSet(blockId = 403L, position = 1, reps = 10, weight = null)
+                        BlockSet(blockId = 403L, position = 1, reps = 12, weight = null)
                     )
                 ),
                 BlockWithSets(
                     block = SessionBlock(
-                        id = 404L, sessionId = 40L, position = 3, name = "Back Squat",
-                        kind = BlockKind.STRENGTH, mainExerciseId = 1L, subBlock = "Placeholder"
+                        id = 404L, sessionId = 40L, position = 3, name = "Air Bike",
+                        kind = BlockKind.CARDIO, mainExerciseId = 4L,
+                        format = STANDALONE_EXERCISE_SESSION_FORMAT,
+                        notes = "[log_metric=CALORIES]"
                     ),
-                    sets = listOf(BlockSet(blockId = 404L, position = 0, reps = 1, weight = null))
+                    sets = listOf(
+                        BlockSet(blockId = 404L, position = 0, groupIndex = 1, reps = 1, metricValue = 15.0),
+                        BlockSet(blockId = 404L, position = 1, groupIndex = 3, reps = 1, metricValue = 12.0)
+                    )
                 )
             )
         )
@@ -560,11 +574,20 @@ class AvailableBlockCodecTest {
         val hydrated = AvailableBlockCodec.hydrateSessionBlocksForEditor(
             session = session,
             availableBlocks = emptyList(),
-            exercises = listOf(backSquat, cleanAndJerk, burpees),
+            exercises = listOf(backSquat, cleanAndJerk, burpees, airBike),
             sessionRepMaxes = emptyList()
         )
 
-        assertEquals(listOf(listOf(401L), listOf(404L)), hydrated.simplifiedBlocks.map { it.sourceBlockIds })
-        assertEquals(listOf(402L, 403L), hydrated.residualLegacyBlocks.map { it.block.id })
+        assertEquals(listOf(listOf(401L), listOf(403L), listOf(404L)), hydrated.simplifiedBlocks.map { it.sourceBlockIds })
+        assertEquals(listOf(402L), hydrated.residualLegacyBlocks.map { it.block.id })
+
+        val burpeesSeed = hydrated.simplifiedBlocks[1].exercises.single()
+        assertEquals(listOf(10, 12), burpeesSeed.perSetReps)
+        assertEquals(ExerciseTargetMetric.REPS, burpeesSeed.loggedMetric)
+
+        val bikeSeed = hydrated.simplifiedBlocks[2].exercises.single()
+        assertEquals(listOf(15.0, 12.0), bikeSeed.metricValues)
+        assertEquals(listOf(1, 3), bikeSeed.groupIndices)
+        assertEquals(ExerciseTargetMetric.CALORIES, bikeSeed.loggedMetric)
     }
 }

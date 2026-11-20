@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -93,8 +95,12 @@ import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.AvailableBlockExercise
 import com.fractanomics.crosstraining.util.DailyRoutine
 import com.fractanomics.crosstraining.util.DailyRoutineCodec
+import com.fractanomics.crosstraining.util.DailyRoutineItem
 import com.fractanomics.crosstraining.util.EvaluatedPrChip
+import com.fractanomics.crosstraining.util.ExerciseTargetMetric
 import com.fractanomics.crosstraining.util.HydratedAvailableBlockSeed
+import com.fractanomics.crosstraining.util.RoutineExerciseTargetSpec
+import com.fractanomics.crosstraining.util.RoutineTargetCodec
 import com.fractanomics.crosstraining.util.STANDALONE_EXERCISE_SESSION_FORMAT
 import com.fractanomics.crosstraining.util.STANDARD_RM_REPS
 import com.fractanomics.crosstraining.util.TrackedPrSlot
@@ -129,6 +135,12 @@ internal data class DismissedPrSnapshot(
     val slotIndex: Int
 )
 
+private data class CachedExerciseMetricInputs(
+    val repsInputs: List<String>,
+    val weights: List<String>,
+    val metricInputs: List<String>
+)
+
 internal class LoadedAvailableBlockExerciseState(
     val exerciseId: Long,
     val exerciseName: String,
@@ -142,12 +154,62 @@ internal class LoadedAvailableBlockExerciseState(
     val rawSection: String = "",
     val rawKind: BlockKind = BlockKind.STRENGTH,
     val rawIsCompleted: Boolean = true,
-    val subBlockTitle: String = ""
+    val subBlockTitle: String = "",
+    initialMetric: ExerciseTargetMetric = ExerciseTargetMetric.REPS,
+    initialRepsInputs: List<String>? = null,
+    initialMetricInputs: List<String>? = null,
+    initialGroupIndices: List<Int?> = List(initialWeights.size.coerceAtLeast(1)) { null },
+    val targetBanner: String? = null,
+    val rawNotes: String = ""
 ) {
+    var activeMetric by mutableStateOf(initialMetric)
     val weights: SnapshotStateList<String> = initialWeights.ifEmpty { listOf("") }.toMutableStateList()
     val perSetReps: SnapshotStateList<Int> = List(this.weights.size) { idx ->
         initialPerSetReps.getOrNull(idx)?.coerceAtLeast(1) ?: defaultReps.coerceAtLeast(1)
     }.toMutableStateList()
+    val repsInputs: SnapshotStateList<String> = List(this.weights.size) { idx ->
+        initialRepsInputs?.getOrNull(idx)
+            ?: initialPerSetReps.getOrNull(idx)?.takeIf { it > 1 }?.toString()
+            ?: ""
+    }.toMutableStateList()
+    val metricInputs: SnapshotStateList<String> = List(this.weights.size) { idx ->
+        initialMetricInputs?.getOrNull(idx).orEmpty()
+    }.toMutableStateList()
+    val groupIndices: SnapshotStateList<Int?> = List(this.weights.size) { idx ->
+        initialGroupIndices.getOrNull(idx)?.takeIf { it > 0 }
+    }.toMutableStateList()
+
+    private val metricInputCache = mutableMapOf<ExerciseTargetMetric, CachedExerciseMetricInputs>()
+
+    internal fun switchActiveMetric(newMetric: ExerciseTargetMetric) {
+        if (activeMetric == newMetric) return
+        val currentCount = weights.size.coerceAtLeast(1)
+        metricInputCache[activeMetric] = CachedExerciseMetricInputs(
+            repsInputs = repsInputs.toList(),
+            weights = weights.toList(),
+            metricInputs = metricInputs.toList()
+        )
+        activeMetric = newMetric
+        val cached = metricInputCache[newMetric]
+        if (cached != null) {
+            for (i in 0 until currentCount) {
+                repsInputs[i] = cached.repsInputs.getOrNull(i).orEmpty()
+                weights[i] = cached.weights.getOrNull(i).orEmpty()
+                metricInputs[i] = cached.metricInputs.getOrNull(i).orEmpty()
+                perSetReps[i] = repsInputs[i].toIntOrNull()?.coerceAtLeast(1) ?: defaultReps.coerceAtLeast(1)
+            }
+        } else {
+            if (newMetric == ExerciseTargetMetric.REPS) {
+                for (i in 0 until currentCount) {
+                    metricInputs[i] = ""
+                }
+            } else {
+                for (i in 0 until currentCount) {
+                    metricInputs[i] = ""
+                }
+            }
+        }
+    }
 }
 
 internal class LoadedAvailableBlockState(
@@ -163,7 +225,8 @@ internal class LoadedAvailableBlockState(
     val rawKind: BlockKind = BlockKind.STRENGTH,
     val rawIsCompleted: Boolean = true,
     val uiKey: String = UUID.randomUUID().toString(),
-    val itemKind: SessionItemKind = SessionItemKind.BLOCK
+    val itemKind: SessionItemKind = SessionItemKind.BLOCK,
+    val sourceRoutineItem: DailyRoutineItem? = null
 ) {
     val exerciseSections: SnapshotStateList<LoadedAvailableBlockExerciseState> = exerciseStates.toMutableStateList()
     val trackedPrSlots: SnapshotStateList<TrackedPrSlot> = initialTrackedPrs.toMutableStateList()
@@ -196,6 +259,7 @@ internal class LoadedAvailableBlockState(
 
     fun blockMaxSetWeight(): Double =
         exerciseSections.asSequence()
+            .filter { it.activeMetric == ExerciseTargetMetric.REPS }
             .flatMap { it.weights.asSequence() }
             .mapNotNull { AvailableBlockCodec.normalizedPositiveWeight(it) }
             .maxOrNull() ?: 0.0
@@ -205,6 +269,7 @@ internal class LoadedAvailableBlockState(
             val matchSections = exerciseSections.filter { it.exerciseId == movementId }
             if (matchSections.isNotEmpty()) {
                 return matchSections.asSequence()
+                    .filter { it.activeMetric == ExerciseTargetMetric.REPS }
                     .flatMap { it.weights.asSequence() }
                     .mapNotNull { AvailableBlockCodec.normalizedPositiveWeight(it) }
                     .maxOrNull() ?: 0.0
@@ -225,9 +290,56 @@ internal class LoadedAvailableBlockState(
         mutationCount += 1
     }
 
+    fun updateSetReps(
+        exState: LoadedAvailableBlockExerciseState,
+        setIndex: Int,
+        rawValue: String
+    ) {
+        if (setIndex !in exState.repsInputs.indices) return
+        val filtered = rawValue.filter { it.isDigit() }.take(4)
+        if (exState.repsInputs[setIndex] == filtered) return
+        exState.repsInputs[setIndex] = filtered
+        if (setIndex in exState.perSetReps.indices) {
+            exState.perSetReps[setIndex] = filtered.toIntOrNull()?.coerceAtLeast(1)
+                ?: exState.defaultReps.coerceAtLeast(1)
+        }
+        mutationCount += 1
+    }
+
+    fun updateSetMetricValue(
+        exState: LoadedAvailableBlockExerciseState,
+        setIndex: Int,
+        rawValue: String
+    ) {
+        if (setIndex !in exState.metricInputs.indices) return
+        val filtered = rawValue.filter { it.isDigit() || it == '.' || it == ',' }.take(8)
+        if (exState.metricInputs[setIndex] == filtered) return
+        exState.metricInputs[setIndex] = filtered
+        mutationCount += 1
+    }
+
+    fun switchExerciseMetric(
+        exState: LoadedAvailableBlockExerciseState,
+        newMetric: ExerciseTargetMetric
+    ) {
+        if (exState.activeMetric == newMetric) return
+        exState.switchActiveMetric(newMetric)
+        syncNonOverriddenPrWeightsFor(exState.exerciseId, exState.exerciseName)
+        mutationCount += 1
+    }
+
     fun addSet(exState: LoadedAvailableBlockExerciseState) {
         exState.weights.add("")
         exState.perSetReps.add(exState.perSetReps.lastOrNull() ?: exState.defaultReps.coerceAtLeast(1))
+        exState.repsInputs.add("")
+        exState.metricInputs.add("")
+        val hasGroupLabels = exState.groupIndices.any { it != null }
+        val nextGroup = if (hasGroupLabels) {
+            (exState.groupIndices.filterNotNull().maxOrNull() ?: exState.weights.size) + 1
+        } else {
+            null
+        }
+        exState.groupIndices.add(nextGroup)
         syncNonOverriddenPrWeightsFor(exState.exerciseId, exState.exerciseName)
         mutationCount += 1
     }
@@ -235,9 +347,10 @@ internal class LoadedAvailableBlockState(
     fun removeSet(exState: LoadedAvailableBlockExerciseState, setIndex: Int) {
         if (exState.weights.size <= 1 || setIndex !in exState.weights.indices) return
         exState.weights.removeAt(setIndex)
-        if (setIndex in exState.perSetReps.indices) {
-            exState.perSetReps.removeAt(setIndex)
-        }
+        if (setIndex in exState.perSetReps.indices) exState.perSetReps.removeAt(setIndex)
+        if (setIndex in exState.repsInputs.indices) exState.repsInputs.removeAt(setIndex)
+        if (setIndex in exState.metricInputs.indices) exState.metricInputs.removeAt(setIndex)
+        if (setIndex in exState.groupIndices.indices) exState.groupIndices.removeAt(setIndex)
         syncNonOverriddenPrWeightsFor(exState.exerciseId, exState.exerciseName)
         mutationCount += 1
     }
@@ -447,12 +560,40 @@ internal class LoadedAvailableBlockState(
 
         return exerciseSections.mapIndexed { idx, exState ->
             val mappedSets = mutableListOf<SetDraft>()
-            exState.weights.forEachIndexed { setIdx, raw ->
-                val weight = AvailableBlockCodec.normalizedPositiveWeight(raw)
-                if (weight != null) {
-                    val reps = exState.perSetReps.getOrNull(setIdx)?.coerceAtLeast(1)
-                        ?: exState.defaultReps.coerceAtLeast(1)
-                    mappedSets += SetDraft(reps = reps, weight = weight)
+            val setCount = maxOf(exState.weights.size, exState.repsInputs.size, exState.metricInputs.size)
+            for (setIdx in 0 until setCount) {
+                val groupIdx = exState.groupIndices.getOrNull(setIdx)?.takeIf { it > 0 }
+                if (exState.activeMetric == ExerciseTargetMetric.REPS) {
+                    val weight = AvailableBlockCodec.normalizedPositiveWeight(
+                        exState.weights.getOrNull(setIdx).orEmpty()
+                    )
+                    val parsedReps = exState.repsInputs.getOrNull(setIdx)
+                        ?.trim()
+                        ?.toIntOrNull()
+                        ?.takeIf { it > 0 }
+                    if (weight != null || parsedReps != null) {
+                        val finalReps = parsedReps
+                            ?: exState.perSetReps.getOrNull(setIdx)?.coerceAtLeast(1)
+                            ?: exState.defaultReps.coerceAtLeast(1)
+                        mappedSets += SetDraft(
+                            reps = finalReps,
+                            weight = weight,
+                            metricValue = null,
+                            groupIndex = groupIdx
+                        )
+                    }
+                } else {
+                    val metricVal = AvailableBlockCodec.normalizedPositiveWeight(
+                        exState.metricInputs.getOrNull(setIdx).orEmpty()
+                    )
+                    if (metricVal != null) {
+                        mappedSets += SetDraft(
+                            reps = 1,
+                            weight = null,
+                            metricValue = metricVal,
+                            groupIndex = groupIdx
+                        )
+                    }
                 }
             }
             val sets = if (mappedSets.isNotEmpty()) {
@@ -462,6 +603,8 @@ internal class LoadedAvailableBlockState(
             }
             val prsForThis = activeSessionPrs.filter { it.movementId == exState.exerciseId } +
                 if (idx == 0) unmatchedPrs else emptyList()
+            val cleanRawNotes = RoutineTargetCodec.extractCleanNotes(exState.rawNotes)
+            val encodedNotes = RoutineTargetCodec.encodeNotesWithLogMetric(cleanRawNotes, exState.activeMetric)
 
             BlockDraft(
                 name = exState.exerciseName,
@@ -481,7 +624,8 @@ internal class LoadedAvailableBlockState(
                 exerciseIdsCsv = exState.exerciseId.takeIf { it > 0L }?.toString().orEmpty(),
                 subBlock = if (isStandaloneEx) "" else block.title.ifBlank { exState.subBlockTitle },
                 isCompleted = exState.rawIsCompleted,
-                newRepMaxes = prsForThis.map { RepMaxDraft(it.movementId, it.rmReps, it.candidateWeight) }
+                newRepMaxes = prsForThis.map { RepMaxDraft(it.movementId, it.rmReps, it.candidateWeight) },
+                notes = encodedNotes
             )
         }
     }
@@ -499,14 +643,176 @@ internal class LoadedAvailableBlockState(
     }
 }
 
+internal fun firstTimeSubtitleForMetric(
+    metric: ExerciseTargetMetric,
+    libraryMetricType: MetricType = MetricType.WEIGHT
+): String = when (metric) {
+    ExerciseTargetMetric.CALORIES -> "First time logging — enter calories"
+    ExerciseTargetMetric.TIME_SECONDS -> "First time logging — enter time (sec)"
+    ExerciseTargetMetric.METERS -> "First time logging — enter meters"
+    ExerciseTargetMetric.REPS -> if (libraryMetricType == MetricType.REPS) {
+        "First time logging — enter reps & optional weight"
+    } else {
+        "First time logging — enter set weights"
+    }
+}
+
+private fun buildTargetOrPrefillExerciseState(
+    exerciseId: Long,
+    exerciseName: String,
+    libraryMetricType: MetricType,
+    targetSetsCount: Int?,
+    targetSpec: RoutineExerciseTargetSpec?,
+    lastWeights: List<Double?>?,
+    lastReps: List<Int>?,
+    lastMetricValues: List<Double?>?,
+    lastLoggedMetric: ExerciseTargetMetric?,
+    lastDateFormatted: String?,
+    defaultEmptyTileCount: Int,
+    rawFormat: String = ""
+): LoadedAvailableBlockExerciseState {
+    if (targetSetsCount != null && targetSpec != null) {
+        val cleanSets = targetSetsCount.coerceAtLeast(1)
+        val effectiveValues = targetSpec.effectiveValues(cleanSets)
+        val hasSkipped = effectiveValues.any { it <= 0 }
+        val activeRoundIndices = effectiveValues.indices.filter { effectiveValues[it] > 0 }
+            .ifEmpty { listOf(0) }
+        val activeMetric = targetSpec.metric
+        val hasPriorWeights = activeMetric == ExerciseTargetMetric.REPS &&
+            lastWeights?.any { (it ?: 0.0) > 0.0 } == true &&
+            lastDateFormatted != null
+
+        val initialWeights = activeRoundIndices.mapIndexed { activeIdx, _ ->
+            if (activeMetric == ExerciseTargetMetric.REPS) {
+                lastWeights?.getOrNull(activeIdx)?.takeIf { it > 0.0 }?.trimmed().orEmpty()
+            } else {
+                ""
+            }
+        }
+        val initialRepsInputs = activeRoundIndices.map { roundIdx ->
+            if (activeMetric == ExerciseTargetMetric.REPS) {
+                effectiveValues[roundIdx].takeIf { it > 0 }?.toString().orEmpty()
+            } else {
+                ""
+            }
+        }
+        val initialPerSetReps = activeRoundIndices.map { roundIdx ->
+            if (activeMetric == ExerciseTargetMetric.REPS) {
+                effectiveValues[roundIdx].coerceAtLeast(1)
+            } else {
+                1
+            }
+        }
+        val initialMetricInputs = activeRoundIndices.map { roundIdx ->
+            if (activeMetric != ExerciseTargetMetric.REPS) {
+                effectiveValues[roundIdx].takeIf { it > 0 }?.toString().orEmpty()
+            } else {
+                ""
+            }
+        }
+        val initialGroups = activeRoundIndices.map { roundIdx ->
+            if (hasSkipped) roundIdx + 1 else null
+        }
+        val banner = "Target: ${formatDailyRoutineTargetSummary(cleanSets, targetSpec)}"
+        val dateLabel = if (hasPriorWeights) {
+            "Pre-filled weights from last session ($lastDateFormatted)"
+        } else {
+            null
+        }
+        return LoadedAvailableBlockExerciseState(
+            exerciseId = exerciseId,
+            exerciseName = exerciseName,
+            lastSessionDateLabel = dateLabel,
+            initialWeights = initialWeights,
+            initialPerSetReps = initialPerSetReps,
+            rawFormat = rawFormat,
+            initialMetric = activeMetric,
+            initialRepsInputs = initialRepsInputs,
+            initialMetricInputs = initialMetricInputs,
+            initialGroupIndices = initialGroups,
+            targetBanner = banner
+        )
+    }
+
+    val hasPriorWeights = lastWeights?.any { (it ?: 0.0) > 0.0 } == true
+    val hasPriorMetrics = lastMetricValues?.any { (it ?: 0.0) > 0.0 } == true
+    val hasPriorReps = lastReps != null && (lastReps.size > 1 || lastReps.any { it > 1 })
+    val hasPriorData = (hasPriorWeights || hasPriorMetrics || hasPriorReps) && lastDateFormatted != null
+
+    if (hasPriorData) {
+        val activeMetric = lastLoggedMetric ?: ExerciseTargetMetric.fromLibraryMetricType(libraryMetricType)
+        val count = maxOf(
+            lastWeights?.size ?: 0,
+            lastMetricValues?.size ?: 0,
+            lastReps?.size ?: 0
+        ).coerceAtLeast(1)
+        val initialWeights = List(count) { idx ->
+            if (activeMetric == ExerciseTargetMetric.REPS) {
+                lastWeights?.getOrNull(idx)?.takeIf { it > 0.0 }?.trimmed().orEmpty()
+            } else {
+                ""
+            }
+        }
+        val initialRepsInputs = List(count) { idx ->
+            if (activeMetric == ExerciseTargetMetric.REPS) {
+                val r = lastReps?.getOrNull(idx) ?: 0
+                val w = lastWeights?.getOrNull(idx) ?: 0.0
+                if (r > 1 || (w <= 0.0 && r > 0)) r.toString() else ""
+            } else {
+                ""
+            }
+        }
+        val initialPerSetReps = List(count) { idx ->
+            lastReps?.getOrNull(idx)?.coerceAtLeast(1) ?: 1
+        }
+        val initialMetricInputs = List(count) { idx ->
+            if (activeMetric != ExerciseTargetMetric.REPS) {
+                lastMetricValues?.getOrNull(idx)?.takeIf { it > 0.0 }?.trimmed().orEmpty()
+            } else {
+                ""
+            }
+        }
+        return LoadedAvailableBlockExerciseState(
+            exerciseId = exerciseId,
+            exerciseName = exerciseName,
+            lastSessionDateLabel = "Pre-filled from last session ($lastDateFormatted)",
+            initialWeights = initialWeights,
+            initialPerSetReps = initialPerSetReps,
+            rawFormat = rawFormat,
+            initialMetric = activeMetric,
+            initialRepsInputs = initialRepsInputs,
+            initialMetricInputs = initialMetricInputs
+        )
+    }
+
+    val defaultMetric = ExerciseTargetMetric.fromLibraryMetricType(libraryMetricType)
+    val emptyTiles = List(defaultEmptyTileCount.coerceAtLeast(1)) { "" }
+    return LoadedAvailableBlockExerciseState(
+        exerciseId = exerciseId,
+        exerciseName = exerciseName,
+        lastSessionDateLabel = firstTimeSubtitleForMetric(defaultMetric, libraryMetricType),
+        initialWeights = emptyTiles,
+        rawFormat = rawFormat,
+        initialMetric = defaultMetric,
+        initialRepsInputs = emptyTiles,
+        initialMetricInputs = emptyTiles
+    )
+}
+
 internal fun buildLoadedAvailableBlockState(
     block: AvailableBlock,
     sessions: List<SessionWithBlocks>,
     exercises: List<Exercise>,
     weightUnit: String,
     isEditMode: Boolean = false,
-    editingSessionId: Long? = null
+    editingSessionId: Long? = null,
+    routineTargetSetsCount: Int? = null,
+    routineExerciseTargets: Map<Long, RoutineExerciseTargetSpec> = emptyMap(),
+    routineExerciseTargetsByName: Map<String, RoutineExerciseTargetSpec> = emptyMap(),
+    sourceRoutineItem: DailyRoutineItem? = null
 ): LoadedAvailableBlockState {
+    val exercisesById = exercises.associateBy { it.id }
+    val exercisesByLowerName = exercises.associateBy { it.name.trim().lowercase() }
     val lastSession = AvailableBlockCodec.resolveLastBlockSession(
         block = block,
         sessions = sessions,
@@ -515,30 +821,36 @@ internal fun buildLoadedAvailableBlockState(
         excludeSessionId = editingSessionId
     )
     val exStates = block.exercises.map { ex ->
+        val exObj = exercisesById[ex.id] ?: exercisesByLowerName[ex.name.trim().lowercase()]
+        val lowerName = ex.name.trim().lowercase()
+        val targetSpec = resolveBlockExerciseTargetSpec(ex, routineExerciseTargets, routineExerciseTargetsByName)
         val prevWeights = lastSession?.exerciseWeightsById?.get(ex.id)
-            ?: lastSession?.exerciseWeightsByName?.get(ex.name.trim().lowercase())
-        val initialWeights = if (!prevWeights.isNullOrEmpty()) {
-            prevWeights.map { w -> w?.takeIf { it > 0.0 }?.trimmed() ?: "" }
-        } else {
-            listOf("", "", "")
-        }
-        val dateBanner = if (!prevWeights.isNullOrEmpty() && lastSession != null) {
-            "Pre-filled from last session (${lastSession.dateFormatted})"
-        } else {
-            "First time logging — enter set weights"
-        }
-        LoadedAvailableBlockExerciseState(
+            ?: lastSession?.exerciseWeightsByName?.get(lowerName)
+        val prevReps = lastSession?.exerciseRepsById?.get(ex.id)
+            ?: lastSession?.exerciseRepsByName?.get(lowerName)
+        val prevMetrics = lastSession?.exerciseMetricValuesById?.get(ex.id)
+            ?: lastSession?.exerciseMetricValuesByName?.get(lowerName)
+        val prevLoggedMetric = lastSession?.exerciseLoggedMetricById?.get(ex.id)
+            ?: lastSession?.exerciseLoggedMetricByName?.get(lowerName)
+
+        buildTargetOrPrefillExerciseState(
             exerciseId = ex.id,
             exerciseName = ex.name,
-            lastSessionDateLabel = dateBanner,
-            initialWeights = initialWeights
+            libraryMetricType = exObj?.metricType ?: MetricType.WEIGHT,
+            targetSetsCount = if (targetSpec != null) routineTargetSetsCount else null,
+            targetSpec = targetSpec,
+            lastWeights = prevWeights,
+            lastReps = prevReps,
+            lastMetricValues = prevMetrics,
+            lastLoggedMetric = prevLoggedMetric,
+            lastDateFormatted = lastSession?.dateFormatted,
+            defaultEmptyTileCount = 3
         )
     }
-    val byLowerName = exercises.associateBy { it.name.trim().lowercase() }
     val resolvedSlots = AvailableBlockCodec.normalizeTrackedPrSlots(
         block.trackedPrs.map { slot ->
             if (slot.movementId > 0L) slot
-            else slot.copy(movementId = byLowerName[slot.movementName.trim().lowercase()]?.id ?: 0L)
+            else slot.copy(movementId = exercisesByLowerName[slot.movementName.trim().lowercase()]?.id ?: 0L)
         }
     )
     return LoadedAvailableBlockState(
@@ -546,21 +858,31 @@ internal fun buildLoadedAvailableBlockState(
         exerciseStates = exStates,
         initialTrackedPrs = resolvedSlots,
         isEditMode = isEditMode,
-        editingSessionId = editingSessionId
+        editingSessionId = editingSessionId,
+        sourceRoutineItem = sourceRoutineItem
     )
 }
 
 internal fun buildCustomAvailableBlockState(
     block: AvailableBlock,
     isEditMode: Boolean = false,
-    editingSessionId: Long? = null
+    editingSessionId: Long? = null,
+    exercises: List<Exercise> = emptyList()
 ): LoadedAvailableBlockState {
+    val byId = exercises.associateBy { it.id }
+    val byLower = exercises.associateBy { it.name.trim().lowercase() }
     val exStates = block.exercises.map { ex ->
+        val exObj = byId[ex.id] ?: byLower[ex.name.trim().lowercase()]
+        val defaultMetric = exObj?.let { ExerciseTargetMetric.fromLibraryMetricType(it.metricType) }
+            ?: ExerciseTargetMetric.REPS
         LoadedAvailableBlockExerciseState(
             exerciseId = ex.id,
             exerciseName = ex.name,
             lastSessionDateLabel = null,
-            initialWeights = listOf("", "", "")
+            initialWeights = listOf("", "", ""),
+            initialMetric = defaultMetric,
+            initialRepsInputs = listOf("", "", ""),
+            initialMetricInputs = listOf("", "", "")
         )
     }
     return LoadedAvailableBlockState(
@@ -582,6 +904,31 @@ internal fun buildHydratedBlockState(
 
     val exStates = seed.exercises.map { exSeed ->
         val initialWeights = exSeed.weights.map { w -> if (w > 0.0) w.trimmed() else "" }
+        val explicitLogMetric = RoutineTargetCodec.decodeLogMetricHeader(exSeed.rawNotes)
+        val exObj = byId[exSeed.movementId] ?: byLowerName[exSeed.movementName.trim().lowercase()]
+        val initialMetric = exSeed.loggedMetric
+            ?: explicitLogMetric
+            ?: if (exSeed.metricValues.any { (it ?: 0.0) > 0.0 }) {
+                exObj?.let { ExerciseTargetMetric.fromLibraryMetricType(it.metricType) }
+                    ?.takeIf { it != ExerciseTargetMetric.REPS }
+                    ?: ExerciseTargetMetric.CALORIES
+            } else {
+                ExerciseTargetMetric.REPS
+            }
+        val initialMetricInputs = List(initialWeights.size) { idx ->
+            exSeed.metricValues.getOrNull(idx)?.takeIf { it > 0.0 }?.trimmed().orEmpty()
+        }
+        val initialRepsInputs = List(initialWeights.size) { idx ->
+            val r = exSeed.perSetReps.getOrNull(idx) ?: exSeed.defaultReps
+            val w = exSeed.weights.getOrNull(idx) ?: 0.0
+            if (initialMetric == ExerciseTargetMetric.REPS &&
+                (r > 1 || (w <= 0.0 && r > 0 && explicitLogMetric == ExerciseTargetMetric.REPS))
+            ) {
+                r.toString()
+            } else {
+                ""
+            }
+        }
         LoadedAvailableBlockExerciseState(
             exerciseId = exSeed.movementId,
             exerciseName = exSeed.movementName,
@@ -595,7 +942,12 @@ internal fun buildHydratedBlockState(
             rawSection = exSeed.rawSection,
             rawKind = exSeed.rawKind,
             rawIsCompleted = exSeed.rawIsCompleted,
-            subBlockTitle = exSeed.subBlockTitle
+            subBlockTitle = exSeed.subBlockTitle,
+            initialMetric = initialMetric,
+            initialRepsInputs = initialRepsInputs,
+            initialMetricInputs = initialMetricInputs,
+            initialGroupIndices = exSeed.groupIndices,
+            rawNotes = exSeed.rawNotes
         )
     }
 
@@ -656,7 +1008,10 @@ internal fun buildLoadedStandaloneExerciseState(
     repMaxes: List<RepMax>,
     weightUnit: String = "kg",
     isEditMode: Boolean = false,
-    editingSessionId: Long? = null
+    editingSessionId: Long? = null,
+    targetSetsCount: Int? = null,
+    targetSpec: RoutineExerciseTargetSpec? = null,
+    sourceRoutineItem: DailyRoutineItem? = null
 ): LoadedAvailableBlockState {
     val last = DailyRoutineCodec.resolveLastExerciseSession(
         exercise = exercise,
@@ -664,17 +1019,21 @@ internal fun buildLoadedStandaloneExerciseState(
         weightUnit = weightUnit,
         excludeSessionId = editingSessionId
     )
-    val validLast = last?.takeIf { s -> s.weights.any { (it ?: 0.0) > 0.0 } }
-    val initialWeights = if (validLast != null) {
-        validLast.weights.map { w -> w?.takeIf { it > 0.0 }?.trimmed() ?: "" }
-    } else {
-        listOf("", "", "", "")
-    }
-    val dateBanner = if (validLast != null) {
-        "Pre-filled from last session (${validLast.dateFormatted})"
-    } else {
-        "First time logging — enter set weights"
-    }
+    val meaningfulLast = last?.takeIf { it.topWeight != null }
+    val exState = buildTargetOrPrefillExerciseState(
+        exerciseId = exercise.id,
+        exerciseName = exercise.name,
+        libraryMetricType = exercise.metricType,
+        targetSetsCount = if (targetSpec != null) targetSetsCount else null,
+        targetSpec = targetSpec,
+        lastWeights = meaningfulLast?.weights,
+        lastReps = meaningfulLast?.reps,
+        lastMetricValues = meaningfulLast?.metricValues,
+        lastLoggedMetric = meaningfulLast?.loggedMetric,
+        lastDateFormatted = meaningfulLast?.dateFormatted,
+        defaultEmptyTileCount = 4,
+        rawFormat = STANDALONE_EXERCISE_SESSION_FORMAT
+    )
     val filteredRepMaxes = if (editingSessionId != null) {
         repMaxes.filter { it.sessionId != editingSessionId }
     } else {
@@ -684,13 +1043,6 @@ internal fun buildLoadedStandaloneExerciseState(
         exercise = exercise,
         defaultTrackedPrs = defaultTrackedPrs,
         repMaxes = filteredRepMaxes
-    )
-    val exState = LoadedAvailableBlockExerciseState(
-        exerciseId = exercise.id,
-        exerciseName = exercise.name,
-        lastSessionDateLabel = dateBanner,
-        initialWeights = initialWeights,
-        rawFormat = STANDALONE_EXERCISE_SESSION_FORMAT
     )
     val backingBlock = AvailableBlock(
         id = 0L,
@@ -712,7 +1064,8 @@ internal fun buildLoadedStandaloneExerciseState(
         isEditMode = isEditMode,
         editingSessionId = editingSessionId,
         rawFormat = STANDALONE_EXERCISE_SESSION_FORMAT,
-        itemKind = SessionItemKind.EXERCISE
+        itemKind = SessionItemKind.EXERCISE,
+        sourceRoutineItem = sourceRoutineItem
     )
 }
 
@@ -731,8 +1084,6 @@ internal fun SimplifiedBlockLogCard(
     modifier: Modifier = Modifier
 ) {
     val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
-    val fontScale = LocalConfiguration.current.fontScale
-    val columns = if (fontScale >= 1.4f) 2 else 4
     val isDark = isSystemInDarkTheme()
     val blockAccent = if (isDark) BlockSkyDark else BlockSkyLight
     val headerText = buildString {
@@ -781,7 +1132,6 @@ internal fun SimplifiedBlockLogCard(
                     exState = exState,
                     blockState = blockState,
                     weightUnit = weightUnit,
-                    columns = columns,
                     showExerciseHeading = true
                 )
             }
@@ -812,8 +1162,6 @@ internal fun SimplifiedExerciseLogCard(
     modifier: Modifier = Modifier
 ) {
     val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
-    val fontScale = LocalConfiguration.current.fontScale
-    val columns = if (fontScale >= 1.4f) 2 else 4
     val isDark = isSystemInDarkTheme()
     val emeraldAccent = if (isDark) PrEmeraldAccent else PrEmeraldDark
     val exSection = blockState.exerciseSections.firstOrNull()
@@ -865,7 +1213,6 @@ internal fun SimplifiedExerciseLogCard(
                     exState = section,
                     blockState = blockState,
                     weightUnit = weightUnit,
-                    columns = columns,
                     showExerciseHeading = false
                 )
             }
@@ -932,15 +1279,27 @@ private fun SessionItemHeaderRow(
     }
 }
 
+internal fun resolveRepsWeightSetColumns(widthDp: Int, fontScale: Float): Int = when {
+    fontScale >= 1.5f -> 1
+    widthDp >= 600 -> 4
+    else -> 2
+}
+
+internal fun resolveMetricOnlySetColumns(widthDp: Int, fontScale: Float): Int = when {
+    fontScale >= 1.3f -> 2
+    widthDp >= 600 -> 4
+    else -> 3
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionExerciseSetTilesSection(
     exState: LoadedAvailableBlockExerciseState,
     blockState: LoadedAvailableBlockState,
     weightUnit: String,
-    columns: Int,
     showExerciseHeading: Boolean
 ) {
+    val fontScale = LocalConfiguration.current.fontScale
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -952,6 +1311,14 @@ private fun SessionExerciseSetTilesSection(
                 fontWeight = FontWeight.SemiBold
             )
         }
+        if (!exState.targetBanner.isNullOrBlank()) {
+            Text(
+                text = exState.targetBanner,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
         if (!exState.lastSessionDateLabel.isNullOrBlank()) {
             Text(
                 text = exState.lastSessionDateLabel,
@@ -959,8 +1326,33 @@ private fun SessionExerciseSetTilesSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            items(ExerciseTargetMetric.entries) { metric ->
+                val chipLabel = if (metric == ExerciseTargetMetric.CALORIES) "Cal" else metric.label
+                FilterChip(
+                    selected = exState.activeMetric == metric,
+                    onClick = { blockState.switchExerciseMetric(exState, metric) },
+                    label = {
+                        Text(
+                            text = chipLabel,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                )
+            }
+        }
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val spacing = 8.dp
+            val columns = if (exState.activeMetric == ExerciseTargetMetric.REPS) {
+                resolveRepsWeightSetColumns(maxWidth.value.toInt(), fontScale)
+            } else {
+                resolveMetricOnlySetColumns(maxWidth.value.toInt(), fontScale)
+            }
             val tileWidth = (maxWidth - spacing * (columns - 1)) / columns
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
@@ -968,16 +1360,34 @@ private fun SessionExerciseSetTilesSection(
                 verticalArrangement = Arrangement.spacedBy(spacing),
                 maxItemsInEachRow = columns
             ) {
-                exState.weights.forEachIndexed { idx, w ->
-                    WeightOnlySetTile(
-                        setNumber = idx + 1,
-                        value = w,
-                        unit = weightUnit,
-                        canRemove = exState.weights.size > 1,
-                        onValueChange = { updated -> blockState.updateSetWeight(exState, idx, updated) },
-                        onRemove = { blockState.removeSet(exState, idx) },
-                        modifier = Modifier.width(tileWidth)
-                    )
+                val setCount = exState.weights.size
+                for (idx in 0 until setCount) {
+                    val groupIdx = exState.groupIndices.getOrNull(idx)?.takeIf { it > 0 }
+                    val setLabel = if (groupIdx != null) "Rd $groupIdx" else "Set ${idx + 1}"
+                    val canRemove = setCount > 1
+                    if (exState.activeMetric == ExerciseTargetMetric.REPS) {
+                        RepsWeightSetTile(
+                            setLabel = setLabel,
+                            repsValue = exState.repsInputs.getOrNull(idx).orEmpty(),
+                            weightValue = exState.weights.getOrNull(idx).orEmpty(),
+                            weightUnit = weightUnit,
+                            canRemove = canRemove,
+                            onRepsChange = { updated -> blockState.updateSetReps(exState, idx, updated) },
+                            onWeightChange = { updated -> blockState.updateSetWeight(exState, idx, updated) },
+                            onRemove = { blockState.removeSet(exState, idx) },
+                            modifier = Modifier.width(tileWidth)
+                        )
+                    } else {
+                        SingleMetricSetTile(
+                            setLabel = setLabel,
+                            value = exState.metricInputs.getOrNull(idx).orEmpty(),
+                            unit = exState.activeMetric.compactUnit,
+                            canRemove = canRemove,
+                            onValueChange = { updated -> blockState.updateSetMetricValue(exState, idx, updated) },
+                            onRemove = { blockState.removeSet(exState, idx) },
+                            modifier = Modifier.width(tileWidth)
+                        )
+                    }
                 }
             }
         }
@@ -1099,8 +1509,150 @@ private fun TrackedPrChipsFlowSection(
 }
 
 @Composable
-internal fun WeightOnlySetTile(
-    setNumber: Int,
+private fun CompactTileInputRow(
+    value: String,
+    unit: String,
+    keyboardType: KeyboardType,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = keyboardType,
+                imeAction = ImeAction.Next
+            ),
+            textStyle = MaterialTheme.typography.titleMedium.copy(
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                fontFeatureSettings = "tnum"
+            ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            modifier = Modifier.weight(1f, fill = false),
+            decorationBox = { innerTextField ->
+                Box(contentAlignment = Alignment.Center) {
+                    if (value.isBlank()) {
+                        Text(
+                            text = "—",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        )
+                    }
+                    innerTextField()
+                }
+            }
+        )
+        Spacer(Modifier.width(3.dp))
+        Text(
+            text = unit,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false
+        )
+    }
+}
+
+@Composable
+internal fun RepsWeightSetTile(
+    setLabel: String,
+    repsValue: String,
+    weightValue: String,
+    weightUnit: String,
+    canRemove: Boolean,
+    onRepsChange: (String) -> Unit,
+    onWeightChange: (String) -> Unit,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val hasReps = (repsValue.toIntOrNull() ?: 0) > 0
+    val hasWeight = AvailableBlockCodec.normalizedPositiveWeight(weightValue) != null
+    val isPopulated = hasReps || hasWeight
+    val tileSemantic = buildString {
+        append(setLabel)
+        append(if (hasReps) ", $repsValue reps" else ", empty reps")
+        append(if (hasWeight) ", $weightValue $weightUnit" else ", no weight")
+    }
+    Surface(
+        modifier = modifier
+            .heightIn(min = 98.dp)
+            .semantics(mergeDescendants = true) {
+                contentDescription = tileSemantic
+            },
+        shape = RoundedCornerShape(12.dp),
+        color = if (isPopulated) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        },
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isPopulated) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant
+        )
+    ) {
+        Box(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+            if (canRemove) {
+                IconButton(
+                    onClick = onRemove,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(28.dp)
+                        .minimumInteractiveComponentSize()
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Remove $setLabel",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp, bottom = 2.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = setLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+                CompactTileInputRow(
+                    value = repsValue,
+                    unit = "reps",
+                    keyboardType = KeyboardType.Number,
+                    onValueChange = { raw ->
+                        onRepsChange(raw.filter { it.isDigit() }.take(4))
+                    }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                CompactTileInputRow(
+                    value = weightValue,
+                    unit = weightUnit,
+                    keyboardType = KeyboardType.Decimal,
+                    onValueChange = { raw ->
+                        onWeightChange(raw.filter { it.isDigit() || it == '.' || it == ',' }.take(8))
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SingleMetricSetTile(
+    setLabel: String,
     value: String,
     unit: String,
     canRemove: Boolean,
@@ -1108,11 +1660,11 @@ internal fun WeightOnlySetTile(
     onRemove: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val hasWeight = AvailableBlockCodec.normalizedPositiveWeight(value) != null
-    val tileSemantic = if (hasWeight) {
-        "Set $setNumber, $value $unit"
+    val hasValue = AvailableBlockCodec.normalizedPositiveWeight(value) != null
+    val tileSemantic = if (hasValue) {
+        "$setLabel, $value $unit"
     } else {
-        "Set $setNumber, empty weight"
+        "$setLabel, empty value"
     }
     Surface(
         modifier = modifier
@@ -1121,14 +1673,14 @@ internal fun WeightOnlySetTile(
                 contentDescription = tileSemantic
             },
         shape = RoundedCornerShape(12.dp),
-        color = if (hasWeight) {
+        color = if (hasValue) {
             MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
         } else {
             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
         },
         border = BorderStroke(
             width = 1.dp,
-            color = if (hasWeight) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant
+            color = if (hasValue) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant
         )
     ) {
         Box(modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
@@ -1142,7 +1694,7 @@ internal fun WeightOnlySetTile(
                 ) {
                     Icon(
                         Icons.Filled.Close,
-                        contentDescription = "Remove set $setNumber",
+                        contentDescription = "Remove $setLabel",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
                         modifier = Modifier.size(15.dp)
                     )
@@ -1157,57 +1709,43 @@ internal fun WeightOnlySetTile(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = "Set $setNumber",
+                    text = setLabel,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    BasicTextField(
-                        value = value,
-                        onValueChange = { raw ->
-                            val filtered = raw.filter { it.isDigit() || it == '.' || it == ',' }.take(8)
-                            onValueChange(filtered)
-                        },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Decimal,
-                            imeAction = ImeAction.Next
-                        ),
-                        textStyle = MaterialTheme.typography.titleMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                            fontFeatureSettings = "tnum"
-                        ),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.weight(1f, fill = false),
-                        decorationBox = { innerTextField ->
-                            Box(contentAlignment = Alignment.Center) {
-                                if (value.isBlank()) {
-                                    Text(
-                                        text = "—",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                                    )
-                                }
-                                innerTextField()
-                            }
-                        }
-                    )
-                    Spacer(Modifier.width(2.dp))
-                    Text(
-                        text = unit,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                CompactTileInputRow(
+                    value = value,
+                    unit = unit,
+                    keyboardType = KeyboardType.Decimal,
+                    onValueChange = { raw ->
+                        onValueChange(raw.filter { it.isDigit() || it == '.' || it == ',' }.take(8))
+                    }
+                )
             }
         }
     }
+}
+
+@Composable
+internal fun WeightOnlySetTile(
+    setNumber: Int,
+    value: String,
+    unit: String,
+    canRemove: Boolean,
+    onValueChange: (String) -> Unit,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    SingleMetricSetTile(
+        setLabel = "Set $setNumber",
+        value = value,
+        unit = unit,
+        canRemove = canRemove,
+        onValueChange = onValueChange,
+        onRemove = onRemove,
+        modifier = modifier
+    )
 }
 
 internal enum class AddBlockSheetTab {

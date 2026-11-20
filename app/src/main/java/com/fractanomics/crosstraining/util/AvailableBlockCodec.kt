@@ -61,7 +61,13 @@ data class LastBlockSessionSummary(
     val exerciseWeightsByName: Map<String, List<Double?>>,
     val topWeight: Double?,
     val averageWeight: Double?,
-    val setWeightsSummary: String
+    val setWeightsSummary: String,
+    val exerciseRepsById: Map<Long, List<Int>> = emptyMap(),
+    val exerciseRepsByName: Map<String, List<Int>> = emptyMap(),
+    val exerciseMetricValuesById: Map<Long, List<Double?>> = emptyMap(),
+    val exerciseMetricValuesByName: Map<String, List<Double?>> = emptyMap(),
+    val exerciseLoggedMetricById: Map<Long, ExerciseTargetMetric> = emptyMap(),
+    val exerciseLoggedMetricByName: Map<String, ExerciseTargetMetric> = emptyMap()
 )
 
 /** Live-evaluated Basic Movement PR chip state inside Log Session. */
@@ -86,7 +92,11 @@ data class HydratedBlockExerciseSeed(
     val rawSection: String = "",
     val rawKind: BlockKind = BlockKind.STRENGTH,
     val rawIsCompleted: Boolean = true,
-    val subBlockTitle: String = ""
+    val subBlockTitle: String = "",
+    val metricValues: List<Double?> = emptyList(),
+    val groupIndices: List<Int?> = emptyList(),
+    val loggedMetric: ExerciseTargetMetric? = null,
+    val rawNotes: String = ""
 )
 
 data class HydratedAvailableBlockSeed(
@@ -429,6 +439,8 @@ object AvailableBlockCodec {
             )
             .toList()
 
+        var fallbackSummary: LastBlockSessionSummary? = null
+
         for (sw in sortedSessions) {
             val matching = sw.blocks
                 .filter { bws -> matchesAvailableBlock(bws.block, block) }
@@ -437,57 +449,118 @@ object AvailableBlockCodec {
 
             val byExerciseId = linkedMapOf<Long, List<Double?>>()
             val byExerciseName = linkedMapOf<String, List<Double?>>()
+            val repsById = linkedMapOf<Long, List<Int>>()
+            val repsByName = linkedMapOf<String, List<Int>>()
+            val metricValuesById = linkedMapOf<Long, List<Double?>>()
+            val metricValuesByName = linkedMapOf<String, List<Double?>>()
+            val loggedMetricById = linkedMapOf<Long, ExerciseTargetMetric>()
+            val loggedMetricByName = linkedMapOf<String, ExerciseTargetMetric>()
             val summaryTokens = mutableListOf<String>()
-            val allPositiveWeights = mutableListOf<Double>()
+            val allLoggedValues = mutableListOf<Double>()
+            var hasMeaningfulData = false
 
             matching.forEach { bws ->
                 val orderedSets = bws.sets.sortedBy { it.position }
-                val weights = orderedSets.map { s -> s.weight?.takeIf { it > 0.0 } }
-                val positiveWeights = weights.filterNotNull()
-                allPositiveWeights.addAll(positiveWeights)
+                val workingSets = orderedSets.filter { !it.isWarmup && !it.isFailed }.ifEmpty { orderedSets }
 
                 val parsedCsvIds = RoutineTargetCodec.parseExerciseIdsPreservingOrder(bws.block.exerciseIdsCsv)
                 val targetExId = bws.block.mainExerciseId?.takeIf { it > 0L }
                     ?: parsedCsvIds.singleOrNull()
                     ?: parsedCsvIds.firstOrNull()
-                val resolvedName = targetExId?.let { byId[it]?.name }
+                val exObj = targetExId?.let { byId[it] }
+                val resolvedName = exObj?.name
                     ?: bws.block.name.trim().ifEmpty { block.title }
+
+                val resolvedMetric = RoutineTargetCodec.resolveSessionBlockMetric(
+                    blockNotes = bws.block.notes,
+                    sets = workingSets,
+                    exercise = exObj
+                )
+                val weights = workingSets.map { s -> s.weight?.takeIf { it > 0.0 } }
+                val repsList = workingSets.map { s -> s.reps.coerceAtLeast(0) }
+                val metricList = workingSets.map { s -> s.metricValue?.takeIf { it > 0.0 } }
+                val positiveWeights = weights.filterNotNull()
+                val positiveMetrics = metricList.filterNotNull()
+                val blockMeaningful = RoutineTargetCodec.hasMeaningfulLoggedValues(bws.block.notes, workingSets)
+                if (blockMeaningful) {
+                    hasMeaningfulData = true
+                }
+
+                when {
+                    positiveWeights.isNotEmpty() -> allLoggedValues.addAll(positiveWeights)
+                    positiveMetrics.isNotEmpty() -> allLoggedValues.addAll(positiveMetrics)
+                    blockMeaningful -> allLoggedValues.addAll(workingSets.filter { it.reps > 0 }.map { it.reps.toDouble() })
+                }
 
                 if (targetExId != null && targetExId > 0L) {
                     byExerciseId[targetExId] = weights
+                    repsById[targetExId] = repsList
+                    metricValuesById[targetExId] = metricList
+                    loggedMetricById[targetExId] = resolvedMetric
                 }
                 if (resolvedName.isNotBlank()) {
-                    byExerciseName[resolvedName.lowercase()] = weights
+                    val lower = resolvedName.lowercase()
+                    byExerciseName[lower] = weights
+                    repsByName[lower] = repsList
+                    metricValuesByName[lower] = metricList
+                    loggedMetricByName[lower] = resolvedMetric
                 }
 
-                if (positiveWeights.isNotEmpty()) {
-                    if (matching.size == 1 && block.exercises.size <= 1) {
-                        summaryTokens += positiveWeights.take(4).joinToString(" · ") { it.trimmed() } + " $weightUnit"
-                    } else {
-                        val peak = positiveWeights.max()
-                        summaryTokens += "$resolvedName ${peak.trimmed()} $weightUnit"
+                if (matching.size == 1 && block.exercises.size <= 1) {
+                    val formatted = RoutineTargetCodec.formatLoggedSetsSummary(
+                        workingSets = workingSets,
+                        metric = resolvedMetric,
+                        weightUnit = weightUnit
+                    )
+                    if (formatted.isNotBlank()) {
+                        summaryTokens += formatted
+                    }
+                } else if (positiveWeights.isNotEmpty()) {
+                    val peak = positiveWeights.max()
+                    summaryTokens += "$resolvedName ${peak.trimmed()} $weightUnit"
+                } else if (positiveMetrics.isNotEmpty()) {
+                    val peak = positiveMetrics.max()
+                    val unitSuffix = when (resolvedMetric) {
+                        ExerciseTargetMetric.CALORIES -> " cal"
+                        ExerciseTargetMetric.TIME_SECONDS -> "s"
+                        ExerciseTargetMetric.METERS -> "m"
+                        ExerciseTargetMetric.REPS -> ""
+                    }
+                    summaryTokens += "$resolvedName ${peak.trimmed()}$unitSuffix"
+                } else if (blockMeaningful) {
+                    val peakReps = workingSets.filter { it.reps > 0 }.maxOfOrNull { it.reps }
+                    if (peakReps != null) {
+                        summaryTokens += "$resolvedName $peakReps reps"
                     }
                 }
             }
 
-            val topWeight = allPositiveWeights.maxOrNull()
-            val averageWeight = allPositiveWeights.takeIf { it.isNotEmpty() }?.average()
+            val topValue = allLoggedValues.maxOrNull()
+            val averageValue = allLoggedValues.takeIf { it.isNotEmpty() }?.average()
             val summaryText = when {
                 summaryTokens.isNotEmpty() -> summaryTokens.joinToString(" · ")
                 else -> "Completed ${sw.session.date.formatShort()}"
             }
 
-            return LastBlockSessionSummary(
+            val summary = LastBlockSessionSummary(
                 dateIso = sw.session.date.toString(),
                 dateFormatted = sw.session.date.formatShort(),
                 exerciseWeightsById = byExerciseId,
                 exerciseWeightsByName = byExerciseName,
-                topWeight = topWeight,
-                averageWeight = averageWeight,
-                setWeightsSummary = summaryText
+                topWeight = topValue,
+                averageWeight = averageValue,
+                setWeightsSummary = summaryText,
+                exerciseRepsById = repsById,
+                exerciseRepsByName = repsByName,
+                exerciseMetricValuesById = metricValuesById,
+                exerciseMetricValuesByName = metricValuesByName,
+                exerciseLoggedMetricById = loggedMetricById,
+                exerciseLoggedMetricByName = loggedMetricByName
             )
+            if (hasMeaningfulData) return summary
+            if (fallbackSummary == null) fallbackSummary = summary
         }
-        return null
+        return fallbackSummary
     }
 
     /**
@@ -596,19 +669,19 @@ object AvailableBlockCodec {
         bws: BlockWithSets,
         matchedBlock: AvailableBlock?
     ): Boolean {
-        // The simplified editor only round-trips (reps, positive weight) per set. Keep any block
-        // carrying warm-up / failed / grouped sets or unweighted rep-only sets on the legacy
-        // CompactBlockEditor so editing a historical log never silently drops set data.
-        if (bws.sets.any { it.isWarmup || it.isFailed || (it.groupIndex ?: 0) > 0 }) return true
-        val isBlankPlaceholder = bws.sets.size == 1 && bws.sets[0].reps <= 1
-        if (!isBlankPlaceholder && bws.sets.any { (it.weight ?: 0.0) <= 0.0 }) return true
+        // Keep warm-up / failed blocks and unmatched WOD/score blocks on CompactBlockEditor so
+        // editing a historical log never loses warm-up, failure, or metcon text/score fields.
+        // Unweighted rep-only sets, metricValue (cal/time/meters) sets, and groupIndex rounds
+        // hydrate cleanly into SimplifiedBlockLogCard / SimplifiedExerciseLogCard.
+        if (bws.sets.any { it.isWarmup || it.isFailed }) return true
         if (matchedBlock != null) return false
         val blk = bws.block
+        if (blk.format.equals(STANDALONE_EXERCISE_SESSION_FORMAT, ignoreCase = true)) {
+            return false
+        }
         if (blk.resultText.isNotBlank() || blk.resultValue != null) return true
-        val hasPositiveWeight = bws.sets.any { (it.weight ?: 0.0) > 0.0 }
-        val hasNonWeightMetricOnly = bws.sets.any { (it.metricValue ?: 0.0) > 0.0 && (it.weight ?: 0.0) <= 0.0 }
-        if (hasNonWeightMetricOnly) return true
-        if (blk.kind == BlockKind.METCON && !hasPositiveWeight) return true
+        val hasLoggedValues = bws.sets.any { (it.weight ?: 0.0) > 0.0 || (it.metricValue ?: 0.0) > 0.0 }
+        if (blk.kind == BlockKind.METCON && !hasLoggedValues) return true
         return false
     }
 
@@ -697,12 +770,28 @@ object AvailableBlockCodec {
                 } else {
                     listOf(1)
                 }
+                val metricValues = if (orderedSets.isNotEmpty()) {
+                    orderedSets.map { it.metricValue?.takeIf { mv -> mv > 0.0 } }
+                } else {
+                    listOf(null)
+                }
+                val groupIndices = if (orderedSets.isNotEmpty()) {
+                    orderedSets.map { it.groupIndex?.takeIf { g -> g > 0 } }
+                } else {
+                    listOf(null)
+                }
                 val defaultReps = orderedSets.firstOrNull { it.reps > 0 }?.reps ?: 1
 
                 if (orderedSets.isEmpty() && parsedCsvIds.size > 1) {
                     parsedCsvIds.forEachIndexed { csvIdx, exId ->
-                        val exName = exercisesById[exId]?.name
+                        val resolvedEx = exercisesById[exId]
+                        val exName = resolvedEx?.name
                             ?: blk.name.trim().ifBlank { matchedBlock?.title.orEmpty() }
+                        val resolvedMetric = RoutineTargetCodec.resolveSessionBlockMetric(
+                            blockNotes = blk.notes,
+                            sets = emptyList(),
+                            exercise = resolvedEx
+                        )
                         exerciseSeeds += HydratedBlockExerciseSeed(
                             sourceBlockId = blk.id.takeIf { it > 0L && csvIdx == 0 },
                             movementId = exId,
@@ -715,7 +804,11 @@ object AvailableBlockCodec {
                             rawSection = blk.section,
                             rawKind = blk.kind,
                             rawIsCompleted = blk.isCompleted,
-                            subBlockTitle = blk.subBlock
+                            subBlockTitle = blk.subBlock,
+                            metricValues = listOf(null),
+                            groupIndices = listOf(null),
+                            loggedMetric = resolvedMetric,
+                            rawNotes = blk.notes
                         )
                     }
                 } else {
@@ -729,8 +822,14 @@ object AvailableBlockCodec {
                     ) {
                         resolvedId = matchedBlock.exercises.first().id
                     }
-                    val resolvedName = (resolvedId.takeIf { it > 0L }?.let { exercisesById[it]?.name })
+                    val resolvedEx = resolvedId.takeIf { it > 0L }?.let { exercisesById[it] }
+                    val resolvedName = resolvedEx?.name
                         ?: blk.name.trim().ifBlank { matchedBlock?.title.orEmpty() }
+                    val resolvedMetric = RoutineTargetCodec.resolveSessionBlockMetric(
+                        blockNotes = blk.notes,
+                        sets = orderedSets,
+                        exercise = resolvedEx ?: exercisesByLowerName[resolvedName.trim().lowercase()]
+                    )
 
                     exerciseSeeds += HydratedBlockExerciseSeed(
                         sourceBlockId = blk.id.takeIf { it > 0L },
@@ -744,7 +843,11 @@ object AvailableBlockCodec {
                         rawSection = blk.section,
                         rawKind = blk.kind,
                         rawIsCompleted = blk.isCompleted,
-                        subBlockTitle = blk.subBlock
+                        subBlockTitle = blk.subBlock,
+                        metricValues = metricValues,
+                        groupIndices = groupIndices,
+                        loggedMetric = resolvedMetric,
+                        rawNotes = blk.notes
                     )
                 }
             }
