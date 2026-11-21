@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import cors from "cors";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
@@ -11,19 +12,53 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createCrossTrainingMcpServer } from "./mcp.js";
 import { OAuthServer, type OAuthConfig } from "./oauth.js";
 import {
+  isValidIsoDate,
+  type WeightSubcycleType,
+  WeightSubcycleTypeValues,
+} from "./schemas.js";
+import { buildSheetsExport } from "./sheets-export.js";
+import {
+  type AppEnv,
   FirestoreBackingStore,
   type RawDocumentBackingStore,
   type UserContext,
   WorkoutDomainService,
 } from "./store.js";
 
+export interface SheetsExportConfig {
+  /** Dedicated static Bearer token (>= 32 chars) scoped solely to `GET /export/sheets`. */
+  token?: string;
+  /** Target Firebase user UID exported when `GET /export/sheets` is invoked. */
+  defaultUid?: string;
+  /** Default Firestore environment (`production` or `snapshot`). */
+  defaultEnv?: AppEnv;
+  /** Optional default weight subcycle corridor (`FAT_LOSS`, `RECOMPOSITION`, `MUSCLE_GAIN`). */
+  defaultSubcycleType?: WeightSubcycleType;
+  /** Per-minute request limit on `/export/sheets` (defaults to 60). */
+  rateLimitMaxPerMinute?: number;
+}
+
 export interface CreateAppOptions {
   backingStore: RawDocumentBackingStore;
   oauthConfig: OAuthConfig;
+  /** Optional configuration for the read-only Google Sheets export endpoint (`GET /export/sheets`). */
+  sheetsExportConfig?: SheetsExportConfig;
   /** Per-authenticated-user MCP request ceiling per minute (defaults to 180). */
   rateLimitMaxPerMinute?: number;
   /** Per-IP unauthenticated/proxy request ceiling per minute (defaults to max(rateLimitMaxPerMinute * 3, 300)). */
   ipRateLimitMaxPerMinute?: number;
+}
+
+function isValidSheetsBearerToken(
+  authHeader: string | undefined,
+  expectedToken: string
+): boolean {
+  const match = /^Bearer\s+(.+)$/i.exec((authHeader ?? "").trim());
+  if (!match) return false;
+  const provided = match[1].trim();
+  const a = Buffer.from(provided, "utf8");
+  const b = Buffer.from(expectedToken, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 /**
@@ -235,6 +270,111 @@ export function createMcpExpressApp(options: CreateAppOptions): Express {
     }
   );
 
+  // ==========================================================================
+  // Read-Only Google Sheets Export Bridge (GET /export/sheets)
+  // ==========================================================================
+
+  const sheetsMaxPerMin = options.sheetsExportConfig?.rateLimitMaxPerMinute ?? 60;
+  const sheetsExportLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: sheetsMaxPerMin,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: (_req, res) => {
+      res.setHeader("Retry-After", "60");
+      res.status(429).json({
+        error: "too_many_requests",
+        error_description: `Sheets export rate limit exceeded (max ${sheetsMaxPerMin} requests/minute).`,
+      });
+    },
+  });
+
+  app.get("/export/sheets", sheetsExportLimiter, async (req: Request, res: Response) => {
+    res.setHeader("Cache-Control", "no-store");
+
+    const cfg = options.sheetsExportConfig;
+    const expectedToken = cfg?.token?.trim() ?? "";
+    const defaultUid = cfg?.defaultUid?.trim() ?? "";
+    if (expectedToken.length < 32 || !defaultUid) {
+      res.status(503).json({
+        error: "sheets_export_not_configured",
+        error_description: "Sheets export endpoint is not configured on this server.",
+      });
+      return;
+    }
+
+    if (!isValidSheetsBearerToken(req.headers.authorization, expectedToken)) {
+      res.status(401).json({
+        error: "unauthorized",
+        error_description: "Invalid or missing Sheets export Bearer token.",
+      });
+      return;
+    }
+
+    let targetEnv: AppEnv = cfg?.defaultEnv === "snapshot" ? "snapshot" : "production";
+    if (req.query.env !== undefined) {
+      if (req.query.env !== "production" && req.query.env !== "snapshot") {
+        res.status(400).json({
+          error: "invalid_request",
+          error_description: "Invalid 'env' query parameter (expected 'production' or 'snapshot').",
+        });
+        return;
+      }
+      targetEnv = req.query.env;
+    }
+
+    let subcycleType: WeightSubcycleType | undefined = cfg?.defaultSubcycleType;
+    if (req.query.subcycleType !== undefined) {
+      const rawSubcycle = req.query.subcycleType;
+      if (
+        typeof rawSubcycle !== "string" ||
+        !(WeightSubcycleTypeValues as readonly string[]).includes(rawSubcycle)
+      ) {
+        res.status(400).json({
+          error: "invalid_request",
+          error_description: `Invalid 'subcycleType' query parameter (expected one of ${WeightSubcycleTypeValues.join(", ")}).`,
+        });
+        return;
+      }
+      subcycleType = rawSubcycle as WeightSubcycleType;
+    }
+
+    const parseOptionalDateQuery = (paramName: "cycleStartDate" | "cycleFinishDate" | "asOfDate"): string | undefined | null => {
+      const raw = req.query[paramName];
+      if (raw === undefined) return undefined;
+      if (typeof raw !== "string" || !isValidIsoDate(raw)) {
+        res.status(400).json({
+          error: "invalid_request",
+          error_description: `Invalid '${paramName}' query parameter (expected YYYY-MM-DD).`,
+        });
+        return null;
+      }
+      return raw;
+    };
+
+    const cycleStartDate = parseOptionalDateQuery("cycleStartDate");
+    if (cycleStartDate === null) return;
+    const cycleFinishDate = parseOptionalDateQuery("cycleFinishDate");
+    if (cycleFinishDate === null) return;
+    const asOfDate = parseOptionalDateQuery("asOfDate");
+    if (asOfDate === null) return;
+
+    try {
+      const payload = await buildSheetsExport(
+        options.backingStore,
+        { uid: defaultUid, env: targetEnv },
+        { subcycleType, cycleStartDate, cycleFinishDate, asOfDate }
+      );
+      res.status(200).json(payload);
+    } catch (err) {
+      console.error("Failed to build sheets export:", err);
+      res.status(500).json({
+        error: "export_failed",
+        error_description: "Failed to build sheets export.",
+      });
+    }
+  });
+
   return app;
 }
 
@@ -280,6 +420,13 @@ async function main() {
     process.exit(1);
   }
 
+  const rawSheetsSubcycle = process.env.SHEETS_EXPORT_SUBCYCLE_TYPE?.trim();
+  const sheetsDefaultSubcycle =
+    rawSheetsSubcycle &&
+    (WeightSubcycleTypeValues as readonly string[]).includes(rawSheetsSubcycle)
+      ? (rawSheetsSubcycle as WeightSubcycleType)
+      : undefined;
+
   const app = createMcpExpressApp({
     backingStore,
     rateLimitMaxPerMinute: parsePositiveIntEnv(process.env.MCP_RATE_LIMIT_PER_MIN, 180),
@@ -294,6 +441,17 @@ async function main() {
         const decoded = await getAuth().verifyIdToken(idToken);
         return { uid: decoded.uid, email: decoded.email };
       },
+    },
+    sheetsExportConfig: {
+      token: process.env.SHEETS_EXPORT_TOKEN?.trim(),
+      defaultUid: process.env.SHEETS_EXPORT_UID?.trim(),
+      defaultEnv:
+        process.env.SHEETS_EXPORT_ENV?.trim() === "snapshot" ? "snapshot" : "production",
+      defaultSubcycleType: sheetsDefaultSubcycle,
+      rateLimitMaxPerMinute: parsePositiveIntEnv(
+        process.env.SHEETS_EXPORT_RATE_LIMIT_PER_MIN,
+        60
+      ),
     },
   });
 
