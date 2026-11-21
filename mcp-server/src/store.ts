@@ -215,6 +215,14 @@ export interface UpdateBlockSessionLogInput {
   sync_parent_complex_default_prs?: boolean;
   sync_parent_block_default_prs?: boolean;
   cycleId?: number;
+  shared_set_weights_kg?: number[];
+  exercise_targets?: Array<{
+    exercise_name: string;
+    target_metric: RoutineTargetMetric;
+    target_mode?: RoutineTargetMode;
+    fixed_value?: number;
+    per_set_values?: number[];
+  }>;
   exercises?: Array<{
     exerciseId?: number;
     exerciseName: string;
@@ -299,7 +307,15 @@ export interface LogBlockSessionInput {
   block_title?: string;
   cycleId?: number;
   notes?: string;
-  exerciseLogs: Array<{
+  shared_set_weights_kg?: number[];
+  exercise_targets?: Array<{
+    exercise_name: string;
+    target_metric: RoutineTargetMetric;
+    target_mode?: RoutineTargetMode;
+    fixed_value?: number;
+    per_set_values?: number[];
+  }>;
+  exerciseLogs?: Array<{
     exerciseName: string;
     weights?: number[];
     metric?: RoutineTargetMetric;
@@ -409,6 +425,7 @@ export interface LogDailyRoutineSessionInput {
     exercise_name?: string;
     note?: string;
     set_weights_kg?: number[];
+    shared_set_weights_kg?: number[];
     metric?: RoutineTargetMetric;
     sets?: Array<{
       reps?: number;
@@ -2130,6 +2147,194 @@ export class WorkoutDomainService {
     });
   }
 
+  private buildTargetSlotMapFromInputs(
+    targets:
+      | Array<{
+          exercise_name: string;
+          target_metric: RoutineTargetMetric;
+          target_mode?: RoutineTargetMode;
+          fixed_value?: number;
+          per_set_values?: number[];
+        }>
+      | undefined,
+    roundCount: number
+  ): Map<string, RoutineExerciseTargetSlot> {
+    const map = new Map<string, RoutineExerciseTargetSlot>();
+    for (const t of targets ?? []) {
+      const cleanName = t.exercise_name.trim().toLowerCase();
+      if (!cleanName) continue;
+      const mode: RoutineTargetMode =
+        t.target_mode ?? (t.per_set_values && t.per_set_values.length > 0 ? "PER_SET" : "FIXED");
+      const fixedValue = Math.max(0, Math.trunc(t.fixed_value ?? 1));
+      const perSetValues =
+        mode === "FIXED"
+          ? Array.from({ length: roundCount }, () => fixedValue)
+          : resizeRoutinePerSetValues(t.per_set_values ?? [], fixedValue, roundCount);
+      map.set(cleanName, {
+        metric: t.target_metric,
+        mode,
+        fixedValue,
+        perSetValues,
+      });
+    }
+    return map;
+  }
+
+  private expandSharedComplexSetWeights(params: {
+    sharedSetWeightsKg: number[];
+    orderedExerciseNames: string[];
+    exercisesByLowerName: Map<string, ExerciseRecord>;
+    targetsByLowerName: Map<string, RoutineExerciseTargetSlot>;
+    priorActiveRoundMasksByLowerName?: Map<string, Set<number>>;
+    explicitOverridesByLowerName?: Map<
+      string,
+      {
+        exerciseId?: number;
+        exerciseName: string;
+        weights?: number[];
+        metric?: RoutineTargetMetric;
+        sets?: Array<{
+          reps?: number;
+          weight_kg?: number;
+          weight?: number;
+          metric_value?: number;
+          group_index?: number;
+        }>;
+        setCountForEmpty?: number;
+      }
+    >;
+  }): Array<{
+    exerciseId?: number;
+    exerciseName: string;
+    weights?: number[];
+    metric?: RoutineTargetMetric;
+    sets?: Array<{
+      reps?: number;
+      weight_kg?: number;
+      weight?: number;
+      metric_value?: number;
+      group_index?: number;
+    }>;
+    setCountForEmpty?: number;
+  }> {
+    const roundCount = params.sharedSetWeightsKg.length;
+    const seenLower = new Set<string>();
+    const combinedOrder: string[] = [];
+    for (const rawName of params.orderedExerciseNames) {
+      const clean = rawName.trim();
+      const lower = clean.toLowerCase();
+      if (clean && !seenLower.has(lower)) {
+        seenLower.add(lower);
+        combinedOrder.push(clean);
+      }
+    }
+    for (const [lower, ov] of params.explicitOverridesByLowerName?.entries() ?? []) {
+      if (!seenLower.has(lower)) {
+        seenLower.add(lower);
+        combinedOrder.push(ov.exerciseName);
+      }
+    }
+
+    const valuesByLower = new Map<string, number[]>();
+    for (const name of combinedOrder) {
+      const lower = name.toLowerCase();
+      if (params.explicitOverridesByLowerName?.has(lower)) continue;
+      const slot = params.targetsByLowerName.get(lower);
+      const priorMask = params.priorActiveRoundMasksByLowerName?.get(lower);
+      if (slot) {
+        const vals =
+          slot.mode === "FIXED"
+            ? Array.from({ length: roundCount }, () => Math.max(0, slot.fixedValue))
+            : resizeRoutinePerSetValues(slot.perSetValues, slot.fixedValue, roundCount);
+        valuesByLower.set(lower, vals);
+      } else if (priorMask) {
+        valuesByLower.set(
+          lower,
+          Array.from({ length: roundCount }, (_, rIdx) => (priorMask.has(rIdx + 1) ? 1 : 0))
+        );
+      } else {
+        valuesByLower.set(
+          lower,
+          Array.from({ length: roundCount }, () => 1)
+        );
+      }
+    }
+
+    let anySkipInComplex = false;
+    for (const vals of valuesByLower.values()) {
+      if (vals.some((v) => v <= 0)) {
+        anySkipInComplex = true;
+        break;
+      }
+    }
+    if (!anySkipInComplex) {
+      for (const ov of params.explicitOverridesByLowerName?.values() ?? []) {
+        const count = ov.sets?.length ?? ov.weights?.length ?? 0;
+        if (
+          (ov.sets ?? []).some((s) => Number(s.group_index ?? 0) > 0) ||
+          (count > 0 && count !== roundCount)
+        ) {
+          anySkipInComplex = true;
+          break;
+        }
+      }
+    }
+
+    return combinedOrder.map((name) => {
+      const lower = name.toLowerCase();
+      const override = params.explicitOverridesByLowerName?.get(lower);
+      if (override) {
+        return override;
+      }
+      const exRec = params.exercisesByLowerName.get(lower);
+      const slot = params.targetsByLowerName.get(lower);
+      const metric: RoutineTargetMetric =
+        slot?.metric ?? inferRoutineTargetMetricFromLibraryMetric(exRec?.metricType);
+      const isWeighted = metric === "REPS" && (!exRec || exRec.metricType === "WEIGHT");
+      const vals = valuesByLower.get(lower) ?? Array.from({ length: roundCount }, () => 1);
+      const sets: Array<{
+        reps?: number;
+        weight_kg?: number;
+        metric_value?: number;
+        group_index?: number;
+      }> = [];
+
+      for (let rIdx = 0; rIdx < roundCount; rIdx++) {
+        const targetVal = vals[rIdx] ?? 0;
+        if (targetVal <= 0) continue;
+        const groupIndex = anySkipInComplex ? rIdx + 1 : undefined;
+        if (metric === "REPS") {
+          const wKg = isWeighted ? Number(params.sharedSetWeightsKg[rIdx] ?? 0) : 0;
+          sets.push({
+            reps: targetVal,
+            weight_kg: wKg,
+            ...(groupIndex !== undefined ? { group_index: groupIndex } : {}),
+          });
+        } else {
+          sets.push({
+            reps: 1,
+            metric_value: targetVal,
+            ...(groupIndex !== undefined ? { group_index: groupIndex } : {}),
+          });
+        }
+      }
+
+      if (sets.length === 0) {
+        return {
+          exerciseName: exRec?.name ?? name,
+          metric,
+          sets: [],
+          setCountForEmpty: 0,
+        };
+      }
+      return {
+        exerciseName: exRec?.name ?? name,
+        metric,
+        sets,
+      };
+    });
+  }
+
   async logBlockSession(
     ctx: UserContext,
     input: LogBlockSessionInput
@@ -2138,6 +2343,12 @@ export class WorkoutDomainService {
     recordedPrs: RepMaxRecord[];
     updatedTrackedPrs: TrackedPrSlotRecord[] | null;
   }> {
+    const hasExplicitLogs = (input.exerciseLogs?.length ?? 0) > 0;
+    const hasSharedWeights = (input.shared_set_weights_kg?.length ?? 0) > 0;
+    if (!hasExplicitLogs && !hasSharedWeights) {
+      throw new Error("Provide non-empty `exerciseLogs` or `shared_set_weights_kg`.");
+    }
+
     return this.runWithUserMutationLock(
       ctx,
       ["exercises", "routines", "sessions", "cycle_goals", "rep_maxes"],
@@ -2175,10 +2386,28 @@ export class WorkoutDomainService {
         const matchedRoutine =
           matchedRoutineIdx >= 0 ? routines[matchedRoutineIdx] : undefined;
 
+        const existingExercises = await tx.readCollection<ExerciseRecord>(ctx, "exercises");
+        const existingExById = new Map<number, ExerciseRecord>(
+          existingExercises.map((e) => [Number(e.id), e])
+        );
+        const existingExByLower = new Map<string, ExerciseRecord>(
+          existingExercises.map((e) => [e.name.trim().toLowerCase(), e])
+        );
+        const matchedInitialBlock = matchedRoutine
+          ? this.buildAvailableBlockRecord(
+              matchedRoutine,
+              existingExById,
+              existingExByLower,
+              [],
+              false
+            )
+          : undefined;
+
         const resolvedBlockTitle =
           cleanBlockTitleInput ||
           matchedRoutine?.routine.name ||
-          input.exerciseLogs[0]?.exerciseName.trim() ||
+          input.exerciseLogs?.[0]?.exerciseName.trim() ||
+          input.exercise_targets?.[0]?.exercise_name.trim() ||
           "Training Complex";
         const resolvedSessionTitle = input.sessionTitle?.trim() || resolvedBlockTitle;
 
@@ -2187,7 +2416,18 @@ export class WorkoutDomainService {
           metricType?: string;
           tracksRepMax?: boolean;
         }> = [];
-        for (const log of input.exerciseLogs) {
+        for (const ex of matchedInitialBlock?.exercises ?? []) {
+          exReqs.push({ name: ex.name });
+        }
+        for (const t of input.exercise_targets ?? []) {
+          if (t.exercise_name.trim()) {
+            exReqs.push({
+              name: t.exercise_name.trim(),
+              metricType: inferLibraryMetricTypeFromRoutineTarget(t.target_metric),
+            });
+          }
+        }
+        for (const log of input.exerciseLogs ?? []) {
           exReqs.push({ name: log.exerciseName });
         }
         for (const pr of input.recordedPrs ?? []) {
@@ -2216,6 +2456,40 @@ export class WorkoutDomainService {
             )
           : undefined;
         const blockInstructions = matchedAvailableBlock?.instructions ?? "";
+
+        const resolvedMovementLogs = hasSharedWeights
+          ? (() => {
+              const sharedWeights = input.shared_set_weights_kg!;
+              const orderedNames =
+                matchedAvailableBlock && matchedAvailableBlock.exercises.length > 0
+                  ? matchedAvailableBlock.exercises.map((e) => e.name)
+                  : [
+                      ...(input.exercise_targets ?? []).map((t) => t.exercise_name.trim()),
+                      ...(input.exerciseLogs ?? []).map((l) => l.exerciseName.trim()),
+                    ].filter(Boolean);
+              const fallbackNames =
+                orderedNames.length > 0 ? orderedNames : [resolvedBlockTitle];
+              const targetsByLowerName = this.buildTargetSlotMapFromInputs(
+                input.exercise_targets,
+                sharedWeights.length
+              );
+              const explicitMap = new Map<
+                string,
+                NonNullable<LogBlockSessionInput["exerciseLogs"]>[number]
+              >();
+              for (const log of input.exerciseLogs ?? []) {
+                const clean = log.exerciseName.trim();
+                if (clean) explicitMap.set(clean.toLowerCase(), log);
+              }
+              return this.expandSharedComplexSetWeights({
+                sharedSetWeightsKg: sharedWeights,
+                orderedExerciseNames: fallbackNames,
+                exercisesByLowerName,
+                targetsByLowerName,
+                explicitOverridesByLowerName: explicitMap,
+              });
+            })()
+          : (input.exerciseLogs ?? []);
 
         const sessions = await tx.readCollection<SessionWithBlocksRecord>(ctx, "sessions");
         const existingSessionIdx = sessions.findIndex(
@@ -2248,7 +2522,7 @@ export class WorkoutDomainService {
           existingSessionIdx >= 0 ? sessions[existingSessionIdx].session.id : maxSessionId + 1;
         const now = Date.now();
 
-        const blocks: SessionBlockEntryRecord[] = input.exerciseLogs.map((log, bIdx) => {
+        const blocks: SessionBlockEntryRecord[] = resolvedMovementLogs.map((log, bIdx) => {
           const ex = exerciseMap.get(log.exerciseName.trim().toLowerCase()) ?? null;
           const blockId = ++maxBlockId;
           const { sets, notes: blockNotes } = this.buildLoggedSessionSetsAndNotes({
@@ -2617,6 +2891,14 @@ export class WorkoutDomainService {
           metricType?: string;
           tracksRepMax?: boolean;
         }> = [];
+        for (const t of input.exercise_targets ?? []) {
+          if (t.exercise_name.trim()) {
+            exReqs.push({
+              name: t.exercise_name.trim(),
+              metricType: inferLibraryMetricTypeFromRoutineTarget(t.target_metric),
+            });
+          }
+        }
         for (const log of input.exercises ?? []) {
           if (log.exerciseName.trim()) {
             exReqs.push({ name: log.exerciseName.trim() });
@@ -2710,15 +2992,113 @@ export class WorkoutDomainService {
 
         let activeTargetBlocks: SessionBlockEntryRecord[] = targetBlocks;
         let nextBlocks: SessionBlockEntryRecord[];
+        const hasSharedWeights = (input.shared_set_weights_kg?.length ?? 0) > 0;
 
-        if (input.exercises !== undefined) {
-          const replacementBlocks: SessionBlockEntryRecord[] = input.exercises.map(
+        if (input.exercises !== undefined || hasSharedWeights) {
+          const replacementInputs: Array<{
+            exerciseId?: number;
+            exerciseName: string;
+            weights?: number[];
+            metric?: RoutineTargetMetric;
+            sets?: Array<{
+              reps?: number;
+              weight_kg?: number;
+              weight?: number;
+              metric_value?: number;
+              group_index?: number;
+            }>;
+            setCountForEmpty?: number;
+          }> = hasSharedWeights
+            ? (() => {
+                const sharedWeights = input.shared_set_weights_kg!;
+                const orderedNames =
+                  targetBlocks.length > 0
+                    ? targetBlocks
+                        .map((tb) => (tb.block.mainExerciseName || tb.block.name).trim())
+                        .filter(Boolean)
+                    : (matchedAvailableBlock?.exercises.map((e) => e.name) ?? []);
+                const fallbackNames =
+                  orderedNames.length > 0
+                    ? orderedNames
+                    : (input.exercises ?? []).map((e) => e.exerciseName.trim()).filter(Boolean);
+                const targetsByLowerName = this.buildTargetSlotMapFromInputs(
+                  input.exercise_targets,
+                  sharedWeights.length
+                );
+
+                let priorMasks: Map<string, Set<number>> | undefined;
+                if ((input.exercise_targets?.length ?? 0) === 0 && targetBlocks.length > 0) {
+                  const firstLen = (targetBlocks[0]?.sets ?? []).length;
+                  const anyTargetSkip = targetBlocks.some(
+                    (tb) =>
+                      (tb.sets ?? []).length === 0 ||
+                      (tb.sets ?? []).some((st) => Number(st.groupIndex) > 0) ||
+                      (tb.sets ?? []).length !== firstLen
+                  );
+                  if (anyTargetSkip) {
+                    priorMasks = new Map<string, Set<number>>();
+                    for (const tb of targetBlocks) {
+                      const exNameLower = (tb.block.mainExerciseName || tb.block.name)
+                        .trim()
+                        .toLowerCase();
+                      if (!exNameLower) continue;
+                      const tbSets = tb.sets ?? [];
+                      const hasExplicitG = tbSets.some((st) => Number(st.groupIndex) > 0);
+                      const mask = new Set<number>();
+                      tbSets.forEach((st, idx) => {
+                        const rNum = hasExplicitG
+                          ? Number(st.groupIndex) > 0
+                            ? Number(st.groupIndex)
+                            : idx + 1
+                          : idx + 1;
+                        mask.add(rNum);
+                      });
+                      priorMasks.set(exNameLower, mask);
+                    }
+                  }
+                }
+
+                const explicitMap = new Map<
+                  string,
+                  {
+                    exerciseId?: number;
+                    exerciseName: string;
+                    weights?: number[];
+                    metric?: RoutineTargetMetric;
+                    sets?: Array<{
+                      reps?: number;
+                      weight_kg?: number;
+                      weight?: number;
+                      metric_value?: number;
+                      group_index?: number;
+                    }>;
+                    setCountForEmpty?: number;
+                  }
+                >();
+                for (const log of input.exercises ?? []) {
+                  const clean = log.exerciseName.trim();
+                  if (clean) explicitMap.set(clean.toLowerCase(), log);
+                }
+
+                return this.expandSharedComplexSetWeights({
+                  sharedSetWeightsKg: sharedWeights,
+                  orderedExerciseNames: fallbackNames,
+                  exercisesByLowerName,
+                  targetsByLowerName,
+                  priorActiveRoundMasksByLowerName: priorMasks,
+                  explicitOverridesByLowerName: explicitMap,
+                });
+              })()
+            : (input.exercises ?? []);
+
+          const replacementBlocks: SessionBlockEntryRecord[] = replacementInputs.map(
             (log, bIdx) => {
               const ex =
                 (log.exerciseId !== undefined
                   ? exercisesById.get(log.exerciseId)
                   : undefined) ??
                 exerciseMap.get(log.exerciseName.trim().toLowerCase()) ??
+                exercisesByLowerName.get(log.exerciseName.trim().toLowerCase()) ??
                 null;
               const priorMatchingBlock = targetBlocks.find(
                 (tb) =>
@@ -2733,7 +3113,7 @@ export class WorkoutDomainService {
                 metric: log.metric,
                 sets: log.sets,
                 weights: log.weights,
-                setCountForEmpty: 1,
+                setCountForEmpty: log.setCountForEmpty ?? 1,
                 exerciseMetricType: ex?.metricType,
                 priorNotes: priorMatchingBlock?.block.notes ?? "",
               });
@@ -2853,6 +3233,7 @@ export class WorkoutDomainService {
           input.reconcilePrs !== false &&
           (input.trackedPrs !== undefined ||
             input.exercises !== undefined ||
+            hasSharedWeights ||
             input.date !== undefined ||
             input.cycleId !== undefined);
 
@@ -4106,23 +4487,23 @@ export class WorkoutDomainService {
     }
 
     const weightsList = params.weights ?? [];
-    const sets: SessionSetRecord[] =
-      weightsList.length > 0
-        ? weightsList.map((w, sIdx) => ({
-            id: params.nextSetIdFn(),
-            blockId: params.blockId,
-            position: sIdx,
-            groupIndex: 0,
-            reps: 1,
-            weight: Number(w) > 0 ? Number(w) : 0.0,
-            metricValue: 0.0,
-            isWarmup: false,
-            isFailed: false,
-            notes: "",
-          }))
-        : Array.from(
-            { length: Math.max(1, Math.trunc(params.setCountForEmpty ?? 1)) },
-            (_, sIdx) => ({
+      const sets: SessionSetRecord[] =
+        weightsList.length > 0
+          ? weightsList.map((w, sIdx) => ({
+              id: params.nextSetIdFn(),
+              blockId: params.blockId,
+              position: sIdx,
+              groupIndex: 0,
+              reps: 1,
+              weight: Number(w) > 0 ? Number(w) : 0.0,
+              metricValue: 0.0,
+              isWarmup: false,
+              isFailed: false,
+              notes: "",
+            }))
+          : Array.from(
+              { length: Math.max(0, Math.trunc(params.setCountForEmpty ?? 1)) },
+              (_, sIdx) => ({
               id: params.nextSetIdFn(),
               blockId: params.blockId,
               position: sIdx,
@@ -5109,6 +5490,15 @@ export class WorkoutDomainService {
             const resolvedBlockTitle =
               matchedAb?.routine.name || cleanTitle || "Training Complex";
             const instructions = decodedAb?.instructions ?? "";
+            const priorBlockItem = matchedAb
+              ? priorDailyRoutine?.items.find(
+                  (pi) =>
+                    pi.itemType === "COMPLEX" &&
+                    ((pi.complexId ?? pi.blockId) === matchedAb.routine.id ||
+                      (pi.complexTitle ?? pi.blockTitle ?? "").trim().toLowerCase() ===
+                        matchedAb.routine.name.trim().toLowerCase())
+                )
+              : undefined;
 
             const movementLogs: Array<{
               exerciseName: string;
@@ -5123,42 +5513,94 @@ export class WorkoutDomainService {
               }>;
               setCountForEmpty?: number;
             }> =
-              item.exercise_logs && item.exercise_logs.length > 0
-                ? item.exercise_logs.map((l) => ({
-                    exerciseName:
-                      (l.exercise_name ?? l.exerciseName ?? "").trim() || resolvedBlockTitle,
-                    weights: l.weights,
-                    metric: l.metric,
-                    sets: l.sets,
-                    setCountForEmpty: l.set_count_for_empty ?? l.setCountForEmpty,
-                  }))
-                : (item.set_weights_kg !== undefined || item.sets !== undefined) &&
-                    (decodedAb?.exercises.length ?? 0) <= 1
-                  ? [
+              item.shared_set_weights_kg && item.shared_set_weights_kg.length > 0
+                ? (() => {
+                    const orderedNames =
+                      decodedAb && decodedAb.exercises.length > 0
+                        ? decodedAb.exercises.map((e) => e.name)
+                        : (item.exercise_logs ?? [])
+                            .map((l) => (l.exercise_name ?? l.exerciseName ?? "").trim())
+                            .filter(Boolean);
+                    const fallbackNames =
+                      orderedNames.length > 0 ? orderedNames : [resolvedBlockTitle];
+                    const targetsByLowerName = new Map<string, RoutineExerciseTargetSlot>();
+                    for (const et of priorBlockItem?.exerciseTargets ?? []) {
+                      if (et.exerciseName.trim()) {
+                        targetsByLowerName.set(et.exerciseName.trim().toLowerCase(), et.target);
+                      }
+                    }
+                    const explicitOverrides = new Map<
+                      string,
                       {
-                        exerciseName:
-                          decodedAb?.exercises[0]?.name || resolvedBlockTitle,
-                        weights: item.set_weights_kg,
-                        metric: item.metric,
-                        sets: item.sets,
-                      },
-                    ]
-                  : decodedAb && decodedAb.exercises.length > 0
-                    ? decodedAb.exercises.map((e) => ({
-                        exerciseName: e.name,
-                        weights: item.set_weights_kg ?? [],
-                        metric: item.metric,
-                        setCountForEmpty: 3,
-                      }))
-                    : [
+                        exerciseName: string;
+                        weights?: number[];
+                        metric?: RoutineTargetMetric;
+                        sets?: Array<{
+                          reps?: number;
+                          weight_kg?: number;
+                          weight?: number;
+                          metric_value?: number;
+                          group_index?: number;
+                        }>;
+                        setCountForEmpty?: number;
+                      }
+                    >();
+                    for (const l of item.exercise_logs ?? []) {
+                      const clean = (l.exercise_name ?? l.exerciseName ?? "").trim();
+                      if (clean) {
+                        explicitOverrides.set(clean.toLowerCase(), {
+                          exerciseName: clean,
+                          weights: l.weights,
+                          metric: l.metric,
+                          sets: l.sets,
+                          setCountForEmpty: l.set_count_for_empty ?? l.setCountForEmpty,
+                        });
+                      }
+                    }
+                    return this.expandSharedComplexSetWeights({
+                      sharedSetWeightsKg: item.shared_set_weights_kg,
+                      orderedExerciseNames: fallbackNames,
+                      exercisesByLowerName,
+                      targetsByLowerName,
+                      explicitOverridesByLowerName: explicitOverrides,
+                    });
+                  })()
+                : item.exercise_logs && item.exercise_logs.length > 0
+                  ? item.exercise_logs.map((l) => ({
+                      exerciseName:
+                        (l.exercise_name ?? l.exerciseName ?? "").trim() || resolvedBlockTitle,
+                      weights: l.weights,
+                      metric: l.metric,
+                      sets: l.sets,
+                      setCountForEmpty: l.set_count_for_empty ?? l.setCountForEmpty,
+                    }))
+                  : (item.set_weights_kg !== undefined || item.sets !== undefined) &&
+                      (decodedAb?.exercises.length ?? 0) <= 1
+                    ? [
                         {
-                          exerciseName: resolvedBlockTitle,
-                          weights: item.set_weights_kg ?? [],
+                          exerciseName:
+                            decodedAb?.exercises[0]?.name || resolvedBlockTitle,
+                          weights: item.set_weights_kg,
                           metric: item.metric,
                           sets: item.sets,
-                          setCountForEmpty: 1,
                         },
-                      ];
+                      ]
+                    : decodedAb && decodedAb.exercises.length > 0
+                      ? decodedAb.exercises.map((e) => ({
+                          exerciseName: e.name,
+                          weights: item.set_weights_kg ?? [],
+                          metric: item.metric,
+                          setCountForEmpty: 3,
+                        }))
+                      : [
+                          {
+                            exerciseName: resolvedBlockTitle,
+                            weights: item.set_weights_kg ?? [],
+                            metric: item.metric,
+                            sets: item.sets,
+                            setCountForEmpty: 1,
+                          },
+                        ];
 
             const blockIdsForItem: number[] = [];
             const exIdsForBlock: Array<{ exId: number; sessionBlockId: number }> = [];
@@ -5211,13 +5653,6 @@ export class WorkoutDomainService {
             }
 
             if (matchedAb) {
-              const priorBlockItem = priorDailyRoutine?.items.find(
-                (pi) =>
-                  pi.itemType === "COMPLEX" &&
-                  ((pi.complexId ?? pi.blockId) === matchedAb.routine.id ||
-                    (pi.complexTitle ?? pi.blockTitle ?? "").trim().toLowerCase() ===
-                      matchedAb.routine.name.trim().toLowerCase())
-              );
               templateItemsForUpdate.push({
                 itemType: "BLOCK",
                 resolvedBlock: matchedAb,

@@ -135,6 +135,41 @@ internal data class DismissedPrSnapshot(
     val slotIndex: Int
 )
 
+internal enum class SharedSetWeightStateKind {
+    LINKED,
+    MIXED,
+    ALL_SKIPPED,
+    NON_WEIGHTED_ONLY
+}
+
+internal data class SharedSetWeightSummary(
+    val kind: SharedSetWeightStateKind,
+    val uniformWeightText: String = "",
+    val minWeight: Double? = null,
+    val maxWeight: Double? = null,
+    val majorityWeightText: String = "",
+    val divergentExerciseIndices: Set<Int> = emptySet()
+)
+
+internal data class ComplexSetWeightsSnapshot(
+    val setIndex: Int,
+    val previousWeightsByExercise: List<String>
+)
+
+internal data class RemovedExerciseSetSlice(
+    val weight: String,
+    val perSetRep: Int,
+    val repsInput: String,
+    val metricInput: String,
+    val groupIndex: Int?,
+    val skipped: Boolean
+)
+
+internal data class RemovedComplexSetSnapshot(
+    val setIndex: Int,
+    val perExerciseSlices: List<RemovedExerciseSetSlice>
+)
+
 private data class CachedExerciseMetricInputs(
     val repsInputs: List<String>,
     val weights: List<String>,
@@ -160,7 +195,9 @@ internal class LoadedAvailableBlockExerciseState(
     initialMetricInputs: List<String>? = null,
     initialGroupIndices: List<Int?> = List(initialWeights.size.coerceAtLeast(1)) { null },
     val targetBanner: String? = null,
-    val rawNotes: String = ""
+    val rawNotes: String = "",
+    val libraryMetricType: MetricType = MetricType.WEIGHT,
+    initialSkippedFlags: List<Boolean> = List(initialWeights.size.coerceAtLeast(1)) { false }
 ) {
     var activeMetric by mutableStateOf(initialMetric)
     val weights: SnapshotStateList<String> = initialWeights.ifEmpty { listOf("") }.toMutableStateList()
@@ -178,6 +215,12 @@ internal class LoadedAvailableBlockExerciseState(
     val groupIndices: SnapshotStateList<Int?> = List(this.weights.size) { idx ->
         initialGroupIndices.getOrNull(idx)?.takeIf { it > 0 }
     }.toMutableStateList()
+    val skippedFlags: SnapshotStateList<Boolean> = List(this.weights.size) { idx ->
+        initialSkippedFlags.getOrNull(idx) ?: false
+    }.toMutableStateList()
+
+    val supportsSharedWeight: Boolean
+        get() = activeMetric == ExerciseTargetMetric.REPS && libraryMetricType == MetricType.WEIGHT
 
     private val metricInputCache = mutableMapOf<ExerciseTargetMetric, CachedExerciseMetricInputs>()
 
@@ -193,20 +236,21 @@ internal class LoadedAvailableBlockExerciseState(
         val cached = metricInputCache[newMetric]
         if (cached != null) {
             for (i in 0 until currentCount) {
-                repsInputs[i] = cached.repsInputs.getOrNull(i).orEmpty()
-                weights[i] = cached.weights.getOrNull(i).orEmpty()
-                metricInputs[i] = cached.metricInputs.getOrNull(i).orEmpty()
-                perSetReps[i] = repsInputs[i].toIntOrNull()?.coerceAtLeast(1) ?: defaultReps.coerceAtLeast(1)
+                if (skippedFlags.getOrElse(i) { false }) {
+                    repsInputs[i] = ""
+                    weights[i] = ""
+                    metricInputs[i] = ""
+                    perSetReps[i] = defaultReps.coerceAtLeast(1)
+                } else {
+                    repsInputs[i] = cached.repsInputs.getOrNull(i).orEmpty()
+                    weights[i] = cached.weights.getOrNull(i).orEmpty()
+                    metricInputs[i] = cached.metricInputs.getOrNull(i).orEmpty()
+                    perSetReps[i] = repsInputs[i].toIntOrNull()?.coerceAtLeast(1) ?: defaultReps.coerceAtLeast(1)
+                }
             }
         } else {
-            if (newMetric == ExerciseTargetMetric.REPS) {
-                for (i in 0 until currentCount) {
-                    metricInputs[i] = ""
-                }
-            } else {
-                for (i in 0 until currentCount) {
-                    metricInputs[i] = ""
-                }
+            for (i in 0 until currentCount) {
+                metricInputs[i] = ""
             }
         }
     }
@@ -226,7 +270,9 @@ internal class LoadedAvailableBlockState(
     val rawIsCompleted: Boolean = true,
     val uiKey: String = UUID.randomUUID().toString(),
     val itemKind: SessionItemKind = SessionItemKind.BLOCK,
-    val sourceRoutineItem: DailyRoutineItem? = null
+    val sourceRoutineItem: DailyRoutineItem? = null,
+    val lastSessionDateFormatted: String? = null,
+    val hasPreFilledHistory: Boolean = false
 ) {
     val exerciseSections: SnapshotStateList<LoadedAvailableBlockExerciseState> = exerciseStates.toMutableStateList()
     val trackedPrSlots: SnapshotStateList<TrackedPrSlot> = initialTrackedPrs.toMutableStateList()
@@ -235,6 +281,12 @@ internal class LoadedAvailableBlockState(
     val persistedSessionPrKeys: SnapshotStateMap<String, Boolean> = mutableStateMapOf()
     val explicitlyAppliedPrKeys: SnapshotStateMap<String, Boolean> = mutableStateMapOf()
     var mutationCount by mutableIntStateOf(0)
+
+    val isCompactComplex: Boolean
+        get() = itemKind == SessionItemKind.BLOCK && exerciseSections.size >= 2
+
+    val complexSetCount: Int
+        get() = exerciseSections.maxOfOrNull { it.weights.size }?.coerceAtLeast(1) ?: 1
 
     init {
         initialPersistedRepMaxes.forEach { rm ->
@@ -260,7 +312,11 @@ internal class LoadedAvailableBlockState(
     fun blockMaxSetWeight(): Double =
         exerciseSections.asSequence()
             .filter { it.activeMetric == ExerciseTargetMetric.REPS }
-            .flatMap { it.weights.asSequence() }
+            .flatMap { section ->
+                section.weights.asSequence().filterIndexed { idx, _ ->
+                    !section.skippedFlags.getOrElse(idx) { false }
+                }
+            }
             .mapNotNull { AvailableBlockCodec.normalizedPositiveWeight(it) }
             .maxOrNull() ?: 0.0
 
@@ -270,12 +326,276 @@ internal class LoadedAvailableBlockState(
             if (matchSections.isNotEmpty()) {
                 return matchSections.asSequence()
                     .filter { it.activeMetric == ExerciseTargetMetric.REPS }
-                    .flatMap { it.weights.asSequence() }
+                    .flatMap { section ->
+                        section.weights.asSequence().filterIndexed { idx, _ ->
+                            !section.skippedFlags.getOrElse(idx) { false }
+                        }
+                    }
                     .mapNotNull { AvailableBlockCodec.normalizedPositiveWeight(it) }
                     .maxOrNull() ?: 0.0
             }
         }
         return blockMaxSetWeight()
+    }
+
+    fun resolveSharedSetWeight(setIndex: Int): SharedSetWeightSummary {
+        val activeIndices = exerciseSections.indices.filter { idx ->
+            !exerciseSections[idx].skippedFlags.getOrElse(setIndex) { false }
+        }
+        if (activeIndices.isEmpty()) {
+            return SharedSetWeightSummary(kind = SharedSetWeightStateKind.ALL_SKIPPED)
+        }
+
+        val weightedActive = activeIndices.filter { exerciseSections[it].supportsSharedWeight }
+        val explicitlyLoadedActive = activeIndices.filter { idx ->
+            val sec = exerciseSections[idx]
+            sec.activeMetric == ExerciseTargetMetric.REPS &&
+                (AvailableBlockCodec.normalizedPositiveWeight(sec.weights.getOrNull(setIndex).orEmpty()) ?: 0.0) > 0.0
+        }
+        val targetIndices = (weightedActive + explicitlyLoadedActive).distinct()
+        if (targetIndices.isEmpty()) {
+            return SharedSetWeightSummary(kind = SharedSetWeightStateKind.NON_WEIGHTED_ONLY)
+        }
+
+        val rawTexts = targetIndices.map { exerciseSections[it].weights.getOrNull(setIndex).orEmpty() }
+        if (rawTexts.distinct().size == 1) {
+            return SharedSetWeightSummary(
+                kind = SharedSetWeightStateKind.LINKED,
+                uniformWeightText = rawTexts.first()
+            )
+        }
+
+        val parsedWeights = rawTexts.map { AvailableBlockCodec.normalizedPositiveWeight(it) }
+        val allPositive = parsedWeights.all { it != null }
+        if (allPositive) {
+            val scaledDistinct = parsedWeights.map { normalizeWeight2dp(checkNotNull(it)) }.distinct()
+            if (scaledDistinct.size == 1) {
+                return SharedSetWeightSummary(
+                    kind = SharedSetWeightStateKind.LINKED,
+                    uniformWeightText = checkNotNull(parsedWeights.first()).trimmed()
+                )
+            }
+        }
+
+        val nonNullWeights = parsedWeights.filterNotNull()
+        val minWeight = nonNullWeights.minOrNull()
+        val maxWeight = nonNullWeights.maxOrNull()
+
+        var majorityBd: BigDecimal? = null
+        var majorityWeightValue: Double? = null
+        if (nonNullWeights.isNotEmpty()) {
+            val groupedCounts = linkedMapOf<BigDecimal, Pair<Int, Double>>()
+            parsedWeights.forEach { w ->
+                if (w != null) {
+                    val bd = normalizeWeight2dp(w)
+                    val prev = groupedCounts[bd]
+                    if (prev == null) {
+                        groupedCounts[bd] = 1 to w
+                    } else {
+                        groupedCounts[bd] = (prev.first + 1) to prev.second
+                    }
+                }
+            }
+            val bestEntry = groupedCounts.entries.maxByOrNull { it.value.first }
+            if (bestEntry != null) {
+                majorityBd = bestEntry.key
+                majorityWeightValue = bestEntry.value.second
+            }
+        }
+
+        val divergent = mutableSetOf<Int>()
+        targetIndices.forEachIndexed { pos, exIdx ->
+            val w = parsedWeights[pos]
+            val matchesMajority = w != null && majorityBd != null && normalizeWeight2dp(w) == majorityBd
+            if (!matchesMajority) {
+                divergent += exIdx
+            }
+        }
+
+        return SharedSetWeightSummary(
+            kind = SharedSetWeightStateKind.MIXED,
+            uniformWeightText = "",
+            minWeight = minWeight,
+            maxWeight = maxWeight,
+            majorityWeightText = majorityWeightValue?.trimmed().orEmpty(),
+            divergentExerciseIndices = divergent
+        )
+    }
+
+    fun captureComplexSetWeights(setIndex: Int): ComplexSetWeightsSnapshot =
+        ComplexSetWeightsSnapshot(
+            setIndex = setIndex,
+            previousWeightsByExercise = exerciseSections.map { it.weights.getOrNull(setIndex).orEmpty() }
+        )
+
+    fun updateSharedSetWeight(setIndex: Int, rawValue: String): String {
+        val sanitized = sanitizeCompactWeightInput(rawValue)
+        val activeIndices = exerciseSections.indices.filter { idx ->
+            !exerciseSections[idx].skippedFlags.getOrElse(setIndex) { false }
+        }
+        val targets = activeIndices.filter { idx ->
+            val sec = exerciseSections[idx]
+            sec.supportsSharedWeight ||
+                (sec.activeMetric == ExerciseTargetMetric.REPS &&
+                    (AvailableBlockCodec.normalizedPositiveWeight(sec.weights.getOrNull(setIndex).orEmpty()) ?: 0.0) > 0.0)
+        }
+        var changed = false
+        targets.forEach { idx ->
+            val sec = exerciseSections[idx]
+            if (setIndex in sec.weights.indices && sec.weights[setIndex] != sanitized) {
+                sec.weights[setIndex] = sanitized
+                syncNonOverriddenPrWeightsFor(sec.exerciseId, sec.exerciseName)
+                changed = true
+            }
+        }
+        if (changed) {
+            mutationCount += 1
+        }
+        return sanitized
+    }
+
+    fun relinkComplexSetWeights(setIndex: Int, targetWeight: String): ComplexSetWeightsSnapshot? {
+        val sanitized = sanitizeCompactWeightInput(targetWeight)
+        val snapshot = captureComplexSetWeights(setIndex)
+        updateSharedSetWeight(setIndex, sanitized)
+        val after = exerciseSections.map { it.weights.getOrNull(setIndex).orEmpty() }
+        return if (after != snapshot.previousWeightsByExercise) snapshot else null
+    }
+
+    fun restoreComplexSetWeights(snapshot: ComplexSetWeightsSnapshot) {
+        val setIdx = snapshot.setIndex
+        exerciseSections.forEachIndexed { idx, sec ->
+            val prev = snapshot.previousWeightsByExercise.getOrNull(idx) ?: return@forEachIndexed
+            if (setIdx in sec.weights.indices) {
+                sec.weights[setIdx] = prev
+                syncNonOverriddenPrWeightsFor(sec.exerciseId, sec.exerciseName)
+            }
+        }
+        mutationCount += 1
+    }
+
+    fun toggleComplexExerciseSkipped(
+        exState: LoadedAvailableBlockExerciseState,
+        setIndex: Int
+    ) {
+        if (setIndex !in exState.skippedFlags.indices) return
+        val currentlySkipped = exState.skippedFlags[setIndex]
+        if (!currentlySkipped) {
+            exState.skippedFlags[setIndex] = true
+            if (setIndex in exState.weights.indices) exState.weights[setIndex] = ""
+            if (setIndex in exState.metricInputs.indices) exState.metricInputs[setIndex] = ""
+            syncNonOverriddenPrWeightsFor(exState.exerciseId, exState.exerciseName)
+            mutationCount += 1
+            return
+        }
+
+        val preToggleSummary = resolveSharedSetWeight(setIndex)
+        exState.skippedFlags[setIndex] = false
+        if (exState.activeMetric == ExerciseTargetMetric.REPS) {
+            val priorActiveRep = exState.perSetReps.indices.lastOrNull { i ->
+                i != setIndex && !exState.skippedFlags.getOrElse(i) { false }
+            }?.let { exState.perSetReps[it] }
+            val restoredRep = exState.repsInputs.getOrNull(setIndex)?.toIntOrNull()?.takeIf { it > 0 }
+                ?: exState.perSetReps.getOrNull(setIndex)?.takeIf { it > 0 }
+                ?: priorActiveRep
+                ?: exState.defaultReps.coerceAtLeast(1)
+            if (setIndex in exState.perSetReps.indices) {
+                exState.perSetReps[setIndex] = restoredRep
+            }
+            if (setIndex in exState.repsInputs.indices) {
+                exState.repsInputs[setIndex] = restoredRep.toString()
+            }
+            if (exState.supportsSharedWeight &&
+                preToggleSummary.kind == SharedSetWeightStateKind.LINKED &&
+                preToggleSummary.uniformWeightText.isNotBlank() &&
+                setIndex in exState.weights.indices
+            ) {
+                exState.weights[setIndex] = preToggleSummary.uniformWeightText
+            }
+        } else {
+            val priorActiveMetric = exState.metricInputs.indices.lastOrNull { i ->
+                i != setIndex && !exState.skippedFlags.getOrElse(i) { false } && exState.metricInputs[i].isNotBlank()
+            }?.let { exState.metricInputs[it] }
+            val restoredMetric = exState.metricInputs.getOrNull(setIndex)?.takeIf { it.isNotBlank() }
+                ?: priorActiveMetric
+                ?: exState.activeMetric.defaultFixedValue.toString()
+            if (setIndex in exState.metricInputs.indices) {
+                exState.metricInputs[setIndex] = restoredMetric
+            }
+        }
+        syncNonOverriddenPrWeightsFor(exState.exerciseId, exState.exerciseName)
+        mutationCount += 1
+    }
+
+    fun addComplexSet() {
+        val currentCount = complexSetCount
+        val lastIdx = (currentCount - 1).coerceAtLeast(0)
+        val newCount = currentCount + 1
+        exerciseSections.forEach { sec ->
+            while (sec.weights.size < currentCount) sec.weights.add("")
+            while (sec.perSetReps.size < currentCount) sec.perSetReps.add(sec.defaultReps.coerceAtLeast(1))
+            while (sec.repsInputs.size < currentCount) sec.repsInputs.add("")
+            while (sec.metricInputs.size < currentCount) sec.metricInputs.add("")
+            while (sec.groupIndices.size < currentCount) sec.groupIndices.add(sec.groupIndices.size + 1)
+            while (sec.skippedFlags.size < currentCount) sec.skippedFlags.add(false)
+
+            val lastSkipped = sec.skippedFlags.getOrNull(lastIdx) ?: false
+            sec.skippedFlags.add(lastSkipped)
+            sec.weights.add(if (lastSkipped) "" else sec.weights.getOrNull(lastIdx).orEmpty())
+            sec.perSetReps.add(sec.perSetReps.getOrNull(lastIdx) ?: sec.defaultReps.coerceAtLeast(1))
+            sec.repsInputs.add(if (lastSkipped) "" else sec.repsInputs.getOrNull(lastIdx).orEmpty())
+            sec.metricInputs.add(if (lastSkipped) "" else sec.metricInputs.getOrNull(lastIdx).orEmpty())
+            sec.groupIndices.add(newCount)
+            syncNonOverriddenPrWeightsFor(sec.exerciseId, sec.exerciseName)
+        }
+        mutationCount += 1
+    }
+
+    fun removeComplexSet(setIndex: Int): RemovedComplexSetSnapshot? {
+        val currentCount = complexSetCount
+        if (currentCount <= 1 || setIndex !in 0 until currentCount) return null
+        val slices = exerciseSections.map { sec ->
+            RemovedExerciseSetSlice(
+                weight = sec.weights.getOrNull(setIndex).orEmpty(),
+                perSetRep = sec.perSetReps.getOrNull(setIndex) ?: sec.defaultReps.coerceAtLeast(1),
+                repsInput = sec.repsInputs.getOrNull(setIndex).orEmpty(),
+                metricInput = sec.metricInputs.getOrNull(setIndex).orEmpty(),
+                groupIndex = sec.groupIndices.getOrNull(setIndex),
+                skipped = sec.skippedFlags.getOrNull(setIndex) ?: false
+            )
+        }
+        exerciseSections.forEach { sec ->
+            if (setIndex in sec.weights.indices) sec.weights.removeAt(setIndex)
+            if (setIndex in sec.perSetReps.indices) sec.perSetReps.removeAt(setIndex)
+            if (setIndex in sec.repsInputs.indices) sec.repsInputs.removeAt(setIndex)
+            if (setIndex in sec.metricInputs.indices) sec.metricInputs.removeAt(setIndex)
+            if (setIndex in sec.groupIndices.indices) sec.groupIndices.removeAt(setIndex)
+            if (setIndex in sec.skippedFlags.indices) sec.skippedFlags.removeAt(setIndex)
+            for (i in sec.groupIndices.indices) {
+                sec.groupIndices[i] = i + 1
+            }
+            syncNonOverriddenPrWeightsFor(sec.exerciseId, sec.exerciseName)
+        }
+        mutationCount += 1
+        return RemovedComplexSetSnapshot(setIndex = setIndex, perExerciseSlices = slices)
+    }
+
+    fun restoreRemovedComplexSet(snapshot: RemovedComplexSetSnapshot) {
+        exerciseSections.forEachIndexed { idx, sec ->
+            val slice = snapshot.perExerciseSlices.getOrNull(idx) ?: return@forEachIndexed
+            val insertAt = snapshot.setIndex.coerceIn(0, sec.weights.size)
+            sec.weights.add(insertAt, slice.weight)
+            sec.perSetReps.add(insertAt.coerceIn(0, sec.perSetReps.size), slice.perSetRep)
+            sec.repsInputs.add(insertAt.coerceIn(0, sec.repsInputs.size), slice.repsInput)
+            sec.metricInputs.add(insertAt.coerceIn(0, sec.metricInputs.size), slice.metricInput)
+            sec.groupIndices.add(insertAt.coerceIn(0, sec.groupIndices.size), slice.groupIndex)
+            sec.skippedFlags.add(insertAt.coerceIn(0, sec.skippedFlags.size), slice.skipped)
+            for (i in sec.groupIndices.indices) {
+                sec.groupIndices[i] = i + 1
+            }
+            syncNonOverriddenPrWeightsFor(sec.exerciseId, sec.exerciseName)
+        }
+        mutationCount += 1
     }
 
     fun updateSetWeight(
@@ -558,11 +878,19 @@ internal class LoadedAvailableBlockState(
             )
         }
 
+        val isCompact = isCompactComplex
+        val anySkipInComplex = isCompact && exerciseSections.any { sec -> sec.skippedFlags.any { it } }
+
         return exerciseSections.mapIndexed { idx, exState ->
             val mappedSets = mutableListOf<SetDraft>()
             val setCount = maxOf(exState.weights.size, exState.repsInputs.size, exState.metricInputs.size)
             for (setIdx in 0 until setCount) {
-                val groupIdx = exState.groupIndices.getOrNull(setIdx)?.takeIf { it > 0 }
+                if (exState.skippedFlags.getOrElse(setIdx) { false }) continue
+                val groupIdx = if (isCompact) {
+                    if (anySkipInComplex) setIdx + 1 else null
+                } else {
+                    exState.groupIndices.getOrNull(setIdx)?.takeIf { it > 0 }
+                }
                 if (exState.activeMetric == ExerciseTargetMetric.REPS) {
                     val weight = AvailableBlockCodec.normalizedPositiveWeight(
                         exState.weights.getOrNull(setIdx).orEmpty()
@@ -596,10 +924,31 @@ internal class LoadedAvailableBlockState(
                     }
                 }
             }
-            val sets = if (mappedSets.isNotEmpty()) {
-                mappedSets
-            } else {
-                listOf(SetDraft(reps = exState.defaultReps.coerceAtLeast(1), weight = null))
+            val allSkipped = exState.skippedFlags.isNotEmpty() && exState.skippedFlags.all { it }
+            val sets = when {
+                mappedSets.isNotEmpty() -> mappedSets
+                isCompact && allSkipped -> emptyList()
+                isCompact && anySkipInComplex -> {
+                    val activeIndices = (0 until setCount).filter { !exState.skippedFlags.getOrElse(it) { false } }
+                    if (activeIndices.isEmpty()) {
+                        emptyList()
+                    } else {
+                        activeIndices.map { sIdx ->
+                            SetDraft(
+                                reps = if (exState.activeMetric == ExerciseTargetMetric.REPS) {
+                                    exState.perSetReps.getOrNull(sIdx)?.coerceAtLeast(1)
+                                        ?: exState.defaultReps.coerceAtLeast(1)
+                                } else {
+                                    1
+                                },
+                                weight = null,
+                                metricValue = null,
+                                groupIndex = sIdx + 1
+                            )
+                        }
+                    }
+                }
+                else -> listOf(SetDraft(reps = exState.defaultReps.coerceAtLeast(1), weight = null))
             }
             val prsForThis = activeSessionPrs.filter { it.movementId == exState.exerciseId } +
                 if (idx == 0) unmatchedPrs else emptyList()
@@ -820,10 +1169,93 @@ internal fun buildLoadedAvailableBlockState(
         weightUnit = weightUnit,
         excludeSessionId = editingSessionId
     )
-    val exStates = block.exercises.map { ex ->
+    val resolvedSlots = AvailableBlockCodec.normalizeTrackedPrSlots(
+        block.trackedPrs.map { slot ->
+            if (slot.movementId > 0L) slot
+            else slot.copy(movementId = exercisesByLowerName[slot.movementName.trim().lowercase()]?.id ?: 0L)
+        }
+    )
+
+    if (block.exercises.size <= 1) {
+        val exStates = block.exercises.map { ex ->
+            val exObj = exercisesById[ex.id] ?: exercisesByLowerName[ex.name.trim().lowercase()]
+            val lowerName = ex.name.trim().lowercase()
+            val targetSpec = resolveBlockExerciseTargetSpec(ex, routineExerciseTargets, routineExerciseTargetsByName)
+            val prevWeights = lastSession?.exerciseWeightsById?.get(ex.id)
+                ?: lastSession?.exerciseWeightsByName?.get(lowerName)
+            val prevReps = lastSession?.exerciseRepsById?.get(ex.id)
+                ?: lastSession?.exerciseRepsByName?.get(lowerName)
+            val prevMetrics = lastSession?.exerciseMetricValuesById?.get(ex.id)
+                ?: lastSession?.exerciseMetricValuesByName?.get(lowerName)
+            val prevLoggedMetric = lastSession?.exerciseLoggedMetricById?.get(ex.id)
+                ?: lastSession?.exerciseLoggedMetricByName?.get(lowerName)
+
+            val built = buildTargetOrPrefillExerciseState(
+                exerciseId = ex.id,
+                exerciseName = ex.name,
+                libraryMetricType = exObj?.metricType ?: MetricType.WEIGHT,
+                targetSetsCount = if (targetSpec != null) routineTargetSetsCount else null,
+                targetSpec = targetSpec,
+                lastWeights = prevWeights,
+                lastReps = prevReps,
+                lastMetricValues = prevMetrics,
+                lastLoggedMetric = prevLoggedMetric,
+                lastDateFormatted = lastSession?.dateFormatted,
+                defaultEmptyTileCount = 3
+            )
+            LoadedAvailableBlockExerciseState(
+                exerciseId = built.exerciseId,
+                exerciseName = built.exerciseName,
+                lastSessionDateLabel = built.lastSessionDateLabel,
+                initialWeights = built.weights.toList(),
+                initialPerSetReps = built.perSetReps.toList(),
+                defaultReps = built.defaultReps,
+                sourceBlockId = built.sourceBlockId,
+                rawFormat = built.rawFormat,
+                rawScheme = built.rawScheme,
+                rawSection = built.rawSection,
+                rawKind = built.rawKind,
+                rawIsCompleted = built.rawIsCompleted,
+                subBlockTitle = built.subBlockTitle,
+                initialMetric = built.activeMetric,
+                initialRepsInputs = built.repsInputs.toList(),
+                initialMetricInputs = built.metricInputs.toList(),
+                initialGroupIndices = built.groupIndices.toList(),
+                targetBanner = built.targetBanner,
+                rawNotes = built.rawNotes,
+                libraryMetricType = exObj?.metricType ?: MetricType.WEIGHT,
+                initialSkippedFlags = built.skippedFlags.toList()
+            )
+        }
+        return LoadedAvailableBlockState(
+            block = block,
+            exerciseStates = exStates,
+            initialTrackedPrs = resolvedSlots,
+            isEditMode = isEditMode,
+            editingSessionId = editingSessionId,
+            sourceRoutineItem = sourceRoutineItem
+        )
+    }
+
+    val specsByIndex = block.exercises.map { ex ->
+        resolveBlockExerciseTargetSpec(ex, routineExerciseTargets, routineExerciseTargetsByName)
+    }
+    val hasRoutineTargets = routineTargetSetsCount != null && specsByIndex.any { it != null }
+
+    data class LastExerciseSlice(
+        val exObj: Exercise?,
+        val prevWeights: List<Double?>?,
+        val prevReps: List<Int>?,
+        val prevMetrics: List<Double?>?,
+        val prevLoggedMetric: ExerciseTargetMetric?,
+        val prevGroupIndices: List<Int?>?,
+        val hasMeaningfulData: Boolean,
+        val hasHistoricalWeights: Boolean
+    )
+
+    val lastSlices = block.exercises.map { ex ->
         val exObj = exercisesById[ex.id] ?: exercisesByLowerName[ex.name.trim().lowercase()]
         val lowerName = ex.name.trim().lowercase()
-        val targetSpec = resolveBlockExerciseTargetSpec(ex, routineExerciseTargets, routineExerciseTargetsByName)
         val prevWeights = lastSession?.exerciseWeightsById?.get(ex.id)
             ?: lastSession?.exerciseWeightsByName?.get(lowerName)
         val prevReps = lastSession?.exerciseRepsById?.get(ex.id)
@@ -832,34 +1264,164 @@ internal fun buildLoadedAvailableBlockState(
             ?: lastSession?.exerciseMetricValuesByName?.get(lowerName)
         val prevLoggedMetric = lastSession?.exerciseLoggedMetricById?.get(ex.id)
             ?: lastSession?.exerciseLoggedMetricByName?.get(lowerName)
+        val prevGroups = lastSession?.exerciseGroupIndicesById?.get(ex.id)
+            ?: lastSession?.exerciseGroupIndicesByName?.get(lowerName)
 
-        buildTargetOrPrefillExerciseState(
-            exerciseId = ex.id,
-            exerciseName = ex.name,
-            libraryMetricType = exObj?.metricType ?: MetricType.WEIGHT,
-            targetSetsCount = if (targetSpec != null) routineTargetSetsCount else null,
-            targetSpec = targetSpec,
-            lastWeights = prevWeights,
-            lastReps = prevReps,
-            lastMetricValues = prevMetrics,
-            lastLoggedMetric = prevLoggedMetric,
-            lastDateFormatted = lastSession?.dateFormatted,
-            defaultEmptyTileCount = 3
+        val hasPriorW = prevWeights?.any { (it ?: 0.0) > 0.0 } == true
+        val hasPriorM = prevMetrics?.any { (it ?: 0.0) > 0.0 } == true
+        val hasPriorR = prevReps != null && (prevReps.size > 1 || prevReps.any { it > 1 })
+        val hasPriorG = prevGroups?.any { it != null } == true
+        LastExerciseSlice(
+            exObj = exObj,
+            prevWeights = prevWeights,
+            prevReps = prevReps,
+            prevMetrics = prevMetrics,
+            prevLoggedMetric = prevLoggedMetric,
+            prevGroupIndices = prevGroups,
+            hasMeaningfulData = hasPriorW || hasPriorM || hasPriorR || hasPriorG,
+            hasHistoricalWeights = hasPriorW
         )
     }
-    val resolvedSlots = AvailableBlockCodec.normalizeTrackedPrSlots(
-        block.trackedPrs.map { slot ->
-            if (slot.movementId > 0L) slot
-            else slot.copy(movementId = exercisesByLowerName[slot.movementName.trim().lowercase()]?.id ?: 0L)
+
+    val anyHistoryData = lastSession?.dateFormatted != null && lastSlices.any { it.hasMeaningfulData }
+    val totalRounds = when {
+        hasRoutineTargets -> checkNotNull(routineTargetSetsCount).coerceAtLeast(1)
+        anyHistoryData -> lastSlices.maxOfOrNull { slice ->
+            val maxG = slice.prevGroupIndices?.filterNotNull()?.maxOrNull() ?: 0
+            val maxLen = maxOf(
+                slice.prevWeights?.size ?: 0,
+                slice.prevMetrics?.size ?: 0,
+                slice.prevReps?.size ?: 0
+            )
+            maxOf(maxG, maxLen)
+        }?.coerceAtLeast(1) ?: 3
+        else -> 3
+    }
+
+    var anyPreFilledWeightsOrHistory = false
+    val exStates = block.exercises.mapIndexed { idx, ex ->
+        val slice = lastSlices[idx]
+        val libMetric = slice.exObj?.metricType ?: MetricType.WEIGHT
+        val targetSpec = specsByIndex[idx]
+        val activeMetric = targetSpec?.metric
+            ?: slice.prevLoggedMetric
+            ?: ExerciseTargetMetric.fromLibraryMetricType(libMetric)
+
+        val weightsArr = MutableList(totalRounds) { "" }
+        val repsInputsArr = MutableList(totalRounds) { "" }
+        val perSetRepsArr = MutableList(totalRounds) { 1 }
+        val metricInputsArr = MutableList(totalRounds) { "" }
+        val skippedArr = MutableList(totalRounds) { false }
+        val groupArr = List(totalRounds) { it + 1 }
+
+        if (hasRoutineTargets) {
+            val effectiveTargets = targetSpec?.effectiveValues(totalRounds) ?: List(totalRounds) { 1 }
+            val hasExplicitGroups = slice.prevGroupIndices?.any { it != null } == true
+            var activeOrdinal = 0
+            for (r in 0 until totalRounds) {
+                val targetVal = effectiveTargets.getOrNull(r) ?: 1
+                if (targetVal <= 0) {
+                    skippedArr[r] = true
+                } else {
+                    skippedArr[r] = false
+                    val histIdx = if (hasExplicitGroups) {
+                        slice.prevGroupIndices?.indexOfFirst { it == r + 1 }?.takeIf { it >= 0 }
+                    } else {
+                        activeOrdinal
+                    }
+                    activeOrdinal += 1
+                    if (activeMetric == ExerciseTargetMetric.REPS) {
+                        val w = histIdx?.let { slice.prevWeights?.getOrNull(it) }?.takeIf { it > 0.0 }
+                        if (w != null) {
+                            weightsArr[r] = w.trimmed()
+                            anyPreFilledWeightsOrHistory = true
+                        }
+                        perSetRepsArr[r] = targetVal
+                        repsInputsArr[r] = targetVal.toString()
+                    } else {
+                        metricInputsArr[r] = targetVal.toString()
+                    }
+                }
+            }
+        } else if (anyHistoryData) {
+            val exWasInLast = slice.prevWeights != null || slice.prevReps != null || slice.prevMetrics != null
+            val priorCount = maxOf(
+                slice.prevWeights?.size ?: 0,
+                slice.prevReps?.size ?: 0,
+                slice.prevMetrics?.size ?: 0
+            )
+            when {
+                !exWasInLast -> {
+                    // New movement added to template: keep active across canonical rounds
+                    for (r in 0 until totalRounds) skippedArr[r] = false
+                }
+                priorCount == 0 -> {
+                    // Explicitly skipped across every round in last session
+                    for (r in 0 until totalRounds) skippedArr[r] = true
+                }
+                else -> {
+                    for (r in 0 until totalRounds) skippedArr[r] = true
+                    val hasExplicitGroups = slice.prevGroupIndices?.any { it != null } == true
+                    for (sIdx in 0 until priorCount) {
+                        val rIdx = (if (hasExplicitGroups) {
+                            slice.prevGroupIndices?.getOrNull(sIdx) ?: (sIdx + 1)
+                        } else {
+                            sIdx + 1
+                        }) - 1
+                        if (rIdx in 0 until totalRounds) {
+                            skippedArr[rIdx] = false
+                            if (activeMetric == ExerciseTargetMetric.REPS) {
+                                val w = slice.prevWeights?.getOrNull(sIdx)?.takeIf { it > 0.0 }
+                                if (w != null) {
+                                    weightsArr[rIdx] = w.trimmed()
+                                    anyPreFilledWeightsOrHistory = true
+                                }
+                                val rVal = slice.prevReps?.getOrNull(sIdx)?.coerceAtLeast(1) ?: 1
+                                perSetRepsArr[rIdx] = rVal
+                                if (rVal > 1 || (w == null && rVal > 0) || hasExplicitGroups) {
+                                    repsInputsArr[rIdx] = rVal.toString()
+                                }
+                                if (rVal > 1) anyPreFilledWeightsOrHistory = true
+                            } else {
+                                val mv = slice.prevMetrics?.getOrNull(sIdx)?.takeIf { it > 0.0 }
+                                if (mv != null) {
+                                    metricInputsArr[rIdx] = mv.trimmed()
+                                    anyPreFilledWeightsOrHistory = true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-    )
+
+        val banner = targetSpec?.let { "Target: ${formatDailyRoutineTargetSummary(totalRounds, it)}" }
+        LoadedAvailableBlockExerciseState(
+            exerciseId = ex.id,
+            exerciseName = ex.name,
+            lastSessionDateLabel = null,
+            initialWeights = weightsArr,
+            initialPerSetReps = perSetRepsArr,
+            initialMetric = activeMetric,
+            initialRepsInputs = repsInputsArr,
+            initialMetricInputs = metricInputsArr,
+            initialGroupIndices = groupArr,
+            targetBanner = banner,
+            libraryMetricType = libMetric,
+            initialSkippedFlags = skippedArr
+        )
+    }
+
+    val showPreFill = !isEditMode && anyPreFilledWeightsOrHistory && lastSession?.dateFormatted != null
     return LoadedAvailableBlockState(
         block = block,
         exerciseStates = exStates,
         initialTrackedPrs = resolvedSlots,
         isEditMode = isEditMode,
         editingSessionId = editingSessionId,
-        sourceRoutineItem = sourceRoutineItem
+        sourceRoutineItem = sourceRoutineItem,
+        lastSessionDateFormatted = if (showPreFill) lastSession?.dateFormatted else null,
+        hasPreFilledHistory = showPreFill
     )
 }
 
@@ -871,8 +1433,10 @@ internal fun buildCustomAvailableBlockState(
 ): LoadedAvailableBlockState {
     val byId = exercises.associateBy { it.id }
     val byLower = exercises.associateBy { it.name.trim().lowercase() }
+    val isMulti = block.exercises.size >= 2
     val exStates = block.exercises.map { ex ->
         val exObj = byId[ex.id] ?: byLower[ex.name.trim().lowercase()]
+        val libMetric = exObj?.metricType ?: MetricType.WEIGHT
         val defaultMetric = exObj?.let { ExerciseTargetMetric.fromLibraryMetricType(it.metricType) }
             ?: ExerciseTargetMetric.REPS
         LoadedAvailableBlockExerciseState(
@@ -882,7 +1446,10 @@ internal fun buildCustomAvailableBlockState(
             initialWeights = listOf("", "", ""),
             initialMetric = defaultMetric,
             initialRepsInputs = listOf("", "", ""),
-            initialMetricInputs = listOf("", "", "")
+            initialMetricInputs = listOf("", "", ""),
+            initialGroupIndices = if (isMulti) listOf(1, 2, 3) else listOf(null, null, null),
+            libraryMetricType = libMetric,
+            initialSkippedFlags = listOf(false, false, false)
         )
     }
     return LoadedAvailableBlockState(
@@ -901,54 +1468,145 @@ internal fun buildHydratedBlockState(
 ): LoadedAvailableBlockState {
     val byId = exercises.associateBy { it.id }
     val byLowerName = exercises.associateBy { it.name.trim().lowercase() }
+    val isMultiComplex = !seed.isStandaloneExercise && seed.exercises.size >= 2
 
-    val exStates = seed.exercises.map { exSeed ->
-        val initialWeights = exSeed.weights.map { w -> if (w > 0.0) w.trimmed() else "" }
-        val explicitLogMetric = RoutineTargetCodec.decodeLogMetricHeader(exSeed.rawNotes)
-        val exObj = byId[exSeed.movementId] ?: byLowerName[exSeed.movementName.trim().lowercase()]
-        val initialMetric = exSeed.loggedMetric
-            ?: explicitLogMetric
-            ?: if (exSeed.metricValues.any { (it ?: 0.0) > 0.0 }) {
-                exObj?.let { ExerciseTargetMetric.fromLibraryMetricType(it.metricType) }
-                    ?.takeIf { it != ExerciseTargetMetric.REPS }
-                    ?: ExerciseTargetMetric.CALORIES
-            } else {
-                ExerciseTargetMetric.REPS
+    val exStates = if (!isMultiComplex) {
+        seed.exercises.map { exSeed ->
+            val initialWeights = exSeed.weights.map { w -> if (w > 0.0) w.trimmed() else "" }
+            val explicitLogMetric = RoutineTargetCodec.decodeLogMetricHeader(exSeed.rawNotes)
+            val exObj = byId[exSeed.movementId] ?: byLowerName[exSeed.movementName.trim().lowercase()]
+            val libMetric = exObj?.metricType ?: MetricType.WEIGHT
+            val initialMetric = exSeed.loggedMetric
+                ?: explicitLogMetric
+                ?: if (exSeed.metricValues.any { (it ?: 0.0) > 0.0 }) {
+                    exObj?.let { ExerciseTargetMetric.fromLibraryMetricType(it.metricType) }
+                        ?.takeIf { it != ExerciseTargetMetric.REPS }
+                        ?: ExerciseTargetMetric.CALORIES
+                } else {
+                    ExerciseTargetMetric.REPS
+                }
+            val initialMetricInputs = List(initialWeights.size) { idx ->
+                exSeed.metricValues.getOrNull(idx)?.takeIf { it > 0.0 }?.trimmed().orEmpty()
             }
-        val initialMetricInputs = List(initialWeights.size) { idx ->
-            exSeed.metricValues.getOrNull(idx)?.takeIf { it > 0.0 }?.trimmed().orEmpty()
-        }
-        val initialRepsInputs = List(initialWeights.size) { idx ->
-            val r = exSeed.perSetReps.getOrNull(idx) ?: exSeed.defaultReps
-            val w = exSeed.weights.getOrNull(idx) ?: 0.0
-            if (initialMetric == ExerciseTargetMetric.REPS &&
-                (r > 1 || (w <= 0.0 && r > 0 && explicitLogMetric == ExerciseTargetMetric.REPS))
-            ) {
-                r.toString()
-            } else {
-                ""
+            val initialRepsInputs = List(initialWeights.size) { idx ->
+                val r = exSeed.perSetReps.getOrNull(idx) ?: exSeed.defaultReps
+                val w = exSeed.weights.getOrNull(idx) ?: 0.0
+                if (initialMetric == ExerciseTargetMetric.REPS &&
+                    (r > 1 || (w <= 0.0 && r > 0 && explicitLogMetric == ExerciseTargetMetric.REPS))
+                ) {
+                    r.toString()
+                } else {
+                    ""
+                }
             }
+            LoadedAvailableBlockExerciseState(
+                exerciseId = exSeed.movementId,
+                exerciseName = exSeed.movementName,
+                lastSessionDateLabel = null, // Hidden in edit mode (Option 2.1A)
+                initialWeights = initialWeights,
+                initialPerSetReps = exSeed.perSetReps,
+                defaultReps = exSeed.defaultReps,
+                sourceBlockId = exSeed.sourceBlockId,
+                rawFormat = exSeed.rawFormat,
+                rawScheme = exSeed.rawScheme,
+                rawSection = exSeed.rawSection,
+                rawKind = exSeed.rawKind,
+                rawIsCompleted = exSeed.rawIsCompleted,
+                subBlockTitle = exSeed.subBlockTitle,
+                initialMetric = initialMetric,
+                initialRepsInputs = initialRepsInputs,
+                initialMetricInputs = initialMetricInputs,
+                initialGroupIndices = exSeed.groupIndices,
+                rawNotes = exSeed.rawNotes,
+                libraryMetricType = libMetric
+            )
         }
-        LoadedAvailableBlockExerciseState(
-            exerciseId = exSeed.movementId,
-            exerciseName = exSeed.movementName,
-            lastSessionDateLabel = null, // Hidden in edit mode (Option 2.1A)
-            initialWeights = initialWeights,
-            initialPerSetReps = exSeed.perSetReps,
-            defaultReps = exSeed.defaultReps,
-            sourceBlockId = exSeed.sourceBlockId,
-            rawFormat = exSeed.rawFormat,
-            rawScheme = exSeed.rawScheme,
-            rawSection = exSeed.rawSection,
-            rawKind = exSeed.rawKind,
-            rawIsCompleted = exSeed.rawIsCompleted,
-            subBlockTitle = exSeed.subBlockTitle,
-            initialMetric = initialMetric,
-            initialRepsInputs = initialRepsInputs,
-            initialMetricInputs = initialMetricInputs,
-            initialGroupIndices = exSeed.groupIndices,
-            rawNotes = exSeed.rawNotes
-        )
+    } else {
+        val nonEmptySeeds = seed.exercises.filter { !it.hasNoLoggedSets }
+        val totalRounds = nonEmptySeeds.maxOfOrNull { exSeed ->
+            maxOf(
+                exSeed.weights.size,
+                exSeed.groupIndices.filterNotNull().maxOrNull() ?: 0
+            )
+        }?.coerceAtLeast(1) ?: 1
+
+        seed.exercises.map { exSeed ->
+            val explicitLogMetric = RoutineTargetCodec.decodeLogMetricHeader(exSeed.rawNotes)
+            val exObj = byId[exSeed.movementId] ?: byLowerName[exSeed.movementName.trim().lowercase()]
+            val libMetric = exObj?.metricType ?: MetricType.WEIGHT
+            val initialMetric = exSeed.loggedMetric
+                ?: explicitLogMetric
+                ?: if (exSeed.metricValues.any { (it ?: 0.0) > 0.0 }) {
+                    exObj?.let { ExerciseTargetMetric.fromLibraryMetricType(it.metricType) }
+                        ?.takeIf { it != ExerciseTargetMetric.REPS }
+                        ?: ExerciseTargetMetric.CALORIES
+                } else {
+                    ExerciseTargetMetric.REPS
+                }
+
+            val weightsArr = MutableList(totalRounds) { "" }
+            val perSetRepsArr = MutableList(totalRounds) { exSeed.defaultReps.coerceAtLeast(1) }
+            val repsInputsArr = MutableList(totalRounds) { "" }
+            val metricInputsArr = MutableList(totalRounds) { "" }
+            val groupArr = List(totalRounds) { it + 1 }
+            val skippedArr = MutableList(totalRounds) {
+                if (nonEmptySeeds.isNotEmpty()) exSeed.hasNoLoggedSets else false
+            }
+
+            if (!exSeed.hasNoLoggedSets) {
+                val hasExplicitGroups = exSeed.groupIndices.any { it != null }
+                for (r in 0 until totalRounds) skippedArr[r] = true
+                for (sIdx in 0 until exSeed.weights.size) {
+                    val rIdx = (if (hasExplicitGroups) {
+                        exSeed.groupIndices.getOrNull(sIdx) ?: (sIdx + 1)
+                    } else {
+                        sIdx + 1
+                    }) - 1
+                    if (rIdx in 0 until totalRounds) {
+                        skippedArr[rIdx] = false
+                        val w = exSeed.weights.getOrNull(sIdx) ?: 0.0
+                        weightsArr[rIdx] = if (w > 0.0) w.trimmed() else ""
+                        val r = exSeed.perSetReps.getOrNull(sIdx)?.coerceAtLeast(1) ?: exSeed.defaultReps.coerceAtLeast(1)
+                        perSetRepsArr[rIdx] = r
+                        metricInputsArr[rIdx] = if (initialMetric != ExerciseTargetMetric.REPS) {
+                            exSeed.metricValues.getOrNull(sIdx)?.takeIf { it > 0.0 }?.trimmed().orEmpty()
+                        } else {
+                            ""
+                        }
+                        repsInputsArr[rIdx] = if (initialMetric == ExerciseTargetMetric.REPS &&
+                            (r > 1 || (w <= 0.0 && r > 0 && explicitLogMetric == ExerciseTargetMetric.REPS) || hasExplicitGroups)
+                        ) {
+                            r.toString()
+                        } else {
+                            ""
+                        }
+                    }
+                }
+            }
+
+            LoadedAvailableBlockExerciseState(
+                exerciseId = exSeed.movementId,
+                exerciseName = exSeed.movementName,
+                lastSessionDateLabel = null,
+                initialWeights = weightsArr,
+                initialPerSetReps = perSetRepsArr,
+                defaultReps = exSeed.defaultReps,
+                sourceBlockId = exSeed.sourceBlockId,
+                rawFormat = exSeed.rawFormat,
+                rawScheme = exSeed.rawScheme,
+                rawSection = exSeed.rawSection,
+                rawKind = exSeed.rawKind,
+                rawIsCompleted = exSeed.rawIsCompleted,
+                subBlockTitle = exSeed.subBlockTitle,
+                initialMetric = initialMetric,
+                initialRepsInputs = repsInputsArr,
+                initialMetricInputs = metricInputsArr,
+                initialGroupIndices = groupArr,
+                rawNotes = exSeed.rawNotes,
+                libraryMetricType = libMetric,
+                initialSkippedFlags = skippedArr
+            )
+        }
     }
 
     // Keep the session's own historical prescription (seed.cleanNotes falls back to the template
@@ -1081,8 +1739,26 @@ internal fun SimplifiedBlockLogCard(
     onOpenPrPicker: () -> Unit,
     onRemoveTrackedPr: (TrackedPrSlot) -> Unit,
     itemNumber: Int? = null,
+    onShowUndoSnackbar: (message: String, onUndo: () -> Unit) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
+    if (blockState.isCompactComplex) {
+        CompactComplexLogCard(
+            blockState = blockState,
+            exercises = exercises,
+            repMaxes = repMaxes,
+            weightUnit = weightUnit,
+            onRemoveBlock = onRemoveBlock,
+            onLaunchTimer = onLaunchTimer,
+            onOpenPrPicker = onOpenPrPicker,
+            onRemoveTrackedPr = onRemoveTrackedPr,
+            itemNumber = itemNumber,
+            onShowUndoSnackbar = onShowUndoSnackbar,
+            modifier = modifier
+        )
+        return
+    }
+
     val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
     val isDark = isSystemInDarkTheme()
     val blockAccent = if (isDark) BlockSkyDark else BlockSkyLight
@@ -1230,7 +1906,7 @@ internal fun SimplifiedExerciseLogCard(
 }
 
 @Composable
-private fun SessionItemHeaderRow(
+internal fun SessionItemHeaderRow(
     label: String,
     titleColor: Color,
     timerContentDesc: String,
@@ -1407,7 +2083,7 @@ private fun SessionExerciseSetTilesSection(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TrackedPrChipsFlowSection(
+internal fun TrackedPrChipsFlowSection(
     blockState: LoadedAvailableBlockState,
     evaluatedChips: List<Pair<TrackedPrSlot, EvaluatedPrChip>>,
     weightUnit: String,

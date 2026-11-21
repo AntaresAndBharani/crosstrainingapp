@@ -2412,5 +2412,154 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     const delComplex = await callTool("delete_complex", { complex_title: "Barbell Overhead Complex" });
     assert.equal(delComplex.status, "deleted");
     assert.deepEqual(delComplex.deletedTitles, ["Barbell Overhead Complex"]);
+
+    // 7. Compact Complex Logging parity: shared_set_weights_kg + 1-2-3-1-2-3 skip patterns + mixed modalities
+    await callTool("upsert_exercise", {
+      name: "Air Bike",
+      category: "MACHINE",
+      metricType: "CALORIES",
+      unit: "cal",
+      tracksRepMax: false,
+    });
+    const mixedComplex = await callTool("upsert_complex", {
+      title: "Oly + Engine",
+      instructions: "E4MOM · 1-2-3-1-2-3",
+      exercises: ["Snatch", "Hang Snatch", "Snatch Balance", "Air Bike"],
+    });
+    const mixedComplexId = mixedComplex.complex.id as number;
+
+    const sharedLogged = await callTool("log_complex_session", {
+      date: "2026-11-22",
+      complex_id: mixedComplexId,
+      shared_set_weights_kg: [40, 42.5, 45, 47.5, 47.5, 50],
+      exercise_targets: [
+        { exercise_name: "Snatch", target_metric: "REPS", target_mode: "FIXED", fixed_value: 1 },
+        {
+          exercise_name: "Hang Snatch",
+          target_metric: "REPS",
+          target_mode: "PER_SET",
+          per_set_values: [0, 1, 1, 0, 1, 1],
+        },
+        {
+          exercise_name: "Snatch Balance",
+          target_metric: "REPS",
+          target_mode: "PER_SET",
+          per_set_values: [0, 0, 1, 0, 0, 1],
+        },
+        { exercise_name: "Air Bike", target_metric: "CALORIES", target_mode: "FIXED", fixed_value: 10 },
+      ],
+    });
+    const sharedBlocks = sharedLogged.session.blocks as Array<any>;
+    assert.equal(sharedBlocks.length, 4);
+    assert.deepEqual(
+      sharedBlocks[0].sets.map((s: any) => s.weight),
+      [40, 42.5, 45, 47.5, 47.5, 50]
+    );
+    assert.deepEqual(
+      sharedBlocks[0].sets.map((s: any) => s.groupIndex),
+      [1, 2, 3, 4, 5, 6]
+    );
+    assert.deepEqual(
+      sharedBlocks[1].sets.map((s: any) => s.weight),
+      [42.5, 45, 47.5, 50]
+    );
+    assert.deepEqual(
+      sharedBlocks[1].sets.map((s: any) => s.groupIndex),
+      [2, 3, 5, 6]
+    );
+    assert.deepEqual(
+      sharedBlocks[2].sets.map((s: any) => s.weight),
+      [45, 50]
+    );
+    assert.deepEqual(
+      sharedBlocks[2].sets.map((s: any) => s.groupIndex),
+      [3, 6]
+    );
+    assert.equal(sharedBlocks[3].sets.length, 6);
+    assert.ok(sharedBlocks[3].sets.every((s: any) => s.weight === 0 && s.metricValue === 10));
+
+    // Update with shared_set_weights_kg WITHOUT exercise_targets preserves existing active groupIndex masks
+    const sharedEdited = await callTool("update_complex_session_log", {
+      sessionId: sharedLogged.session.session.id,
+      complex_id: mixedComplexId,
+      shared_set_weights_kg: [45, 47.5, 50, 52.5, 52.5, 55],
+    });
+    const editedBlocks = sharedEdited.session.blocks as Array<any>;
+    assert.deepEqual(
+      editedBlocks[1].sets.map((s: any) => s.weight),
+      [47.5, 50, 52.5, 55]
+    );
+    assert.deepEqual(
+      editedBlocks[1].sets.map((s: any) => s.groupIndex),
+      [2, 3, 5, 6]
+    );
+    assert.deepEqual(
+      editedBlocks[2].sets.map((s: any) => s.weight),
+      [50, 55]
+    );
+    assert.deepEqual(
+      editedBlocks[2].sets.map((s: any) => s.groupIndex),
+      [3, 6]
+    );
+
+    // Daily Routine with saved 1-2-3-1-2-3 targets logged via shared_set_weights_kg + partial override
+    const sparseRoutine = await callTool("upsert_daily_routine", {
+      title: "Sparse Oly Routine",
+      items: [
+        {
+          item_type: "COMPLEX",
+          complex_id: snatchComplexId,
+          sets_count: 6,
+          exercise_targets: [
+            { exercise_name: "Snatch", target_metric: "REPS", target_mode: "FIXED", fixed_value: 1 },
+            {
+              exercise_name: "Hang Snatch",
+              target_metric: "REPS",
+              target_mode: "PER_SET",
+              per_set_values: [0, 1, 1, 0, 1, 1],
+            },
+            {
+              exercise_name: "Snatch Balance",
+              target_metric: "REPS",
+              target_mode: "PER_SET",
+              per_set_values: [0, 0, 1, 0, 0, 1],
+            },
+          ],
+        },
+      ],
+    });
+    const sparseDrLog = await callTool("log_daily_routine_session", {
+      date: "2026-11-23",
+      routine_id: sparseRoutine.dailyRoutine.id,
+      logged_items: [
+        {
+          item_type: "COMPLEX",
+          complex_id: snatchComplexId,
+          shared_set_weights_kg: [40, 42.5, 45, 47.5, 47.5, 50],
+          exercise_logs: [
+            {
+              exercise_name: "Snatch Balance",
+              sets: [
+                { reps: 1, weight_kg: 40, group_index: 3 },
+                { reps: 1, weight_kg: 45, group_index: 6 },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const sparseDrBlocks = sparseDrLog.session.blocks as Array<any>;
+    assert.deepEqual(
+      sparseDrBlocks[0].sets.map((s: any) => s.weight),
+      [40, 42.5, 45, 47.5, 47.5, 50]
+    );
+    assert.deepEqual(
+      sparseDrBlocks[1].sets.map((s: any) => s.groupIndex),
+      [2, 3, 5, 6]
+    );
+    assert.deepEqual(
+      sparseDrBlocks[2].sets.map((s: any) => s.weight),
+      [40, 45]
+    );
   });
 });

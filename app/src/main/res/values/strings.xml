@@ -1,4 +1,21 @@
 <resources>
     <string name="app_name">CrossTraining</string>
     <string name="default_web_client_id">384900244521.apps.googleusercontent.com</string>
+    <string name="complex_col_set">SET</string>
+    <string name="complex_col_movements">MOVEMENTS</string>
+    <string name="complex_col_weight">WEIGHT (%1$s)</string>
+    <string name="complex_view_by_exercise">By ex. ▸</string>
+    <string name="complex_view_compact">Compact ▾</string>
+    <string name="complex_state_mixed">Mixed</string>
+    <string name="complex_state_skipped">Skipped</string>
+    <string name="complex_state_bw">— (BW)</string>
+    <string name="complex_status_active">Active</string>
+    <string name="complex_status_skip">Skip</string>
+    <string name="complex_action_add_set">Add Set</string>
+    <string name="complex_relink_all">Re-link all to %1$s %2$s</string>
+    <string name="complex_prefilled_from">Pre-filled from last (%1$s)</string>
+    <string name="complex_all_skipped_hint">All movements skipped in Set %1$d — tap any exercise to re-enable or remove set.</string>
+    <string name="complex_applied_shared_weight">Applied %1$s %2$s to all active exercises in Set %3$d</string>
+    <string name="complex_set_removed">Set %1$d removed</string>
+    <string name="complex_unit_label">Unit: %1$s ▾</string>
 </resources>
