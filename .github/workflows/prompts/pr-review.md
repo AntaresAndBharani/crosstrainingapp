@@ -28,6 +28,10 @@ You are acting as the automated **PR Review & Auto-Fix Engineer (Claude Opus 5.5
      3. Once fixed, set `"verdict": "APPROVED"` and `"fixes_applied": true` in `pr_review_output.json`.
    - Only set `"verdict": "CHANGES_REQUESTED"` if there is a blocking product ambiguity or an architectural issue that cannot be safely fixed without human decision.
 
+## Headless CI Execution Constraints
+- Do **not** spawn subagents (`Agent` / `Task`) and do **not** run `Bash` commands with `run_in_background: true`. Execute all file reads, edits, and verification commands synchronously in the foreground (in headless `claude-code-action` runs, ending a turn with background work in flight terminates the session on the first `result` event before `pr_review_output.json` is written).
+- Always finish your final turn by writing valid JSON to `pr_review_output.json` in the repository root.
+
 ## Required Output (`pr_review_output.json`)
 Write your final result to `pr_review_output.json` in the workspace root using this exact JSON schema:
 ```json

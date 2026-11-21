@@ -83,6 +83,12 @@ Assert-True -Condition (-not ($PrReviewText -match 'setup-java|setup-gradle')) `
 Assert-True -Condition ($PrReviewText -match 'uses:\s*anthropics/claude-code-action@v1' -and $PrReviewText -match '--model claude-opus-5-5 --effort high') `
             -TestName "static: pr-review.yml runs Claude Opus 5.5 High via anthropics/claude-code-action@v1"
 
+Assert-True -Condition ($PrReviewText -match '--permission-mode default' -and $PrReviewText -match '--disallowedTools "Agent,Task"') `
+            -TestName "static: pr-review.yml enforces --permission-mode default and --disallowedTools Agent,Task"
+
+Assert-True -Condition ($PrReviewText -match 'name:\s*Fail when review produced no verdict' -and $PrReviewText -match "hashFiles\('pr_review_output\.json'\)\s*==\s*''" -and $PrReviewText -match 'exit 1') `
+            -TestName "static: pr-review.yml fails fast when Claude finishes without writing pr_review_output.json"
+
 Assert-True -Condition ($PrReviewText -match 'def ensure_label\(' -and $PrReviewText -match "'gh',\s*'label',\s*'create'" -and $PrReviewText -match "'--force'") `
             -TestName "static: pr-review.yml defines idempotent ensure_label helper with --force"
 
@@ -123,3 +129,6 @@ Assert-True -Condition ($PrReviewPromptText -match '"verdict":\s*"APPROVED"' -an
 
 Assert-True -Condition ($PrReviewPromptText -match 'collectAsStateWithLifecycle' -and $PrReviewPromptText -match 'gradle\.properties') `
             -TestName "static: prompts/pr-review.md enforces CrossTraining MVVM/UDF and gradle.properties hygiene rules"
+
+Assert-True -Condition ($PrReviewPromptText -match 'run_in_background' -and $PrReviewPromptText -match 'Agent') `
+            -TestName "static: prompts/pr-review.md prohibits background Bash tasks and subagents in headless CI"

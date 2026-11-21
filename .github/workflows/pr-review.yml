@@ -103,9 +103,12 @@ jobs:
           fetch-depth: 0
 
       - name: Fetch PR context
+        id: context
         if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.merge_only != 'true'
         run: |
           set -euo pipefail
+          # The branch may have advanced since steps.meta; record the commit actually checked out for review.
+          echo "checkout_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           gh pr view "$PR_NUMBER" -R "$REPO" --json number,title,body,url,headRefName,baseRefName,comments > pr_meta.json
           gh pr diff "$PR_NUMBER" -R "$REPO" > pr_diff.txt
 
@@ -118,10 +121,17 @@ jobs:
           github_token: ${{ secrets.ORCHESTRATION_PAT || secrets.GITHUB_TOKEN }}
           prompt: |
             Read and follow all instructions in .github/workflows/prompts/pr-review.md.
-            Review the PR, automatically fix any code/test/script/doc issues you find in the working tree, and write your final output to pr_review_output.json.
-          claude_args: '--model claude-opus-5-5 --effort high --allowedTools "Read,Write,Edit,MultiEdit,Grep,Glob,Bash"'
+            Review the PR synchronously in the foreground (do not spawn subagents or background Bash tasks), automatically fix any code/test/script/doc issues you find in the working tree, and write your final output to pr_review_output.json in the repository root.
+          claude_args: '--model claude-opus-5-5 --effort high --permission-mode default --allowedTools "Read,Write,Edit,MultiEdit,Grep,Glob,Bash" --disallowedTools "Agent,Task"'
           additional_permissions: |
             actions: read
+
+      - name: Fail when review produced no verdict
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.merge_only != 'true' && steps.claude.outcome == 'success' && hashFiles('pr_review_output.json') == ''
+        run: |
+          echo "::error::Claude review finished without writing pr_review_output.json; no verdict was posted."
+          gh pr comment "$PR_NUMBER" -R "$REPO" --body "⚠️ **PR Review Failed:** Claude Opus 5.5 finished without writing \`pr_review_output.json\`, so no verdict or auto-merge was applied. Re-run the \`PR Review\` workflow to retry." || true
+          exit 1
 
       - name: Commit auto-fixes, apply verdict, and prepare merge
         id: verdict_step
@@ -129,6 +139,7 @@ jobs:
         env:
           HEAD_REF: ${{ steps.meta.outputs.head_ref }}
           INITIAL_SHA: ${{ steps.meta.outputs.head_sha }}
+          CHECKOUT_SHA: ${{ steps.context.outputs.checkout_sha }}
           MERGE_ONLY: ${{ steps.meta.outputs.merge_only }}
         run: |
           set -euo pipefail
@@ -154,7 +165,7 @@ jobs:
             git commit -m "fix(pr-review): apply Claude Opus 5.5 auto-fixes [skip pr-review]"
             git push origin "HEAD:${HEAD_REF}"
             FIX_PUSHED="true"
-          elif [ "$(git rev-parse HEAD)" != "$INITIAL_SHA" ]; then
+          elif [ "$(git rev-parse HEAD)" != "${CHECKOUT_SHA:-$INITIAL_SHA}" ]; then
             git push origin "HEAD:${HEAD_REF}"
             FIX_PUSHED="true"
           fi
@@ -283,14 +294,15 @@ jobs:
           set -euo pipefail
 
           PR_BODY=$(gh pr view "$PR_NUMBER" -R "$REPO" --json body -q '.body')
-          SUBTASK=$(echo "$PR_BODY" | grep -oiP '(close[sd]?|fixe?[sd]?|resolve[sd]?)\s*:?\s*#\K[0-9]+' | head -1 || true)
+          SUBTASK=$(echo "$PR_BODY" | grep -oiP '\b(close[sd]?|fixe?[sd]?|resolve[sd]?)\s*:?\s*#\K[0-9]+' | head -1 || true)
           if [ -z "${SUBTASK:-}" ]; then
             echo "No linked subtask found in PR body — nothing to check."
             exit 0
           fi
 
+          # On HTTP errors (e.g. 404 for a parentless issue) gh api prints the raw error JSON to stdout, so require a numeric story id.
           STORY=$(gh api "repos/$REPO/issues/$SUBTASK/parent" -q .number 2>/dev/null || true)
-          if [ -z "${STORY:-}" ]; then
+          if ! [[ "${STORY:-}" =~ ^[0-9]+$ ]]; then
             echo "Subtask #$SUBTASK has no parent story reference — nothing to check."
             exit 0
           fi
