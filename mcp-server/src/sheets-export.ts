@@ -561,16 +561,26 @@ export async function buildSheetsExport(
 
       let currentBest: number | null = null;
       if (parsed.goalMetric === "WEIGHT") {
-        const matchingAll = activeRepMaxes.filter(
+        // Parity with Android evaluateCycleGoalProgress(): only PRs logged within the goal's own
+        // cycle count toward progress. PRs tagged with another cycleId never leak across cycles;
+        // legacy unscoped PRs (cycleId null/0) are attributed by the goal cycle's date window.
+        const goalCycleStart = isActiveGoalCycle
+          ? active_cycle.start_date
+          : cycleEarliestDate.get(goalCycleId);
+        const goalCycleEnd = isActiveGoalCycle ? undefined : cycleLatestDate.get(goalCycleId);
+        const belongsToGoalCycle = (rm: RepMaxRecord): boolean => {
+          const rmCycleId = Number(rm.cycleId);
+          if (Number.isFinite(rmCycleId) && rmCycleId >= 1) return rmCycleId === goalCycleId;
+          if (!goalCycleStart || !rm.date) return false;
+          return rm.date >= goalCycleStart && (!goalCycleEnd || rm.date <= goalCycleEnd);
+        };
+        const pool = activeRepMaxes.filter(
           (rm) =>
             Number(rm.reps) === Number(g.targetReps) &&
             (Number(rm.exerciseId) === Number(g.exerciseId) ||
-              (rm.exerciseName ?? "").trim().toLowerCase() === exNameLower)
+              (rm.exerciseName ?? "").trim().toLowerCase() === exNameLower) &&
+            belongsToGoalCycle(rm)
         );
-        const matchingSameCycle = matchingAll.filter(
-          (rm) => Number(rm.cycleId) === goalCycleId
-        );
-        const pool = matchingSameCycle.length > 0 ? matchingSameCycle : matchingAll;
         if (pool.length > 0) {
           currentBest = round2(Math.max(...pool.map((rm) => Number(rm.weight))));
         }

@@ -11,6 +11,7 @@ param(
     [string]$ServiceName = "crosstraining-mcp",
     [string]$BudgetTopic = "billing-killswitch-alerts",
     [string]$SheetsExportUid = "",
+    [ValidateSet("production", "snapshot")]
     [string]$SheetsExportEnv = "production"
 )
 

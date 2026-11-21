@@ -342,6 +342,13 @@ function writeTab_(ss, tabName, headers, rows, dateColumns) {
   }
 }
 
+/**
+ * Converts null/undefined to "" and escapes free-text strings that Sheets would otherwise parse
+ * as formulas (e.g. notes such as "- felt heavy" or "=> PR" rendering as #ERROR!) by prefixing a
+ * literal-text apostrophe. Numbers and booleans are written as-is.
+ */
 function toCell_(val) {
-  return val === null || val === undefined ? "" : val;
+  if (val === null || val === undefined) return "";
+  if (typeof val === "string" && /^[=+\-@]/.test(val)) return "'" + val;
+  return val;
 }

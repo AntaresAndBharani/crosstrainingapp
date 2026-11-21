@@ -35,6 +35,9 @@ Assert-True -Condition ($DeployText -match 'SHEETS_EXPORT_UID' -and $DeployText 
 Assert-True -Condition ($DeployText -match '--set-secrets="\$deploySecrets"' -and $DeployText -match '--set-env-vars="\$deployEnvVars"' -and $DeployText -match 'SHEETS_EXPORT_TOKEN=\$\{sheetsExportSecretName\}:latest') `
             -TestName "static: setup-gcp-and-deploy.ps1 passes quoted comma-separated secrets and env vars to gcloud run deploy"
 
+Assert-True -Condition ($DeployText -match '\[ValidateSet\("production",\s*"snapshot"\)\]\s*\[string\]\$SheetsExportEnv') `
+            -TestName "static: setup-gcp-and-deploy.ps1 restricts -SheetsExportEnv to production|snapshot"
+
 Assert-True -Condition (-not ($DeployText -match 'Write-Host.*\$\w*hexToken')) `
             -TestName "static: setup-gcp-and-deploy.ps1 never prints the generated export token"
 
@@ -64,6 +67,9 @@ foreach ($tab in $ExpectedTabs) {
 }
 Assert-True -Condition $AllTabsPresent `
             -TestName "static: google-sheets-sync.gs configures Dashboard and all 6 exported data tabs"
+
+Assert-True -Condition ($AppsText -match 'function toCell_' -and $AppsText -match [regex]::Escape('/^[=+\-@]/.test(val)')) `
+            -TestName "static: google-sheets-sync.gs escapes formula-like free-text cells before setValues"
 
 Assert-True -Condition ($AppsText -match 'installDailySyncTrigger' -and $AppsText -match 'syncCrossTrainingData') `
             -TestName "static: google-sheets-sync.gs provides manual sync and daily auto-sync trigger setup"

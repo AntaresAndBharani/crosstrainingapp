@@ -426,6 +426,11 @@ async function main() {
     (WeightSubcycleTypeValues as readonly string[]).includes(rawSheetsSubcycle)
       ? (rawSheetsSubcycle as WeightSubcycleType)
       : undefined;
+  if (rawSheetsSubcycle && !sheetsDefaultSubcycle) {
+    console.warn(
+      `Ignoring invalid SHEETS_EXPORT_SUBCYCLE_TYPE='${rawSheetsSubcycle}' (expected one of ${WeightSubcycleTypeValues.join(", ")}); inferring corridor from active cycle name.`
+    );
+  }
 
   const app = createMcpExpressApp({
     backingStore,

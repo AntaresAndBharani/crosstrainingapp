@@ -30,7 +30,7 @@ import {
   type WeightEntryRecord,
   WorkoutDomainService,
 } from "../src/store.js";
-import type { SheetsExportPayload } from "../src/sheets-export.js";
+import { buildSheetsExport, type SheetsExportPayload } from "../src/sheets-export.js";
 import { evaluateBudgetNotification } from "../billing-killswitch/index.js";
 
 function base64Url(buf: Buffer): string {
@@ -3031,5 +3031,36 @@ describe("GET /export/sheets (Read-Only Google Sheets Bridge)", () => {
     } finally {
       await srv.close();
     }
+  });
+
+  it("attributes cycle goal progress only to PRs from the goal's own cycle (no cross-cycle leakage)", async () => {
+    const backing = new InMemoryBackingStore();
+    const ctx = { uid: TARGET_UID, env: "production" as const };
+    await backing.writeCollection<ExerciseRecord>(ctx, "exercises", [
+      { id: 1, name: "Snatch", category: "BARBELL", metricType: "WEIGHT", unit: "kg", tracksRepMax: true },
+    ]);
+    await backing.writeCollection<RepMaxRecord>(ctx, "rep_maxes", [
+      // Prior-cycle PR above the new cycle's target must NOT count toward cycle 2 progress
+      { id: 1, exerciseId: 1, exerciseName: "Snatch", reps: 1, weight: 95, date: "2026-06-01", cycleId: 1, cycleName: "Strength", isActiveCycle: false },
+    ]);
+    await backing.writeCollection<CycleGoalRecord>(ctx, "cycle_goals", [
+      { id: 1, cycleId: 2, cycleName: "Recomposition", isActiveCycle: true, exerciseId: 1, exerciseName: "Snatch", targetReps: 1, startWeight: 80, targetWeight: 90, notes: "" },
+    ]);
+
+    const payload = await buildSheetsExport(backing, ctx, {});
+    const goal = payload.cycle_goals.find((g) => g.cycle_id === 2)!;
+    assert.equal(goal.is_active_cycle, true);
+    assert.equal(goal.current_best_value, null);
+    assert.equal(goal.progress_pct, null);
+
+    // An in-cycle PR (tagged cycleId 2) is joined normally
+    await backing.writeCollection<RepMaxRecord>(ctx, "rep_maxes", [
+      { id: 1, exerciseId: 1, exerciseName: "Snatch", reps: 1, weight: 95, date: "2026-06-01", cycleId: 1, cycleName: "Strength", isActiveCycle: false },
+      { id: 2, exerciseId: 1, exerciseName: "Snatch", reps: 1, weight: 84, date: "2026-11-12", cycleId: 2, cycleName: "Recomposition", isActiveCycle: true },
+    ]);
+    const payload2 = await buildSheetsExport(backing, ctx, {});
+    const goal2 = payload2.cycle_goals.find((g) => g.cycle_id === 2)!;
+    assert.equal(goal2.current_best_value, 84);
+    assert.equal(goal2.progress_pct, 40);
   });
 });
