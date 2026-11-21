@@ -784,6 +784,153 @@ export interface DeleteCycleGoalItemInput {
 }
 
 /**
+ * Discovers training cycles and resolves the active cycle from raw goals, sessions, and PRs.
+ */
+export function computeCyclesFromRaw(
+  rawGoals: CycleGoalRecord[],
+  rawSessions: SessionWithBlocksRecord[],
+  rawRepMaxes: RepMaxRecord[]
+): CycleSummary[] {
+  interface MutableCycleAgg {
+    cycleId: number;
+    cycleName?: string;
+    cycleNameTs: number;
+    explicitActiveFlag?: boolean;
+    explicitFlagTs: number;
+    goalsCount: number;
+    sessionsCount: number;
+    repMaxesCount: number;
+    latestActivityDate: string | null;
+    latestUpdatedAtMillis: number;
+  }
+
+  const byId = new Map<number, MutableCycleAgg>();
+  const ensureAgg = (rawId: number | null | undefined): MutableCycleAgg | null => {
+    const id = Number(rawId);
+    if (!Number.isFinite(id) || id < 1) return null;
+    let agg = byId.get(id);
+    if (!agg) {
+      agg = {
+        cycleId: id,
+        cycleNameTs: -1,
+        explicitFlagTs: -1,
+        goalsCount: 0,
+        sessionsCount: 0,
+        repMaxesCount: 0,
+        latestActivityDate: null,
+        latestUpdatedAtMillis: 0,
+      };
+      byId.set(id, agg);
+    }
+    return agg;
+  };
+
+  const recordMeta = (
+    agg: MutableCycleAgg,
+    cycleName: string | undefined,
+    isActiveCycle: boolean | undefined,
+    updatedAtMillis: number | undefined,
+    isoDate?: string
+  ) => {
+    const ts = Number(updatedAtMillis) || 0;
+    if (ts > agg.latestUpdatedAtMillis) {
+      agg.latestUpdatedAtMillis = ts;
+    }
+    if (cycleName && cycleName.trim().length > 0 && ts >= agg.cycleNameTs) {
+      agg.cycleName = cycleName.trim();
+      agg.cycleNameTs = ts;
+    }
+    if (typeof isActiveCycle === "boolean" && ts >= agg.explicitFlagTs) {
+      agg.explicitActiveFlag = isActiveCycle;
+      agg.explicitFlagTs = ts;
+    }
+    if (isoDate && (!agg.latestActivityDate || isoDate > agg.latestActivityDate)) {
+      agg.latestActivityDate = isoDate;
+    }
+  };
+
+  for (const g of rawGoals) {
+    if (isDeletedTombstone(g.deletedAtMillis)) continue;
+    const agg = ensureAgg(g.cycleId);
+    if (!agg) continue;
+    agg.goalsCount += 1;
+    recordMeta(agg, g.cycleName, g.isActiveCycle, g.updatedAtMillis);
+  }
+
+  for (const s of rawSessions) {
+    if (isDeletedTombstone(s.session?.deletedAtMillis)) continue;
+    const agg = ensureAgg(s.session?.cycleId);
+    if (!agg) continue;
+    agg.sessionsCount += 1;
+    recordMeta(
+      agg,
+      s.session.cycleName,
+      s.session.isActiveCycle,
+      s.session.updatedAtMillis,
+      s.session.date
+    );
+  }
+
+  for (const rm of rawRepMaxes) {
+    if (isDeletedTombstone(rm.deletedAtMillis)) continue;
+    const agg = ensureAgg(rm.cycleId);
+    if (!agg) continue;
+    agg.repMaxesCount += 1;
+    recordMeta(agg, rm.cycleName, rm.isActiveCycle, rm.updatedAtMillis, rm.date);
+  }
+
+  const entries = Array.from(byId.values());
+  if (entries.length === 0) {
+    return [
+      {
+        cycleId: 1,
+        cycleName: "Active Cycle",
+        isActive: true,
+        goalsCount: 0,
+        sessionsCount: 0,
+        repMaxesCount: 0,
+        latestActivityDate: null,
+      },
+    ];
+  }
+
+  // Precedence 1: Any cycle explicitly marked isActiveCycle === true on synced records
+  const explicitActives = entries.filter((e) => e.explicitActiveFlag === true);
+  let winningCycleId: number;
+  if (explicitActives.length > 0) {
+    explicitActives.sort((a, b) => {
+      if (b.explicitFlagTs !== a.explicitFlagTs) return b.explicitFlagTs - a.explicitFlagTs;
+      return b.cycleId - a.cycleId;
+    });
+    winningCycleId = explicitActives[0].cycleId;
+  } else {
+    // Precedence 2: Highest non-false cycleId (tie-breaking by latest activity/update)
+    const candidates = entries.filter((e) => e.explicitActiveFlag !== false);
+    const pool = candidates.length > 0 ? candidates : entries;
+    pool.sort((a, b) => {
+      if (b.cycleId !== a.cycleId) return b.cycleId - a.cycleId;
+      const dateCmp = (b.latestActivityDate ?? "").localeCompare(a.latestActivityDate ?? "");
+      if (dateCmp !== 0) return dateCmp;
+      return b.latestUpdatedAtMillis - a.latestUpdatedAtMillis;
+    });
+    winningCycleId = pool[0].cycleId;
+  }
+
+  return entries
+    .sort((a, b) => b.cycleId - a.cycleId)
+    .map((e) => ({
+      cycleId: e.cycleId,
+      cycleName: e.cycleName ?? `Cycle ${e.cycleId}`,
+      isActive: e.cycleId === winningCycleId,
+      ...(e.explicitActiveFlag !== undefined ? { explicitActiveFlag: e.explicitActiveFlag } : {}),
+      goalsCount: e.goalsCount,
+      sessionsCount: e.sessionsCount,
+      repMaxesCount: e.repMaxesCount,
+      latestActivityDate: e.latestActivityDate,
+    }));
+}
+
+/**
  * High-level domain service mediating between MCP tools and the 7 Firestore collections.
  * Serializes mutations per user (`env:uid`) and executes multi-collection writes atomically.
  */
@@ -824,150 +971,6 @@ export class WorkoutDomainService {
   // Cycle Discovery & Dynamic Active-Cycle Resolution
   // ==========================================================================
 
-  private computeCyclesFromRaw(
-    rawGoals: CycleGoalRecord[],
-    rawSessions: SessionWithBlocksRecord[],
-    rawRepMaxes: RepMaxRecord[]
-  ): CycleSummary[] {
-    interface MutableCycleAgg {
-      cycleId: number;
-      cycleName?: string;
-      cycleNameTs: number;
-      explicitActiveFlag?: boolean;
-      explicitFlagTs: number;
-      goalsCount: number;
-      sessionsCount: number;
-      repMaxesCount: number;
-      latestActivityDate: string | null;
-      latestUpdatedAtMillis: number;
-    }
-
-    const byId = new Map<number, MutableCycleAgg>();
-    const ensureAgg = (rawId: number | null | undefined): MutableCycleAgg | null => {
-      const id = Number(rawId);
-      if (!Number.isFinite(id) || id < 1) return null;
-      let agg = byId.get(id);
-      if (!agg) {
-        agg = {
-          cycleId: id,
-          cycleNameTs: -1,
-          explicitFlagTs: -1,
-          goalsCount: 0,
-          sessionsCount: 0,
-          repMaxesCount: 0,
-          latestActivityDate: null,
-          latestUpdatedAtMillis: 0,
-        };
-        byId.set(id, agg);
-      }
-      return agg;
-    };
-
-    const recordMeta = (
-      agg: MutableCycleAgg,
-      cycleName: string | undefined,
-      isActiveCycle: boolean | undefined,
-      updatedAtMillis: number | undefined,
-      isoDate?: string
-    ) => {
-      const ts = Number(updatedAtMillis) || 0;
-      if (ts > agg.latestUpdatedAtMillis) {
-        agg.latestUpdatedAtMillis = ts;
-      }
-      if (cycleName && cycleName.trim().length > 0 && ts >= agg.cycleNameTs) {
-        agg.cycleName = cycleName.trim();
-        agg.cycleNameTs = ts;
-      }
-      if (typeof isActiveCycle === "boolean" && ts >= agg.explicitFlagTs) {
-        agg.explicitActiveFlag = isActiveCycle;
-        agg.explicitFlagTs = ts;
-      }
-      if (isoDate && (!agg.latestActivityDate || isoDate > agg.latestActivityDate)) {
-        agg.latestActivityDate = isoDate;
-      }
-    };
-
-    for (const g of rawGoals) {
-      if (isDeletedTombstone(g.deletedAtMillis)) continue;
-      const agg = ensureAgg(g.cycleId);
-      if (!agg) continue;
-      agg.goalsCount += 1;
-      recordMeta(agg, g.cycleName, g.isActiveCycle, g.updatedAtMillis);
-    }
-
-    for (const s of rawSessions) {
-      if (isDeletedTombstone(s.session?.deletedAtMillis)) continue;
-      const agg = ensureAgg(s.session?.cycleId);
-      if (!agg) continue;
-      agg.sessionsCount += 1;
-      recordMeta(
-        agg,
-        s.session.cycleName,
-        s.session.isActiveCycle,
-        s.session.updatedAtMillis,
-        s.session.date
-      );
-    }
-
-    for (const rm of rawRepMaxes) {
-      if (isDeletedTombstone(rm.deletedAtMillis)) continue;
-      const agg = ensureAgg(rm.cycleId);
-      if (!agg) continue;
-      agg.repMaxesCount += 1;
-      recordMeta(agg, rm.cycleName, rm.isActiveCycle, rm.updatedAtMillis, rm.date);
-    }
-
-    const entries = Array.from(byId.values());
-    if (entries.length === 0) {
-      return [
-        {
-          cycleId: 1,
-          cycleName: "Active Cycle",
-          isActive: true,
-          goalsCount: 0,
-          sessionsCount: 0,
-          repMaxesCount: 0,
-          latestActivityDate: null,
-        },
-      ];
-    }
-
-    // Precedence 1: Any cycle explicitly marked isActiveCycle === true on synced records
-    const explicitActives = entries.filter((e) => e.explicitActiveFlag === true);
-    let winningCycleId: number;
-    if (explicitActives.length > 0) {
-      explicitActives.sort((a, b) => {
-        if (b.explicitFlagTs !== a.explicitFlagTs) return b.explicitFlagTs - a.explicitFlagTs;
-        return b.cycleId - a.cycleId;
-      });
-      winningCycleId = explicitActives[0].cycleId;
-    } else {
-      // Precedence 2: Highest non-false cycleId (tie-breaking by latest activity/update)
-      const candidates = entries.filter((e) => e.explicitActiveFlag !== false);
-      const pool = candidates.length > 0 ? candidates : entries;
-      pool.sort((a, b) => {
-        if (b.cycleId !== a.cycleId) return b.cycleId - a.cycleId;
-        const dateCmp = (b.latestActivityDate ?? "").localeCompare(a.latestActivityDate ?? "");
-        if (dateCmp !== 0) return dateCmp;
-        return b.latestUpdatedAtMillis - a.latestUpdatedAtMillis;
-      });
-      winningCycleId = pool[0].cycleId;
-    }
-
-    return entries
-      .sort((a, b) => b.cycleId - a.cycleId)
-      .map((e) => ({
-        cycleId: e.cycleId,
-        cycleName: e.cycleName ?? `Cycle ${e.cycleId}`,
-        isActive: e.cycleId === winningCycleId,
-        ...(e.explicitActiveFlag !== undefined ? { explicitActiveFlag: e.explicitActiveFlag } : {}),
-        goalsCount: e.goalsCount,
-        sessionsCount: e.sessionsCount,
-        repMaxesCount: e.repMaxesCount,
-        latestActivityDate: e.latestActivityDate,
-      }));
-  }
-
   private async resolveTargetCycleInStore(
     tx: RawDocumentBackingStore,
     ctx: UserContext,
@@ -979,7 +982,7 @@ export class WorkoutDomainService {
       tx.readCollection<SessionWithBlocksRecord>(ctx, "sessions"),
       tx.readCollection<RepMaxRecord>(ctx, "rep_maxes"),
     ]);
-    const cycles = this.computeCyclesFromRaw(goals, sessions, repMaxes);
+    const cycles = computeCyclesFromRaw(goals, sessions, repMaxes);
     const active = cycles.find((c) => c.isActive) ?? cycles[0];
 
     if (requestedCycleId !== undefined && requestedCycleId >= 1) {
@@ -1030,7 +1033,7 @@ export class WorkoutDomainService {
       this.backing.readCollection<SessionWithBlocksRecord>(ctx, "sessions"),
       this.backing.readCollection<RepMaxRecord>(ctx, "rep_maxes"),
     ]);
-    const cycles = this.computeCyclesFromRaw(goals, sessions, repMaxes);
+    const cycles = computeCyclesFromRaw(goals, sessions, repMaxes);
     const active = cycles.find((c) => c.isActive) ?? cycles[0];
     return {
       activeCycleId: active.cycleId,
@@ -1051,7 +1054,7 @@ export class WorkoutDomainService {
       this.backing.readCollection<RepMaxRecord>(ctx, "rep_maxes"),
       this.backing.readCollection<ExerciseRecord>(ctx, "exercises"),
     ]);
-    const cycles = this.computeCyclesFromRaw(rawGoals, rawSessions, rawRepMaxes);
+    const cycles = computeCyclesFromRaw(rawGoals, rawSessions, rawRepMaxes);
     const active = cycles.find((c) => c.isActive) ?? cycles[0];
     const exById = new Map(exercises.map((e) => [e.id, e.name]));
 
@@ -3735,7 +3738,7 @@ export class WorkoutDomainService {
       this.backing.readCollection<RepMaxRecord>(ctx, "rep_maxes"),
       this.backing.readCollection<ExerciseRecord>(ctx, "exercises"),
     ]);
-    const cycles = this.computeCyclesFromRaw(rawGoals, rawSessions, rawRepMaxes);
+    const cycles = computeCyclesFromRaw(rawGoals, rawSessions, rawRepMaxes);
     const active = cycles.find((c) => c.isActive) ?? cycles[0];
     const cycleNameById = new Map(cycles.map((c) => [c.cycleId, c.cycleName]));
     const exById = new Map(exercises.map((e) => [e.id, e.name]));

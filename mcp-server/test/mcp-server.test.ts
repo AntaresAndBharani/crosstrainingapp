@@ -20,12 +20,17 @@ import {
 } from "../src/schemas.js";
 import {
   type CycleGoalRecord,
+  type DailyLogRecord,
+  type ExerciseRecord,
   InMemoryBackingStore,
+  isoDateToEpochDay,
   type RepMaxRecord,
   type RoutineWithBlocksRecord,
   type SessionWithBlocksRecord,
+  type WeightEntryRecord,
   WorkoutDomainService,
 } from "../src/store.js";
+import { buildSheetsExport, type SheetsExportPayload } from "../src/sheets-export.js";
 import { evaluateBudgetNotification } from "../billing-killswitch/index.js";
 
 function base64Url(buf: Buffer): string {
@@ -2561,5 +2566,501 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       sparseDrBlocks[2].sets.map((s: any) => s.weight),
       [40, 45]
     );
+  });
+});
+
+describe("GET /export/sheets (Read-Only Google Sheets Bridge)", () => {
+  const SHEETS_TOKEN = "sheets-export-secret-token-0123456789abcdef-valid";
+  const TARGET_UID = "athlete-sheets-uid";
+
+  async function startTestServer(options: {
+    sheetsToken?: string;
+    sheetsUid?: string;
+    backingStore?: InMemoryBackingStore;
+  }) {
+    const store = options.backingStore ?? new InMemoryBackingStore();
+    const app = createMcpExpressApp({
+      backingStore: store,
+      rateLimitMaxPerMinute: 500,
+      oauthConfig: {
+        jwtSecret: "test-secret-key-for-mcp-unit-tests-at-least-32-chars",
+        devBearerToken: "mcp-dev-token-unrelated-987654",
+        devDefaultUid: TARGET_UID,
+        verifyFirebaseIdToken: async () => ({ uid: TARGET_UID, email: "athlete@crosstraining.app" }),
+      },
+      ...(options.sheetsToken !== undefined || options.sheetsUid !== undefined
+        ? {
+            sheetsExportConfig: {
+              token: options.sheetsToken,
+              defaultUid: options.sheetsUid,
+              defaultEnv: "production",
+            },
+          }
+        : {}),
+    });
+
+    let srv!: Server;
+    let url = "";
+    await new Promise<void>((resolve) => {
+      srv = app.listen(0, "127.0.0.1", () => {
+        const addr = srv.address();
+        if (addr && typeof addr === "object") {
+          url = `http://127.0.0.1:${addr.port}`;
+        }
+        resolve();
+      });
+    });
+    return {
+      url,
+      store,
+      close: () =>
+        new Promise<void>((resolve, reject) => {
+          srv.close((err) => (err ? reject(err) : resolve()));
+        }),
+    };
+  }
+
+  it("returns 503 when unconfigured or configured with an insecure short token", async () => {
+    const unconfigured = await startTestServer({});
+    try {
+      const res = await fetch(`${unconfigured.url}/export/sheets`);
+      assert.equal(res.status, 503);
+      assert.equal(res.headers.get("cache-control"), "no-store");
+    } finally {
+      await unconfigured.close();
+    }
+
+    const shortTok = await startTestServer({
+      sheetsToken: "too-short",
+      sheetsUid: TARGET_UID,
+    });
+    try {
+      const res = await fetch(`${shortTok.url}/export/sheets`, {
+        headers: { Authorization: "Bearer too-short" },
+      });
+      assert.equal(res.status, 503);
+    } finally {
+      await shortTok.close();
+    }
+  });
+
+  it("enforces strict Bearer token auth, constant-time mismatch rejection, and MCP/Sheets scope isolation", async () => {
+    const srv = await startTestServer({
+      sheetsToken: SHEETS_TOKEN,
+      sheetsUid: TARGET_UID,
+    });
+    try {
+      const missingRes = await fetch(`${srv.url}/export/sheets`);
+      assert.equal(missingRes.status, 401);
+
+      const wrongRes = await fetch(`${srv.url}/export/sheets`, {
+        headers: { Authorization: "Bearer wrong-token-0123456789abcdef0123456789" },
+      });
+      assert.equal(wrongRes.status, 401);
+
+      // MCP dev token must NOT access /export/sheets
+      const mcpTokenOnSheets = await fetch(`${srv.url}/export/sheets`, {
+        headers: { Authorization: "Bearer mcp-dev-token-unrelated-987654" },
+      });
+      assert.equal(mcpTokenOnSheets.status, 401);
+
+      // Sheets export token must NOT access POST /mcp
+      const sheetsTokenOnMcp = await fetch(`${srv.url}/mcp`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${SHEETS_TOKEN}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+      });
+      assert.equal(sheetsTokenOnMcp.status, 401);
+
+      // Query validation -> 400
+      const badEnv = await fetch(`${srv.url}/export/sheets?env=staging`, {
+        headers: { Authorization: `Bearer ${SHEETS_TOKEN}` },
+      });
+      assert.equal(badEnv.status, 400);
+
+      const badSub = await fetch(`${srv.url}/export/sheets?subcycleType=INVALID`, {
+        headers: { Authorization: `Bearer ${SHEETS_TOKEN}` },
+      });
+      assert.equal(badSub.status, 400);
+
+      for (const p of ["cycleStartDate", "cycleFinishDate", "asOfDate"]) {
+        const badDate = await fetch(`${srv.url}/export/sheets?${p}=2026-02-30`, {
+          headers: { Authorization: `Bearer ${SHEETS_TOKEN}` },
+        });
+        assert.equal(badDate.status, 400);
+      }
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("exports flattened weights, sessions_sets, prs, cycles, cycle_goals, and daily_logs strictly read-only", async () => {
+    const backing = new InMemoryBackingStore();
+    const ctx = { uid: TARGET_UID, env: "production" as const };
+    const srv = await startTestServer({
+      backingStore: backing,
+      sheetsToken: SHEETS_TOKEN,
+      sheetsUid: TARGET_UID,
+    });
+
+    try {
+      const exercises: ExerciseRecord[] = [
+        { id: 1, name: "Snatch", category: "BARBELL", metricType: "WEIGHT", unit: "kg", tracksRepMax: true },
+        { id: 2, name: "Hang Snatch", category: "BARBELL", metricType: "WEIGHT", unit: "kg", tracksRepMax: true },
+        { id: 3, name: "Air Bike", category: "ACCESSORY", metricType: "CALORIES", unit: "cal", tracksRepMax: false },
+        { id: 4, name: "Back Squat", category: "BARBELL", metricType: "WEIGHT", unit: "kg", tracksRepMax: true },
+      ];
+      await backing.writeCollection(ctx, "exercises", exercises);
+
+      const routines: RoutineWithBlocksRecord[] = [
+        {
+          routine: {
+            id: 10,
+            name: "Snatch Balance Complex",
+            description: "[ab_prs=Snatch:1]\nBuild cleanly",
+            mainExerciseId: null,
+            defaultFormat: AVAILABLE_BLOCK_FORMAT,
+          },
+          blocks: [],
+        },
+        {
+          routine: {
+            id: 11,
+            name: "WL - Thursday Clean",
+            description: "Technique + strength",
+            mainExerciseId: null,
+            defaultFormat: "DAILY_ROUTINE",
+          },
+          blocks: [],
+        },
+      ];
+      await backing.writeCollection(ctx, "routines", routines);
+
+      const sessions: SessionWithBlocksRecord[] = [
+        {
+          session: {
+            id: 100,
+            cycleId: 1,
+            cycleName: "Strength & Performance",
+            isActiveCycle: false,
+            date: "2026-10-01",
+            title: "Old Deleted Session",
+            notes: "",
+            deletedAtMillis: 1700000000000,
+          },
+          blocks: [],
+        },
+        {
+          session: {
+            id: 101,
+            cycleId: 4,
+            cycleName: "Recomposition",
+            isActiveCycle: true,
+            date: "2026-11-12",
+            title: "WL - Thursday Clean",
+            notes: "",
+          },
+          blocks: [
+            {
+              block: {
+                id: 201,
+                sessionId: 101,
+                position: 0,
+                name: "Hang Snatch",
+                kind: "COMPLEX",
+                format: "",
+                scheme: "",
+                mainExerciseId: 2,
+                mainExerciseName: "Hang Snatch",
+                routineId: 10,
+                routineName: "Snatch Balance Complex",
+                description: "",
+                resultText: "",
+                resultValue: null,
+                notes: "",
+                subBlock: "Snatch Balance Complex",
+                isCompleted: true,
+              },
+              sets: [
+                { id: 1, blockId: 201, position: 0, groupIndex: 2, reps: 1, weight: 65, metricValue: 0, isWarmup: false, isFailed: false, notes: "" },
+                { id: 2, blockId: 201, position: 1, groupIndex: 4, reps: 1, weight: 70, metricValue: 0, isWarmup: false, isFailed: false, notes: "" },
+              ],
+            },
+            {
+              block: {
+                id: 202,
+                sessionId: 101,
+                position: 1,
+                name: "Air Bike",
+                kind: "METABOLIC",
+                format: "STANDALONE_EXERCISE",
+                scheme: "",
+                mainExerciseId: 3,
+                mainExerciseName: "Air Bike",
+                routineId: null,
+                routineName: null,
+                description: "",
+                resultText: "",
+                resultValue: null,
+                notes: "[log_metric=CALORIES]",
+                subBlock: "",
+                isCompleted: true,
+              },
+              sets: [
+                { id: 3, blockId: 202, position: 0, groupIndex: 0, reps: 1, weight: 0, metricValue: 18, isWarmup: false, isFailed: false, notes: "" },
+              ],
+            },
+            {
+              block: {
+                id: 203,
+                sessionId: 101,
+                position: 2,
+                name: "Back Squat",
+                kind: "STRENGTH",
+                format: "STANDALONE_EXERCISE",
+                scheme: "",
+                mainExerciseId: 4,
+                mainExerciseName: "Back Squat",
+                routineId: null,
+                routineName: null,
+                description: "",
+                resultText: "",
+                resultValue: null,
+                notes: "",
+                subBlock: "",
+                isCompleted: true,
+              },
+              // Single blank placeholder set should be skipped
+              sets: [
+                { id: 4, blockId: 203, position: 0, groupIndex: 0, reps: 1, weight: 0, metricValue: 0, isWarmup: false, isFailed: false, notes: "" },
+              ],
+            },
+          ],
+        },
+      ];
+      await backing.writeCollection(ctx, "sessions", sessions);
+
+      const repMaxes: RepMaxRecord[] = [
+        {
+          id: 1,
+          exerciseId: 1,
+          exerciseName: "Snatch",
+          reps: 1,
+          weight: 85,
+          date: "2026-11-12",
+          cycleId: 4,
+          cycleName: "Recomposition",
+          isActiveCycle: true,
+          sessionId: 101,
+          blockId: 201,
+        },
+        {
+          id: 2,
+          exerciseId: 4,
+          exerciseName: "Back Squat",
+          reps: 3,
+          weight: 140,
+          date: "2026-11-10",
+          cycleId: 4,
+          cycleName: "Recomposition",
+          isActiveCycle: true,
+          deletedAtMillis: 1700000000000,
+        },
+      ];
+      await backing.writeCollection(ctx, "rep_maxes", repMaxes);
+
+      const cycleGoals: CycleGoalRecord[] = [
+        {
+          id: 1,
+          cycleId: 4,
+          cycleName: "Recomposition",
+          isActiveCycle: true,
+          exerciseId: 1,
+          exerciseName: "Snatch",
+          targetReps: 1,
+          startWeight: 80,
+          targetWeight: 90,
+          notes: "Hit smooth 90kg",
+        },
+        {
+          id: 2,
+          cycleId: 4,
+          cycleName: "Recomposition",
+          isActiveCycle: true,
+          exerciseId: 3,
+          exerciseName: "Air Bike",
+          targetReps: 1,
+          startWeight: 20,
+          targetWeight: 28,
+          notes: "[metric=CALORIES,window=1] Sprint",
+        },
+      ];
+      await backing.writeCollection(ctx, "cycle_goals", cycleGoals);
+
+      // Weight entries with a 2-day gap between Nov 02 and Nov 04, spanning >= 8 timeline days
+      const weightEntries: WeightEntryRecord[] = [
+        { date: isoDateToEpochDay("2026-11-01"), weightKg: 76.0, notes: "Morning", updatedAtMillis: 1, deletedAtMillis: null },
+        { date: isoDateToEpochDay("2026-11-02"), weightKg: 75.8, notes: "", updatedAtMillis: 1, deletedAtMillis: null },
+        { date: isoDateToEpochDay("2026-11-04"), weightKg: 75.4, notes: "Post-gap", updatedAtMillis: 1, deletedAtMillis: null },
+        { date: isoDateToEpochDay("2026-11-05"), weightKg: 75.5, notes: "", updatedAtMillis: 1, deletedAtMillis: null },
+        { date: isoDateToEpochDay("2026-11-06"), weightKg: 75.3, notes: "", updatedAtMillis: 1, deletedAtMillis: null },
+        { date: isoDateToEpochDay("2026-11-07"), weightKg: 75.2, notes: "", updatedAtMillis: 1, deletedAtMillis: null },
+        { date: isoDateToEpochDay("2026-11-08"), weightKg: 75.1, notes: "", updatedAtMillis: 1, deletedAtMillis: null },
+        { date: isoDateToEpochDay("2026-11-09"), weightKg: 75.0, notes: "", updatedAtMillis: 1, deletedAtMillis: null },
+        { date: isoDateToEpochDay("2026-11-10"), weightKg: 74.9, notes: "", updatedAtMillis: 1, deletedAtMillis: 1700000000000 },
+      ];
+      await backing.writeCollection(ctx, "weight_entries", weightEntries);
+
+      const dailyLogs: DailyLogRecord[] = [
+        { date: isoDateToEpochDay("2026-11-09"), fastCompleted: true, isRestDay: false, caloriesKcal: 2600, proteinGrams: 185, carbsGrams: 290, fatGrams: 75, notes: "Solid", updatedAtMillis: 1, deletedAtMillis: null },
+        { date: isoDateToEpochDay("2026-11-08"), fastCompleted: false, isRestDay: true, caloriesKcal: 2200, proteinGrams: 170, carbsGrams: 210, fatGrams: 70, notes: "Deleted", updatedAtMillis: 1, deletedAtMillis: 1700000000000 },
+      ];
+      await backing.writeCollection(ctx, "daily_logs", dailyLogs);
+
+      // Assert strictly read-only (0 writeCollection calls during GET /export/sheets)
+      let writeCalls = 0;
+      const origWrite = backing.writeCollection.bind(backing);
+      backing.writeCollection = async (...args) => {
+        writeCalls += 1;
+        return origWrite(...args);
+      };
+
+      const res = await fetch(`${srv.url}/export/sheets`, {
+        headers: { Authorization: `Bearer ${SHEETS_TOKEN}` },
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("cache-control"), "no-store");
+      assert.equal(writeCalls, 0);
+
+      const payload = (await res.json()) as SheetsExportPayload;
+      assert.equal(payload.env, "production");
+      assert.equal(payload.active_cycle.cycle_name, "Recomposition");
+      assert.equal(payload.active_cycle.subcycle_type, "RECOMPOSITION");
+      assert.equal(payload.active_cycle.target_min_pct_wk, -0.25);
+      assert.equal(payload.active_cycle.target_max_pct_wk, 0.25);
+
+      // Weights: 2026-11-01..2026-11-09 = 9 days (Nov 10 tombstoned, Nov 03 interpolated)
+      assert.equal(payload.weights.length, 9);
+      const nov03 = payload.weights.find((w) => w.date === "2026-11-03")!;
+      assert.equal(nov03.real_weight_kg, null);
+      assert.equal(nov03.is_interpolated, true);
+      assert.equal(nov03.entry_type, "THEORETICAL");
+      assert.equal(nov03.interpolated_weight_kg, 75.6);
+
+      const expectedAnalytics = computeWeightMomentumAnalytics(
+        weightEntries
+          .filter((w) => !w.deletedAtMillis)
+          .map((w) => ({
+            isoDate: new Date(w.date * 86_400_000).toISOString().slice(0, 10),
+            weightKg: w.weightKg,
+          })),
+        { subcycleType: "RECOMPOSITION" }
+      );
+      const lastWeightRow = payload.weights[payload.weights.length - 1];
+      assert.equal(
+        lastWeightRow.weekly_body_weight_kg,
+        expectedAnalytics.weekly_body_weight_composite.current_kg
+      );
+      assert.equal(
+        lastWeightRow.momentum_pct,
+        expectedAnalytics.weekly_body_weight_composite.weekly_momentum_pct
+      );
+      assert.equal(
+        lastWeightRow.status,
+        expectedAnalytics.weekly_body_weight_composite.status
+      );
+      assert.equal(
+        lastWeightRow.avg_7d,
+        expectedAnalytics.horizons["7d"].avg_kg
+      );
+      assert.equal(
+        lastWeightRow.avg_28d,
+        expectedAnalytics.horizons["28d"].avg_kg
+      );
+
+      // Sessions_Sets: 2 complex sets (groupIndex 2, 4) + 1 Air Bike set (cal, weight_kg=null); placeholder skipped; deleted session skipped
+      assert.equal(payload.sessions_sets.length, 3);
+      assert.equal(payload.sessions_sets[0].item_type, "COMPLEX");
+      assert.equal(payload.sessions_sets[0].item_title, "Snatch Balance Complex");
+      assert.equal(payload.sessions_sets[0].routine_title, "WL - Thursday Clean");
+      assert.equal(payload.sessions_sets[0].set_index, 2);
+      assert.equal(payload.sessions_sets[0].weight_kg, 65);
+      assert.equal(payload.sessions_sets[1].set_index, 4);
+      assert.equal(payload.sessions_sets[2].item_type, "EXERCISE");
+      assert.equal(payload.sessions_sets[2].weight_kg, null);
+      assert.equal(payload.sessions_sets[2].metric_value, 18);
+      assert.equal(payload.sessions_sets[2].unit, "cal");
+
+      // PRs: Back Squat tombstoned; Snatch resolves source_complex_title
+      assert.equal(payload.prs.length, 1);
+      assert.equal(payload.prs[0].movement_name, "Snatch");
+      assert.equal(payload.prs[0].source_complex_title, "Snatch Balance Complex");
+      assert.equal(payload.prs[0].session_title, "WL - Thursday Clean");
+
+      // Cycle goals: Snatch 1RM joined against 85kg PR => 50% progress; Air Bike decoded CALORIES 1 min
+      assert.equal(payload.cycle_goals.length, 2);
+      const snatchGoal = payload.cycle_goals.find((g) => g.exercise_name === "Snatch")!;
+      assert.equal(snatchGoal.current_best_value, 85);
+      assert.equal(snatchGoal.progress_pct, 50);
+      assert.equal(snatchGoal.notes, "Hit smooth 90kg");
+      const bikeGoal = payload.cycle_goals.find((g) => g.exercise_name === "Air Bike")!;
+      assert.equal(bikeGoal.goal_metric, "CALORIES");
+      assert.equal(bikeGoal.time_window_minutes, 1);
+      assert.equal(bikeGoal.current_best_value, null);
+      assert.equal(bikeGoal.notes, "Sprint");
+
+      // Daily logs: tombstoned entry excluded
+      assert.equal(payload.daily_logs.length, 1);
+      assert.equal(payload.daily_logs[0].date, "2026-11-09");
+      assert.equal(payload.daily_logs[0].calories_kcal, 2600);
+
+      // Query override ?subcycleType=FAT_LOSS overrides active cycle corridor
+      const fatLossRes = await fetch(
+        `${srv.url}/export/sheets?subcycleType=FAT_LOSS`,
+        { headers: { Authorization: `Bearer ${SHEETS_TOKEN}` } }
+      );
+      assert.equal(fatLossRes.status, 200);
+      const fatLossPayload = (await fatLossRes.json()) as SheetsExportPayload;
+      assert.equal(fatLossPayload.active_cycle.subcycle_type, "FAT_LOSS");
+      assert.equal(fatLossPayload.active_cycle.target_min_pct_wk, -1.0);
+      assert.equal(fatLossPayload.active_cycle.target_max_pct_wk, -0.25);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("attributes cycle goal progress only to PRs from the goal's own cycle (no cross-cycle leakage)", async () => {
+    const backing = new InMemoryBackingStore();
+    const ctx = { uid: TARGET_UID, env: "production" as const };
+    await backing.writeCollection<ExerciseRecord>(ctx, "exercises", [
+      { id: 1, name: "Snatch", category: "BARBELL", metricType: "WEIGHT", unit: "kg", tracksRepMax: true },
+    ]);
+    await backing.writeCollection<RepMaxRecord>(ctx, "rep_maxes", [
+      // Prior-cycle PR above the new cycle's target must NOT count toward cycle 2 progress
+      { id: 1, exerciseId: 1, exerciseName: "Snatch", reps: 1, weight: 95, date: "2026-06-01", cycleId: 1, cycleName: "Strength", isActiveCycle: false },
+    ]);
+    await backing.writeCollection<CycleGoalRecord>(ctx, "cycle_goals", [
+      { id: 1, cycleId: 2, cycleName: "Recomposition", isActiveCycle: true, exerciseId: 1, exerciseName: "Snatch", targetReps: 1, startWeight: 80, targetWeight: 90, notes: "" },
+    ]);
+
+    const payload = await buildSheetsExport(backing, ctx, {});
+    const goal = payload.cycle_goals.find((g) => g.cycle_id === 2)!;
+    assert.equal(goal.is_active_cycle, true);
+    assert.equal(goal.current_best_value, null);
+    assert.equal(goal.progress_pct, null);
+
+    // An in-cycle PR (tagged cycleId 2) is joined normally
+    await backing.writeCollection<RepMaxRecord>(ctx, "rep_maxes", [
+      { id: 1, exerciseId: 1, exerciseName: "Snatch", reps: 1, weight: 95, date: "2026-06-01", cycleId: 1, cycleName: "Strength", isActiveCycle: false },
+      { id: 2, exerciseId: 1, exerciseName: "Snatch", reps: 1, weight: 84, date: "2026-11-12", cycleId: 2, cycleName: "Recomposition", isActiveCycle: true },
+    ]);
+    const payload2 = await buildSheetsExport(backing, ctx, {});
+    const goal2 = payload2.cycle_goals.find((g) => g.cycle_id === 2)!;
+    assert.equal(goal2.current_best_value, 84);
+    assert.equal(goal2.progress_pct, 40);
   });
 });

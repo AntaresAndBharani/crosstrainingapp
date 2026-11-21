@@ -1884,7 +1884,7 @@ export interface DailyInterpolatedWeightPoint {
   dayIndexFromFirstReal: number;
 }
 
-const SUBCYCLE_CORRIDORS: Record<
+export const SUBCYCLE_CORRIDORS: Record<
   CanonicalWeightSubcycleType,
   { minPct: number; maxPct: number; label: string }
 > = {
@@ -1909,7 +1909,7 @@ function roundTo(val: number, decimals: number): number {
   return Math.round(val * factor) / factor;
 }
 
-function classifyZone(momentumPct: number): string {
+export function classifyZone(momentumPct: number): string {
   if (momentumPct < -1.0) return "POSSIBLE_MUSCLE_LOSS";
   if (momentumPct < -0.25) return "FAT_LOSS";
   if (momentumPct <= 0.25) return "RECOMPOSITION";
@@ -1917,7 +1917,7 @@ function classifyZone(momentumPct: number): string {
   return "SUBOPTIMAL_MUSCLE_GAIN";
 }
 
-function evaluateMomentumDiagnostic(
+export function evaluateMomentumDiagnostic(
   momentumPct: number | null,
   subcycleType: CanonicalWeightSubcycleType,
   calibrationDay: number = 1
@@ -2033,43 +2033,70 @@ function classifyStatus(
   return evaluateMomentumDiagnostic(momentumPct, subcycleType, calibrationDay).status;
 }
 
-/**
- * Pure deterministic multi-horizon (7D/14D/21D/28D) and 3:4:2:1 Weekly Body Weight momentum
- * analytics engine matching Android FatLossAnalytics.computeCycleMomentumState().
- */
-export function computeWeightMomentumAnalytics(
-  entries: Array<{ date?: string | number; isoDate?: string; weightKg: number; isDeleted?: boolean }>,
-  options: {
-    subcycleType?: WeightSubcycleType;
-    cycleName?: string;
-    cycleStartDate?: string;
-    cycleFinishDate?: string;
-    asOfDate?: string;
-    includeDailyTimeline?: boolean;
-  } = {}
-) {
-  const subcycleType: CanonicalWeightSubcycleType = normalizeWeightSubcycleType(options.subcycleType);
-  const cycleName = options.cycleName ?? "Active Cycle";
-  const corridor = SUBCYCLE_CORRIDORS[subcycleType];
+export interface DailyWeightAnalyticsRow {
+  date: string;
+  real_weight_kg: number | null;
+  interpolated_weight_kg: number;
+  is_interpolated: boolean;
+  entry_type: "REAL" | "THEORETICAL";
+  day_index: number;
+  avg_7d: number;
+  avg_14d: number;
+  avg_21d: number;
+  avg_28d: number;
+  weekly_body_weight_kg: number;
+  weekly_rate_kg: number | null;
+  momentum_pct: number | null;
+  status: string;
+  zone: string | null;
+  notes: string;
+}
 
-  const validMap = new Map<string, number>();
+interface DailyWeightSnapshot extends DailyInterpolatedWeightPoint {
+  notes: string;
+  avg7d: number;
+  avg14d: number;
+  avg21d: number;
+  avg28d: number;
+  weeklyComposite: number;
+}
+
+function buildDailyWeightSnapshots(
+  entries: Array<{
+    date?: string | number;
+    isoDate?: string;
+    weightKg: number;
+    notes?: string;
+    isDeleted?: boolean;
+  }>,
+  options: { asOfDate?: string } = {}
+): {
+  snapshots: DailyWeightSnapshot[];
+  firstRealDate: string;
+  lastRealDate: string;
+  effectiveAsOf: string;
+} {
+  const validMap = new Map<string, { weightKg: number; notes: string }>();
   for (const e of entries) {
     const resolvedDate = typeof e.isoDate === "string" ? e.isoDate : String(e.date ?? "");
     // Parity with Android interpolateDailyWeightTimeline(referenceDate): weigh-ins after asOfDate are excluded.
     const isAfterAsOf = options.asOfDate !== undefined && resolvedDate > options.asOfDate;
     if (!e.isDeleted && !isAfterAsOf && e.weightKg > 0 && isValidIsoDate(resolvedDate)) {
-      validMap.set(resolvedDate, e.weightKg);
+      validMap.set(resolvedDate, {
+        weightKg: e.weightKg,
+        notes: typeof e.notes === "string" ? e.notes : "",
+      });
     }
   }
   const realPoints = Array.from(validMap.entries())
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([date, weightKg]) => ({ date, weightKg }));
+    .map(([date, v]) => ({ date, weightKg: v.weightKg, notes: v.notes }));
 
   const firstRealDate = realPoints[0]?.date ?? options.asOfDate ?? new Date().toISOString().slice(0, 10);
   const lastRealDate = realPoints[realPoints.length - 1]?.date ?? firstRealDate;
   const effectiveAsOf = options.asOfDate ?? lastRealDate;
 
-  const dailyPoints: DailyInterpolatedWeightPoint[] = [];
+  const dailyPoints: Array<DailyInterpolatedWeightPoint & { notes: string }> = [];
   if (realPoints.length > 0) {
     let dayIndex = 1;
     for (let i = 0; i < realPoints.length; i++) {
@@ -2079,6 +2106,7 @@ export function computeWeightMomentumAnalytics(
         weightKg: a.weightKg,
         source: "REAL",
         dayIndexFromFirstReal: dayIndex++,
+        notes: a.notes,
       });
       if (i < realPoints.length - 1) {
         const b = realPoints[i + 1];
@@ -2090,6 +2118,7 @@ export function computeWeightMomentumAnalytics(
             weightKg: interpWeight,
             source: "THEORETICAL",
             dayIndexFromFirstReal: dayIndex++,
+            notes: "",
           });
         }
       }
@@ -2102,11 +2131,12 @@ export function computeWeightMomentumAnalytics(
         weightKg: lastReal.weightKg,
         source: "THEORETICAL",
         dayIndexFromFirstReal: dayIndex++,
+        notes: "",
       });
     }
   }
 
-  const snapshots = dailyPoints.map((pt, idx) => {
+  const snapshots: DailyWeightSnapshot[] = dailyPoints.map((pt, idx) => {
     const windowAvg = (n: number) => {
       const count = Math.min(idx + 1, n);
       let sum = 0;
@@ -2128,6 +2158,83 @@ export function computeWeightMomentumAnalytics(
       avg28d,
       weeklyComposite,
     };
+  });
+
+  return { snapshots, firstRealDate, lastRealDate, effectiveAsOf };
+}
+
+/**
+ * Computes the complete per-day weight analytics time series (linear interpolation, 7D/14D/21D/28D
+ * moving averages, 3:4:2:1 Weekly Body Weight composite, and momentum %/status/zone) in chronological
+ * ascending order, maintaining exact mathematical parity with `computeWeightMomentumAnalytics`.
+ */
+export function computeDailyWeightSeries(
+  entries: Array<{
+    date?: string | number;
+    isoDate?: string;
+    weightKg: number;
+    notes?: string;
+    isDeleted?: boolean;
+  }>,
+  options: { subcycleType?: WeightSubcycleType; asOfDate?: string } = {}
+): DailyWeightAnalyticsRow[] {
+  const subcycleType: CanonicalWeightSubcycleType = normalizeWeightSubcycleType(options.subcycleType);
+  const { snapshots } = buildDailyWeightSnapshots(entries, { asOfDate: options.asOfDate });
+
+  return snapshots.map((curr, idx) => {
+    const prev7 = idx >= 7 ? snapshots[idx - 7] : undefined;
+    const weeklyRateKg = prev7
+      ? roundTo(curr.weeklyComposite - prev7.weeklyComposite, 2)
+      : null;
+    const momentumPct =
+      prev7 && prev7.weeklyComposite > 0
+        ? roundTo(((curr.weeklyComposite - prev7.weeklyComposite) / prev7.weeklyComposite) * 100, 2)
+        : null;
+    const calibrationDay = Math.min(idx + 1, 8);
+    const diagnostic = evaluateMomentumDiagnostic(momentumPct, subcycleType, calibrationDay);
+
+    return {
+      date: curr.date,
+      real_weight_kg: curr.source === "REAL" ? roundTo(curr.weightKg, 2) : null,
+      interpolated_weight_kg: roundTo(curr.weightKg, 2),
+      is_interpolated: curr.source === "THEORETICAL",
+      entry_type: curr.source,
+      day_index: curr.dayIndexFromFirstReal,
+      avg_7d: roundTo(curr.avg7d, 2),
+      avg_14d: roundTo(curr.avg14d, 2),
+      avg_21d: roundTo(curr.avg21d, 2),
+      avg_28d: roundTo(curr.avg28d, 2),
+      weekly_body_weight_kg: roundTo(curr.weeklyComposite, 2),
+      weekly_rate_kg: weeklyRateKg,
+      momentum_pct: momentumPct,
+      status: diagnostic.status,
+      zone: momentumPct !== null ? classifyZone(momentumPct) : null,
+      notes: curr.source === "REAL" ? curr.notes : "",
+    };
+  });
+}
+
+/**
+ * Pure deterministic multi-horizon (7D/14D/21D/28D) and 3:4:2:1 Weekly Body Weight momentum
+ * analytics engine matching Android FatLossAnalytics.computeCycleMomentumState().
+ */
+export function computeWeightMomentumAnalytics(
+  entries: Array<{ date?: string | number; isoDate?: string; weightKg: number; isDeleted?: boolean }>,
+  options: {
+    subcycleType?: WeightSubcycleType;
+    cycleName?: string;
+    cycleStartDate?: string;
+    cycleFinishDate?: string;
+    asOfDate?: string;
+    includeDailyTimeline?: boolean;
+  } = {}
+) {
+  const subcycleType: CanonicalWeightSubcycleType = normalizeWeightSubcycleType(options.subcycleType);
+  const cycleName = options.cycleName ?? "Active Cycle";
+  const corridor = SUBCYCLE_CORRIDORS[subcycleType];
+
+  const { snapshots, firstRealDate, effectiveAsOf } = buildDailyWeightSnapshots(entries, {
+    asOfDate: options.asOfDate,
   });
 
   const totalTimelineDays = snapshots.length;
@@ -2262,7 +2369,7 @@ export function computeWeightMomentumAnalytics(
     },
     ...(options.includeDailyTimeline
       ? {
-          daily_timeline: dailyPoints.map((pt) => ({
+          daily_timeline: snapshots.map((pt) => ({
             date: pt.date,
             weight_kg: roundTo(pt.weightKg, 2),
             source: pt.source,

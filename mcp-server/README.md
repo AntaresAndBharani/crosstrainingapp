@@ -35,6 +35,25 @@ Every tool includes explicit MCP `ToolAnnotations` (`readOnlyHint`, `destructive
 | `MCP_ISSUER_URL` | No | Public base URL; inferred from `X-Forwarded-*` headers when omitted. |
 | `MCP_DEV_BEARER_TOKEN` + `MCP_DEFAULT_UID` | No | Static dev token mapped to a single uid. **Never set these on a public deployment.** |
 | `MCP_DEFAULT_UID` / `MCP_DEFAULT_ENV` | `--stdio` only | Target uid / environment for local stdio mode. |
+| `SHEETS_EXPORT_TOKEN` | No | Dedicated Bearer token (>= 32 chars, Secret Manager `sheets-export-token`) scoped solely to read-only `GET /export/sheets`. Rejected on `/mcp`. |
+| `SHEETS_EXPORT_UID` | No (required if `SHEETS_EXPORT_TOKEN` set) | Target Firebase UID exported by `GET /export/sheets`. |
+| `SHEETS_EXPORT_ENV` | No | Default Firestore environment for `GET /export/sheets` (`production` or `snapshot`, defaults to `production`). |
+| `SHEETS_EXPORT_SUBCYCLE_TYPE` | No | Optional default weight corridor (`FAT_LOSS`, `RECOMPOSITION`, `MUSCLE_GAIN`); inferred from active cycle name when omitted. |
+| `SHEETS_EXPORT_RATE_LIMIT_PER_MIN` | No | Per-minute IP rate limit for `GET /export/sheets` (defaults to `60`). |
+
+## Read-Only Google Sheets Analytics Bridge (`GET /export/sheets`)
+
+Exposes a read-only JSON snapshot across all 7 Firestore collections (`active_cycle`, `weights`, `sessions_sets`, `prs`, `cycles`, `cycle_goals`, `daily_logs`) for prototyping charts with **Gemini in Google Sheets**:
+
+1. Deploy with `-SheetsExportUid` to provision `sheets-export-token` in Secret Manager and attach `SHEETS_EXPORT_UID` / `SHEETS_EXPORT_ENV` on Cloud Run:
+   ```powershell
+   .\mcp-server\scripts\setup-gcp-and-deploy.ps1 -SheetsExportUid "<YOUR_FIREBASE_UID>"
+   ```
+   Subsequent redeploys without `-SheetsExportUid` preserve existing `SHEETS_EXPORT_UID` and `SHEETS_EXPORT_ENV`.
+2. In your Google Sheet, open **Extensions → Apps Script**, paste [`mcp-server/scripts/google-sheets-sync.gs`](scripts/google-sheets-sync.gs) into `Code.gs`, and configure **Project Settings → Script Properties**:
+   - `EXPORT_URL` = `https://<CLOUD_RUN_URL>/export/sheets`
+   - `EXPORT_TOKEN` = value of `gcloud secrets versions access latest --secret=sheets-export-token --project=virgymia-c2cc7`
+3. Run `syncCrossTrainingData` once to authorize and populate the 6 data tabs (`Weights`, `Sessions_Sets`, `PRs`, `Cycles`, `Cycle_Goals`, `Daily_Logs`) plus `Dashboard`, then optionally run **CrossTraining → Install Daily Auto-Sync Trigger**.
 
 ### OAuth security model
 

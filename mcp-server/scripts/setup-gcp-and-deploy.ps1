@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Configures anti-bill guardrails, Artifact Registry cleanup policy, Pub/Sub Billing Kill-Switch,
     automated 5-unit Cloud Billing Budget, Firebase Auth authorizedDomains, and deploys the
@@ -9,7 +9,10 @@ param(
     [string]$Account = "fractanomics@gmail.com",
     [string]$Region = "europe-west1",
     [string]$ServiceName = "crosstraining-mcp",
-    [string]$BudgetTopic = "billing-killswitch-alerts"
+    [string]$BudgetTopic = "billing-killswitch-alerts",
+    [string]$SheetsExportUid = "",
+    [ValidateSet("production", "snapshot")]
+    [string]$SheetsExportEnv = "production"
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,6 +56,7 @@ $runtimeSa = "$projectNumber-compute@developer.gserviceaccount.com"
 $killSwitchSaName = "billing-killswitch"
 $killSwitchSa = "$killSwitchSaName@$ProjectId.iam.gserviceaccount.com"
 $jwtSecretName = "mcp-jwt-secret"
+$sheetsExportSecretName = "sheets-export-token"
 
 Write-Host "=== 3b. Granting Cloud Build & Runtime IAM Roles to $runtimeSa ===" -ForegroundColor Cyan
 # The default compute SA is both the Cloud Build identity for `gcloud run deploy --source` and the
@@ -200,8 +204,9 @@ if (-not $matchingBudget) {
 }
 
 Write-Host "=== 5e. Ensuring MCP OAuth signing secret '$jwtSecretName' in Secret Manager ===" -ForegroundColor Cyan
-$existingSecrets = gcloud secrets list --project=$ProjectId --format="value(name)" --quiet
-if (-not ($existingSecrets -match "/secrets/$jwtSecretName$")) {
+$existingSecretsRaw = gcloud secrets list --project=$ProjectId --format="value(name)" --quiet
+$existingSecretNames = @(($existingSecretsRaw | Out-String) -split "\r?\n" | ForEach-Object { ($_ -split "/")[-1].Trim() } | Where-Object { $_ })
+if (-not ($existingSecretNames -contains $jwtSecretName)) {
     $secretBytes = New-Object byte[] 48
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     try { $rng.GetBytes($secretBytes) } finally { $rng.Dispose() }
@@ -226,6 +231,68 @@ gcloud secrets add-iam-policy-binding $jwtSecretName `
     --quiet | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Failed to grant secretAccessor on '$jwtSecretName' to $runtimeSa." }
 
+$effectiveSheetsExportUid = $SheetsExportUid.Trim()
+$effectiveSheetsExportEnv = if ($SheetsExportEnv -eq "snapshot") { "snapshot" } else { "production" }
+if ([string]::IsNullOrWhiteSpace($effectiveSheetsExportUid)) {
+    $prevErrPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $existingServiceRaw = gcloud run services describe $ServiceName --region=$Region --project=$ProjectId --format="json" --quiet 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($existingServiceRaw | Out-String))) {
+            $svcJson = ($existingServiceRaw | Out-String) | ConvertFrom-Json
+            $envList = $svcJson.spec.template.spec.containers[0].env
+            $uidEntry = $envList | Where-Object { $_.name -eq "SHEETS_EXPORT_UID" } | Select-Object -First 1
+            if ($uidEntry -and -not [string]::IsNullOrWhiteSpace($uidEntry.value)) {
+                $effectiveSheetsExportUid = [string]$uidEntry.value
+            }
+            if (-not $PSBoundParameters.ContainsKey("SheetsExportEnv")) {
+                $envEntry = $envList | Where-Object { $_.name -eq "SHEETS_EXPORT_ENV" } | Select-Object -First 1
+                if ($envEntry -and -not [string]::IsNullOrWhiteSpace($envEntry.value)) {
+                    $effectiveSheetsExportEnv = if ($envEntry.value -eq "snapshot") { "snapshot" } else { "production" }
+                }
+            }
+        }
+    }
+    finally {
+        $ErrorActionPreference = $prevErrPref
+    }
+}
+
+$deploySecrets = "MCP_JWT_SECRET=${jwtSecretName}:latest"
+$deployEnvVars = "FIREBASE_PROJECT_ID=$ProjectId"
+
+if (-not [string]::IsNullOrWhiteSpace($effectiveSheetsExportUid)) {
+    Write-Host "=== 5f. Ensuring Sheets Export token '$sheetsExportSecretName' in Secret Manager ===" -ForegroundColor Cyan
+    if (-not ($existingSecretNames -contains $sheetsExportSecretName)) {
+        $exportBytes = New-Object byte[] 32
+        $exportRng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $exportRng.GetBytes($exportBytes) } finally { $exportRng.Dispose() }
+        $hexToken = [System.BitConverter]::ToString($exportBytes).Replace("-", "").ToLowerInvariant()
+        $exportFile = [System.IO.Path]::GetTempFileName()
+        try {
+            [System.IO.File]::WriteAllText($exportFile, $hexToken)
+            gcloud secrets create $sheetsExportSecretName `
+                --project=$ProjectId `
+                --replication-policy=automatic `
+                --data-file=$exportFile `
+                --quiet
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create Secret Manager secret '$sheetsExportSecretName'." }
+        }
+        finally {
+            Remove-Item $exportFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+    gcloud secrets add-iam-policy-binding $sheetsExportSecretName `
+        --project=$ProjectId `
+        --member="serviceAccount:$runtimeSa" `
+        --role="roles/secretmanager.secretAccessor" `
+        --quiet | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to grant secretAccessor on '$sheetsExportSecretName' to $runtimeSa." }
+
+    $deploySecrets = "MCP_JWT_SECRET=${jwtSecretName}:latest,SHEETS_EXPORT_TOKEN=${sheetsExportSecretName}:latest"
+    $deployEnvVars = "FIREBASE_PROJECT_ID=$ProjectId,SHEETS_EXPORT_UID=$effectiveSheetsExportUid,SHEETS_EXPORT_ENV=$effectiveSheetsExportEnv"
+}
+
 Write-Host "=== 6. Deploying CrossTraining Remote MCP Server (Hard Cap: max-instances=1, 256Mi) ===" -ForegroundColor Cyan
 $mcpDir = Join-Path $PSScriptRoot ".."
 gcloud run deploy $ServiceName `
@@ -241,8 +308,8 @@ gcloud run deploy $ServiceName `
     --concurrency=20 `
     --timeout=30s `
     --service-account=$runtimeSa `
-    --set-secrets="MCP_JWT_SECRET=${jwtSecretName}:latest" `
-    --set-env-vars="FIREBASE_PROJECT_ID=$ProjectId" `
+    --set-secrets="$deploySecrets" `
+    --set-env-vars="$deployEnvVars" `
     --quiet
 if ($LASTEXITCODE -ne 0) { throw "Failed to deploy $ServiceName to Cloud Run." }
 
@@ -313,3 +380,9 @@ Write-Host "✅ Deployment Complete!" -ForegroundColor Green
 Write-Host "Remote MCP Endpoint URL : $serviceUrl/mcp" -ForegroundColor Green
 Write-Host "Legacy SSE Endpoint URL : $serviceUrl/sse" -ForegroundColor Green
 Write-Host "OAuth Discovery URL     : $serviceUrl/.well-known/oauth-authorization-server" -ForegroundColor Green
+if (-not [string]::IsNullOrWhiteSpace($effectiveSheetsExportUid)) {
+    Write-Host "Sheets Export URL       : $serviceUrl/export/sheets" -ForegroundColor Green
+    Write-Host "Fetch Sheets Token Cmd  : gcloud secrets versions access latest --secret=$sheetsExportSecretName --project=$ProjectId" -ForegroundColor Cyan
+} else {
+    Write-Host "Sheets Export           : disabled (pass -SheetsExportUid '<firebase-uid>' to enable GET /export/sheets)" -ForegroundColor Yellow
+}
