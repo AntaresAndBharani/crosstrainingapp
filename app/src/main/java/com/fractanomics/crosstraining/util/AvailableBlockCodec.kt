@@ -67,7 +67,9 @@ data class LastBlockSessionSummary(
     val exerciseMetricValuesById: Map<Long, List<Double?>> = emptyMap(),
     val exerciseMetricValuesByName: Map<String, List<Double?>> = emptyMap(),
     val exerciseLoggedMetricById: Map<Long, ExerciseTargetMetric> = emptyMap(),
-    val exerciseLoggedMetricByName: Map<String, ExerciseTargetMetric> = emptyMap()
+    val exerciseLoggedMetricByName: Map<String, ExerciseTargetMetric> = emptyMap(),
+    val exerciseGroupIndicesById: Map<Long, List<Int?>> = emptyMap(),
+    val exerciseGroupIndicesByName: Map<String, List<Int?>> = emptyMap()
 )
 
 /** Live-evaluated Basic Movement PR chip state inside Log Session. */
@@ -96,7 +98,8 @@ data class HydratedBlockExerciseSeed(
     val metricValues: List<Double?> = emptyList(),
     val groupIndices: List<Int?> = emptyList(),
     val loggedMetric: ExerciseTargetMetric? = null,
-    val rawNotes: String = ""
+    val rawNotes: String = "",
+    val hasNoLoggedSets: Boolean = false
 )
 
 data class HydratedAvailableBlockSeed(
@@ -455,6 +458,8 @@ object AvailableBlockCodec {
             val metricValuesByName = linkedMapOf<String, List<Double?>>()
             val loggedMetricById = linkedMapOf<Long, ExerciseTargetMetric>()
             val loggedMetricByName = linkedMapOf<String, ExerciseTargetMetric>()
+            val groupIndicesById = linkedMapOf<Long, List<Int?>>()
+            val groupIndicesByName = linkedMapOf<String, List<Int?>>()
             val summaryTokens = mutableListOf<String>()
             val allLoggedValues = mutableListOf<Double>()
             var hasMeaningfulData = false
@@ -479,6 +484,7 @@ object AvailableBlockCodec {
                 val weights = workingSets.map { s -> s.weight?.takeIf { it > 0.0 } }
                 val repsList = workingSets.map { s -> s.reps.coerceAtLeast(0) }
                 val metricList = workingSets.map { s -> s.metricValue?.takeIf { it > 0.0 } }
+                val groupIndices = workingSets.map { s -> s.groupIndex?.takeIf { it > 0 } }
                 val positiveWeights = weights.filterNotNull()
                 val positiveMetrics = metricList.filterNotNull()
                 val blockMeaningful = RoutineTargetCodec.hasMeaningfulLoggedValues(bws.block.notes, workingSets)
@@ -497,6 +503,7 @@ object AvailableBlockCodec {
                     repsById[targetExId] = repsList
                     metricValuesById[targetExId] = metricList
                     loggedMetricById[targetExId] = resolvedMetric
+                    groupIndicesById[targetExId] = groupIndices
                 }
                 if (resolvedName.isNotBlank()) {
                     val lower = resolvedName.lowercase()
@@ -504,6 +511,7 @@ object AvailableBlockCodec {
                     repsByName[lower] = repsList
                     metricValuesByName[lower] = metricList
                     loggedMetricByName[lower] = resolvedMetric
+                    groupIndicesByName[lower] = groupIndices
                 }
 
                 if (matching.size == 1 && block.exercises.size <= 1) {
@@ -555,7 +563,9 @@ object AvailableBlockCodec {
                 exerciseMetricValuesById = metricValuesById,
                 exerciseMetricValuesByName = metricValuesByName,
                 exerciseLoggedMetricById = loggedMetricById,
-                exerciseLoggedMetricByName = loggedMetricByName
+                exerciseLoggedMetricByName = loggedMetricByName,
+                exerciseGroupIndicesById = groupIndicesById,
+                exerciseGroupIndicesByName = groupIndicesByName
             )
             if (hasMeaningfulData) return summary
             if (fallbackSummary == null) fallbackSummary = summary
@@ -808,7 +818,8 @@ object AvailableBlockCodec {
                             metricValues = listOf(null),
                             groupIndices = listOf(null),
                             loggedMetric = resolvedMetric,
-                            rawNotes = blk.notes
+                            rawNotes = blk.notes,
+                            hasNoLoggedSets = true
                         )
                     }
                 } else {
@@ -847,7 +858,8 @@ object AvailableBlockCodec {
                         metricValues = metricValues,
                         groupIndices = groupIndices,
                         loggedMetric = resolvedMetric,
-                        rawNotes = blk.notes
+                        rawNotes = blk.notes,
+                        hasNoLoggedSets = orderedSets.isEmpty()
                     )
                 }
             }

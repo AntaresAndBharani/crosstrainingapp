@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -1409,6 +1410,7 @@ fun SessionEditorBody(
         Column(
             modifier = Modifier
                 .padding(pad)
+                .imePadding()
                 .onGloballyPositioned { viewportHeightPx = it.size.height }
                 .verticalScroll(scrollState)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -1620,6 +1622,19 @@ fun SessionEditorBody(
                             onOpenPrPicker = { activePrPickerForBlock = availState },
                             onRemoveTrackedPr = onRemovePrSlot,
                             itemNumber = idx + 1,
+                            onShowUndoSnackbar = { msg, onUndo ->
+                                scope.launch {
+                                    snackbar.currentSnackbarData?.dismiss()
+                                    val res = snackbar.showSnackbar(
+                                        message = msg,
+                                        actionLabel = "Undo",
+                                        duration = SnackbarDuration.Short
+                                    )
+                                    if (res == SnackbarResult.ActionPerformed) {
+                                        onUndo()
+                                    }
+                                }
+                            },
                             modifier = cardModifier
                         )
                     }

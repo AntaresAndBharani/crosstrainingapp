@@ -70,8 +70,8 @@ export const CROSSTRAINING_MCP_INSTRUCTIONS = [
   "CrossTraining Workout Assistant Connector rules:",
   "1. ACTIVE CYCLE: Never assume Cycle 1 is the active cycle. Call `get_active_cycle` (or `get_workout_summary`) when the user asks for their current/active cycle or goals. Whenever `cycleId` is omitted on goal, session, or rep-max mutations, the server automatically targets the user's resolved active cycle.",
   "2. BATCH MULTI-ORDER PROMPTS IN ONE CALL: When a user message contains multiple orders (e.g. changing 2RM Snatch to 3RM Snatch AND adding several new goals, or logging multiple exercises, PRs, weigh-ins, or daily logs), ALWAYS combine them into a single batch tool call (`manage_cycle_goals`, `batch_upsert_complexes`, `batch_upsert_exercises`, `batch_record_rep_maxes`, `batch_upsert_weight_entries`, `batch_upsert_daily_logs`) instead of chaining multiple single-item tool calls. In `manage_cycle_goals`, set `previousTargetReps` on an upsert item to convert an RM goal (such as 2RM -> 3RM) in one atomic step.",
-  "3. COMPLEXES & MULTI-METRIC SESSION LOGGING: Prefer `list_complexes`, `upsert_complex`, `batch_upsert_complexes`, and `delete_complex` when managing standalone Complex cards (legacy `*_available_block` aliases remain supported; `[ab_prs=...]` tracked PR slots and free-form instructions), use `log_complex_session` (legacy `log_block_session` alias) when logging complex sets (`weights` or multi-metric `metric` + `sets` with `reps`/`weight_kg`/`metric_value`/`group_index`; pass `weights: []` for unloaded/bodyweight movements) along with optional `recordedPrs` that auto-link to the session/complex and persist on the complex template, and use `update_complex_session_log` (legacy `update_block_session_log` alias) when editing an existing logged complex session (updating set weights/metrics/reps/counts, notes, date, or tracked PRs while reconciling/tombstoning replaced or removed session PRs).",
-  "4. COMPOSITE DAILY ROUTINES (COMPLEXES + STANDALONE EXERCISES): Use `list_daily_routines`, `upsert_daily_routine`, and `delete_daily_routine` to compose reusable workout-day templates (`defaultFormat: 'DAILY_ROUTINE'`) made of ordered Saved Complexes (`item_type: 'COMPLEX'`, legacy `'BLOCK'` alias, with optional per-routine `sets_count` + `exercise_targets`) and standalone Exercises (`item_type: 'EXERCISE'`, with optional `note`, `default_tracked_prs`, and optional `sets_count`/`target_metric`/`target_mode`/`fixed_value`/`per_set_values`). Use `log_daily_routine_session` to log a mixed Complex + standalone Exercise (`STANDALONE_EXERCISE`) workout with either `set_weights_kg`/`weights` or multi-metric `metric` + `sets` (pass `update_routine_template: true` if the user adds/reorders items and wants the template updated), and use `get_daily_routine_progress` for unified constituent trends (`kg`/`reps`/`cal`/`s`/`m`), PRs, charts, and set history across all historical sessions.",
+  "3. COMPLEXES & MULTI-METRIC SESSION LOGGING: Prefer `list_complexes`, `upsert_complex`, `batch_upsert_complexes`, and `delete_complex` when managing standalone Complex cards (legacy `*_available_block` aliases remain supported; `[ab_prs=...]` tracked PR slots and free-form instructions), use `log_complex_session` (legacy `log_block_session` alias) when logging complex sets (`shared_set_weights_kg` with optional `exercise_targets` skip patterns, per-exercise `weights`, or multi-metric `metric` + `sets` with `reps`/`weight_kg`/`metric_value`/`group_index`; pass `weights: []` for unloaded/bodyweight movements) along with optional `recordedPrs` that auto-link to the session/complex and persist on the complex template, and use `update_complex_session_log` (legacy `update_block_session_log` alias) when editing an existing logged complex session (updating shared or per-exercise set weights/metrics/reps/counts, notes, date, or tracked PRs while reconciling/tombstoning replaced or removed session PRs).",
+  "4. COMPOSITE DAILY ROUTINES (COMPLEXES + STANDALONE EXERCISES): Use `list_daily_routines`, `upsert_daily_routine`, and `delete_daily_routine` to compose reusable workout-day templates (`defaultFormat: 'DAILY_ROUTINE'`) made of ordered Saved Complexes (`item_type: 'COMPLEX'`, legacy `'BLOCK'` alias, with optional per-routine `sets_count` + `exercise_targets`) and standalone Exercises (`item_type: 'EXERCISE'`, with optional `note`, `default_tracked_prs`, and optional `sets_count`/`target_metric`/`target_mode`/`fixed_value`/`per_set_values`). Use `log_daily_routine_session` to log a mixed Complex + standalone Exercise (`STANDALONE_EXERCISE`) workout with `shared_set_weights_kg` (honoring saved `exercise_targets` 0-skip rounds), `set_weights_kg`/`weights`, or multi-metric `metric` + `sets` (pass `update_routine_template: true` if the user adds/reorders items and wants the template updated), and use `get_daily_routine_progress` for unified constituent trends (`kg`/`reps`/`cal`/`s`/`m`), PRs, charts, and set history across all historical sessions.",
 ].join("\n");
 
 function jsonResult(data: unknown) {
@@ -686,7 +686,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Log Complex Session",
       description:
-        "Log a Complex session with weight-only `weights` or multi-metric `metric` + `sets` (`reps`, `weight_kg`, `metric_value`, `group_index`) and optional `recordedPrs` linked to session/complex/cycle and auto-inherited onto the matched complex's tracked PRs.",
+        "Log a Complex session with shared per-set weights (`shared_set_weights_kg` + optional `exercise_targets`), weight-only `weights`, or multi-metric `metric` + `sets` (`reps`, `weight_kg`, `metric_value`, `group_index`) and optional `recordedPrs` linked to session/complex/cycle and auto-inherited onto the matched complex's tracked PRs.",
       inputSchema: LogComplexSessionInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },
@@ -707,7 +707,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Update Complex Session Log",
       description:
-        "Edit an existing logged Complex session in place (`weights` or multi-metric `metric` + `sets`, complex/session notes, date, cycle, or tracked PRs), tombstoning replaced or removed session `rep_maxes` and auto-inheriting newly tracked 1RM-20RM PR slots onto the parent Complex.",
+        "Edit an existing logged Complex session in place (`shared_set_weights_kg`, per-exercise `weights`, or multi-metric `metric` + `sets`, complex/session notes, date, cycle, or tracked PRs), tombstoning replaced or removed session `rep_maxes` and auto-inheriting newly tracked 1RM-20RM PR slots onto the parent Complex.",
       inputSchema: UpdateComplexSessionLogInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },
@@ -801,7 +801,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Log Block Session",
       description:
-        "(Legacy alias for `log_complex_session`) Log a Complex session with weight-only `weights` or multi-metric `metric` + `sets` and optional `recordedPrs` linked to session/complex/cycle.",
+        "(Legacy alias for `log_complex_session`) Log a Complex session with `shared_set_weights_kg`, weight-only `weights`, or multi-metric `metric` + `sets` and optional `recordedPrs` linked to session/complex/cycle.",
       inputSchema: LogBlockSessionInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },
@@ -822,7 +822,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Update Block Session Log",
       description:
-        "(Legacy alias for `update_complex_session_log`) Edit an existing logged Complex session in place, tombstoning replaced or removed session `rep_maxes` and auto-inheriting tracked PR slots.",
+        "(Legacy alias for `update_complex_session_log`) Edit an existing logged Complex session in place (`shared_set_weights_kg` or explicit `exercises`), tombstoning replaced or removed session `rep_maxes` and auto-inheriting tracked PR slots.",
       inputSchema: UpdateBlockSessionLogInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },
@@ -897,7 +897,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Log Daily Routine Session",
       description:
-        "Log an ordered mixed workout of Saved Complexes (`item_type: 'COMPLEX'`, legacy `'BLOCK'`) and standalone Exercises (`item_type: 'EXERCISE'`, `STANDALONE_EXERCISE`) supporting weight-only or multi-metric `metric` + `sets` (`reps`, `weight_kg`, `metric_value`, `group_index`), recording `achieved_prs` into `rep_maxes` and optionally updating the Daily Routine template (`update_routine_template: true`).",
+        "Log an ordered mixed workout of Saved Complexes (`item_type: 'COMPLEX'`, legacy `'BLOCK'`) and standalone Exercises (`item_type: 'EXERCISE'`, `STANDALONE_EXERCISE`) supporting `shared_set_weights_kg` (skip-aware via saved `exercise_targets`), weight-only, or multi-metric `metric` + `sets` (`reps`, `weight_kg`, `metric_value`, `group_index`), recording `achieved_prs` into `rep_maxes` and optionally updating the Daily Routine template (`update_routine_template: true`).",
       inputSchema: LogDailyRoutineSessionInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },

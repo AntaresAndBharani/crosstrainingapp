@@ -906,6 +906,44 @@ const makeBlockRecordedPrInputSchema = () =>
       .describe("PR weight achieved in kg"),
   });
 
+const makeSharedSetWeightsSchema = () =>
+  z
+    .array(z.number().min(0).max(2000))
+    .min(1)
+    .max(50)
+    .optional()
+    .describe(
+      "Optional shared set loads in kg (`[S1..SN]`) expanded across active weighted movements in the complex (skipping 0-target rounds via `exercise_targets` or Daily Routine targets)"
+    );
+
+const makeDailyRoutineBlockExerciseTargetSchema = () =>
+  z.object({
+    exercise_name: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("Movement name inside the referenced Complex / Available Block"),
+    target_metric: z
+      .enum(RoutineTargetMetricValues)
+      .describe("Target measurement unit: REPS, CALORIES, TIME_SECONDS, or METERS"),
+    target_mode: z
+      .enum(RoutineTargetModeValues)
+      .optional()
+      .describe("FIXED (same target per set) or PER_SET (explicit value per set, 0 = skip)"),
+    fixed_value: z
+      .number()
+      .int()
+      .min(0)
+      .max(100000)
+      .optional()
+      .describe("Target value per set when FIXED (must be > 0)"),
+    per_set_values: z
+      .array(z.number().int().min(0).max(100000))
+      .max(100)
+      .optional()
+      .describe("Ordered per-set values when PER_SET (0 = skip; at least one > 0)"),
+  });
+
 export const LogComplexSessionInputSchema = {
   date: isoDateSchema().describe("Workout date in YYYY-MM-DD format"),
   sessionTitle: z
@@ -968,11 +1006,18 @@ export const LogComplexSessionInputSchema = {
     .max(2000)
     .optional()
     .describe("Optional session notes"),
+  shared_set_weights_kg: makeSharedSetWeightsSchema(),
+  exercise_targets: z
+    .array(makeDailyRoutineBlockExerciseTargetSchema())
+    .max(30)
+    .optional()
+    .describe("Optional per-exercise target/skip patterns (`0` = Skip round) guiding `shared_set_weights_kg` expansion"),
   exerciseLogs: z
     .array(makeBlockExerciseLogInputSchema())
     .min(1)
     .max(50)
-    .describe("Ordered per-exercise weight-only or multi-metric logs recorded for this complex"),
+    .optional()
+    .describe("Ordered per-exercise weight-only or multi-metric logs recorded for this complex (optional when `shared_set_weights_kg` is supplied; overrides matching movements when combined)"),
   recordedPrs: z
     .array(makeBlockRecordedPrInputSchema())
     .max(50)
@@ -1046,11 +1091,18 @@ export const LogBlockSessionInputSchema = {
     .max(2000)
     .optional()
     .describe("Optional session notes"),
+  shared_set_weights_kg: makeSharedSetWeightsSchema(),
+  exercise_targets: z
+    .array(makeDailyRoutineBlockExerciseTargetSchema())
+    .max(30)
+    .optional()
+    .describe("Optional per-exercise target/skip patterns (`0` = Skip round) guiding `shared_set_weights_kg` expansion"),
   exerciseLogs: z
     .array(makeBlockExerciseLogInputSchema())
     .min(1)
     .max(50)
-    .describe("Ordered per-exercise weight-only or multi-metric logs recorded for this complex"),
+    .optional()
+    .describe("Ordered per-exercise weight-only or multi-metric logs recorded for this complex (optional when `shared_set_weights_kg` is supplied; overrides matching movements when combined)"),
   recordedPrs: z
     .array(makeBlockRecordedPrInputSchema())
     .max(50)
@@ -1274,11 +1326,17 @@ export const UpdateComplexSessionLogInputSchema = {
     .min(1)
     .optional()
     .describe("Optional cycle ID override"),
+  shared_set_weights_kg: makeSharedSetWeightsSchema(),
+  exercise_targets: z
+    .array(makeDailyRoutineBlockExerciseTargetSchema())
+    .max(30)
+    .optional()
+    .describe("Optional per-exercise target/skip patterns (`0` = Skip round) guiding `shared_set_weights_kg` expansion"),
   exercises: z
     .array(makeUpdateBlockExerciseInputSchema())
     .max(30)
     .optional()
-    .describe("Updated movement groups and weight/set logs for this complex"),
+    .describe("Updated movement groups and weight/set logs for this complex (overrides matching movements when combined with `shared_set_weights_kg`)"),
   trackedPrs: z
     .array(makeUpdateBlockTrackedPrInputSchema())
     .max(30)
@@ -1399,11 +1457,17 @@ export const UpdateBlockSessionLogInputSchema = {
     .min(1)
     .optional()
     .describe("Optional cycle ID override"),
+  shared_set_weights_kg: makeSharedSetWeightsSchema(),
+  exercise_targets: z
+    .array(makeDailyRoutineBlockExerciseTargetSchema())
+    .max(30)
+    .optional()
+    .describe("Optional per-exercise target/skip patterns (`0` = Skip round) guiding `shared_set_weights_kg` expansion"),
   exercises: z
     .array(makeUpdateBlockExerciseInputSchema())
     .max(30)
     .optional()
-    .describe("Updated movement groups and weight/set logs for this complex"),
+    .describe("Updated movement groups and weight/set logs for this complex (overrides matching movements when combined with `shared_set_weights_kg`)"),
   trackedPrs: z
     .array(makeUpdateBlockTrackedPrInputSchema())
     .max(30)
@@ -1491,34 +1555,6 @@ const makeDailyRoutineBlockExerciseLogSchema = () =>
       .max(20)
       .optional()
       .describe("Alias for set_count_for_empty"),
-  });
-
-const makeDailyRoutineBlockExerciseTargetSchema = () =>
-  z.object({
-    exercise_name: z
-      .string()
-      .min(1)
-      .max(200)
-      .describe("Movement name inside the referenced Available Block"),
-    target_metric: z
-      .enum(RoutineTargetMetricValues)
-      .describe("Target measurement unit: REPS, CALORIES, TIME_SECONDS, or METERS"),
-    target_mode: z
-      .enum(RoutineTargetModeValues)
-      .optional()
-      .describe("FIXED (same target per set) or PER_SET (explicit value per set, 0 = skip)"),
-    fixed_value: z
-      .number()
-      .int()
-      .min(0)
-      .max(100000)
-      .optional()
-      .describe("Target value per set when FIXED (must be > 0)"),
-    per_set_values: z
-      .array(z.number().int().min(0).max(100000))
-      .max(100)
-      .optional()
-      .describe("Ordered per-set values when PER_SET (0 = skip; at least one > 0)"),
   });
 
 const makeDailyRoutineItemInputSchema = () =>
@@ -1719,6 +1755,7 @@ const makeDailyRoutineLoggedItemInputSchema = () =>
       .max(50)
       .optional()
       .describe("For item_type='EXERCISE' (or single-movement complex): ordered weight-only sets in kg"),
+    shared_set_weights_kg: makeSharedSetWeightsSchema(),
     metric: z
       .enum(RoutineTargetMetricValues)
       .optional()
