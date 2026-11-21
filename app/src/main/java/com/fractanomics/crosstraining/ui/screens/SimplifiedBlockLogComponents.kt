@@ -1088,7 +1088,7 @@ internal fun SimplifiedBlockLogCard(
     val blockAccent = if (isDark) BlockSkyDark else BlockSkyLight
     val headerText = buildString {
         if (itemNumber != null) append("$itemNumber  ")
-        append("BLOCK: ${blockState.block.title.ifBlank { "Untitled Block" }}")
+        append("COMPLEX: ${blockState.block.title.ifBlank { "Untitled Complex" }}")
     }
 
     ElevatedCard(
@@ -1105,7 +1105,7 @@ internal fun SimplifiedBlockLogCard(
                 label = headerText,
                 titleColor = blockAccent,
                 timerContentDesc = "Start timer for ${blockState.block.title}",
-                removeContentDesc = "Remove block ${blockState.block.title}",
+                removeContentDesc = "Remove complex ${blockState.block.title}",
                 onLaunchTimer = onLaunchTimer,
                 onRemove = onRemoveBlock
             )
@@ -1783,14 +1783,14 @@ internal fun canSubmitCustomBlock(
 ): Boolean = rawTitle.trim().isNotEmpty() || selectedExerciseIds.isNotEmpty()
 
 internal fun formatSavedBlocksConfirmLabel(selectedCount: Int): String = when {
-    selectedCount <= 0 -> "Select Block(s)"
-    selectedCount == 1 -> "Add 1 Block"
-    else -> "Add $selectedCount Blocks"
+    selectedCount <= 0 -> "Select Complex(es)"
+    selectedCount == 1 -> "Add 1 Complex"
+    else -> "Add $selectedCount Complexes"
 }
 
 /**
- * Unified modal sheet for adding blocks to the active session from either the saved
- * Available Blocks library or a custom exercise block definition.
+ * Unified modal sheet for adding complexes to the active session from either the saved
+ * Complexes library or a custom exercise complex definition.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1812,7 +1812,7 @@ internal fun AddBlockToSessionSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     // Resolve the initial tab once per sheet opening: `initialTab` is recomputed from live
     // `availableBlocks` / `alreadyLoadedIds`, so keying on it would reset the active tab (and discard
-    // an in-progress Custom Block form) whenever a background sync or library save emits mid-sheet.
+    // an in-progress Custom Complex form) whenever a background sync or library save emits mid-sheet.
     var selectedTab by remember { mutableStateOf(initialTab) }
 
     ModalBottomSheet(
@@ -1827,7 +1827,7 @@ internal fun AddBlockToSessionSheet(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Add Block to Session",
+                text = "Add Complex to Session",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -1839,7 +1839,7 @@ internal fun AddBlockToSessionSheet(
                     modifier = Modifier.heightIn(min = 48.dp),
                     text = {
                         Text(
-                            text = "Saved Blocks (${availableBlocks.size})",
+                            text = "Saved Complexes (${availableBlocks.size})",
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1851,7 +1851,7 @@ internal fun AddBlockToSessionSheet(
                     modifier = Modifier.heightIn(min = 48.dp),
                     text = {
                         Text(
-                            text = "Custom Block",
+                            text = "Custom Complex",
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1896,7 +1896,7 @@ private fun SavedBlocksTabBody(
     OutlinedTextField(
         value = query,
         onValueChange = { query = it },
-        placeholder = { Text("Search available blocks...") },
+        placeholder = { Text("Search complexes...") },
         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
         trailingIcon = if (query.isNotEmpty()) {
             {
@@ -1920,7 +1920,7 @@ private fun SavedBlocksTabBody(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "No saved available blocks yet. Build a custom block right here or save one for future sessions.",
+                text = "No saved complexes yet. Build a custom complex right here or save one for future sessions.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1929,12 +1929,12 @@ private fun SavedBlocksTabBody(
                 modifier = Modifier.heightIn(min = 48.dp),
                 shape = RoundedCornerShape(10.dp)
             ) {
-                Text("Switch to Custom Block")
+                Text("Switch to Custom Complex")
             }
         }
     } else if (filtered.isEmpty()) {
         Text(
-            text = "No blocks matching \"$query\".",
+            text = "No complexes matching \"$query\".",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 12.dp)
@@ -2112,10 +2112,12 @@ private fun CustomBlockTabBody(
     ) {
         OutlinedTextField(
             value = rawTitle,
-            onValueChange = { rawTitle = it },
-            label = { Text("Block Name (optional)") },
+            onValueChange = { rawTitle = sanitizeComplexNameInput(it) },
+            label = { Text("Complex Name (optional)") },
             placeholder = { Text(placeholderTitle) },
-            singleLine = true,
+            singleLine = false,
+            minLines = 1,
+            maxLines = 2,
             shape = RoundedCornerShape(10.dp),
             modifier = Modifier.fillMaxWidth()
         )
@@ -2160,7 +2162,7 @@ private fun CustomBlockTabBody(
         if (filteredExercises.isEmpty()) {
             Text(
                 text = if (allExercises.isEmpty()) {
-                    "No movements yet — add one below or enter a Block Name above."
+                    "No movements yet — add one below or enter a Complex Name above."
                 } else {
                     "No movements matching \"$exerciseQuery\"."
                 },
@@ -2249,12 +2251,12 @@ private fun CustomBlockTabBody(
                     .padding(end = 12.dp)
             ) {
                 Text(
-                    text = "Save to Available Blocks library",
+                    text = "Save to Complexes library",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "Reuse this block in future workouts",
+                    text = "Reuse this complex in future workouts",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2295,7 +2297,7 @@ private fun CustomBlockTabBody(
             enabled = !isSubmitting && canSubmitCustomBlock(rawTitle, selectedExerciseIds),
             modifier = Modifier.heightIn(min = 48.dp)
         ) {
-            Text("Add Block")
+            Text("Add Complex")
         }
     }
 }
@@ -2452,7 +2454,7 @@ internal fun MultiMovementPrPickerSheet(
                                         )
                                         if (ex.id in blockExerciseIds) {
                                             Text(
-                                                text = "In this block",
+                                                text = "In this complex",
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.primary
                                             )
@@ -2620,7 +2622,7 @@ internal fun LoadDailyRoutineSheet(
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                placeholder = { Text("Search routines, blocks, or exercises...") },
+                placeholder = { Text("Search routines...") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 trailingIcon = if (query.isNotEmpty()) {
                     {
@@ -2657,7 +2659,7 @@ internal fun LoadDailyRoutineSheet(
                         val lastDate = DailyRoutineCodec.resolveLastDailyRoutineSessionDate(routine, sessions)
                         val subtitle = buildString {
                             append("${routine.blockCount} ")
-                            append(if (routine.blockCount == 1) "Block" else "Blocks")
+                            append(if (routine.blockCount == 1) "Complex" else "Complexes")
                             append(" · ${routine.exerciseCount} ")
                             append(if (routine.exerciseCount == 1) "Exercise" else "Exercises")
                             append(" · ")
@@ -2692,7 +2694,7 @@ internal fun LoadDailyRoutineSheet(
                                         routine.items.take(4).forEach { item ->
                                             val label = when (item) {
                                                 is com.fractanomics.crosstraining.util.DailyRoutineItem.BlockRef ->
-                                                    "BLOCK: ${item.blockTitle}"
+                                                    "COMPLEX: ${item.blockTitle}"
                                                 is com.fractanomics.crosstraining.util.DailyRoutineItem.StandaloneExercise ->
                                                     "EX: ${item.exerciseName}"
                                             }

@@ -511,7 +511,7 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
     }
 
     fun duplicateAvailableBlock(block: AvailableBlock) = viewModelScope.launch {
-        val baseTitle = block.title.trim().ifEmpty { "Block" }
+        val baseTitle = block.title.trim().ifEmpty { "Complex" }
         val existingTitles = availableBlocks.value.map { it.title.trim().lowercase() }.toSet()
         var candidate = "$baseTitle (Copy)"
         var idx = 2

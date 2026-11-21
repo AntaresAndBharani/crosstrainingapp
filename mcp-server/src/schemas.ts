@@ -514,7 +514,7 @@ export const DeleteDailyLogInputSchema = {
 };
 
 // ============================================================================
-// Available Blocks & Block-Centric Session Logging Schemas (SPEC-021)
+// Complexes (formerly Available Blocks) & Complex-Centric Session Logging Schemas
 // ============================================================================
 
 const makeTrackedPrSlotInputSchema = () =>
@@ -529,7 +529,7 @@ const makeTrackedPrSlotInputSchema = () =>
       .int()
       .min(1)
       .max(20)
-      .describe("Rep max count tracked for PRs on this block (1-20, e.g. 1, 2, 3, 5, 10)"),
+      .describe("Rep max count tracked for PRs on this complex (1-20, e.g. 1, 2, 3, 5, 10)"),
   });
 
 const makeAvailableBlockUpsertItemSchema = () =>
@@ -539,12 +539,30 @@ const makeAvailableBlockUpsertItemSchema = () =>
       .int()
       .min(1)
       .optional()
-      .describe("Optional numeric Available Block ID when updating an existing block by ID"),
+      .describe("Optional numeric Complex ID when updating an existing complex by ID"),
+    complex_id: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Preferred alias for `id`: numeric Complex ID"),
+    complexId: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("CamelCase alias for `complex_id`"),
+    block_id: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Deprecated alias for `complex_id`"),
     title: z
       .string()
       .min(1)
       .max(300)
-      .describe("Unique Available Block title, e.g. 'Strength Wave A' or 'Barbell Conditioning'"),
+      .describe("Unique Complex title, e.g. 'Clean + Hang Clean + Front Squat'"),
     instructions: z
       .string()
       .max(4000)
@@ -554,45 +572,82 @@ const makeAvailableBlockUpsertItemSchema = () =>
       .array(z.string().min(1).max(200))
       .max(50)
       .optional()
-      .describe("Ordered exercise names performed in this block (auto-created if missing)"),
+      .describe("Ordered exercise names performed in this complex (auto-created if missing)"),
     trackedPrs: z
       .array(makeTrackedPrSlotInputSchema())
       .max(50)
       .optional()
-      .describe("Movement PR slots auto-inherited whenever this block is opened in Log Session"),
+      .describe("Movement PR slots auto-inherited whenever this complex is opened in Log Session"),
   });
 
-export const ListAvailableBlocksInputSchema = {
+export const ListComplexesInputSchema = {
   query: z
     .string()
     .max(200)
     .optional()
-    .describe("Optional case-insensitive filter across block title, instructions, and exercise names"),
+    .describe("Optional case-insensitive filter across complex title, instructions, and exercise names"),
   includeLastSession: z
     .boolean()
     .optional()
-    .describe("When true (default), includes the most recent historical session weight summary for each block"),
+    .describe("When true (default), includes the most recent historical session weight summary for each complex"),
   limit: z
     .number()
     .int()
     .min(1)
     .max(200)
     .optional()
-    .describe("Optional maximum number of Available Blocks to return"),
+    .describe("Optional maximum number of Complexes to return"),
 };
 
-export const UpsertAvailableBlockInputSchema = {
+export const ListAvailableBlocksInputSchema = {
+  query: z
+    .string()
+    .max(200)
+    .optional()
+    .describe("Optional case-insensitive filter across complex title, instructions, and exercise names"),
+  includeLastSession: z
+    .boolean()
+    .optional()
+    .describe("When true (default), includes the most recent historical session weight summary for each complex"),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Optional maximum number of Complexes to return"),
+};
+
+export const UpsertComplexInputSchema = {
   id: z
     .number()
     .int()
     .min(1)
     .optional()
-    .describe("Optional numeric Available Block ID when updating an existing block by ID"),
+    .describe("Optional numeric Complex ID when updating an existing complex by ID"),
+  complex_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Preferred alias for `id`: numeric Complex ID"),
+  complexId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("CamelCase alias for `complex_id`"),
+  block_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Deprecated alias for `complex_id`"),
   title: z
     .string()
     .min(1)
     .max(300)
-    .describe("Available Block title, e.g. 'Strength Wave A'"),
+    .describe("Complex title, e.g. 'Clean + Hang Clean + Front Squat'"),
   instructions: z
     .string()
     .max(4000)
@@ -602,35 +657,167 @@ export const UpsertAvailableBlockInputSchema = {
     .array(z.string().min(1).max(200))
     .max(50)
     .optional()
-    .describe("Ordered exercise names performed in this block (auto-created if missing)"),
+    .describe("Ordered exercise names performed in this complex (auto-created if missing)"),
   trackedPrs: z
     .array(makeTrackedPrSlotInputSchema())
     .max(50)
     .optional()
-    .describe("Movement PR slots auto-inherited across sessions for this block"),
+    .describe("Movement PR slots auto-inherited across sessions for this complex"),
 };
 
-export const BatchUpsertAvailableBlocksInputSchema = {
-  blocks: z
-    .array(makeAvailableBlockUpsertItemSchema())
-    .min(1)
-    .max(100)
-    .describe("Available Blocks to create or update atomically in a single call"),
-};
-
-export const DeleteAvailableBlockInputSchema = {
+export const UpsertAvailableBlockInputSchema = {
   id: z
     .number()
     .int()
     .min(1)
     .optional()
-    .describe("Numeric Available Block ID to delete (provide `id` or `title`)"),
+    .describe("Optional numeric Complex ID when updating an existing complex by ID"),
+  complex_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Preferred alias for `id`: numeric Complex ID"),
+  complexId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("CamelCase alias for `complex_id`"),
+  block_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Deprecated alias for `complex_id`"),
+  title: z
+    .string()
+    .min(1)
+    .max(300)
+    .describe("Complex title, e.g. 'Strength Wave A'"),
+  instructions: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("Free-form prescription, rep scheme, EMOM/AMRAP notes, or cues"),
+  exercises: z
+    .array(z.string().min(1).max(200))
+    .max(50)
+    .optional()
+    .describe("Ordered exercise names performed in this complex (auto-created if missing)"),
+  trackedPrs: z
+    .array(makeTrackedPrSlotInputSchema())
+    .max(50)
+    .optional()
+    .describe("Movement PR slots auto-inherited across sessions for this complex"),
+};
+
+export const BatchUpsertComplexesInputSchema = {
+  complexes: z
+    .array(makeAvailableBlockUpsertItemSchema())
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("Complexes to create or update atomically in a single call (takes precedence over deprecated `blocks`)"),
+  blocks: z
+    .array(makeAvailableBlockUpsertItemSchema())
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("Deprecated alias for `complexes`"),
+};
+
+export const BatchUpsertAvailableBlocksInputSchema = {
+  complexes: z
+    .array(makeAvailableBlockUpsertItemSchema())
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("Preferred alias for `blocks`: Complexes to create or update atomically in a single call"),
+  blocks: z
+    .array(makeAvailableBlockUpsertItemSchema())
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("Complexes to create or update atomically in a single call"),
+};
+
+export const DeleteComplexInputSchema = {
+  complex_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Numeric Complex ID to delete (provide `complex_id`/`id` or `title`/`complex_title`)"),
+  complexId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("CamelCase alias for `complex_id`"),
+  id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Numeric Complex ID to delete (alias for `complex_id`)"),
+  block_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Deprecated alias for `complex_id`"),
+  complex_title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Exact Complex title to delete (takes precedence over `title` if both are supplied)"),
   title: z
     .string()
     .min(1)
     .max(300)
     .optional()
-    .describe("Exact Available Block title to delete (provide `id` or `title`)"),
+    .describe("Exact Complex title to delete (provide `complex_id`/`id` or `title`/`complex_title`)"),
+};
+
+export const DeleteAvailableBlockInputSchema = {
+  complex_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Preferred alias for `id`: numeric Complex ID to delete"),
+  complexId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("CamelCase alias for `complex_id`"),
+  id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Numeric Complex ID to delete (provide `id` or `title`)"),
+  block_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Deprecated alias for `id`"),
+  complex_title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Preferred alias for `title`: exact Complex title to delete"),
+  title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Exact Complex title to delete (provide `id` or `title`)"),
 };
 
 const makeMultiMetricSetInputSchema = () =>
@@ -719,24 +906,57 @@ const makeBlockRecordedPrInputSchema = () =>
       .describe("PR weight achieved in kg"),
   });
 
-export const LogBlockSessionInputSchema = {
+export const LogComplexSessionInputSchema = {
   date: isoDateSchema().describe("Workout date in YYYY-MM-DD format"),
   sessionTitle: z
     .string()
     .max(300)
     .optional()
-    .describe("Optional session title (defaults to the resolved block title)"),
+    .describe("Optional session title (defaults to the resolved complex title)"),
+  complex_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Preferred numeric Complex ID to link this logged session"),
+  complexId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("CamelCase alias for `complex_id`"),
   blockId: z
     .number()
     .int()
     .min(1)
     .optional()
-    .describe("Optional Available Block numeric ID to link this logged session"),
+    .describe("Deprecated alias for `complex_id`"),
+  block_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Deprecated snake_case alias for `complex_id`"),
+  complex_title: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Preferred Complex title to match/link (takes precedence over `blockTitle`/`block_title`)"),
+  complexTitle: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("CamelCase alias for `complex_title`"),
   blockTitle: z
     .string()
     .max(300)
     .optional()
-    .describe("Available Block title to match/link (or block label if logging ad-hoc)"),
+    .describe("Deprecated alias for `complex_title`"),
+  block_title: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Deprecated snake_case alias for `complex_title`"),
   cycleId: z
     .number()
     .int()
@@ -752,16 +972,94 @@ export const LogBlockSessionInputSchema = {
     .array(makeBlockExerciseLogInputSchema())
     .min(1)
     .max(50)
-    .describe("Ordered per-exercise weight-only logs recorded for this block"),
+    .describe("Ordered per-exercise weight-only or multi-metric logs recorded for this complex"),
   recordedPrs: z
     .array(makeBlockRecordedPrInputSchema())
     .max(50)
     .optional()
-    .describe("Optional PRs achieved in this block; linked to sessionId/blockId/sourceBlockTitle"),
+    .describe("Optional PRs achieved in this complex; linked to sessionId/blockId/sourceBlockTitle"),
   updateTrackedPrLinks: z
     .boolean()
     .optional()
-    .describe("When true (default), appends new recordedPrs (movementName, rmReps) slots to the matched Available Block's trackedPrs"),
+    .describe("When true (default), appends new recordedPrs (movementName, rmReps) slots to the matched Complex's trackedPrs"),
+};
+
+export const LogBlockSessionInputSchema = {
+  date: isoDateSchema().describe("Workout date in YYYY-MM-DD format"),
+  sessionTitle: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Optional session title (defaults to the resolved complex title)"),
+  complex_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Preferred alias for `blockId`: numeric Complex ID"),
+  complexId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("CamelCase alias for `complex_id`"),
+  blockId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional Complex numeric ID to link this logged session"),
+  block_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Snake-case alias for `blockId`"),
+  complex_title: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Preferred alias for `blockTitle`: Complex title to match/link"),
+  complexTitle: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("CamelCase alias for `complex_title`"),
+  blockTitle: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Complex title to match/link (or label if logging ad-hoc)"),
+  block_title: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Snake-case alias for `blockTitle`"),
+  cycleId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional cycle ID (omit to automatically use the active cycle)"),
+  notes: z
+    .string()
+    .max(2000)
+    .optional()
+    .describe("Optional session notes"),
+  exerciseLogs: z
+    .array(makeBlockExerciseLogInputSchema())
+    .min(1)
+    .max(50)
+    .describe("Ordered per-exercise weight-only or multi-metric logs recorded for this complex"),
+  recordedPrs: z
+    .array(makeBlockRecordedPrInputSchema())
+    .max(50)
+    .optional()
+    .describe("Optional PRs achieved in this complex; linked to sessionId/blockId/sourceBlockTitle"),
+  updateTrackedPrLinks: z
+    .boolean()
+    .optional()
+    .describe("When true (default), appends new recordedPrs (movementName, rmReps) slots to the matched Complex's trackedPrs"),
 };
 
 const makeUpdateBlockSetItemSchema = () =>
@@ -867,28 +1165,76 @@ const makeUpdateBlockTrackedPrInputSchema = () =>
       .describe("Set true to explicitly remove & tombstone this session PR"),
   });
 
-export const UpdateBlockSessionLogInputSchema = {
+export const UpdateComplexSessionLogInputSchema = {
   sessionId: z
     .number()
     .int()
     .min(1)
     .optional()
-    .describe("Existing logged session ID to edit (provide sessionId, or date + blockId/blockTitle)"),
+    .describe("Existing logged session ID to edit (provide sessionId, or date + complex_id/complex_title)"),
   date: isoDateSchema()
     .optional()
     .describe("Workout date in YYYY-MM-DD format (updates session date when sessionId is passed, or locates session by date)"),
+  complex_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Preferred numeric Complex ID to scope which complex is edited and inherit tracked PRs"),
+  complexId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("CamelCase alias for `complex_id`"),
   blockId: z
     .number()
     .int()
     .min(1)
     .optional()
-    .describe("Optional Available Block numeric ID to scope which block is edited and inherit tracked PRs"),
+    .describe("Deprecated alias for `complex_id`"),
+  block_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Deprecated snake_case alias for `complex_id`"),
+  complex_title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Preferred updated or matching complex title"),
+  complexTitle: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("CamelCase alias for `complex_title`"),
   blockTitle: z
     .string()
     .min(1)
     .max(300)
     .optional()
-    .describe("Optional updated or matching block title"),
+    .describe("Deprecated alias for `complex_title`"),
+  block_title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Deprecated snake_case alias for `complex_title`"),
+  session_complex_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional logged session block record ID (`SessionBlock.id`) to scope editing"),
+  session_block_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Deprecated alias for `session_complex_id`"),
   title: z
     .string()
     .max(300)
@@ -899,11 +1245,29 @@ export const UpdateBlockSessionLogInputSchema = {
     .max(4000)
     .optional()
     .describe("Optional updated session notes"),
+  complex_notes: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("Optional updated complex prescription/notes (preserves `[ab_prs=...]` / `[rb_v2=...]` markers)"),
+  complexNotes: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("CamelCase alias for `complex_notes`"),
   blockNotes: z
     .string()
     .max(4000)
     .optional()
-    .describe("Optional updated block prescription/notes (preserves `[ab_prs=...]` / `[rb_v2=...]` markers)"),
+    .describe("Deprecated alias for `complex_notes`"),
+  sync_parent_complex_default_prs: z
+    .boolean()
+    .optional()
+    .describe("When true (default), auto-inherits newly tracked 1RM-20RM PR slots onto the parent Complex template"),
+  sync_parent_block_default_prs: z
+    .boolean()
+    .optional()
+    .describe("Deprecated alias for `sync_parent_complex_default_prs`"),
   cycleId: z
     .number()
     .int()
@@ -914,12 +1278,137 @@ export const UpdateBlockSessionLogInputSchema = {
     .array(makeUpdateBlockExerciseInputSchema())
     .max(30)
     .optional()
-    .describe("Updated movement groups and weight/set logs for this block"),
+    .describe("Updated movement groups and weight/set logs for this complex"),
   trackedPrs: z
     .array(makeUpdateBlockTrackedPrInputSchema())
     .max(30)
     .optional()
-    .describe("Reconciled PR entries for this session/block; missing or `remove: true` prior PRs are tombstoned when `reconcilePrs` is true"),
+    .describe("Reconciled PR entries for this session/complex; missing or `remove: true` prior PRs are tombstoned when `reconcilePrs` is true"),
+  reconcilePrs: z
+    .boolean()
+    .optional()
+    .describe("When true (default when `trackedPrs` or `exercises` changes), tombstones stale session rep_maxes replaced or removed during this edit"),
+};
+
+export const UpdateBlockSessionLogInputSchema = {
+  sessionId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Existing logged session ID to edit (provide sessionId, or date + blockId/blockTitle)"),
+  date: isoDateSchema()
+    .optional()
+    .describe("Workout date in YYYY-MM-DD format (updates session date when sessionId is passed, or locates session by date)"),
+  complex_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Preferred alias for `blockId`: Complex numeric ID"),
+  complexId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("CamelCase alias for `complex_id`"),
+  blockId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional Complex numeric ID to scope which complex is edited and inherit tracked PRs"),
+  block_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Snake-case alias for `blockId`"),
+  complex_title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Preferred alias for `blockTitle`"),
+  complexTitle: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("CamelCase alias for `complex_title`"),
+  blockTitle: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Optional updated or matching complex title"),
+  block_title: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Snake-case alias for `blockTitle`"),
+  session_complex_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Preferred alias for `session_block_id`"),
+  session_block_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional logged session block record ID to scope editing"),
+  title: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Optional updated session title"),
+  notes: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("Optional updated session notes"),
+  complex_notes: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("Preferred alias for `blockNotes`"),
+  complexNotes: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("CamelCase alias for `complex_notes`"),
+  blockNotes: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("Optional updated complex prescription/notes (preserves `[ab_prs=...]` / `[rb_v2=...]` markers)"),
+  sync_parent_complex_default_prs: z
+    .boolean()
+    .optional()
+    .describe("Preferred alias for `sync_parent_block_default_prs`"),
+  sync_parent_block_default_prs: z
+    .boolean()
+    .optional()
+    .describe("When true (default), auto-inherits newly tracked 1RM-20RM PR slots onto the parent Complex template"),
+  cycleId: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optional cycle ID override"),
+  exercises: z
+    .array(makeUpdateBlockExerciseInputSchema())
+    .max(30)
+    .optional()
+    .describe("Updated movement groups and weight/set logs for this complex"),
+  trackedPrs: z
+    .array(makeUpdateBlockTrackedPrInputSchema())
+    .max(30)
+    .optional()
+    .describe("Reconciled PR entries for this session/complex; missing or `remove: true` prior PRs are tombstoned when `reconcilePrs` is true"),
   reconcilePrs: z
     .boolean()
     .optional()
@@ -1035,20 +1524,32 @@ const makeDailyRoutineBlockExerciseTargetSchema = () =>
 const makeDailyRoutineItemInputSchema = () =>
   z.object({
     item_type: z
-      .enum(["BLOCK", "EXERCISE"])
-      .describe("Constituent item type: 'BLOCK' (Saved Available Block ref) or 'EXERCISE' (standalone Exercise)"),
+      .enum(["COMPLEX", "EXERCISE", "BLOCK"])
+      .describe("Constituent item type: 'COMPLEX' (preferred, saved Complex ref), 'EXERCISE' (standalone Exercise), or 'BLOCK' (deprecated alias normalized to 'COMPLEX')"),
+    complex_id: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("For item_type='COMPLEX': preferred numeric Complex ID (takes precedence over `block_id`)"),
+    complex_title: z
+      .string()
+      .min(1)
+      .max(300)
+      .optional()
+      .describe("For item_type='COMPLEX': preferred Complex title (takes precedence over `block_title`, resolved case-insensitively)"),
     block_id: z
       .number()
       .int()
       .min(1)
       .optional()
-      .describe("For item_type='BLOCK': optional numeric Available Block ID"),
+      .describe("Deprecated alias for `complex_id`"),
     block_title: z
       .string()
       .min(1)
       .max(300)
       .optional()
-      .describe("For item_type='BLOCK': Available Block title (resolved case-insensitively)"),
+      .describe("Deprecated alias for `complex_title`"),
     exercise_name: z
       .string()
       .min(1)
@@ -1096,7 +1597,7 @@ const makeDailyRoutineItemInputSchema = () =>
       .array(makeDailyRoutineBlockExerciseTargetSchema())
       .max(30)
       .optional()
-      .describe("For item_type='BLOCK': optional per-routine exercise target overrides (does not mutate underlying Available Block)"),
+      .describe("For item_type='COMPLEX': optional per-routine exercise target overrides (does not mutate underlying Complex)"),
   });
 
 export const ListDailyRoutinesInputSchema = {
@@ -1104,7 +1605,7 @@ export const ListDailyRoutinesInputSchema = {
     .string()
     .max(200)
     .optional()
-    .describe("Optional case-insensitive filter across routine title, notes, constituent blocks, and exercises"),
+    .describe("Optional case-insensitive filter across routine title, notes, constituent complexes, and exercises"),
   limit: z
     .number()
     .int()
@@ -1135,7 +1636,7 @@ export const UpsertDailyRoutineInputSchema = {
     .array(makeDailyRoutineItemInputSchema())
     .min(1)
     .max(50)
-    .describe("Ordered list of Saved Available Blocks ('BLOCK') and standalone Exercises ('EXERCISE')"),
+    .describe("Ordered list of Saved Complexes ('COMPLEX') and standalone Exercises ('EXERCISE')"),
 };
 
 export const DeleteDailyRoutineInputSchema = {
@@ -1176,20 +1677,32 @@ const makeDailyRoutinePrInputSchema = () =>
 const makeDailyRoutineLoggedItemInputSchema = () =>
   z.object({
     item_type: z
-      .enum(["BLOCK", "EXERCISE"])
-      .describe("Logged item type: 'BLOCK' or 'EXERCISE' (standalone)"),
+      .enum(["COMPLEX", "EXERCISE", "BLOCK"])
+      .describe("Logged item type: 'COMPLEX' (preferred), 'EXERCISE' (standalone), or 'BLOCK' (deprecated alias normalized to 'COMPLEX')"),
+    complex_id: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("For item_type='COMPLEX': preferred Complex ID (takes precedence over `block_id`)"),
+    complex_title: z
+      .string()
+      .min(1)
+      .max(300)
+      .optional()
+      .describe("For item_type='COMPLEX': preferred Complex title (takes precedence over `block_title`)"),
     block_id: z
       .number()
       .int()
       .min(1)
       .optional()
-      .describe("For item_type='BLOCK': optional Available Block ID"),
+      .describe("Deprecated alias for `complex_id`"),
     block_title: z
       .string()
       .min(1)
       .max(300)
       .optional()
-      .describe("For item_type='BLOCK': Available Block title"),
+      .describe("Deprecated alias for `complex_title`"),
     exercise_name: z
       .string()
       .min(1)
@@ -1205,21 +1718,21 @@ const makeDailyRoutineLoggedItemInputSchema = () =>
       .array(z.number().min(0).max(2000))
       .max(50)
       .optional()
-      .describe("For item_type='EXERCISE' (or single-movement block): ordered weight-only sets in kg"),
+      .describe("For item_type='EXERCISE' (or single-movement complex): ordered weight-only sets in kg"),
     metric: z
       .enum(RoutineTargetMetricValues)
       .optional()
-      .describe("For item_type='EXERCISE' (or single-movement block): optional logging metric (REPS, CALORIES, TIME_SECONDS, METERS)"),
+      .describe("For item_type='EXERCISE' (or single-movement complex): optional logging metric (REPS, CALORIES, TIME_SECONDS, METERS)"),
     sets: z
       .array(makeMultiMetricSetInputSchema())
       .max(50)
       .optional()
-      .describe("For item_type='EXERCISE' (or single-movement block): ordered multi-metric sets (`reps`, `weight_kg`, `metric_value`, `group_index`)"),
+      .describe("For item_type='EXERCISE' (or single-movement complex): ordered multi-metric sets (`reps`, `weight_kg`, `metric_value`, `group_index`)"),
     exercise_logs: z
       .array(makeDailyRoutineBlockExerciseLogSchema())
       .max(30)
       .optional()
-      .describe("For item_type='BLOCK': ordered movement logs inside the block"),
+      .describe("For item_type='COMPLEX': ordered movement logs inside the complex"),
     achieved_prs: z
       .array(makeDailyRoutinePrInputSchema())
       .max(30)
@@ -1266,7 +1779,7 @@ export const LogDailyRoutineSessionInputSchema = {
     .array(makeDailyRoutineLoggedItemInputSchema())
     .min(1)
     .max(50)
-    .describe("Ordered list of logged Blocks (`BLOCK`) and standalone Exercises (`EXERCISE`)"),
+    .describe("Ordered list of logged Complexes (`COMPLEX`) and standalone Exercises (`EXERCISE`)"),
 };
 
 export const GetDailyRoutineProgressInputSchema = {

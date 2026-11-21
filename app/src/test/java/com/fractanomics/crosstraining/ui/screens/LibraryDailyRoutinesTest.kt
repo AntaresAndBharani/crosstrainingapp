@@ -38,9 +38,50 @@ class LibraryDailyRoutinesTest {
     )
 
     @Test
-    fun `formatLibraryTabLabels produces concise 3-tab labels in Routines Blocks Exercises order`() {
+    fun `formatLibraryTabLabels produces concise 3-tab labels in Routines Complexes Exercises order`() {
         val labels = formatLibraryTabLabels(routinesCount = 3, blocksCount = 2, exercisesCount = 36)
-        assertEquals(listOf("Routines (3)", "Blocks (2)", "Exercises (36)"), labels)
+        assertEquals(listOf("Routines (3)", "Complexes (2)", "Exercises (36)"), labels)
+        assertEquals("Routines, 3 items, Tab 1 of 3", formatLibraryTabContentDescription(0, 3))
+        assertEquals("Complexes, 2 items, Tab 2 of 3", formatLibraryTabContentDescription(1, 2))
+        assertEquals("Exercises, 36 items, Tab 3 of 3", formatLibraryTabContentDescription(2, 36))
+    }
+
+    @Test
+    fun `responsive library helpers and complex editor validation enforce scaling and strict inputs`() {
+        assertFalse(shouldUseScrollableLibraryTabs(1.0f))
+        assertFalse(shouldUseScrollableLibraryTabs(1.19f))
+        assertTrue(shouldUseScrollableLibraryTabs(1.2f))
+        assertTrue(shouldUseScrollableLibraryTabs(1.5f))
+
+        assertFalse(shouldStackCompactActions(1.3f))
+        assertTrue(shouldStackCompactActions(1.4f))
+        assertTrue(shouldStackCompactActions(2.0f))
+
+        assertEquals("Search routines...", librarySearchPlaceholder(0))
+        assertEquals("Search complexes...", librarySearchPlaceholder(1))
+        assertEquals("Search exercises...", librarySearchPlaceholder(2))
+
+        assertFalse(canSaveComplexEditor("   ", 0))
+        assertFalse(canSaveComplexEditor("Clean Complex", 0))
+        assertFalse(canSaveComplexEditor("   ", 2))
+        assertTrue(canSaveComplexEditor("Clean Complex", 1))
+
+        assertNull(complexEditorValidationError("", 0, showValidation = false))
+        assertEquals(
+            "Enter a complex name and select at least 1 exercise.",
+            complexEditorValidationError("Clean Complex", 0, showValidation = true)
+        )
+        assertEquals(
+            "Enter a complex name and select at least 1 exercise.",
+            complexEditorValidationError("  ", 2, showValidation = true)
+        )
+        assertNull(complexEditorValidationError("Clean Complex", 1, showValidation = true))
+
+        assertEquals("Clean + Hang Clean", sanitizeComplexNameInput("Clean + Hang Clean"))
+        assertEquals("Clean + Hang Clean ", sanitizeComplexNameInput("Clean + Hang Clean\n"))
+        assertEquals("Clean + Front Squat", sanitizeComplexNameInput("Clean +\r\nFront Squat"))
+        assertEquals("A B", sanitizeComplexNameInput("A\n\nB"))
+        assertFalse(canSaveComplexEditor(sanitizeComplexNameInput("\n\n"), 1))
     }
 
     @Test
@@ -50,7 +91,10 @@ class LibraryDailyRoutinesTest {
         assertNull(state.validationErrorMessage)
 
         state.attemptedSubmit = true
-        assertNotNull(state.validationErrorMessage)
+        assertEquals(
+            "Add a routine title and at least 1 complex or exercise.",
+            state.validationErrorMessage
+        )
 
         state.title = "Monday Full Session"
         assertFalse(state.canSave)
@@ -93,7 +137,7 @@ class LibraryDailyRoutinesTest {
             DailyRoutineItem.StandaloneExercise(13L, "Calf Raise", "3x15")
         )
 
-        assertEquals("BLOCK: Monday Clean Session", formatDailyRoutineItemChipLabel(items[0]))
+        assertEquals("COMPLEX: Monday Clean Session", formatDailyRoutineItemChipLabel(items[0]))
         assertEquals("EX: Back Squat (4x8)", formatDailyRoutineItemChipLabel(items[2]))
         assertEquals("EX: Pull-ups", formatDailyRoutineItemChipLabel(items[3]))
 
@@ -111,8 +155,15 @@ class LibraryDailyRoutinesTest {
             notes = "",
             items = items.take(4)
         )
-        assertEquals("2 Blocks · 2 Exercises · Last: 14 Nov", formatDailyRoutineTelemetry(routine, "14 Nov"))
-        assertEquals("2 Blocks · 2 Exercises · Not logged yet", formatDailyRoutineTelemetry(routine, null))
+        assertEquals("2 Complexes · 2 Exercises · Last: 14 Nov", formatDailyRoutineTelemetry(routine, "14 Nov"))
+        assertEquals("2 Complexes · 2 Exercises · Not logged yet", formatDailyRoutineTelemetry(routine, null))
+        val singleComplexRoutine = DailyRoutine(
+            id = 2L,
+            title = "Single Complex Day",
+            notes = "",
+            items = listOf(items[0], items[2])
+        )
+        assertEquals("1 Complex · 1 Exercise · Not logged yet", formatDailyRoutineTelemetry(singleComplexRoutine, null))
     }
 
     @Test

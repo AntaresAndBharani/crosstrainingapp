@@ -643,7 +643,7 @@ internal fun InlineBlockTargetsConfigPanel(
     ) {
         SetsCountStepperRow(
             setsCount = cleanSets,
-            label = "Block Sets (this routine)",
+            label = "Complex Sets (this routine)",
             onUpdateSetsCount = onUpdateSetsCount
         )
 

@@ -131,9 +131,9 @@ class SessionEditorAddBlockTest {
 
     @Test
     fun `formatSavedBlocksConfirmLabel formats zero, singular, and plural selection counts`() {
-        assertEquals("Select Block(s)", formatSavedBlocksConfirmLabel(0))
-        assertEquals("Add 1 Block", formatSavedBlocksConfirmLabel(1))
-        assertEquals("Add 3 Blocks", formatSavedBlocksConfirmLabel(3))
+        assertEquals("Select Complex(es)", formatSavedBlocksConfirmLabel(0))
+        assertEquals("Add 1 Complex", formatSavedBlocksConfirmLabel(1))
+        assertEquals("Add 3 Complexes", formatSavedBlocksConfirmLabel(3))
     }
 
     @Test

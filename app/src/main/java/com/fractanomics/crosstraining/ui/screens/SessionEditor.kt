@@ -1832,33 +1832,45 @@ fun SessionEditorBody(
                 }
             }
 
-            // Dual Add Block + Add Exercise Action Row + Quick Parse
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            // Dual Add Complex + Add Exercise Action Row + Quick Parse
+            val actionFontScale = LocalDensity.current.fontScale
+            val addComplexAction: @Composable (Modifier) -> Unit = { btnMod ->
                 OutlinedButton(
                     onClick = { activeAddBlockSheetMode = AddBlockSheetOpenMode.SMART_DEFAULT },
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp),
+                    modifier = btnMod.heightIn(min = 48.dp),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Add Block", maxLines = 1, softWrap = false)
+                    Text("Add Complex", maxLines = 1, softWrap = false)
                 }
-
+            }
+            val addExerciseAction: @Composable (Modifier) -> Unit = { btnMod ->
                 OutlinedButton(
                     onClick = { showAddExerciseSheet = true },
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp),
+                    modifier = btnMod.heightIn(min = 48.dp),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Add Exercise", maxLines = 1, softWrap = false)
+                }
+            }
+            if (shouldStackCompactActions(actionFontScale)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    addComplexAction(Modifier.fillMaxWidth())
+                    addExerciseAction(Modifier.fillMaxWidth())
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    addComplexAction(Modifier.weight(1f))
+                    addExerciseAction(Modifier.weight(1f))
                 }
             }
 
@@ -1948,7 +1960,7 @@ fun SessionEditorBody(
                     }
                     val blockDrafts = availableDrafts + legacyDrafts
                     if (blockDrafts.isEmpty()) {
-                        scope.launch { snackbar.showSnackbar("Add at least one block with content.") }
+                        scope.launch { snackbar.showSnackbar("Add at least one complex or exercise with content.") }
                         return@Button
                     }
                     val inheritedMap = loadedAvailableBlocks
