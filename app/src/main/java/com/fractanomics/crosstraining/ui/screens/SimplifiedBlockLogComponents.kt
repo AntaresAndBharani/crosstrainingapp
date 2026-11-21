@@ -2112,7 +2112,7 @@ private fun CustomBlockTabBody(
     ) {
         OutlinedTextField(
             value = rawTitle,
-            onValueChange = { rawTitle = it },
+            onValueChange = { rawTitle = sanitizeComplexNameInput(it) },
             label = { Text("Complex Name (optional)") },
             placeholder = { Text(placeholderTitle) },
             singleLine = false,

@@ -174,6 +174,14 @@ internal fun librarySearchPlaceholder(tabIndex: Int): String = when (tabIndex) {
     else -> "Search exercises..."
 }
 
+/**
+ * Complex Name inputs wrap visually up to 2 lines (`singleLine = false`), so the IME Enter key
+ * would otherwise insert literal line breaks into persisted titles. Collapse any CR/LF runs to a
+ * single space so names stay single-line in storage, `[dr_item=...]` refs, and title matching.
+ */
+internal fun sanitizeComplexNameInput(raw: String): String =
+    raw.replace(Regex("[\\r\\n]+"), " ")
+
 internal fun canSaveComplexEditor(
     title: String,
     selectedExerciseCount: Int
@@ -2637,7 +2645,7 @@ private fun QuickCreateBlockSheet(
             OutlinedTextField(
                 value = title,
                 onValueChange = {
-                    title = it
+                    title = sanitizeComplexNameInput(it)
                     hasInteracted = true
                 },
                 label = { Text("Complex Name") },

@@ -76,6 +76,12 @@ class LibraryDailyRoutinesTest {
             complexEditorValidationError("  ", 2, showValidation = true)
         )
         assertNull(complexEditorValidationError("Clean Complex", 1, showValidation = true))
+
+        assertEquals("Clean + Hang Clean", sanitizeComplexNameInput("Clean + Hang Clean"))
+        assertEquals("Clean + Hang Clean ", sanitizeComplexNameInput("Clean + Hang Clean\n"))
+        assertEquals("Clean + Front Squat", sanitizeComplexNameInput("Clean +\r\nFront Squat"))
+        assertEquals("A B", sanitizeComplexNameInput("A\n\nB"))
+        assertFalse(canSaveComplexEditor(sanitizeComplexNameInput("\n\n"), 1))
     }
 
     @Test
