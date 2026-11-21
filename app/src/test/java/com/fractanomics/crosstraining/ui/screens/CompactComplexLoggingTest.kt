@@ -581,4 +581,85 @@ class CompactComplexLoggingTest {
         assertTrue(s3Desc.contains("Shared weight 45 kilograms."))
         assertTrue(s3Desc.contains("Expanded. Double-tap to collapse."))
     }
+
+    @Test
+    fun `blank middle round without skips persists canonical groupIndex so later rounds do not shift`() {
+        val twoLiftBlock = AvailableBlock(
+            id = 300L,
+            title = "Snatch + Hang Snatch",
+            instructions = "",
+            exercises = listOf(
+                AvailableBlockExercise(1L, "Snatch", true),
+                AvailableBlockExercise(2L, "Hang Snatch", true)
+            ),
+            trackedPrs = emptyList()
+        )
+        val state = buildLoadedAvailableBlockState(
+            block = twoLiftBlock,
+            sessions = emptyList(),
+            exercises = allExercises,
+            weightUnit = "kg"
+        )
+        assertEquals(3, state.complexSetCount)
+        state.updateSharedSetWeight(0, "60")
+        state.updateSharedSetWeight(2, "70")
+
+        val drafts = state.toBlockDrafts(allExercises, emptyList())
+        assertEquals(listOf(1, 3), drafts[0].sets.map { it.groupIndex })
+        assertEquals(listOf(60.0, 70.0), drafts[0].sets.map { it.weight })
+        assertEquals(listOf(1, 3), drafts[1].sets.map { it.groupIndex })
+
+        // Fully logged rounds keep the zero-migration `groupIndex = null` encoding.
+        state.updateSharedSetWeight(1, "65")
+        val fullDrafts = state.toBlockDrafts(allExercises, emptyList())
+        assertEquals(listOf<Int?>(null, null, null), fullDrafts[0].sets.map { it.groupIndex })
+    }
+
+    @Test
+    fun `routine targets leave untargeted movements active without fabricated target values`() {
+        val block = AvailableBlock(
+            id = 400L,
+            title = "Snatch + Air Bike",
+            instructions = "",
+            exercises = listOf(
+                AvailableBlockExercise(1L, "Snatch", true),
+                AvailableBlockExercise(4L, "Air Bike", false)
+            ),
+            trackedPrs = emptyList()
+        )
+        val state = buildLoadedAvailableBlockState(
+            block = block,
+            sessions = emptyList(),
+            exercises = allExercises,
+            weightUnit = "kg",
+            routineTargetSetsCount = 3,
+            routineExerciseTargets = mapOf(
+                1L to RoutineExerciseTargetSpec(ExerciseTargetMetric.REPS, TargetMode.FIXED, 2, listOf(2, 2, 2))
+            )
+        )
+        val bike = state.exerciseSections[1]
+        assertEquals(ExerciseTargetMetric.CALORIES, bike.activeMetric)
+        assertEquals(listOf(false, false, false), bike.skippedFlags.toList())
+        assertEquals(listOf("", "", ""), bike.metricInputs.toList())
+        assertNull(bike.targetBanner)
+        assertEquals(listOf("2", "2", "2"), state.exerciseSections[0].repsInputs.toList())
+    }
+
+    @Test
+    fun `target input exposes raw reps with fallback placeholder so the field can be cleared`() {
+        val state = buildLoadedAvailableBlockState(
+            block = snatchComplexBlock(),
+            sessions = emptyList(),
+            exercises = allExercises,
+            weightUnit = "kg",
+            routineTargetSetsCount = 6,
+            routineExerciseTargets = targets123()
+        )
+        val snatchState = state.exerciseSections[0]
+        assertEquals("1" to "1", compactTargetInputValueAndPlaceholder(snatchState, 0))
+        state.updateSetReps(snatchState, 0, "")
+        assertEquals("" to "1", compactTargetInputValueAndPlaceholder(snatchState, 0))
+        state.updateSetReps(snatchState, 0, "3")
+        assertEquals("3" to "3", compactTargetInputValueAndPlaceholder(snatchState, 0))
+    }
 }

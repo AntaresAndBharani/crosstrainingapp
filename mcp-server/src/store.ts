@@ -4487,23 +4487,25 @@ export class WorkoutDomainService {
     }
 
     const weightsList = params.weights ?? [];
-      const sets: SessionSetRecord[] =
-        weightsList.length > 0
-          ? weightsList.map((w, sIdx) => ({
-              id: params.nextSetIdFn(),
-              blockId: params.blockId,
-              position: sIdx,
-              groupIndex: 0,
-              reps: 1,
-              weight: Number(w) > 0 ? Number(w) : 0.0,
-              metricValue: 0.0,
-              isWarmup: false,
-              isFailed: false,
-              notes: "",
-            }))
-          : Array.from(
-              { length: Math.max(0, Math.trunc(params.setCountForEmpty ?? 1)) },
-              (_, sIdx) => ({
+    const sets: SessionSetRecord[] =
+      weightsList.length > 0
+        ? weightsList.map((w, sIdx) => ({
+            id: params.nextSetIdFn(),
+            blockId: params.blockId,
+            position: sIdx,
+            groupIndex: 0,
+            reps: 1,
+            weight: Number(w) > 0 ? Number(w) : 0.0,
+            metricValue: 0.0,
+            isWarmup: false,
+            isFailed: false,
+            notes: "",
+          }))
+        : Array.from(
+            // `0` is reserved for internally expanded all-skipped complex movements
+            // (`shared_set_weights_kg`); public schemas keep `set_count_for_empty >= 1`.
+            { length: Math.max(0, Math.trunc(params.setCountForEmpty ?? 1)) },
+            (_, sIdx) => ({
               id: params.nextSetIdFn(),
               blockId: params.blockId,
               position: sIdx,

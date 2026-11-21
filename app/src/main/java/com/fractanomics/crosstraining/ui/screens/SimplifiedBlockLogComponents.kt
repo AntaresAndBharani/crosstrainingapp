@@ -222,6 +222,15 @@ internal class LoadedAvailableBlockExerciseState(
     val supportsSharedWeight: Boolean
         get() = activeMetric == ExerciseTargetMetric.REPS && libraryMetricType == MetricType.WEIGHT
 
+    /** True when [setIndex] would persist a [SetDraft] (positive weight/reps or metric value). */
+    internal fun hasLoggedValueAt(setIndex: Int): Boolean =
+        if (activeMetric == ExerciseTargetMetric.REPS) {
+            AvailableBlockCodec.normalizedPositiveWeight(weights.getOrNull(setIndex).orEmpty()) != null ||
+                (repsInputs.getOrNull(setIndex)?.trim()?.toIntOrNull() ?: 0) > 0
+        } else {
+            AvailableBlockCodec.normalizedPositiveWeight(metricInputs.getOrNull(setIndex).orEmpty()) != null
+        }
+
     private val metricInputCache = mutableMapOf<ExerciseTargetMetric, CachedExerciseMetricInputs>()
 
     internal fun switchActiveMetric(newMetric: ExerciseTargetMetric) {
@@ -880,6 +889,16 @@ internal class LoadedAvailableBlockState(
 
         val isCompact = isCompactComplex
         val anySkipInComplex = isCompact && exerciseSections.any { sec -> sec.skippedFlags.any { it } }
+        // Compact complexes persist canonical round numbers (`groupIndex = S#`) whenever any
+        // movement omits a round — either via an explicit Skip or because an active round was
+        // left blank and is therefore dropped — so later rounds never shift down on rehydration.
+        val writeCompactGroupIndices = isCompact && (
+            anySkipInComplex || exerciseSections.any { sec ->
+                val count = maxOf(sec.weights.size, sec.repsInputs.size, sec.metricInputs.size)
+                val loggedRounds = (0 until count).count { sIdx -> sec.hasLoggedValueAt(sIdx) }
+                loggedRounds in 1 until count
+            }
+        )
 
         return exerciseSections.mapIndexed { idx, exState ->
             val mappedSets = mutableListOf<SetDraft>()
@@ -887,7 +906,7 @@ internal class LoadedAvailableBlockState(
             for (setIdx in 0 until setCount) {
                 if (exState.skippedFlags.getOrElse(setIdx) { false }) continue
                 val groupIdx = if (isCompact) {
-                    if (anySkipInComplex) setIdx + 1 else null
+                    if (writeCompactGroupIndices) setIdx + 1 else null
                 } else {
                     exState.groupIndices.getOrNull(setIdx)?.takeIf { it > 0 }
                 }
@@ -928,7 +947,7 @@ internal class LoadedAvailableBlockState(
             val sets = when {
                 mappedSets.isNotEmpty() -> mappedSets
                 isCompact && allSkipped -> emptyList()
-                isCompact && anySkipInComplex -> {
+                isCompact && writeCompactGroupIndices -> {
                     val activeIndices = (0 until setCount).filter { !exState.skippedFlags.getOrElse(it) { false } }
                     if (activeIndices.isEmpty()) {
                         emptyList()
@@ -1314,8 +1333,38 @@ internal fun buildLoadedAvailableBlockState(
         val skippedArr = MutableList(totalRounds) { false }
         val groupArr = List(totalRounds) { it + 1 }
 
-        if (hasRoutineTargets) {
-            val effectiveTargets = targetSpec?.effectiveValues(totalRounds) ?: List(totalRounds) { 1 }
+        if (hasRoutineTargets && targetSpec == null) {
+            // Movement without its own routine target: keep every canonical round active and
+            // pre-fill from history (by groupIndex, else ordinal) instead of fabricating a
+            // `1` rep / `1` cal / `1` s target value.
+            val hasExplicitGroups = slice.prevGroupIndices?.any { it != null } == true
+            for (r in 0 until totalRounds) {
+                val histIdx = if (hasExplicitGroups) {
+                    slice.prevGroupIndices?.indexOfFirst { it == r + 1 }?.takeIf { it >= 0 }
+                } else {
+                    r
+                }
+                if (activeMetric == ExerciseTargetMetric.REPS) {
+                    val w = histIdx?.let { slice.prevWeights?.getOrNull(it) }?.takeIf { it > 0.0 }
+                    if (w != null) {
+                        weightsArr[r] = w.trimmed()
+                        anyPreFilledWeightsOrHistory = true
+                    }
+                    val rVal = histIdx?.let { slice.prevReps?.getOrNull(it) }?.takeIf { it > 0 }
+                    if (rVal != null) {
+                        perSetRepsArr[r] = rVal
+                        if (rVal > 1 || w == null) repsInputsArr[r] = rVal.toString()
+                    }
+                } else {
+                    val mv = histIdx?.let { slice.prevMetrics?.getOrNull(it) }?.takeIf { it > 0.0 }
+                    if (mv != null) {
+                        metricInputsArr[r] = mv.trimmed()
+                        anyPreFilledWeightsOrHistory = true
+                    }
+                }
+            }
+        } else if (hasRoutineTargets) {
+            val effectiveTargets = checkNotNull(targetSpec).effectiveValues(totalRounds)
             val hasExplicitGroups = slice.prevGroupIndices?.any { it != null } == true
             var activeOrdinal = 0
             for (r in 0 until totalRounds) {

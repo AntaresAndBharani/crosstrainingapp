@@ -1,5 +1,6 @@
 package com.fractanomics.crosstraining.ui.screens
 
+import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -71,11 +72,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -301,7 +301,7 @@ internal fun CompactComplexLogCard(
     modifier: Modifier = Modifier
 ) {
     val isDark = isSystemInDarkTheme()
-    val haptics = LocalHapticFeedback.current
+    val view = LocalView.current
     val context = LocalContext.current
     val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
     val headerAccent = if (isDark) ComplexHeaderDark else ComplexHeaderLight
@@ -418,7 +418,7 @@ internal fun CompactComplexLogCard(
                             null
                         },
                         onAddSet = {
-                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                             blockState.addComplexSet()
                         }
                     )
@@ -1067,7 +1067,7 @@ private fun SetExerciseOverrideDrawer(
     onShowUndoSnackbar: (message: String, onUndo: () -> Unit) -> Unit
 ) {
     val context = LocalContext.current
-    val haptics = LocalHapticFeedback.current
+    val view = LocalView.current
     val drawerBg = if (isDark) ComplexSubDrawerBgDark else ComplexSubDrawerBgLight
     val dividerColor = if (isDark) ComplexRowBorderDark else ComplexRowBorderLight
     val activeSwitchBg = if (isDark) ComplexActiveSwitchBgDark else ComplexActiveSwitchBgLight
@@ -1128,7 +1128,7 @@ private fun SetExerciseOverrideDrawer(
                                 .defaultMinSize(minWidth = 68.dp, minHeight = 48.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .clickable(role = Role.Switch) {
-                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                     blockState.toggleComplexExerciseSkipped(exState, setIdx)
                                 }
                                 .semantics {
@@ -1160,16 +1160,10 @@ private fun SetExerciseOverrideDrawer(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            val targetValue = if (exState.activeMetric == ExerciseTargetMetric.REPS) {
-                                exState.repsInputs.getOrNull(setIdx)
-                                    ?.takeIf { it.isNotBlank() }
-                                    ?: exState.perSetReps.getOrNull(setIdx)?.toString()
-                                    ?: exState.defaultReps.toString()
-                            } else {
-                                exState.metricInputs.getOrNull(setIdx).orEmpty()
-                            }
+                            val (targetValue, targetPlaceholder) = compactTargetInputValueAndPlaceholder(exState, setIdx)
                             InlineCompactInputBox(
                                 value = targetValue,
+                                placeholder = targetPlaceholder,
                                 unit = exState.activeMetric.compactUnit,
                                 keyboardType = if (exState.activeMetric == ExerciseTargetMetric.REPS) {
                                     KeyboardType.Number
@@ -1260,9 +1254,27 @@ private fun SetExerciseOverrideDrawer(
     }
 }
 
+/**
+ * Editable value + placeholder for a movement's per-set target input. The raw input is
+ * edited directly (so clearing the field is possible); the fallback rep count that
+ * [LoadedAvailableBlockState.toBlockDrafts] would persist is surfaced as the placeholder.
+ */
+internal fun compactTargetInputValueAndPlaceholder(
+    exState: LoadedAvailableBlockExerciseState,
+    setIdx: Int
+): Pair<String, String> =
+    if (exState.activeMetric == ExerciseTargetMetric.REPS) {
+        val raw = exState.repsInputs.getOrNull(setIdx).orEmpty()
+        val fallback = (exState.perSetReps.getOrNull(setIdx) ?: exState.defaultReps).coerceAtLeast(1)
+        raw to fallback.toString()
+    } else {
+        exState.metricInputs.getOrNull(setIdx).orEmpty() to "—"
+    }
+
 @Composable
 private fun InlineCompactInputBox(
     value: String,
+    placeholder: String = "—",
     unit: String,
     keyboardType: KeyboardType,
     backgroundColor: Color,
@@ -1308,7 +1320,7 @@ private fun InlineCompactInputBox(
                 Box(contentAlignment = Alignment.Center) {
                     if (value.isBlank()) {
                         Text(
-                            text = "—",
+                            text = placeholder,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                         )
@@ -1370,6 +1382,7 @@ private fun CompactComplexByExerciseView(
     isDark: Boolean
 ) {
     val expandedByEx = remember(blockState.uiKey) { mutableStateMapOf<Int, Boolean>() }
+    val view = LocalView.current
     val rowBorder = if (isDark) ComplexRowBorderDark else ComplexRowBorderLight
     val fieldBg = if (isDark) ComplexRowBgDark else ComplexRowBgLight
     val activeSwitchBg = if (isDark) ComplexActiveSwitchBgDark else ComplexActiveSwitchBgLight
@@ -1500,6 +1513,7 @@ private fun CompactComplexByExerciseView(
                                             .defaultMinSize(minWidth = 60.dp, minHeight = 48.dp)
                                             .clip(RoundedCornerShape(8.dp))
                                             .clickable(role = Role.Switch) {
+                                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                                 blockState.toggleComplexExerciseSkipped(exState, setIdx)
                                             }
                                             .semantics {
@@ -1520,16 +1534,11 @@ private fun CompactComplexByExerciseView(
                                         }
                                     }
                                     if (!isSkipped) {
-                                        val targetVal = if (exState.activeMetric == ExerciseTargetMetric.REPS) {
-                                            exState.repsInputs.getOrNull(setIdx)
-                                                ?.takeIf { it.isNotBlank() }
-                                                ?: exState.perSetReps.getOrNull(setIdx)?.toString()
-                                                ?: exState.defaultReps.toString()
-                                        } else {
-                                            exState.metricInputs.getOrNull(setIdx).orEmpty()
-                                        }
+                                        val (targetVal, targetPlaceholder) =
+                                            compactTargetInputValueAndPlaceholder(exState, setIdx)
                                         InlineCompactInputBox(
                                             value = targetVal,
+                                            placeholder = targetPlaceholder,
                                             unit = exState.activeMetric.compactUnit,
                                             keyboardType = if (exState.activeMetric == ExerciseTargetMetric.REPS) {
                                                 KeyboardType.Number
