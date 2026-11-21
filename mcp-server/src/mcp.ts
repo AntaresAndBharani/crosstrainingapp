@@ -4,11 +4,13 @@ import { z } from "zod";
 import {
   BatchRecordRepMaxesInputSchema,
   BatchUpsertAvailableBlocksInputSchema,
+  BatchUpsertComplexesInputSchema,
   BatchUpsertDailyLogsInputSchema,
   BatchUpsertExercisesInputSchema,
   BatchUpsertWeightEntriesInputSchema,
   computeWeightMomentumAnalytics,
   DeleteAvailableBlockInputSchema,
+  DeleteComplexInputSchema,
   DeleteCycleGoalInputSchema,
   DeleteDailyLogInputSchema,
   DeleteDailyRoutineInputSchema,
@@ -18,17 +20,21 @@ import {
   GetDailyRoutineProgressInputSchema,
   GetWeightMomentumAnalyticsInputSchema,
   ListAvailableBlocksInputSchema,
+  ListComplexesInputSchema,
   ListCycleGoalsInputSchema,
   ListDailyRoutinesInputSchema,
   ListExercisesInputSchema,
   ListSessionsInputSchema,
   LogBlockSessionInputSchema,
+  LogComplexSessionInputSchema,
   LogDailyRoutineSessionInputSchema,
   makeListDateRangeInputSchema,
   ManageCycleGoalsInputSchema,
   RecordRepMaxInputSchema,
   UpdateBlockSessionLogInputSchema,
+  UpdateComplexSessionLogInputSchema,
   UpsertAvailableBlockInputSchema,
+  UpsertComplexInputSchema,
   UpsertCycleGoalInputSchema,
   UpsertDailyLogInputSchema,
   UpsertDailyRoutineInputSchema,
@@ -63,9 +69,9 @@ const DELETE_ANNOTATIONS: ToolAnnotations = {
 export const CROSSTRAINING_MCP_INSTRUCTIONS = [
   "CrossTraining Workout Assistant Connector rules:",
   "1. ACTIVE CYCLE: Never assume Cycle 1 is the active cycle. Call `get_active_cycle` (or `get_workout_summary`) when the user asks for their current/active cycle or goals. Whenever `cycleId` is omitted on goal, session, or rep-max mutations, the server automatically targets the user's resolved active cycle.",
-  "2. BATCH MULTI-ORDER PROMPTS IN ONE CALL: When a user message contains multiple orders (e.g. changing 2RM Snatch to 3RM Snatch AND adding several new goals, or logging multiple exercises, PRs, weigh-ins, or daily logs), ALWAYS combine them into a single batch tool call (`manage_cycle_goals`, `batch_upsert_available_blocks`, `batch_upsert_exercises`, `batch_record_rep_maxes`, `batch_upsert_weight_entries`, `batch_upsert_daily_logs`) instead of chaining multiple single-item tool calls. In `manage_cycle_goals`, set `previousTargetReps` on an upsert item to convert an RM goal (such as 2RM -> 3RM) in one atomic step.",
-  "3. AVAILABLE BLOCKS & MULTI-METRIC SESSION LOGGING: Prefer `list_available_blocks`, `upsert_available_block`, `batch_upsert_available_blocks`, and `delete_available_block` when managing standalone Available Block cards (`[ab_prs=...]` tracked PR slots and free-form instructions), use `log_block_session` when logging block sets (`weights` or multi-metric `metric` + `sets` with `reps`/`weight_kg`/`metric_value`/`group_index`; pass `weights: []` for unloaded/bodyweight movements) along with optional `recordedPrs` that auto-link to the session/block and persist on the block template, and use `update_block_session_log` when editing an existing logged block session (updating set weights/metrics/reps/counts, notes, date, or tracked PRs while reconciling/tombstoning replaced or removed session PRs).",
-  "4. COMPOSITE DAILY ROUTINES (BLOCKS + STANDALONE EXERCISES): Use `list_daily_routines`, `upsert_daily_routine`, and `delete_daily_routine` to compose reusable workout-day templates (`defaultFormat: 'DAILY_ROUTINE'`) made of ordered Saved Available Blocks (`item_type: 'BLOCK'`, with optional per-routine `sets_count` + `exercise_targets`) and standalone Exercises (`item_type: 'EXERCISE'`, with optional `note`, `default_tracked_prs`, and optional `sets_count`/`target_metric`/`target_mode`/`fixed_value`/`per_set_values`). Use `log_daily_routine_session` to log a mixed Block + standalone Exercise (`STANDALONE_EXERCISE`) workout with either `set_weights_kg`/`weights` or multi-metric `metric` + `sets` (pass `update_routine_template: true` if the user adds/reorders items and wants the template updated), and use `get_daily_routine_progress` for unified constituent trends (`kg`/`reps`/`cal`/`s`/`m`), PRs, charts, and set history across all historical sessions.",
+  "2. BATCH MULTI-ORDER PROMPTS IN ONE CALL: When a user message contains multiple orders (e.g. changing 2RM Snatch to 3RM Snatch AND adding several new goals, or logging multiple exercises, PRs, weigh-ins, or daily logs), ALWAYS combine them into a single batch tool call (`manage_cycle_goals`, `batch_upsert_complexes`, `batch_upsert_exercises`, `batch_record_rep_maxes`, `batch_upsert_weight_entries`, `batch_upsert_daily_logs`) instead of chaining multiple single-item tool calls. In `manage_cycle_goals`, set `previousTargetReps` on an upsert item to convert an RM goal (such as 2RM -> 3RM) in one atomic step.",
+  "3. COMPLEXES & MULTI-METRIC SESSION LOGGING: Prefer `list_complexes`, `upsert_complex`, `batch_upsert_complexes`, and `delete_complex` when managing standalone Complex cards (legacy `*_available_block` aliases remain supported; `[ab_prs=...]` tracked PR slots and free-form instructions), use `log_complex_session` (legacy `log_block_session` alias) when logging complex sets (`weights` or multi-metric `metric` + `sets` with `reps`/`weight_kg`/`metric_value`/`group_index`; pass `weights: []` for unloaded/bodyweight movements) along with optional `recordedPrs` that auto-link to the session/complex and persist on the complex template, and use `update_complex_session_log` (legacy `update_block_session_log` alias) when editing an existing logged complex session (updating set weights/metrics/reps/counts, notes, date, or tracked PRs while reconciling/tombstoning replaced or removed session PRs).",
+  "4. COMPOSITE DAILY ROUTINES (COMPLEXES + STANDALONE EXERCISES): Use `list_daily_routines`, `upsert_daily_routine`, and `delete_daily_routine` to compose reusable workout-day templates (`defaultFormat: 'DAILY_ROUTINE'`) made of ordered Saved Complexes (`item_type: 'COMPLEX'`, legacy `'BLOCK'` alias, with optional per-routine `sets_count` + `exercise_targets`) and standalone Exercises (`item_type: 'EXERCISE'`, with optional `note`, `default_tracked_prs`, and optional `sets_count`/`target_metric`/`target_mode`/`fixed_value`/`per_set_values`). Use `log_daily_routine_session` to log a mixed Complex + standalone Exercise (`STANDALONE_EXERCISE`) workout with either `set_weights_kg`/`weights` or multi-metric `metric` + `sets` (pass `update_routine_template: true` if the user adds/reorders items and wants the template updated), and use `get_daily_routine_progress` for unified constituent trends (`kg`/`reps`/`cal`/`s`/`m`), PRs, charts, and set history across all historical sessions.",
 ].join("\n");
 
 function jsonResult(data: unknown) {
@@ -600,15 +606,130 @@ export function createCrossTrainingMcpServer(
   );
 
   // ==========================================================================
-  // 8. Available Blocks & Block-Centric Session Logging
+  // 8. Complexes (Primary) & Legacy Available Block Aliases
   // ==========================================================================
+
+  server.registerTool(
+    "list_complexes",
+    {
+      title: "List Complexes",
+      description:
+        "List streamlined Complex templates (title, clean instructions, ordered exercises, `[ab_prs=...]` tracked PR slots) with optional most recent historical session weight summary.",
+      inputSchema: ListComplexesInputSchema,
+      annotations: READ_ONLY_ANNOTATIONS,
+    },
+    async (args) => {
+      const complexes = await domain.listAvailableBlocks(getUserContext(), args);
+      return jsonResult({ count: complexes.length, complexes });
+    }
+  );
+
+  server.registerTool(
+    "upsert_complex",
+    {
+      title: "Upsert Complex",
+      description:
+        "Create or update a single Complex card (`defaultFormat: 'AVAILABLE_BLOCK'`) with title, instructions, ordered exercises, and auto-inherited `[ab_prs=...]` tracked PR slots. When upserting 2 or more complexes, prefer `batch_upsert_complexes`.",
+      inputSchema: UpsertComplexInputSchema,
+      annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
+    },
+    async (args) => {
+      const complex = await domain.upsertAvailableBlock(getUserContext(), args);
+      return jsonResult({ status: "ok", complex });
+    }
+  );
+
+  server.registerTool(
+    "batch_upsert_complexes",
+    {
+      title: "Batch Upsert Complexes",
+      description:
+        "Create or update multiple Complex cards atomically in a single Firestore transaction.",
+      inputSchema: BatchUpsertComplexesInputSchema,
+      annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
+    },
+    async (args) => {
+      const items = args.complexes ?? args.blocks ?? [];
+      if (items.length === 0) {
+        throw new Error("Provide at least one complex in `complexes` (or legacy `blocks`).");
+      }
+      const upserted = await domain.batchUpsertAvailableBlocks(getUserContext(), items);
+      return jsonResult({
+        status: "ok",
+        upsertedCount: upserted.length,
+        complexes: upserted,
+      });
+    }
+  );
+
+  server.registerTool(
+    "delete_complex",
+    {
+      title: "Delete Complex",
+      description:
+        "Tombstone/delete a Complex by numeric `complex_id`/`id` or exact `title`/`complex_title` while preserving all historical logged workout sessions and PRs.",
+      inputSchema: DeleteComplexInputSchema,
+      annotations: DELETE_ANNOTATIONS,
+    },
+    async (args) => {
+      const res = await domain.deleteAvailableBlock(getUserContext(), args);
+      return jsonResult({
+        status: res.deleted ? "deleted" : "not_found",
+        deletedCount: res.deletedCount,
+        deletedTitles: res.deletedTitles,
+      });
+    }
+  );
+
+  server.registerTool(
+    "log_complex_session",
+    {
+      title: "Log Complex Session",
+      description:
+        "Log a Complex session with weight-only `weights` or multi-metric `metric` + `sets` (`reps`, `weight_kg`, `metric_value`, `group_index`) and optional `recordedPrs` linked to session/complex/cycle and auto-inherited onto the matched complex's tracked PRs.",
+      inputSchema: LogComplexSessionInputSchema,
+      annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
+    },
+    async (args) => {
+      const res = await domain.logBlockSession(getUserContext(), args);
+      return jsonResult({
+        status: "ok",
+        session: res.session,
+        recordedPrsCount: res.recordedPrs.length,
+        recordedPrs: res.recordedPrs,
+        updatedTrackedPrs: res.updatedTrackedPrs,
+      });
+    }
+  );
+
+  server.registerTool(
+    "update_complex_session_log",
+    {
+      title: "Update Complex Session Log",
+      description:
+        "Edit an existing logged Complex session in place (`weights` or multi-metric `metric` + `sets`, complex/session notes, date, cycle, or tracked PRs), tombstoning replaced or removed session `rep_maxes` and auto-inheriting newly tracked 1RM-20RM PR slots onto the parent Complex.",
+      inputSchema: UpdateComplexSessionLogInputSchema,
+      annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
+    },
+    async (args) => {
+      const res = await domain.updateBlockSessionLog(getUserContext(), args);
+      return jsonResult({
+        status: "ok",
+        session: res.session,
+        reconciledPrsCount: res.reconciledPrs.length,
+        reconciledPrs: res.reconciledPrs,
+        tombstonedRepMaxIds: res.tombstonedRepMaxIds,
+        updatedTrackedPrs: res.updatedTrackedPrs,
+      });
+    }
+  );
 
   server.registerTool(
     "list_available_blocks",
     {
       title: "List Available Blocks",
       description:
-        "List streamlined Available Block templates (title, clean instructions, ordered exercises, `[ab_prs=...]` tracked PR slots) with optional most recent historical session weight summary.",
+        "(Legacy alias for `list_complexes`) List saved Complex templates (`[ab_prs=...]` tracked PR slots) with optional most recent historical session weight summary.",
       inputSchema: ListAvailableBlocksInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
@@ -623,7 +744,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Upsert Available Block",
       description:
-        "Create or update a single Available Block card (`defaultFormat: 'AVAILABLE_BLOCK'`) with title, instructions, ordered exercises, and auto-inherited `[ab_prs=...]` tracked PR slots. When upserting 2 or more blocks, prefer `batch_upsert_available_blocks`.",
+        "(Legacy alias for `upsert_complex`) Create or update a single Complex card (`defaultFormat: 'AVAILABLE_BLOCK'`) with title, instructions, ordered exercises, and auto-inherited `[ab_prs=...]` tracked PR slots.",
       inputSchema: UpsertAvailableBlockInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },
@@ -638,12 +759,16 @@ export function createCrossTrainingMcpServer(
     {
       title: "Batch Upsert Available Blocks",
       description:
-        "Create or update multiple Available Block cards atomically in a single Firestore transaction.",
+        "(Legacy alias for `batch_upsert_complexes`) Create or update multiple Complex cards atomically in a single Firestore transaction.",
       inputSchema: BatchUpsertAvailableBlocksInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },
-    async ({ blocks }) => {
-      const upserted = await domain.batchUpsertAvailableBlocks(getUserContext(), blocks);
+    async (args) => {
+      const items = args.complexes ?? args.blocks ?? [];
+      if (items.length === 0) {
+        throw new Error("Provide at least one complex in `complexes` (or legacy `blocks`).");
+      }
+      const upserted = await domain.batchUpsertAvailableBlocks(getUserContext(), items);
       return jsonResult({
         status: "ok",
         upsertedCount: upserted.length,
@@ -657,7 +782,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Delete Available Block",
       description:
-        "Tombstone/delete an Available Block by numeric `id` or exact `title` while preserving all historical logged workout sessions and PRs.",
+        "(Legacy alias for `delete_complex`) Tombstone/delete a Complex by numeric `id` or exact `title` while preserving all historical logged workout sessions and PRs.",
       inputSchema: DeleteAvailableBlockInputSchema,
       annotations: DELETE_ANNOTATIONS,
     },
@@ -676,7 +801,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Log Block Session",
       description:
-        "Log an Available Block session with weight-only `weights` or multi-metric `metric` + `sets` (`reps`, `weight_kg`, `metric_value`, `group_index`) and optional `recordedPrs` linked to session/block/cycle and auto-inherited onto the matched block's tracked PRs.",
+        "(Legacy alias for `log_complex_session`) Log a Complex session with weight-only `weights` or multi-metric `metric` + `sets` and optional `recordedPrs` linked to session/complex/cycle.",
       inputSchema: LogBlockSessionInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },
@@ -697,7 +822,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Update Block Session Log",
       description:
-        "Edit an existing logged Available Block session in place (`weights` or multi-metric `metric` + `sets`, block/session notes, date, cycle, or tracked PRs), tombstoning replaced or removed session `rep_maxes` and auto-inheriting newly tracked 1RM-20RM PR slots onto the parent Available Block.",
+        "(Legacy alias for `update_complex_session_log`) Edit an existing logged Complex session in place, tombstoning replaced or removed session `rep_maxes` and auto-inheriting tracked PR slots.",
       inputSchema: UpdateBlockSessionLogInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },
@@ -715,7 +840,7 @@ export function createCrossTrainingMcpServer(
   );
 
   // ==========================================================================
-  // 8. Composite Daily Routines (Blocks + Standalone Exercises)
+  // 9. Composite Daily Routines (Complexes + Standalone Exercises)
   // ==========================================================================
 
   server.registerTool(
@@ -723,7 +848,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "List Daily Routines",
       description:
-        "List composite Daily Routines (`defaultFormat: 'DAILY_ROUTINE'`) made of ordered Saved Available Blocks and standalone Exercises, including constituent metadata, tracked PR counts, and last logged session date.",
+        "List composite Daily Routines (`defaultFormat: 'DAILY_ROUTINE'`) made of ordered Saved Complexes and standalone Exercises, including constituent metadata, tracked PR counts, and last logged session date.",
       inputSchema: ListDailyRoutinesInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
@@ -738,7 +863,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Upsert Daily Routine",
       description:
-        "Create or update a composite Daily Routine (`defaultFormat: 'DAILY_ROUTINE'`) with ordered Saved Available Blocks (`item_type: 'BLOCK'`, optional `sets_count` + `exercise_targets`) and standalone Exercises (`item_type: 'EXERCISE'`, optional `note`, `default_tracked_prs`, and optional `sets_count`/`target_metric`/`target_mode`/`fixed_value`/`per_set_values`). Auto-creates missing exercises.",
+        "Create or update a composite Daily Routine (`defaultFormat: 'DAILY_ROUTINE'`) with ordered Saved Complexes (`item_type: 'COMPLEX'`, legacy `'BLOCK'` alias, optional `sets_count` + `exercise_targets`) and standalone Exercises (`item_type: 'EXERCISE'`, optional `note`, `default_tracked_prs`, and optional `sets_count`/`target_metric`/`target_mode`/`fixed_value`/`per_set_values`). Auto-creates missing exercises.",
       inputSchema: UpsertDailyRoutineInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },
@@ -753,7 +878,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Delete Daily Routine",
       description:
-        "Tombstone/delete a composite Daily Routine by `routine_id` or exact `title` while preserving all historical logged workout sessions, Available Blocks, and PRs.",
+        "Tombstone/delete a composite Daily Routine by `routine_id` or exact `title` while preserving all historical logged workout sessions, Complexes, and PRs.",
       inputSchema: DeleteDailyRoutineInputSchema,
       annotations: DELETE_ANNOTATIONS,
     },
@@ -772,7 +897,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Log Daily Routine Session",
       description:
-        "Log an ordered mixed workout of Saved Available Blocks (`item_type: 'BLOCK'`) and standalone Exercises (`item_type: 'EXERCISE'`, `STANDALONE_EXERCISE`) supporting weight-only or multi-metric `metric` + `sets` (`reps`, `weight_kg`, `metric_value`, `group_index`), recording `achieved_prs` into `rep_maxes` and optionally updating the Daily Routine template (`update_routine_template: true`).",
+        "Log an ordered mixed workout of Saved Complexes (`item_type: 'COMPLEX'`, legacy `'BLOCK'`) and standalone Exercises (`item_type: 'EXERCISE'`, `STANDALONE_EXERCISE`) supporting weight-only or multi-metric `metric` + `sets` (`reps`, `weight_kg`, `metric_value`, `group_index`), recording `achieved_prs` into `rep_maxes` and optionally updating the Daily Routine template (`update_routine_template: true`).",
       inputSchema: LogDailyRoutineSessionInputSchema,
       annotations: IDEMPOTENT_WRITE_ANNOTATIONS,
     },
@@ -793,7 +918,7 @@ export function createCrossTrainingMcpServer(
     {
       title: "Get Daily Routine Progress",
       description:
-        "Compute unified multi-metric constituent progress (`kg`/`reps`/`cal`/`s`/`m`, All-Time Top, Last Top, Last Average, Last Volume, Top Delta trend, Tracked PRs, chart points, and recent sessions) for every Block and Exercise inside a Daily Routine.",
+        "Compute unified multi-metric constituent progress (`kg`/`reps`/`cal`/`s`/`m`, All-Time Top, Last Top, Last Average, Last Volume, Top Delta trend, Tracked PRs, chart points, and recent sessions) for every Complex and Exercise inside a Daily Routine.",
       inputSchema: GetDailyRoutineProgressInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },

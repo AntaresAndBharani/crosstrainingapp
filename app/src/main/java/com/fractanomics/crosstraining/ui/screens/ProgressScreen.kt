@@ -309,7 +309,7 @@ fun ProgressScreen(
                                 when (mode) {
                                     ProgressMode.BY_DAILY_ROUTINE -> "By routine"
                                     ProgressMode.BY_EXERCISE -> "By exercise"
-                                    ProgressMode.BY_ROUTINE -> "By block"
+                                    ProgressMode.BY_ROUTINE -> "By complex"
                                     ProgressMode.CYCLE_GOALS -> "Cycle goals"
                                     ProgressMode.FAT_LOSS -> "Fat loss"
                                     ProgressMode.BODY_WEIGHT -> "Body weight"
@@ -3955,7 +3955,7 @@ private fun ExerciseProgress(
             FilterChip(
                 selected = blockFilter == null,
                 onClick = { blockFilter = null },
-                label = { Text("All blocks") }
+                label = { Text("All complexes") }
             )
             namedBlocks.forEach { name ->
                 FilterChip(
@@ -4068,7 +4068,7 @@ private fun DailyRoutineProgressSection(
     if (dailyRoutines.isEmpty()) {
         SectionCard(title = "Daily Routines Progress") {
             Text(
-                text = "Daily Routines combine Saved Blocks and standalone Exercises into complete workouts. Create one in Library → Routines to track every movement and block together here.",
+                text = "Daily Routines combine saved Complexes and standalone Exercises into complete workouts. Create one in Library → Routines to track every movement and complex together here.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -4122,7 +4122,7 @@ private fun DailyRoutineProgressSection(
             )
         }
         items(constituents, key = { it.key }) { item ->
-            val prefix = if (item.itemType == DailyRoutineItemType.BLOCK) "BLOCK: " else "EX: "
+            val prefix = if (item.itemType == DailyRoutineItemType.BLOCK) "COMPLEX: " else "EX: "
             FilterChip(
                 selected = selectedItem?.key == item.key,
                 onClick = { selectedItemKey = item.key },
@@ -4174,7 +4174,7 @@ private fun ConstituentTypeBadge(itemType: DailyRoutineItemType) {
         shape = RoundedCornerShape(6.dp)
     ) {
         Text(
-            text = if (isBlock) "BLOCK" else "EXERCISE",
+            text = if (isBlock) "COMPLEX" else "EXERCISE",
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             color = fg,
@@ -4422,7 +4422,7 @@ private fun RoutineProgress(
     onSelect: (Routine) -> Unit
 ) {
     Dropdown(
-        label = "Available block",
+        label = "Complex",
         options = routines,
         selected = current,
         labelOf = { it.name },
@@ -4503,7 +4503,7 @@ private fun RoutineProgress(
 
     if (definedBlocks.isNotEmpty()) {
         Text(
-            "Filter Performance by Block:",
+            "Filter Performance by Complex:",
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold
         )
@@ -4511,7 +4511,7 @@ private fun RoutineProgress(
             FilterChip(
                 selected = selectedBlockFilter == null,
                 onClick = { selectedBlockFilter = null },
-                label = { Text("All Blocks (Global)") }
+                label = { Text("All Complexes (Global)") }
             )
             definedBlocks.forEach { rBlk ->
                 val bName = rBlk.name.ifBlank { rBlk.kind.label }
@@ -4543,15 +4543,15 @@ private fun RoutineProgress(
     val unit = target?.unit ?: weightUnit.ifBlank { "kg" }
 
     KpiRows(activeBlocks, days, unit)
-    EvolutionCards(days, unit, titlePrefix = selectedBlockFilter ?: "All Blocks")
+    EvolutionCards(days, unit, titlePrefix = selectedBlockFilter ?: "All Complexes")
 
-    // --- Per-Block Routine Breakdown Card --------------------------------------
+    // --- Per-Complex Routine Breakdown Card --------------------------------------
     if (definedBlocks.isNotEmpty()) {
-        SectionCard(title = "Per-Block Routine Breakdown") {
+        SectionCard(title = "Per-Complex Routine Breakdown") {
             val totalRoutineSessions = allRoutineBlocks.map { it.sessionId }.distinct().size
             if (totalRoutineSessions > 0) {
                 Text(
-                    "Breakdown of defined blocks executed in $totalRoutineSessions routine sessions:",
+                    "Breakdown of defined complexes executed in $totalRoutineSessions routine sessions:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -4623,7 +4623,7 @@ private fun RoutineProgress(
         blocks = activeBlocks,
         unit = unit,
         selectionKey = "routine-${current.id}-${selectedBlockFilter ?: "all"}",
-        emptyMessage = "No logged blocks match this selection yet.",
+        emptyMessage = "No logged complexes match this selection yet.",
         repMaxes = repMaxes,
         exercises = exercises
     )
@@ -4711,7 +4711,7 @@ private fun BlockHistoryCard(
     repMaxes: List<RepMax> = emptyList(),
     exercises: List<Exercise> = emptyList()
 ) {
-    SectionCard(title = "Block history") {
+    SectionCard(title = "Complex history") {
         if (blocks.isEmpty()) {
             Text(emptyMessage, style = MaterialTheme.typography.bodyMedium)
         } else {
@@ -4720,7 +4720,7 @@ private fun BlockHistoryCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            TableHeader("Date", "Block", "Avg", "Top")
+            TableHeader("Date", "Complex", "Avg", "Top")
             HorizontalDivider()
             var expandedKey by remember(selectionKey) { mutableStateOf<Long?>(null) }
             blocks.asReversed().forEach { bp ->
@@ -4825,7 +4825,7 @@ private fun BlockHistoryRow(
     onToggle: () -> Unit
 ) {
     val b = bp.block
-    val label = b.name.ifBlank { b.scheme.ifBlank { b.format.ifBlank { "Block" } } }
+    val label = b.name.ifBlank { b.scheme.ifBlank { b.format.ifBlank { "Complex" } } }
     val achievedPrs = remember(repMaxes, b.id, bp.sessionId, b.mainExerciseId) {
         repMaxes.filter { rm ->
             (rm.blockId != null && rm.blockId == b.id) ||

@@ -78,6 +78,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -107,6 +108,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
@@ -149,14 +151,48 @@ internal fun formatLibraryTabLabels(
     exercisesCount: Int
 ): List<String> = listOf(
     "Routines ($routinesCount)",
-    "Blocks ($blocksCount)",
+    "Complexes ($blocksCount)",
     "Exercises ($exercisesCount)"
 )
+
+internal fun formatLibraryTabContentDescription(
+    index: Int,
+    count: Int
+): String = when (index) {
+    0 -> "Routines, $count items, Tab 1 of 3"
+    1 -> "Complexes, $count items, Tab 2 of 3"
+    else -> "Exercises, $count items, Tab 3 of 3"
+}
+
+internal fun shouldUseScrollableLibraryTabs(fontScale: Float): Boolean = fontScale >= 1.2f
+
+internal fun shouldStackCompactActions(fontScale: Float): Boolean = fontScale >= 1.4f
+
+internal fun librarySearchPlaceholder(tabIndex: Int): String = when (tabIndex) {
+    0 -> "Search routines..."
+    1 -> "Search complexes..."
+    else -> "Search exercises..."
+}
+
+internal fun canSaveComplexEditor(
+    title: String,
+    selectedExerciseCount: Int
+): Boolean = title.trim().isNotEmpty() && selectedExerciseCount > 0
+
+internal fun complexEditorValidationError(
+    title: String,
+    selectedExerciseCount: Int,
+    showValidation: Boolean
+): String? = if (showValidation && !canSaveComplexEditor(title, selectedExerciseCount)) {
+    "Enter a complex name and select at least 1 exercise."
+} else {
+    null
+}
 
 internal fun formatDailyRoutineItemChipLabel(item: DailyRoutineItem): String = when (item) {
     is DailyRoutineItem.BlockRef -> {
         if (!item.hasConfiguredTargets) {
-            "BLOCK: ${item.blockTitle}"
+            "COMPLEX: ${item.blockTitle}"
         } else {
             val sets = (item.targetSetsCount ?: 1).coerceAtLeast(1)
             val resolvedSpecs = item.resolvedBlock?.exercises.orEmpty().mapNotNull { ex ->
@@ -166,9 +202,9 @@ internal fun formatDailyRoutineItemChipLabel(item: DailyRoutineItem): String = w
                 ?: item.exerciseTargets.values.singleOrNull()
                 ?: item.exerciseTargetsByName.values.singleOrNull()
             if (singleSpec != null) {
-                "BLOCK: ${item.blockTitle} (${formatCompactChipTargetSummary(sets, singleSpec)})"
+                "COMPLEX: ${item.blockTitle} (${formatCompactChipTargetSummary(sets, singleSpec)})"
             } else {
-                "BLOCK: ${item.blockTitle} (${sets} sets)"
+                "COMPLEX: ${item.blockTitle} (${sets} sets)"
             }
         }
     }
@@ -202,7 +238,7 @@ internal fun formatDailyRoutineTelemetry(
     routine: DailyRoutine,
     lastDateFormatted: String?
 ): String {
-    val blockLabel = if (routine.blockCount == 1) "1 Block" else "${routine.blockCount} Blocks"
+    val blockLabel = if (routine.blockCount == 1) "1 Complex" else "${routine.blockCount} Complexes"
     val exLabel = if (routine.exerciseCount == 1) "1 Exercise" else "${routine.exerciseCount} Exercises"
     val lastPart = if (!lastDateFormatted.isNullOrBlank()) "Last: $lastDateFormatted" else "Not logged yet"
     return "$blockLabel · $exLabel · $lastPart"
@@ -236,7 +272,7 @@ internal class DailyRoutineComposerState(
         get() = when {
             hasInvalidTargets -> DAILY_ROUTINE_ALL_ZERO_TARGET_ERROR
             attemptedSubmit && (title.trim().isEmpty() || items.isEmpty()) ->
-                "Add a routine title and at least 1 block or exercise."
+                "Add a routine title and at least 1 complex or exercise."
             else -> null
         }
 
@@ -760,23 +796,38 @@ fun LibraryScreen(
         }
     ) { pad ->
         Column(modifier = Modifier.padding(pad)) {
-            TabRow(selectedTabIndex = tab) {
-                tabLabels.forEachIndexed { index, label ->
-                    Tab(
-                        selected = tab == index,
-                        onClick = { tab = index },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                        text = {
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelLarge.copy(fontSize = 13.5.sp),
-                                fontWeight = if (tab == index) FontWeight.Bold else FontWeight.SemiBold,
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    )
+            val fontScale = LocalDensity.current.fontScale
+            val tabCounts = listOf(dailyRoutines.size, availableBlocks.size, exercises.size)
+            val renderTab: @Composable (Int, String) -> Unit = { index, label ->
+                val tabSemantics = formatLibraryTabContentDescription(index, tabCounts[index])
+                Tab(
+                    selected = tab == index,
+                    onClick = { tab = index },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .semantics { contentDescription = tabSemantics },
+                    text = {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontSize = 13.sp,
+                                fontFeatureSettings = "tnum"
+                            ),
+                            fontWeight = if (tab == index) FontWeight.Bold else FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                )
+            }
+            if (shouldUseScrollableLibraryTabs(fontScale)) {
+                ScrollableTabRow(selectedTabIndex = tab, edgePadding = 12.dp) {
+                    tabLabels.forEachIndexed { index, label -> renderTab(index, label) }
+                }
+            } else {
+                TabRow(selectedTabIndex = tab) {
+                    tabLabels.forEachIndexed { index, label -> renderTab(index, label) }
                 }
             }
             when (tab) {
@@ -792,7 +843,7 @@ fun LibraryScreen(
                             onValueChange = { routineSearch = it },
                             placeholder = {
                                 Text(
-                                    "Search routines, blocks, or exercises...",
+                                    librarySearchPlaceholder(0),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -814,7 +865,7 @@ fun LibraryScreen(
                     if (filteredDailyRoutines.isEmpty()) {
                         EmptyState(
                             if (routineSearch.isNotBlank()) "No daily routines match '$routineSearch'."
-                            else "No daily routines yet. Tap + to combine your Blocks and Exercises into a Daily Routine, or create one via MCP."
+                            else "No daily routines yet. Tap + to combine your Complexes and Exercises into a Daily Routine, or create one via MCP."
                         )
                     } else {
                         ScreenList {
@@ -865,7 +916,7 @@ fun LibraryScreen(
                             onValueChange = { blockSearch = it },
                             placeholder = {
                                 Text(
-                                    "Search available blocks or exercises...",
+                                    librarySearchPlaceholder(1),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -886,8 +937,8 @@ fun LibraryScreen(
 
                     if (filteredAvailableBlocks.isEmpty()) {
                         EmptyState(
-                            if (blockSearch.isNotBlank()) "No available blocks match '$blockSearch'."
-                            else "No available blocks yet. Sync via MCP or tap + to add one."
+                            if (blockSearch.isNotBlank()) "No complexes match '$blockSearch'."
+                            else "No complexes yet. Sync via MCP or tap + to add one."
                         )
                     } else {
                         ScreenList {
@@ -908,7 +959,7 @@ fun LibraryScreen(
                                         viewModel.deleteAvailableBlock(block)
                                         scope.launch {
                                             val res = snackbar.showSnackbar(
-                                                message = "Block removed",
+                                                message = "Complex removed",
                                                 actionLabel = "Undo",
                                                 duration = SnackbarDuration.Short
                                             )
@@ -933,7 +984,7 @@ fun LibraryScreen(
                         OutlinedTextField(
                             value = exerciseSearch,
                             onValueChange = { exerciseSearch = it },
-                            placeholder = { Text("Search exercises...") },
+                            placeholder = { Text(librarySearchPlaceholder(2)) },
                             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                             singleLine = true,
                             shape = RoundedCornerShape(12.dp),
@@ -1031,7 +1082,7 @@ fun LibraryScreen(
                 scope.launch {
                     val msg = buildString {
                         append("Workout journey saved")
-                        if (routine != null) append(" (Block '${routine.name}')")
+                        if (routine != null) append(" (Complex '${routine.name}')")
                         if (session != null) append(" (Session recorded)")
                     }
                     snackbar.showSnackbar(msg)
@@ -1411,7 +1462,7 @@ private fun DailyRoutineCard(
                         val isBlock = item is DailyRoutineItem.BlockRef
                         val label = formatDailyRoutineItemChipLabel(item)
                         val spoken = when (item) {
-                            is DailyRoutineItem.BlockRef -> "Block: ${item.blockTitle}"
+                            is DailyRoutineItem.BlockRef -> "Complex: ${item.blockTitle}"
                             is DailyRoutineItem.StandaloneExercise ->
                                 if (item.note.isNotBlank()) "Exercise: ${item.exerciseName}, ${item.note}"
                                 else "Exercise: ${item.exerciseName}"
@@ -1469,9 +1520,9 @@ private fun DailyRoutineCard(
 
                     if (routine.missingBlockCount > 0) {
                         val warningLabel = if (routine.missingBlockCount == 1) {
-                            "1 removed block hidden"
+                            "1 removed complex hidden"
                         } else {
-                            "${routine.missingBlockCount} removed blocks hidden"
+                            "${routine.missingBlockCount} removed complexes hidden"
                         }
                         Surface(
                             color = MaterialTheme.colorScheme.errorContainer,
@@ -1491,7 +1542,7 @@ private fun DailyRoutineCard(
                                 )
                                 Icon(
                                     Icons.Filled.Close,
-                                    contentDescription = "Dismiss removed block notice",
+                                    contentDescription = "Dismiss removed complex notice",
                                     tint = MaterialTheme.colorScheme.onErrorContainer,
                                     modifier = Modifier.size(14.dp)
                                 )
@@ -1611,7 +1662,7 @@ private fun DailyRoutineComposerSheet(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Combine reusable Blocks and standalone Exercises.",
+                                text = "Combine reusable Complexes and standalone Exercises.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1668,7 +1719,7 @@ private fun DailyRoutineComposerSheet(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text(
-                                    text = "Add at least one Block or Exercise below.",
+                                    text = "No items yet. Tap + Add Complex or + Add Exercise to build this routine.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(14.dp)
@@ -1676,6 +1727,11 @@ private fun DailyRoutineComposerSheet(
                             }
                         } else {
                             state.items.forEachIndexed { idx, entry ->
+                                val isBlock = entry.item is DailyRoutineItem.BlockRef
+                                val itemTitle = when (val p = entry.item) {
+                                    is DailyRoutineItem.BlockRef -> p.blockTitle
+                                    is DailyRoutineItem.StandaloneExercise -> p.exerciseName
+                                }
                                 OutlinedCard(
                                     shape = RoundedCornerShape(12.dp),
                                     modifier = Modifier.fillMaxWidth()
@@ -1689,7 +1745,7 @@ private fun DailyRoutineComposerSheet(
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
                                             Text(
                                                 text = "${idx + 1}",
@@ -1697,31 +1753,19 @@ private fun DailyRoutineComposerSheet(
                                                 fontWeight = FontWeight.Bold,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
-                                            val isBlock = entry.item is DailyRoutineItem.BlockRef
                                             Surface(
                                                 color = if (isBlock) blockBadgeBg else exBadgeBg,
                                                 shape = RoundedCornerShape(6.dp)
                                             ) {
                                                 Text(
-                                                    text = if (isBlock) "BLOCK" else "EXERCISE",
+                                                    text = if (isBlock) "COMPLEX" else "EXERCISE",
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontWeight = FontWeight.Bold,
                                                     color = if (isBlock) blockBadgeText else exBadgeText,
                                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                                 )
                                             }
-                                            val itemTitle = when (val p = entry.item) {
-                                                is DailyRoutineItem.BlockRef -> p.blockTitle
-                                                is DailyRoutineItem.StandaloneExercise -> p.exerciseName
-                                            }
-                                            Text(
-                                                text = itemTitle,
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.SemiBold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.weight(1f)
-                                            )
+                                            Spacer(Modifier.weight(1f))
                                             IconButton(
                                                 onClick = { state.moveUp(idx) },
                                                 enabled = idx > 0,
@@ -1756,6 +1800,14 @@ private fun DailyRoutineComposerSheet(
                                                 )
                                             }
                                         }
+                                        Text(
+                                            text = itemTitle,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
 
                                         when (val p = entry.item) {
                                             is DailyRoutineItem.BlockRef -> {
@@ -1950,10 +2002,8 @@ private fun DailyRoutineComposerSheet(
                         )
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                    val fontScale = LocalDensity.current.fontScale
+                    val addComplexButton: @Composable (Modifier) -> Unit = { btnMod ->
                         OutlinedButton(
                             onClick = {
                                 blockPickerQuery = ""
@@ -1961,14 +2011,14 @@ private fun DailyRoutineComposerSheet(
                                 pickerMode = RoutineComposerPickerMode.PICK_BLOCKS
                             },
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
+                            modifier = btnMod.heightIn(min = 48.dp)
                         ) {
                             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Add Block", maxLines = 1)
+                            Text("Add Complex", maxLines = 1, softWrap = false)
                         }
+                    }
+                    val addExerciseButton: @Composable (Modifier) -> Unit = { btnMod ->
                         OutlinedButton(
                             onClick = {
                                 exercisePickerQuery = ""
@@ -1977,13 +2027,28 @@ private fun DailyRoutineComposerSheet(
                                 pickerMode = RoutineComposerPickerMode.PICK_EXERCISES
                             },
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
+                            modifier = btnMod.heightIn(min = 48.dp)
                         ) {
                             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Add Exercise", maxLines = 1)
+                            Text("Add Exercise", maxLines = 1, softWrap = false)
+                        }
+                    }
+                    if (shouldStackCompactActions(fontScale)) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            addComplexButton(Modifier.fillMaxWidth())
+                            addExerciseButton(Modifier.fillMaxWidth())
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            addComplexButton(Modifier.weight(1f))
+                            addExerciseButton(Modifier.weight(1f))
                         }
                     }
 
@@ -2024,7 +2089,7 @@ private fun DailyRoutineComposerSheet(
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to routine")
                         }
                         Text(
-                            text = "Add Blocks to Routine",
+                            text = "Add Complexes to Routine",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.weight(1f)
@@ -2034,7 +2099,7 @@ private fun DailyRoutineComposerSheet(
                     OutlinedTextField(
                         value = blockPickerQuery,
                         onValueChange = { blockPickerQuery = it },
-                        placeholder = { Text("Search available blocks...") },
+                        placeholder = { Text("Search complexes...") },
                         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp),
@@ -2044,9 +2109,9 @@ private fun DailyRoutineComposerSheet(
                     if (filteredBlocks.isEmpty()) {
                         Text(
                             text = if (availableBlocks.isEmpty()) {
-                                "No Available Blocks yet. Create blocks in Library -> Blocks first."
+                                "No complexes yet. Create complexes in Library → Complexes first."
                             } else {
-                                "No blocks matching \"$blockPickerQuery\"."
+                                "No complexes matching \"$blockPickerQuery\"."
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2136,8 +2201,8 @@ private fun DailyRoutineComposerSheet(
                                 .heightIn(min = 48.dp)
                         ) {
                             Text(
-                                if (pickedBlockIds.size <= 1) "Add ${pickedBlockIds.size.coerceAtLeast(1)} Block"
-                                else "Add ${pickedBlockIds.size} Blocks"
+                                if (pickedBlockIds.size <= 1) "Add ${pickedBlockIds.size.coerceAtLeast(1)} Complex"
+                                else "Add ${pickedBlockIds.size} Complexes"
                             )
                         }
                     }
@@ -2342,6 +2407,26 @@ private fun AvailableBlockCard(
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            val fontScale = LocalDensity.current.fontScale
+            val logComplexButton: @Composable () -> Unit = {
+                Button(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        onLogBlock()
+                    },
+                    shape = RoundedCornerShape(24.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text(
+                        "Log Complex ▸",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -2356,28 +2441,18 @@ private fun AvailableBlockCard(
                     modifier = Modifier.weight(1f)
                 )
 
-                Button(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                        onLogBlock()
-                    },
-                    shape = RoundedCornerShape(24.dp),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                    modifier = Modifier.heightIn(min = 48.dp)
-                ) {
-                    Text(
-                        "Log Block ▸",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
+                if (!shouldStackCompactActions(fontScale)) {
+                    logComplexButton()
                 }
 
                 Box {
-                    IconButton(onClick = { showOverflow = true }) {
+                    IconButton(
+                        onClick = { showOverflow = true },
+                        modifier = Modifier.minimumInteractiveComponentSize()
+                    ) {
                         Icon(
                             Icons.Filled.MoreVert,
-                            contentDescription = "Block options for ${block.title}"
+                            contentDescription = "Complex options for ${block.title}"
                         )
                     }
                     DropdownMenu(
@@ -2407,6 +2482,10 @@ private fun AvailableBlockCard(
                         )
                     }
                 }
+            }
+
+            if (shouldStackCompactActions(fontScale)) {
+                logComplexButton()
             }
 
             if (block.instructions.isNotBlank()) {
@@ -2524,6 +2603,9 @@ private fun QuickCreateBlockSheet(
             addAll(original?.exercises?.map { it.id }.orEmpty())
         }
     }
+    var hasInteracted by remember(original?.id) { mutableStateOf(original != null) }
+    val canSave = canSaveComplexEditor(title, selectedIds.size)
+    val validationError = complexEditorValidationError(title, selectedIds.size, hasInteracted)
 
     val filteredMovements = remember(exercises, movementQuery) {
         val needle = movementQuery.trim().lowercase()
@@ -2539,23 +2621,31 @@ private fun QuickCreateBlockSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 24.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = if (original == null) "New Available Block" else "Edit Available Block",
+                text = if (original == null) "New Complex" else "Edit Complex",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
 
             OutlinedTextField(
                 value = title,
-                onValueChange = { title = it },
-                label = { Text("Block Name") },
+                onValueChange = {
+                    title = it
+                    hasInteracted = true
+                },
+                label = { Text("Complex Name") },
                 placeholder = { Text("e.g. Clean Complex") },
-                singleLine = true,
+                singleLine = false,
+                minLines = 1,
+                maxLines = 2,
+                isError = hasInteracted && title.trim().isEmpty(),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth()
             )
@@ -2574,13 +2664,18 @@ private fun QuickCreateBlockSheet(
             Text(
                 text = "Exercises (${selectedIds.size} selected)",
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.SemiBold,
+                color = if (hasInteracted && selectedIds.isEmpty()) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                }
             )
 
             OutlinedTextField(
                 value = movementQuery,
                 onValueChange = { movementQuery = it },
-                placeholder = { Text("Filter movements...") },
+                placeholder = { Text("Filter exercises...") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 singleLine = true,
                 shape = RoundedCornerShape(10.dp),
@@ -2596,6 +2691,7 @@ private fun QuickCreateBlockSheet(
                     FilterChip(
                         selected = isSelected,
                         onClick = {
+                            hasInteracted = true
                             if (isSelected) selectedIds.remove(ex.id) else selectedIds.add(ex.id)
                         },
                         leadingIcon = if (isSelected) {
@@ -2625,6 +2721,7 @@ private fun QuickCreateBlockSheet(
                         val nameToCreate = newMovementName.trim()
                         newMovementName = ""
                         onCreateExercise(nameToCreate) { created ->
+                            hasInteracted = true
                             if (created.id !in selectedIds) {
                                 selectedIds.add(created.id)
                             }
@@ -2635,28 +2732,44 @@ private fun QuickCreateBlockSheet(
                 }
             }
 
+            validationError?.let { err ->
+                Text(
+                    text = err,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 OutlinedButton(
                     onClick = onDismiss,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
                 ) {
                     Text("Cancel")
                 }
                 Button(
-                    enabled = title.trim().isNotEmpty(),
+                    enabled = canSave,
                     onClick = {
-                        onSave(
-                            title.trim(),
-                            instructions.trim(),
-                            selectedIds.toList()
-                        )
+                        hasInteracted = true
+                        if (canSave) {
+                            onSave(
+                                title.trim(),
+                                instructions.trim(),
+                                selectedIds.toList()
+                            )
+                        }
                     },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
                 ) {
-                    Text(if (original == null) "Create Block" else "Save Block")
+                    Text(if (original == null) "Create Complex" else "Save Complex")
                 }
             }
         }

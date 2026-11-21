@@ -197,11 +197,23 @@ export interface RepMaxRecord {
 export interface UpdateBlockSessionLogInput {
   sessionId?: number;
   date?: string;
+  complex_id?: number;
+  complexId?: number;
   blockId?: number;
+  block_id?: number;
+  complex_title?: string;
+  complexTitle?: string;
   blockTitle?: string;
+  block_title?: string;
+  session_complex_id?: number;
+  session_block_id?: number;
   title?: string;
   notes?: string;
+  complex_notes?: string;
+  complexNotes?: string;
   blockNotes?: string;
+  sync_parent_complex_default_prs?: boolean;
+  sync_parent_block_default_prs?: boolean;
   cycleId?: number;
   exercises?: Array<{
     exerciseId?: number;
@@ -264,6 +276,10 @@ export interface AvailableBlockRecord {
 
 export interface UpsertAvailableBlockInput {
   id?: number;
+  complex_id?: number;
+  complexId?: number;
+  block_id?: number;
+  blockId?: number;
   title: string;
   instructions?: string;
   exercises?: string[];
@@ -273,8 +289,14 @@ export interface UpsertAvailableBlockInput {
 export interface LogBlockSessionInput {
   date: string;
   sessionTitle?: string;
+  complex_id?: number;
+  complexId?: number;
   blockId?: number;
+  block_id?: number;
+  complex_title?: string;
+  complexTitle?: string;
   blockTitle?: string;
+  block_title?: string;
   cycleId?: number;
   notes?: string;
   exerciseLogs: Array<{
@@ -305,8 +327,10 @@ export interface DailyRoutineBlockExerciseTargetRecord {
 }
 
 export interface DailyRoutineItemRecord {
-  itemType: "BLOCK" | "EXERCISE";
+  itemType: "COMPLEX" | "EXERCISE";
   position: number;
+  complexId: number | null;
+  complexTitle: string | null;
   blockId: number | null;
   blockTitle: string | null;
   instructions: string | null;
@@ -324,6 +348,8 @@ export interface DailyRoutineRecord {
   id: number;
   title: string;
   notes: string;
+  complexCount: number;
+  missingComplexCount: number;
   blockCount: number;
   exerciseCount: number;
   missingBlockCount: number;
@@ -338,7 +364,9 @@ export interface UpsertDailyRoutineInput {
   title: string;
   notes?: string;
   items: Array<{
-    item_type: "BLOCK" | "EXERCISE";
+    item_type: "COMPLEX" | "BLOCK" | "EXERCISE";
+    complex_id?: number;
+    complex_title?: string;
     block_id?: number;
     block_title?: string;
     exercise_name?: string;
@@ -373,7 +401,9 @@ export interface LogDailyRoutineSessionInput {
   cycle_id?: number;
   update_routine_template?: boolean;
   logged_items: Array<{
-    item_type: "BLOCK" | "EXERCISE";
+    item_type: "COMPLEX" | "BLOCK" | "EXERCISE";
+    complex_id?: number;
+    complex_title?: string;
     block_id?: number;
     block_title?: string;
     exercise_name?: string;
@@ -411,7 +441,9 @@ export interface LogDailyRoutineSessionInput {
 }
 
 export interface DailyRoutineConstituentProgressRecord {
-  itemType: "BLOCK" | "EXERCISE";
+  itemType: "COMPLEX" | "EXERCISE";
+  complexId?: number | null;
+  blockId?: number | null;
   title: string;
   subtitle: string;
   unit: "kg" | "reps" | "cal" | "s" | "m";
@@ -1058,6 +1090,7 @@ export class WorkoutDomainService {
       cyclesCount: activeInfo.allCycles.length,
       exercisesCount: exercises.length,
       routinesCount: nonDailyRoutines.length,
+      complexesCount: nonDailyRoutines.length,
       availableBlockCount: nonDailyRoutines.length,
       dailyRoutineCount: dailyRoutinesCount,
       repMaxesCount: repMaxes.length,
@@ -1824,12 +1857,16 @@ export class WorkoutDomainService {
       for (const item of inputs) {
         const cleanTitle = item.title.trim();
         if (!cleanTitle) {
-          throw new Error("Available Block title cannot be blank.");
+          throw new Error("Complex title cannot be blank.");
         }
+        const resolvedInputId =
+          item.complex_id ?? item.complexId ?? item.id ?? item.block_id ?? item.blockId;
         const existingIdx =
-          item.id !== undefined
+          resolvedInputId !== undefined
             ? routines.findIndex(
-                (r) => !isDailyRoutineFormat(r.routine?.defaultFormat) && r.routine?.id === item.id
+                (r) =>
+                  !isDailyRoutineFormat(r.routine?.defaultFormat) &&
+                  r.routine?.id === resolvedInputId
               )
             : routines.findIndex(
                 (r) =>
@@ -1959,11 +1996,24 @@ export class WorkoutDomainService {
 
   async deleteAvailableBlock(
     ctx: UserContext,
-    input: { id?: number; title?: string }
+    input: {
+      id?: number;
+      complex_id?: number;
+      complexId?: number;
+      block_id?: number;
+      blockId?: number;
+      title?: string;
+      complex_title?: string;
+      complexTitle?: string;
+    }
   ): Promise<{ deleted: boolean; deletedCount: number; deletedTitles: string[] }> {
-    const cleanTitle = input.title?.trim().toLowerCase();
-    if (input.id === undefined && !cleanTitle) {
-      throw new Error("Provide either 'id' or 'title' to delete an Available Block.");
+    const resolvedId =
+      input.complex_id ?? input.complexId ?? input.id ?? input.block_id ?? input.blockId;
+    const cleanTitle = (input.complex_title ?? input.complexTitle ?? input.title ?? "")
+      .trim()
+      .toLowerCase();
+    if (resolvedId === undefined && !cleanTitle) {
+      throw new Error("Provide either 'complex_id'/'id' or 'title' to delete a Complex.");
     }
     return this.runWithUserMutationLock(ctx, ["routines"], async (tx) => {
       const routines = await tx.readCollection<RoutineWithBlocksRecord>(ctx, "routines");
@@ -1974,7 +2024,7 @@ export class WorkoutDomainService {
         const r = routines[i];
         if (isDeletedTombstone(r.routine?.deletedAtMillis)) continue;
         if (isDailyRoutineFormat(r.routine?.defaultFormat)) continue;
-        const matchesId = input.id !== undefined && r.routine.id === input.id;
+        const matchesId = resolvedId !== undefined && r.routine.id === resolvedId;
         const matchesTitle =
           Boolean(cleanTitle) && r.routine.name.trim().toLowerCase() === cleanTitle;
         if (matchesId || matchesTitle) {
@@ -2095,14 +2145,23 @@ export class WorkoutDomainService {
         const targetCycle = await this.resolveTargetCycleInStore(tx, ctx, input.cycleId);
 
         const routines = await tx.readCollection<RoutineWithBlocksRecord>(ctx, "routines");
-        const cleanBlockTitleInput = input.blockTitle?.trim() ?? "";
+        const resolvedComplexId =
+          input.complex_id ?? input.complexId ?? input.blockId ?? input.block_id;
+        const cleanBlockTitleInput =
+          (
+            input.complex_title ??
+            input.complexTitle ??
+            input.blockTitle ??
+            input.block_title ??
+            ""
+          ).trim();
         const matchedRoutineIdx =
-          input.blockId !== undefined
+          resolvedComplexId !== undefined
             ? routines.findIndex(
                 (r) =>
                   !isDeletedTombstone(r.routine?.deletedAtMillis) &&
                   !isDailyRoutineFormat(r.routine?.defaultFormat) &&
-                  r.routine.id === input.blockId
+                  r.routine.id === resolvedComplexId
               )
             : cleanBlockTitleInput
               ? routines.findIndex(
@@ -2120,7 +2179,7 @@ export class WorkoutDomainService {
           cleanBlockTitleInput ||
           matchedRoutine?.routine.name ||
           input.exerciseLogs[0]?.exerciseName.trim() ||
-          "Training Block";
+          "Training Complex";
         const resolvedSessionTitle = input.sessionTitle?.trim() || resolvedBlockTitle;
 
         const exReqs: Array<{
@@ -2372,6 +2431,21 @@ export class WorkoutDomainService {
       throw new Error("Provide `sessionId` or `date` to locate the session log to update.");
     }
 
+    const resolvedComplexId =
+      input.complex_id ?? input.complexId ?? input.blockId ?? input.block_id;
+    const resolvedComplexTitle = (
+      input.complex_title ??
+      input.complexTitle ??
+      input.blockTitle ??
+      input.block_title ??
+      ""
+    ).trim();
+    const resolvedSessionComplexId = input.session_complex_id ?? input.session_block_id;
+    const resolvedComplexNotes =
+      input.complex_notes ?? input.complexNotes ?? input.blockNotes;
+    const shouldSyncParentDefaultPrs =
+      (input.sync_parent_complex_default_prs ?? input.sync_parent_block_default_prs) !== false;
+
     return this.runWithUserMutationLock(
       ctx,
       ["exercises", "routines", "sessions", "cycle_goals", "rep_maxes"],
@@ -2401,18 +2475,28 @@ export class WorkoutDomainService {
           }
 
           let narrowed = onDate;
-          if (input.blockId !== undefined) {
+          if (resolvedSessionComplexId !== undefined) {
+            const bySessionBlockId = narrowed.filter(({ s }) =>
+              (s.blocks ?? []).some((b) => b.block.id === resolvedSessionComplexId)
+            );
+            if (bySessionBlockId.length > 0) narrowed = bySessionBlockId;
+            else {
+              throw new Error(
+                `No active session on ${input.date} contains session complex #${resolvedSessionComplexId}.`
+              );
+            }
+          } else if (resolvedComplexId !== undefined) {
             const byBlockId = narrowed.filter(({ s }) =>
-              (s.blocks ?? []).some((b) => b.block.routineId === input.blockId)
+              (s.blocks ?? []).some((b) => b.block.routineId === resolvedComplexId)
             );
             if (byBlockId.length > 0) narrowed = byBlockId;
             else {
               throw new Error(
-                `No active session on ${input.date} contains block #${input.blockId}.`
+                `No active session on ${input.date} contains complex #${resolvedComplexId}.`
               );
             }
-          } else if (input.blockTitle?.trim()) {
-            const cleanTitle = input.blockTitle.trim().toLowerCase();
+          } else if (resolvedComplexTitle) {
+            const cleanTitle = resolvedComplexTitle.toLowerCase();
             const byTitle = narrowed.filter(
               ({ s }) =>
                 s.session.title.trim().toLowerCase() === cleanTitle ||
@@ -2426,7 +2510,7 @@ export class WorkoutDomainService {
             if (byTitle.length > 0) narrowed = byTitle;
             else {
               throw new Error(
-                `No active session on ${input.date} matches blockTitle '${input.blockTitle.trim()}'.`
+                `No active session on ${input.date} matches complexTitle '${resolvedComplexTitle}'.`
               );
             }
           } else if (input.title?.trim()) {
@@ -2444,7 +2528,7 @@ export class WorkoutDomainService {
 
           if (narrowed.length > 1) {
             throw new Error(
-              `Multiple sessions (${narrowed.length}) exist on ${input.date}; provide sessionId or blockId/blockTitle to disambiguate.`
+              `Multiple sessions (${narrowed.length}) exist on ${input.date}; provide sessionId or complex_id/complex_title to disambiguate.`
             );
           }
           existingSessionIdx = narrowed[0].idx;
@@ -2453,12 +2537,17 @@ export class WorkoutDomainService {
         const existingSession = sessions[existingSessionIdx];
         const sessionId = existingSession.session.id;
         const existingBlocks = existingSession.blocks ?? [];
-        const cleanBlockTitleInput = input.blockTitle?.trim() ?? "";
+        const cleanBlockTitleInput = resolvedComplexTitle;
 
         let targetBlockIndices: number[] = [];
-        if (input.blockId !== undefined) {
+        if (resolvedSessionComplexId !== undefined) {
           targetBlockIndices = existingBlocks
-            .map((b, idx) => (b.block.routineId === input.blockId ? idx : -1))
+            .map((b, idx) => (b.block.id === resolvedSessionComplexId ? idx : -1))
+            .filter((idx) => idx >= 0);
+        }
+        if (targetBlockIndices.length === 0 && resolvedComplexId !== undefined) {
+          targetBlockIndices = existingBlocks
+            .map((b, idx) => (b.block.routineId === resolvedComplexId ? idx : -1))
             .filter((idx) => idx >= 0);
         }
         if (targetBlockIndices.length === 0 && cleanBlockTitleInput) {
@@ -2502,7 +2591,7 @@ export class WorkoutDomainService {
           existingSession.session.title.trim();
 
         const routines = await tx.readCollection<RoutineWithBlocksRecord>(ctx, "routines");
-        const lookupRoutineId = input.blockId ?? priorRoutineId;
+        const lookupRoutineId = resolvedComplexId ?? priorRoutineId;
         const lookupRoutineTitle = cleanBlockTitleInput || priorBlockTitle;
         let matchedRoutineIdx =
           lookupRoutineId !== null && lookupRoutineId !== undefined
@@ -2579,7 +2668,7 @@ export class WorkoutDomainService {
           priorBlockTitle ||
           matchedRoutine?.routine.name ||
           input.exercises?.[0]?.exerciseName.trim() ||
-          "Training Block";
+          "Training Complex";
         const updatedSessionTitle =
           input.title !== undefined
             ? input.title.trim() || resolvedBlockTitle
@@ -2591,8 +2680,8 @@ export class WorkoutDomainService {
         const updatedSessionNotes =
           input.notes !== undefined ? input.notes : existingSession.session.notes;
         const resolvedDescription =
-          input.blockNotes !== undefined
-            ? input.blockNotes
+          resolvedComplexNotes !== undefined
+            ? resolvedComplexNotes
             : targetBlocks[0]?.block.description ??
               matchedAvailableBlock?.instructions ??
               "";
@@ -3005,7 +3094,12 @@ export class WorkoutDomainService {
             movementName: item.ex.name,
             rmReps: item.rmReps,
           }));
-        if (matchedRoutine && matchedRoutineIdx >= 0 && activeTemplatePrSpecs.length > 0) {
+        if (
+          shouldSyncParentDefaultPrs &&
+          matchedRoutine &&
+          matchedRoutineIdx >= 0 &&
+          activeTemplatePrSpecs.length > 0
+        ) {
           updatedTrackedPrs = await this.mergeAvailableBlockTrackedPrsInTx(
             tx,
             ctx,
@@ -4109,8 +4203,10 @@ export class WorkoutDomainService {
             });
           }
           items.push({
-            itemType: "BLOCK",
+            itemType: "COMPLEX",
             position: idx,
+            complexId: resolvedBlock.id,
+            complexTitle: resolvedBlock.title,
             blockId: resolvedBlock.id,
             blockTitle: resolvedBlock.title,
             instructions: resolvedBlock.instructions,
@@ -4151,6 +4247,8 @@ export class WorkoutDomainService {
         items.push({
           itemType: "EXERCISE",
           position: idx,
+          complexId: null,
+          complexTitle: null,
           blockId: null,
           blockTitle: null,
           instructions: null,
@@ -4184,11 +4282,14 @@ export class WorkoutDomainService {
       )
     );
 
+    const complexCount = items.filter((i) => i.itemType === "COMPLEX").length;
     return {
       id: rwb.routine.id,
       title: rwb.routine.name,
       notes: extractCleanRoutineNotes(rwb.routine.description),
-      blockCount: items.filter((i) => i.itemType === "BLOCK").length,
+      complexCount,
+      missingComplexCount: missingBlockCount,
+      blockCount: complexCount,
       exerciseCount: items.filter((i) => i.itemType === "EXERCISE").length,
       missingBlockCount,
       totalTrackedPrCount: dedupPrSpecs.length,
@@ -4268,7 +4369,7 @@ export class WorkoutDomainService {
           dr.notes.toLowerCase().includes(q) ||
           dr.items.some(
             (it) =>
-              (it.blockTitle ?? "").toLowerCase().includes(q) ||
+              (it.complexTitle ?? it.blockTitle ?? "").toLowerCase().includes(q) ||
               (it.exerciseName ?? "").toLowerCase().includes(q) ||
               it.note.toLowerCase().includes(q)
           )
@@ -4415,7 +4516,7 @@ export class WorkoutDomainService {
       throw new Error("Daily Routine title cannot be blank.");
     }
     if (!input.items || input.items.length === 0) {
-      throw new Error("Daily Routine must contain at least one Block or Exercise item.");
+      throw new Error("Daily Routine must contain at least one Complex or Exercise item.");
     }
 
     return this.runWithUserMutationLock(ctx, ["exercises", "routines"], async (tx) => {
@@ -4489,20 +4590,23 @@ export class WorkoutDomainService {
       }> = [];
 
       for (const item of input.items) {
-        if (item.item_type === "BLOCK") {
+        const normalizedType = item.item_type === "EXERCISE" ? "EXERCISE" : "BLOCK";
+        if (normalizedType === "BLOCK") {
+          const resolvedRefId = item.complex_id ?? item.block_id;
+          const resolvedRefTitle = (item.complex_title ?? item.block_title ?? "").trim();
           const matchedBlock =
-            item.block_id !== undefined
-              ? activeAvailableRoutines.find((r) => r.routine.id === item.block_id)
-              : item.block_title?.trim()
+            resolvedRefId !== undefined
+              ? activeAvailableRoutines.find((r) => r.routine.id === resolvedRefId)
+              : resolvedRefTitle
                 ? activeAvailableRoutines.find(
                     (r) =>
                       r.routine.name.trim().toLowerCase() ===
-                      item.block_title!.trim().toLowerCase()
+                      resolvedRefTitle.toLowerCase()
                   )
                 : undefined;
           if (!matchedBlock) {
             throw new Error(
-              `Referenced Available Block not found (${item.block_id ?? item.block_title ?? "unspecified"}).`
+              `Referenced Complex not found (${resolvedRefId ?? (resolvedRefTitle || "unspecified")}).`
             );
           }
 
@@ -4920,6 +5024,7 @@ export class WorkoutDomainService {
           input.session_title?.trim() ||
           matchedDr?.routine.name ||
           cleanRoutineTitle ||
+          input.logged_items[0]?.complex_title?.trim() ||
           input.logged_items[0]?.block_title?.trim() ||
           input.logged_items[0]?.exercise_name?.trim() ||
           "Daily Routine Session";
@@ -4979,11 +5084,13 @@ export class WorkoutDomainService {
         }> = [];
 
         for (const item of input.logged_items) {
-          if (item.item_type === "BLOCK") {
-            const cleanTitle = (item.block_title ?? "").trim();
+          const normalizedType = item.item_type === "EXERCISE" ? "EXERCISE" : "BLOCK";
+          if (normalizedType === "BLOCK") {
+            const resolvedRefId = item.complex_id ?? item.block_id;
+            const cleanTitle = (item.complex_title ?? item.block_title ?? "").trim();
             const matchedAb =
-              item.block_id !== undefined
-                ? nonDailyRoutines.find((r) => r.routine.id === item.block_id)
+              resolvedRefId !== undefined
+                ? nonDailyRoutines.find((r) => r.routine.id === resolvedRefId)
                 : cleanTitle
                   ? nonDailyRoutines.find(
                       (r) =>
@@ -5000,7 +5107,7 @@ export class WorkoutDomainService {
                 )
               : undefined;
             const resolvedBlockTitle =
-              matchedAb?.routine.name || cleanTitle || "Training Block";
+              matchedAb?.routine.name || cleanTitle || "Training Complex";
             const instructions = decodedAb?.instructions ?? "";
 
             const movementLogs: Array<{
@@ -5106,9 +5213,9 @@ export class WorkoutDomainService {
             if (matchedAb) {
               const priorBlockItem = priorDailyRoutine?.items.find(
                 (pi) =>
-                  pi.itemType === "BLOCK" &&
-                  (pi.blockId === matchedAb.routine.id ||
-                    (pi.blockTitle ?? "").trim().toLowerCase() ===
+                  pi.itemType === "COMPLEX" &&
+                  ((pi.complexId ?? pi.blockId) === matchedAb.routine.id ||
+                    (pi.complexTitle ?? pi.blockTitle ?? "").trim().toLowerCase() ===
                       matchedAb.routine.name.trim().toLowerCase())
               );
               templateItemsForUpdate.push({
@@ -5483,12 +5590,12 @@ export class WorkoutDomainService {
 
     const items: DailyRoutineConstituentProgressRecord[] = dailyRoutine.items.map(
       (item) => {
-        const itemTitle =
-          item.itemType === "BLOCK"
-            ? item.blockTitle ?? "Block"
-            : item.exerciseName ?? "Exercise";
-        const subtitle =
-          item.itemType === "BLOCK" ? item.instructions ?? "" : item.note ?? "";
+        const isComplex = item.itemType === "COMPLEX";
+        const resolvedComplexId = item.complexId ?? item.blockId;
+        const itemTitle = isComplex
+          ? item.complexTitle ?? item.blockTitle ?? "Complex"
+          : item.exerciseName ?? "Exercise";
+        const subtitle = isComplex ? item.instructions ?? "" : item.note ?? "";
 
         const matchedEntries: Array<{
           sessionId: number;
@@ -5510,14 +5617,14 @@ export class WorkoutDomainService {
         for (const sw of ascSessions) {
           const matchingBlocks = (sw.blocks ?? []).filter((entry) => {
             const blk = entry.block;
-            if (item.itemType === "BLOCK") {
+            if (isComplex) {
               if (
                 (blk.format ?? "").trim().toUpperCase() ===
                 STANDALONE_EXERCISE_SESSION_FORMAT
               ) {
                 return false;
               }
-              if (item.blockId && blk.routineId === item.blockId) return true;
+              if (resolvedComplexId && blk.routineId === resolvedComplexId) return true;
               const tLower = itemTitle.trim().toLowerCase();
               return (
                 (blk.subBlock ?? "").trim().toLowerCase() === tLower ||
@@ -5616,16 +5723,14 @@ export class WorkoutDomainService {
           }
         }
 
-        const ab = item.blockId ? abById.get(item.blockId) : undefined;
-        const fallbackMetric: RoutineTargetMetric | null =
-          item.itemType === "BLOCK"
-            ? item.exerciseTargets[0]?.target.metric ?? null
-            : item.targetSpec?.metric ?? null;
-        const fallbackEx: ExerciseRecord | undefined =
-          item.itemType === "BLOCK"
-            ? (ab?.exercises[0]?.id ? exercisesById.get(ab.exercises[0].id) : undefined)
-            : (item.exerciseId ? exercisesById.get(item.exerciseId) : undefined) ??
-              exercisesByLowerName.get(itemTitle.trim().toLowerCase());
+        const ab = resolvedComplexId ? abById.get(resolvedComplexId) : undefined;
+        const fallbackMetric: RoutineTargetMetric | null = isComplex
+          ? item.exerciseTargets[0]?.target.metric ?? null
+          : item.targetSpec?.metric ?? null;
+        const fallbackEx: ExerciseRecord | undefined = isComplex
+          ? (ab?.exercises[0]?.id ? exercisesById.get(ab.exercises[0].id) : undefined)
+          : (item.exerciseId ? exercisesById.get(item.exerciseId) : undefined) ??
+            exercisesByLowerName.get(itemTitle.trim().toLowerCase());
 
         let unit: "kg" | "reps" | "cal" | "s" | "m" = "kg";
         if (anyPositiveWeightAllSessions) {
@@ -5746,7 +5851,7 @@ export class WorkoutDomainService {
         const lastSetsKg = isKgUnit ? lastSets : [];
 
         const targetExIds = new Set<number>();
-        if (item.itemType === "BLOCK" && ab) {
+        if (isComplex && ab) {
           for (const ex of ab.exercises) targetExIds.add(ex.id);
           for (const p of ab.trackedPrs) {
             if (p.movementId > 0) targetExIds.add(p.movementId);
@@ -5802,6 +5907,8 @@ export class WorkoutDomainService {
 
         return {
           itemType: item.itemType,
+          complexId: isComplex ? resolvedComplexId : null,
+          blockId: isComplex ? resolvedComplexId : null,
           title: itemTitle,
           subtitle,
           unit,

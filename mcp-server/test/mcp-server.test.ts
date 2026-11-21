@@ -427,7 +427,7 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
         openWorldHint?: boolean;
       };
     }>;
-    assert.equal(tools.length, 39, `Expected 39 registered tools, got ${tools.length}`);
+    assert.equal(tools.length, 45, `Expected 45 registered tools, got ${tools.length}`);
     const toolsJson = JSON.stringify(tools);
     assert.equal(toolsJson.includes('"$ref"'), false, "Tool schemas must never contain $ref (rejected by Gemini)");
     assert.equal(
@@ -448,6 +448,7 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       "get_weight_momentum_analytics",
       "list_weight_entries",
       "list_daily_logs",
+      "list_complexes",
       "list_available_blocks",
       "list_daily_routines",
       "get_daily_routine_progress",
@@ -458,6 +459,7 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
       "delete_cycle_goal",
       "delete_weight_entry",
       "delete_daily_log",
+      "delete_complex",
       "delete_available_block",
       "delete_daily_routine",
     ]);
@@ -1962,7 +1964,9 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     assert.equal(progress.dailyRoutine.title, "Lower Power");
     assert.equal(progress.items.length, 3);
     const squatProg = progress.items[0];
-    assert.equal(squatProg.itemType, "BLOCK");
+    assert.equal(squatProg.itemType, "COMPLEX");
+    assert.equal(squatProg.complexId, savedBlockId);
+    assert.equal(squatProg.blockId, savedBlockId);
     assert.equal(squatProg.allTimeTopKg, 120);
     const rdlProg = progress.items[1];
     assert.equal(rdlProg.itemType, "EXERCISE");
@@ -2252,5 +2256,161 @@ describe("CrossTraining Remote MCP Server (OAuth 2.1 + DCR + Tools)", () => {
     assert.equal(calBlockEdit.session.blocks[0].block.notes, "[log_metric=TIME_SECONDS]");
     assert.equal(calBlockEdit.session.blocks[0].sets[1].metricValue, 60);
     assert.equal(calBlockEdit.session.blocks[0].sets[1].groupIndex, 2);
+  });
+
+  it("SPEC-027 Complex-first MCP tools, Daily Routine item_type='COMPLEX' + precedence, and legacy Block compatibility", async () => {
+    let msgId = 1300;
+    const callToolRaw = async (name: string, argumentsObj: Record<string, unknown>) => {
+      const id = msgId++;
+      const res = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: "Bearer dev-static-token-123",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: argumentsObj },
+        }),
+      });
+      assert.equal(res.status, 200);
+      const contentType = res.headers.get("content-type") || "";
+      return contentType.includes("text/event-stream")
+        ? JSON.parse(
+            (await res.text())
+              .split("\n")
+              .find((l) => l.startsWith("data: "))!
+              .slice(6)
+          )
+        : await res.json();
+    };
+    const callTool = async (name: string, argumentsObj: Record<string, unknown>) => {
+      const resp = await callToolRaw(name, argumentsObj);
+      assert.ok(!resp.error, `Tool ${name} returned JSON-RPC error: ${JSON.stringify(resp.error)}`);
+      assert.notEqual(resp.result?.isError, true, `Tool ${name} error: ${JSON.stringify(resp.result)}`);
+      return JSON.parse(resp.result.content[0].text);
+    };
+
+    // 1. Upsert & batch upsert via Complex-first tools
+    const c1 = await callTool("upsert_complex", {
+      title: "Clean + Hang Clean + Front Squat Wave",
+      instructions: "E3MOM x 6 sets",
+      exercises: ["Clean", "Hang Clean", "Front Squat"],
+      trackedPrs: [{ movementName: "Clean", rmReps: 1 }],
+    });
+    const cleanComplexId = c1.complex.id as number;
+    assert.ok(cleanComplexId > 0);
+    assert.equal(c1.complex.isAvailableBlockFormat, true);
+
+    const batchRes = await callTool("batch_upsert_complexes", {
+      complexes: [
+        {
+          title: "Snatch + Hang Snatch + Snatch Balance",
+          instructions: "E4MOM x 6 sets",
+          exercises: ["Snatch", "Hang Snatch", "Snatch Balance"],
+        },
+        {
+          title: "Barbell Overhead Complex",
+          instructions: "3 rounds",
+          exercises: ["Push Press"],
+        },
+      ],
+    });
+    assert.equal(batchRes.upsertedCount, 2);
+    const snatchComplexId = batchRes.complexes[0].id as number;
+
+    // Validation: empty batch_upsert_complexes fails gracefully
+    const emptyBatchResp = await callToolRaw("batch_upsert_complexes", {});
+    assert.equal(emptyBatchResp.result?.isError, true);
+
+    // 2. list_complexes & get_workout_summary expose complexes alongside legacy fields
+    const listComplexesRes = await callTool("list_complexes", { query: "Clean + Hang Clean" });
+    assert.equal(listComplexesRes.count, 1);
+    assert.equal(listComplexesRes.complexes[0].id, cleanComplexId);
+    const legacyListRes = await callTool("list_available_blocks", { query: "Clean + Hang Clean" });
+    assert.equal(legacyListRes.availableBlocks[0].id, cleanComplexId);
+
+    const summaryRes = await callTool("get_workout_summary", {});
+    assert.equal(summaryRes.complexesCount, summaryRes.availableBlockCount);
+
+    // 3. Log & edit session via Complex-first tools + precedence check (complex_id > block_id)
+    const logged = await callTool("log_complex_session", {
+      date: "2026-11-20",
+      complex_id: cleanComplexId,
+      blockId: snatchComplexId,
+      exerciseLogs: [{ exerciseName: "Clean", weights: [80, 85, 90] }],
+      recordedPrs: [{ movementName: "Clean", rmReps: 1, weight: 90 }],
+    });
+    const sessionId = logged.session.session.id as number;
+    assert.equal(logged.session.blocks[0].block.routineId, cleanComplexId);
+
+    const edited = await callTool("update_complex_session_log", {
+      sessionId,
+      complex_id: cleanComplexId,
+      complex_notes: "E3MOM x 6 sets - felt crisp",
+      sync_parent_complex_default_prs: false,
+      exercises: [{ exerciseName: "Clean", weights: [85, 90, 95] }],
+      trackedPrs: [{ movementName: "Clean", rmReps: 1, weight: 95 }],
+    });
+    assert.equal(edited.session.blocks[0].block.description, "E3MOM x 6 sets - felt crisp");
+    assert.equal(edited.reconciledPrs[0].weight, 95);
+    assert.equal(edited.updatedTrackedPrs, null);
+
+    // 4. Daily Routine with item_type: "COMPLEX" and complex_id precedence over block_id
+    const routineRes = await callTool("upsert_daily_routine", {
+      title: "Olympic Complex Day",
+      items: [
+        {
+          item_type: "COMPLEX",
+          complex_id: snatchComplexId,
+          block_id: cleanComplexId,
+        },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Lateral Raises",
+          sets_count: 2,
+          target_metric: "REPS",
+          target_mode: "PER_SET",
+          per_set_values: [8, 12],
+        },
+      ],
+    });
+    const dr = routineRes.dailyRoutine;
+    assert.equal(dr.complexCount, 1);
+    assert.equal(dr.blockCount, 1);
+    assert.equal(dr.items[0].itemType, "COMPLEX");
+    assert.equal(dr.items[0].complexId, snatchComplexId);
+    assert.equal(dr.items[0].blockId, snatchComplexId);
+    assert.equal(dr.items[0].complexTitle, "Snatch + Hang Snatch + Snatch Balance");
+
+    // 5. Log Daily Routine session with item_type: "COMPLEX" + verify get_daily_routine_progress
+    await callTool("log_daily_routine_session", {
+      date: "2026-11-21",
+      routine_id: dr.id,
+      logged_items: [
+        {
+          item_type: "COMPLEX",
+          complex_id: snatchComplexId,
+          exercise_logs: [{ exerciseName: "Snatch", weights: [70, 72.5] }],
+        },
+        {
+          item_type: "EXERCISE",
+          exercise_name: "Lateral Raises",
+          set_weights_kg: [12, 12],
+        },
+      ],
+    });
+    const drProgress = await callTool("get_daily_routine_progress", { routine_id: dr.id });
+    assert.equal(drProgress.items[0].itemType, "COMPLEX");
+    assert.equal(drProgress.items[0].complexId, snatchComplexId);
+    assert.equal(drProgress.items[0].allTimeTop, 72.5);
+
+    // 6. delete_complex tombstones the complex cleanly while preserving session logs
+    const delComplex = await callTool("delete_complex", { complex_title: "Barbell Overhead Complex" });
+    assert.equal(delComplex.status, "deleted");
+    assert.deepEqual(delComplex.deletedTitles, ["Barbell Overhead Complex"]);
   });
 });
