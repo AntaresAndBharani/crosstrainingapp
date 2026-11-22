@@ -31,6 +31,13 @@ import {
   WorkoutDomainService,
 } from "../src/store.js";
 import { buildSheetsExport, type SheetsExportPayload } from "../src/sheets-export.js";
+import {
+  buildSortedActiveWeightEntries,
+  computePercentBw,
+  computePercentBwDelta,
+  resolveBodyWeightForIsoDate,
+  roundHalfUp1,
+} from "../src/relative-strength.js";
 import { evaluateBudgetNotification } from "../billing-killswitch/index.js";
 
 function base64Url(buf: Buffer): string {
@@ -3062,5 +3069,257 @@ describe("GET /export/sheets (Read-Only Google Sheets Bridge)", () => {
     const goal2 = payload2.cycle_goals.find((g) => g.cycle_id === 2)!;
     assert.equal(goal2.current_best_value, 84);
     assert.equal(goal2.progress_pct, 40);
+  });
+});
+
+describe("SPEC-029: Body-Weight Percentage Index (% BW) Parity Across MCP Read Tools", () => {
+  it("computes HALF_UP % BW, 7-day fallback, tombstone filtering, lbs conversion, and unit exclusion", () => {
+    const weights: WeightEntryRecord[] = [
+      { date: isoDateToEpochDay("2026-01-10"), weightKg: 85.0, notes: "", updatedAtMillis: 1000, deletedAtMillis: null },
+      { date: isoDateToEpochDay("2026-04-11"), weightKg: 78.5, notes: "", updatedAtMillis: 1000, deletedAtMillis: null },
+      { date: isoDateToEpochDay("2026-05-10"), weightKg: 75.0, notes: "", updatedAtMillis: 1000, deletedAtMillis: null },
+      // Tombstone on May 14 must be ignored
+      { date: isoDateToEpochDay("2026-05-14"), weightKg: 70.0, notes: "", updatedAtMillis: 1000, deletedAtMillis: 9999 },
+      // Non-positive weight must be ignored
+      { date: isoDateToEpochDay("2026-05-15"), weightKg: 0, notes: "", updatedAtMillis: 1000, deletedAtMillis: null },
+    ];
+    const sorted = buildSortedActiveWeightEntries(weights);
+    assert.equal(sorted.length, 3);
+
+    const exact = resolveBodyWeightForIsoDate("2026-05-10", sorted);
+    assert.equal(exact.kind, "EXACT");
+    assert.equal(exact.weightKg, 75.0);
+    assert.equal(exact.isEstimated, false);
+
+    // Tombstone on May 14 falls back to May 10 (4 days prior)
+    const fallback4 = resolveBodyWeightForIsoDate("2026-05-14", sorted);
+    assert.equal(fallback4.kind, "ESTIMATED_PRIOR");
+    assert.equal(fallback4.daysPrior, 4);
+    assert.equal(fallback4.isEstimated, true);
+
+    // 8 days prior (May 18) -> UNAVAILABLE
+    const expired = resolveBodyWeightForIsoDate("2026-05-18", sorted);
+    assert.equal(expired.kind, "UNAVAILABLE");
+    assert.equal(expired.weightKg, null);
+
+    // HALF_UP rounding & lbs conversion parity
+    assert.equal(roundHalfUp1(142.55), 142.6);
+    assert.equal(computePercentBw(114, "kg", 80), 142.5);
+    assert.equal(computePercentBw(112, "kg", 80), 140);
+    assert.equal(computePercentBw(220.462262185, "lbs", 80), 125);
+    assert.equal(computePercentBw(50, "cal", 80), null);
+    assert.equal(computePercentBw(30, "s", 80), null);
+    assert.equal(computePercentBw(400, "m", 80), null);
+    assert.equal(computePercentBw(15, "reps", 80), null);
+    assert.equal(computePercentBwDelta(126.7, 117.6), 9.1);
+  });
+
+  it("enriches list_sessions, list_rep_maxes, list_cycle_goals, get_daily_routine_progress, and get_workout_summary with % BW", async () => {
+    const backing = new InMemoryBackingStore();
+    const domain = new WorkoutDomainService(backing);
+    const ctx = { uid: "bw-index-user", env: "production" as const };
+
+    await backing.writeCollection<ExerciseRecord>(ctx, "exercises", [
+      { id: 1, name: "Squat Snatch", category: "BARBELL", metricType: "WEIGHT", unit: "kg", tracksRepMax: true },
+      { id: 2, name: "Air Bike", category: "MACHINE", metricType: "CALORIES", unit: "cal", tracksRepMax: false },
+    ]);
+
+    await backing.writeCollection<WeightEntryRecord>(ctx, "weight_entries", [
+      { date: isoDateToEpochDay("2026-01-10"), weightKg: 85.0, notes: "", updatedAtMillis: 1000, deletedAtMillis: null },
+      { date: isoDateToEpochDay("2026-04-11"), weightKg: 78.5, notes: "", updatedAtMillis: 1000, deletedAtMillis: null },
+      { date: isoDateToEpochDay("2026-05-10"), weightKg: 75.0, notes: "", updatedAtMillis: 1000, deletedAtMillis: null },
+    ]);
+
+    await backing.writeCollection<RoutineWithBlocksRecord>(ctx, "routines", [
+      {
+        routine: {
+          id: 10,
+          name: "Olympic Day A",
+          description: "",
+          mainExerciseId: 1,
+          defaultFormat: "DAILY_ROUTINE",
+          updatedAtMillis: 1000,
+          deletedAtMillis: null,
+        },
+        blocks: [
+          {
+            id: 101,
+            routineId: 10,
+            position: 0,
+            name: "Squat Snatch",
+            kind: "STRENGTH",
+            format: "DR_EXERCISE",
+            setsCount: 3,
+            targetRepsScheme: "",
+            exerciseIdsCsv: "1",
+            notes: "[dr_item=EXERCISE:1:Squat%20Snatch]",
+          },
+          {
+            id: 102,
+            routineId: 10,
+            position: 1,
+            name: "Air Bike",
+            kind: "CARDIO",
+            format: "DR_EXERCISE",
+            setsCount: 3,
+            targetRepsScheme: "",
+            exerciseIdsCsv: "2",
+            notes: "[dr_item=EXERCISE:2:Air%20Bike]",
+          },
+        ],
+      },
+    ]);
+
+    await backing.writeCollection<SessionWithBlocksRecord>(ctx, "sessions", [
+      {
+        session: { id: 1, cycleId: 1, cycleName: "Spring Cut", isActiveCycle: true, date: "2026-01-10", title: "Day 1", notes: "" },
+        blocks: [
+          {
+            block: {
+              id: 11, sessionId: 1, position: 0, name: "Squat Snatch", kind: "STRENGTH", format: "STANDALONE_EXERCISE",
+              scheme: "", mainExerciseId: 1, routineId: null, description: "", resultText: "", resultValue: null, notes: "", isCompleted: true,
+            },
+            sets: [
+              { id: 1, blockId: 11, position: 0, groupIndex: 1, reps: 1, weight: 100, metricValue: 0, isWarmup: false, isFailed: false, notes: "" },
+              // Warmup heavier than 100 must not count, failed must not count
+              { id: 2, blockId: 11, position: 1, groupIndex: 2, reps: 1, weight: 105, metricValue: 0, isWarmup: false, isFailed: true, notes: "" },
+            ],
+          },
+          {
+            block: {
+              id: 12, sessionId: 1, position: 1, name: "Air Bike", kind: "CARDIO", format: "STANDALONE_EXERCISE",
+              scheme: "", mainExerciseId: 2, routineId: null, description: "", resultText: "", resultValue: null, notes: "", isCompleted: true,
+            },
+            sets: [
+              { id: 3, blockId: 12, position: 0, groupIndex: 1, reps: 1, weight: 0, metricValue: 45, isWarmup: false, isFailed: false, notes: "" },
+            ],
+          },
+        ],
+      },
+      {
+        session: { id: 2, cycleId: 1, cycleName: "Spring Cut", isActiveCycle: true, date: "2026-02-24", title: "Gap Day", notes: "" },
+        blocks: [
+          {
+            block: {
+              id: 21, sessionId: 2, position: 0, name: "Squat Snatch", kind: "STRENGTH", format: "STANDALONE_EXERCISE",
+              scheme: "", mainExerciseId: 1, routineId: null, description: "", resultText: "", resultValue: null, notes: "", isCompleted: true,
+            },
+            sets: [
+              { id: 4, blockId: 21, position: 0, groupIndex: 1, reps: 1, weight: 90, metricValue: 0, isWarmup: false, isFailed: false, notes: "" },
+            ],
+          },
+        ],
+      },
+      {
+        session: { id: 3, cycleId: 1, cycleName: "Spring Cut", isActiveCycle: true, date: "2026-04-14", title: "Est Day", notes: "" },
+        blocks: [
+          {
+            block: {
+              id: 31, sessionId: 3, position: 0, name: "Squat Snatch", kind: "STRENGTH", format: "STANDALONE_EXERCISE",
+              scheme: "", mainExerciseId: 1, routineId: null, description: "", resultText: "", resultValue: null, notes: "", isCompleted: true,
+            },
+            sets: [
+              { id: 5, blockId: 31, position: 0, groupIndex: 1, reps: 1, weight: 92.5, metricValue: 0, isWarmup: false, isFailed: false, notes: "" },
+            ],
+          },
+        ],
+      },
+      {
+        session: { id: 4, cycleId: 1, cycleName: "Spring Cut", isActiveCycle: true, date: "2026-05-10", title: "Peak Cut Day", notes: "" },
+        blocks: [
+          {
+            block: {
+              id: 41, sessionId: 4, position: 0, name: "Squat Snatch", kind: "STRENGTH", format: "STANDALONE_EXERCISE",
+              scheme: "", mainExerciseId: 1, routineId: null, description: "", resultText: "", resultValue: null, notes: "", isCompleted: true,
+            },
+            sets: [
+              { id: 6, blockId: 41, position: 0, groupIndex: 1, reps: 1, weight: 95, metricValue: 0, isWarmup: false, isFailed: false, notes: "" },
+            ],
+          },
+          {
+            block: {
+              id: 42, sessionId: 4, position: 1, name: "Air Bike", kind: "CARDIO", format: "STANDALONE_EXERCISE",
+              scheme: "", mainExerciseId: 2, routineId: null, description: "", resultText: "", resultValue: null, notes: "", isCompleted: true,
+            },
+            sets: [
+              { id: 7, blockId: 42, position: 0, groupIndex: 1, reps: 1, weight: 0, metricValue: 52, isWarmup: false, isFailed: false, notes: "" },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    await backing.writeCollection<RepMaxRecord>(ctx, "rep_maxes", [
+      { id: 1, exerciseId: 1, exerciseName: "Squat Snatch", reps: 1, weight: 100, date: "2026-01-10", cycleId: 1, cycleName: "Spring Cut", isActiveCycle: true },
+      { id: 2, exerciseId: 1, exerciseName: "Squat Snatch", reps: 1, weight: 95, date: "2026-05-10", cycleId: 1, cycleName: "Spring Cut", isActiveCycle: true },
+    ]);
+
+    await backing.writeCollection<CycleGoalRecord>(ctx, "cycle_goals", [
+      { id: 1, cycleId: 1, cycleName: "Spring Cut", isActiveCycle: true, exerciseId: 1, exerciseName: "Squat Snatch", targetReps: 1, startWeight: 90, targetWeight: 105, notes: "" },
+      { id: 2, cycleId: 1, cycleName: "Spring Cut", isActiveCycle: true, exerciseId: 2, exerciseName: "Air Bike", targetReps: 5, startWeight: 40, targetWeight: 55, notes: "[goal_metric=CALORIES:5]" },
+    ]);
+
+    // 1. list_sessions enrichment
+    const sessions = await domain.listSessions(ctx, {});
+    const peakSession = sessions.find((s) => s.session.date === "2026-05-10")!;
+    assert.equal(peakSession.session.bodyWeightKg, 75);
+    assert.equal(peakSession.session.isBodyWeightEstimated, false);
+    assert.equal(peakSession.blocks[0].topPercentBw, 126.7);
+    assert.equal(peakSession.blocks[0].volumePercentBw, 126.7);
+    assert.equal(peakSession.blocks[1].topPercentBw, undefined); // Air Bike omitted
+
+    const estSession = sessions.find((s) => s.session.date === "2026-04-14")!;
+    assert.equal(estSession.session.bodyWeightKg, 78.5);
+    assert.equal(estSession.session.bodyWeightDate, "2026-04-11");
+    assert.equal(estSession.session.isBodyWeightEstimated, true);
+    assert.equal(estSession.blocks[0].topPercentBw, 117.8);
+
+    const gapSession = sessions.find((s) => s.session.date === "2026-02-24")!;
+    assert.equal(gapSession.session.bodyWeightKg, null);
+    assert.equal(gapSession.blocks[0].topPercentBw, null);
+
+    // 2. list_rep_maxes enrichment
+    const rms = await domain.listRepMaxes(ctx);
+    const janRm = rms.find((r) => r.date === "2026-01-10")!;
+    const mayRm = rms.find((r) => r.date === "2026-05-10")!;
+    assert.equal(janRm.percentBw, 117.6);
+    assert.equal(mayRm.percentBw, 126.7);
+
+    // 3. list_cycle_goals enrichment
+    const goalsRes = await domain.listCycleGoals(ctx, { activeCycleOnly: true });
+    const snatchGoal = goalsRes.cycleGoals.find((g) => g.exerciseName === "Squat Snatch")!;
+    const bikeGoal = goalsRes.cycleGoals.find((g) => g.exerciseName === "Air Bike")!;
+    assert.equal(snatchGoal.startPercentBw, 105.9); // 90 / 85 * 100 = 105.88 -> 105.9
+    assert.equal(snatchGoal.currentBestWeightKg, 100);
+    assert.equal(snatchGoal.currentBestPercentBw, 117.6);
+    assert.equal(snatchGoal.goalPercentBw, 140); // 105 / 75 * 100 = 140.0
+    assert.equal(snatchGoal.goalBodyWeightBasis, "LATEST_BW");
+    assert.equal(bikeGoal.goalPercentBw, undefined); // CALORIES omitted
+
+    // 4. get_daily_routine_progress enrichment (including independent Peak % BW & gap coverage)
+    const drProg = await domain.getDailyRoutineProgress(ctx, { routine_id: 10 });
+    const snatchItem = drProg.items.find((i) => i.title === "Squat Snatch")!;
+    const bikeItem = drProg.items.find((i) => i.title === "Air Bike")!;
+
+    assert.equal(snatchItem.allTimeTop, 100);
+    assert.equal(snatchItem.allTimeTopPercentBw, 117.6);
+    assert.equal(snatchItem.peakTopPercentBw, 126.7);
+    assert.equal(snatchItem.peakTopPercentBwDate, "2026-05-10");
+    assert.equal(snatchItem.peakTopPercentBwRawKg, 95);
+    assert.equal(snatchItem.lastTopPercentBw, 126.7);
+    assert.equal(snatchItem.topPercentBwDelta, 8.9); // May 10 (126.7) - Apr 14 (117.8) = 8.9
+    assert.equal(snatchItem.bodyWeightCoverage, "3/4");
+    assert.equal(snatchItem.chartPoints[1].date, "2026-02-24");
+    assert.equal(snatchItem.chartPoints[1].topPercentBw, null);
+    assert.equal(snatchItem.chartPoints[2].isBodyWeightEstimated, true);
+
+    assert.equal(bikeItem.allTimeTopPercentBw, null);
+    assert.equal(bikeItem.peakTopPercentBw, null);
+    assert.equal(bikeItem.bodyWeightCoverage, null);
+
+    // 5. get_workout_summary parity
+    const summary = await domain.getWorkoutSummary(ctx);
+    assert.equal(summary.activeCycleGoals[0].goalPercentBw, 140);
+    assert.equal(summary.recentActiveCycleSessions[0].session.bodyWeightKg, 75);
   });
 });

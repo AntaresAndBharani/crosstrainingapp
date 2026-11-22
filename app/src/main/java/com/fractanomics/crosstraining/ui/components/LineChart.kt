@@ -43,9 +43,10 @@ private fun fmt(v: Float): String =
 fun LineChart(
     points: List<ChartPoint>,
     modifier: Modifier = Modifier,
-    lineColor: Color = MaterialTheme.colorScheme.primary
+    lineColor: Color = MaterialTheme.colorScheme.primary,
+    valueSuffix: String = ""
 ) {
-    ChartCanvas(listOf(ChartSeries("", points, lineColor)), modifier)
+    ChartCanvas(listOf(ChartSeries("", points, lineColor)), modifier, valueSuffix = valueSuffix)
 }
 
 /**
@@ -54,7 +55,11 @@ fun LineChart(
  * should be built from the same ordered date list.
  */
 @Composable
-fun MultiLineChart(series: List<ChartSeries>, modifier: Modifier = Modifier) {
+fun MultiLineChart(
+    series: List<ChartSeries>,
+    modifier: Modifier = Modifier,
+    valueSuffix: String = ""
+) {
     val visible = series.filter { it.points.isNotEmpty() }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (visible.isNotEmpty()) {
@@ -74,12 +79,16 @@ fun MultiLineChart(series: List<ChartSeries>, modifier: Modifier = Modifier) {
                 }
             }
         }
-        ChartCanvas(series)
+        ChartCanvas(series, valueSuffix = valueSuffix)
     }
 }
 
 @Composable
-private fun ChartCanvas(series: List<ChartSeries>, modifier: Modifier = Modifier) {
+private fun ChartCanvas(
+    series: List<ChartSeries>,
+    modifier: Modifier = Modifier,
+    valueSuffix: String = ""
+) {
     val visible = series.filter { it.points.isNotEmpty() }
     if (visible.isEmpty()) {
         Text("No data yet.", style = MaterialTheme.typography.bodyMedium)
@@ -159,9 +168,9 @@ private fun ChartCanvas(series: List<ChartSeries>, modifier: Modifier = Modifier
             isAntiAlias = true
         }
         drawContext.canvas.nativeCanvas.apply {
-            drawText(fmt(maxV), 6f * density, topPad + paint.textSize / 2f, paint)
-            drawText(fmt((minV + maxV) / 2f), 6f * density, midY + paint.textSize / 2f, paint)
-            drawText(fmt(minV), 6f * density, topPad + plotH, paint)
+            drawText("${fmt(maxV)}$valueSuffix", 6f * density, topPad + paint.textSize / 2f, paint)
+            drawText("${fmt((minV + maxV) / 2f)}$valueSuffix", 6f * density, midY + paint.textSize / 2f, paint)
+            drawText("${fmt(minV)}$valueSuffix", 6f * density, topPad + plotH, paint)
             val longest = visible.maxBy { it.points.size }.points
             val first = longest.first().label
             val last = longest.last().label

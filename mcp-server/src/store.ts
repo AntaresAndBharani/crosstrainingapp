@@ -1,3 +1,15 @@
+import {
+  type ActiveWeightPoint,
+  type BodyWeightMatchKind,
+  buildSortedActiveWeightEntries,
+  computePercentBw,
+  computePercentBwDelta,
+  isWeightedUnit,
+  resolveBodyWeightForIsoDate,
+  resolveLatestActiveBodyWeight,
+  roundHalfUp1,
+  toWeightKg,
+} from "./relative-strength.js";
 import type { Firestore } from "firebase-admin/firestore";
 import {
   AVAILABLE_BLOCK_FORMAT,
@@ -144,6 +156,10 @@ export interface SessionBlockEntryRecord {
     isCompleted: boolean;
   };
   sets: SessionSetRecord[];
+  topWeightKg?: number | null;
+  topPercentBw?: number | null;
+  avgPercentBw?: number | null;
+  volumePercentBw?: number | null;
 }
 
 export interface SessionWithBlocksRecord {
@@ -157,6 +173,9 @@ export interface SessionWithBlocksRecord {
     notes: string;
     updatedAtMillis?: number;
     deletedAtMillis?: number | null;
+    bodyWeightKg?: number | null;
+    bodyWeightDate?: string | null;
+    isBodyWeightEstimated?: boolean;
   };
   blocks: SessionBlockEntryRecord[];
 }
@@ -174,6 +193,12 @@ export interface CycleGoalRecord {
   notes: string;
   updatedAtMillis?: number;
   deletedAtMillis?: number | null;
+  startPercentBw?: number | null;
+  currentBestWeightKg?: number | null;
+  currentBestPercentBw?: number | null;
+  goalPercentBw?: number | null;
+  goalBodyWeightKg?: number | null;
+  goalBodyWeightBasis?: BodyWeightMatchKind;
 }
 
 export interface RepMaxRecord {
@@ -192,6 +217,10 @@ export interface RepMaxRecord {
   sourceBlockTitle?: string;
   updatedAtMillis?: number;
   deletedAtMillis?: number | null;
+  percentBw?: number | null;
+  bodyWeightKg?: number | null;
+  bodyWeightDate?: string | null;
+  isBodyWeightEstimated?: boolean;
 }
 
 export interface UpdateBlockSessionLogInput {
@@ -482,6 +511,9 @@ export interface DailyRoutineConstituentProgressRecord {
     movementName: string;
     rmReps: number;
     bestWeightKg: number | null;
+    bestPercentBw?: number | null;
+    bestDate?: string | null;
+    isBodyWeightEstimated?: boolean;
   }>;
   chartPoints: Array<{
     date: string;
@@ -491,6 +523,12 @@ export interface DailyRoutineConstituentProgressRecord {
     topKg: number;
     averageKg: number;
     volumeKg: number;
+    topPercentBw?: number | null;
+    averagePercentBw?: number | null;
+    volumePercentBw?: number | null;
+    bodyWeightKg?: number | null;
+    bodyWeightDate?: string | null;
+    isBodyWeightEstimated?: boolean;
   }>;
   recentSessions: Array<{
     sessionId: number;
@@ -501,7 +539,22 @@ export interface DailyRoutineConstituentProgressRecord {
     values: number[];
     topKg: number | null;
     weightsKg: number[];
+    topPercentBw?: number | null;
+    bodyWeightKg?: number | null;
+    bodyWeightDate?: string | null;
+    isBodyWeightEstimated?: boolean;
   }>;
+  allTimeTopPercentBw?: number | null;
+  allTimeTopPercentBwEstimated?: boolean;
+  peakTopPercentBw?: number | null;
+  peakTopPercentBwDate?: string | null;
+  peakTopPercentBwRawKg?: number | null;
+  lastTopPercentBw?: number | null;
+  lastTopPercentBwEstimated?: boolean;
+  lastAveragePercentBw?: number | null;
+  lastVolumePercentBw?: number | null;
+  topPercentBwDelta?: number | null;
+  bodyWeightCoverage?: string | null;
 }
 
 export interface WeightEntryRecord {
@@ -1084,15 +1137,222 @@ export class WorkoutDomainService {
     };
   }
 
+  private enrichSessionsWithPercentBw(
+    sessions: SessionWithBlocksRecord[],
+    sortedWeights: ActiveWeightPoint[],
+    exercisesById: Map<number, ExerciseRecord>
+  ): SessionWithBlocksRecord[] {
+    return sessions.map((sw) => {
+      const date = sw.session?.date ?? "";
+      const bw = resolveBodyWeightForIsoDate(date, sortedWeights);
+      const enrichedBlocks = (sw.blocks ?? []).map((entry) => {
+        const ex = entry.block.mainExerciseId
+          ? exercisesById.get(Number(entry.block.mainExerciseId))
+          : undefined;
+        const unit = ex?.unit?.trim() || "kg";
+        if (!isWeightedUnit(unit)) {
+          return entry;
+        }
+        const workingWeightedSets = (entry.sets ?? []).filter(
+          (st) => !st.isWarmup && !st.isFailed && Number(st.weight) > 0
+        );
+        if (workingWeightedSets.length === 0) {
+          return entry;
+        }
+        const weights = workingWeightedSets.map((st) => Number(st.weight));
+        const topW = this.round2dp(Math.max(...weights));
+        const avgW = this.round2dp(weights.reduce((s, w) => s + w, 0) / weights.length);
+        const volW = this.round2dp(
+          workingWeightedSets.reduce(
+            (s, st) => s + Number(st.weight) * Math.max(1, Number(st.reps) || 1),
+            0
+          )
+        );
+        return {
+          ...entry,
+          topWeightKg: roundHalfUp1(toWeightKg(topW, unit)),
+          topPercentBw: computePercentBw(topW, unit, bw.weightKg),
+          avgPercentBw: computePercentBw(avgW, unit, bw.weightKg),
+          volumePercentBw: computePercentBw(volW, unit, bw.weightKg),
+        };
+      });
+      return {
+        ...sw,
+        session: {
+          ...sw.session,
+          bodyWeightKg: bw.weightKg,
+          bodyWeightDate: bw.sourceDate,
+          isBodyWeightEstimated: bw.isEstimated,
+        },
+        blocks: enrichedBlocks,
+      };
+    });
+  }
+
+  private enrichCycleGoalsWithPercentBw(
+    goals: CycleGoalRecord[],
+    rawSessions: SessionWithBlocksRecord[],
+    rawRepMaxes: RepMaxRecord[],
+    exercises: ExerciseRecord[],
+    sortedWeights: ActiveWeightPoint[]
+  ): CycleGoalRecord[] {
+    const exById = new Map(exercises.map((e) => [Number(e.id), e]));
+    const activeSessions = rawSessions
+      .filter((s) => !isDeletedTombstone(s.session?.deletedAtMillis))
+      .sort((a, b) => (a.session?.date ?? "").localeCompare(b.session?.date ?? ""));
+    const activeRms = rawRepMaxes.filter(
+      (rm) => !isDeletedTombstone(rm.deletedAtMillis) && Number(rm.weight) > 0
+    );
+
+    const cycleDates = new Map<number, { min?: string; max?: string }>();
+    const bumpDate = (cycleId: number, date?: string) => {
+      if (!date || cycleId < 1) return;
+      const cur = cycleDates.get(cycleId) ?? {};
+      if (!cur.min || date < cur.min) cur.min = date;
+      if (!cur.max || date > cur.max) cur.max = date;
+      cycleDates.set(cycleId, cur);
+    };
+    for (const s of activeSessions) bumpDate(Number(s.session.cycleId), s.session.date);
+    for (const rm of activeRms) bumpDate(Number(rm.cycleId), rm.date);
+
+    const goalBw = resolveLatestActiveBodyWeight(sortedWeights);
+
+    return goals.map((g) => {
+      const parsed = parseCycleGoalMetadata(g.notes ?? "");
+      if (parsed.goalMetric !== "WEIGHT") return g;
+      const ex = exById.get(Number(g.exerciseId));
+      const unit = ex?.unit?.trim() || "kg";
+      if (!isWeightedUnit(unit)) return g;
+
+      const cId = Number(g.cycleId) || 0;
+      const bounds = cycleDates.get(cId);
+      const cycleStart = bounds?.min;
+      const cycleEnd = bounds?.max;
+
+      const matchesGoalEx = (rm: RepMaxRecord) =>
+        Number(rm.reps) === Number(g.targetReps) &&
+        (Number(rm.exerciseId) === Number(g.exerciseId) ||
+          (g.exerciseName &&
+            (rm.exerciseName ?? "").trim().toLowerCase() === g.exerciseName.trim().toLowerCase()));
+
+      const belongsToCycle = (rm: RepMaxRecord) => {
+        const rmCid = Number(rm.cycleId);
+        if (Number.isFinite(rmCid) && rmCid >= 1) return rmCid === cId;
+        if (!cycleStart || !rm.date) return false;
+        return rm.date >= cycleStart && (!cycleEnd || rm.date <= cycleEnd);
+      };
+
+      const priorRms = activeRms.filter(
+        (rm) => matchesGoalEx(rm) && (!cycleStart || (rm.date ?? "") <= cycleStart)
+      );
+      priorRms.sort((a, b) => (a.date ?? "").localeCompare(b.date ?? ""));
+      const priorRm = priorRms.length > 0 ? priorRms[priorRms.length - 1] : null;
+
+      const cycleSessionSets: Array<{ date: string; weight: number }> = [];
+      for (const sw of activeSessions) {
+        if (Number(sw.session.cycleId) !== cId) continue;
+        for (const entry of sw.blocks ?? []) {
+          if (Number(entry.block.mainExerciseId) !== Number(g.exerciseId)) continue;
+          for (const st of entry.sets ?? []) {
+            if (
+              !st.isWarmup &&
+              !st.isFailed &&
+              Number(st.reps) === Number(g.targetReps) &&
+              Number(st.weight) > 0
+            ) {
+              cycleSessionSets.push({ date: sw.session.date, weight: Number(st.weight) });
+            }
+          }
+        }
+      }
+
+      const baselineWeight =
+        Number(g.startWeight) > 0
+          ? Number(g.startWeight)
+          : (priorRm ? Number(priorRm.weight) : cycleSessionSets[0]?.weight ?? 0);
+      const baselineDate =
+        Number(g.startWeight) > 0
+          ? (priorRm && Number(priorRm.weight) === Number(g.startWeight)
+              ? priorRm.date
+              : cycleStart ?? priorRm?.date ?? cycleSessionSets[0]?.date ?? null)
+          : (priorRm?.date ?? cycleSessionSets[0]?.date ?? cycleStart ?? null);
+
+      const cycleRms = activeRms.filter((rm) => matchesGoalEx(rm) && belongsToCycle(rm));
+      let bestRm: RepMaxRecord | null = null;
+      for (const rm of cycleRms) {
+        if (
+          !bestRm ||
+          Number(rm.weight) > Number(bestRm.weight) ||
+          (Number(rm.weight) === Number(bestRm.weight) && (rm.date ?? "") >= (bestRm.date ?? ""))
+        ) {
+          bestRm = rm;
+        }
+      }
+      let bestSet: { date: string; weight: number } | null = null;
+      for (const cs of cycleSessionSets) {
+        if (
+          !bestSet ||
+          cs.weight > bestSet.weight ||
+          (cs.weight === bestSet.weight && cs.date >= bestSet.date)
+        ) {
+          bestSet = cs;
+        }
+      }
+
+      const rmBestVal = bestRm ? Number(bestRm.weight) : 0;
+      const setBestVal = bestSet ? bestSet.weight : 0;
+      const currentBestVal = Math.max(baselineWeight, rmBestVal, setBestVal);
+      let currentBestDate: string | null = null;
+      if (currentBestVal > 0) {
+        if (currentBestVal <= baselineWeight && rmBestVal < baselineWeight && setBestVal < baselineWeight) {
+          currentBestDate = baselineDate;
+        } else if (rmBestVal >= setBestVal && bestRm && rmBestVal >= baselineWeight) {
+          currentBestDate = bestRm.date;
+        } else if (bestSet && setBestVal >= baselineWeight) {
+          currentBestDate = bestSet.date;
+        } else {
+          currentBestDate = baselineDate;
+        }
+      }
+
+      const startBw = baselineDate
+        ? resolveBodyWeightForIsoDate(baselineDate, sortedWeights)
+        : { kind: "UNAVAILABLE" as const, weightKg: null, sourceDate: null, daysPrior: null, isEstimated: false };
+      const bestBw = currentBestDate
+        ? resolveBodyWeightForIsoDate(currentBestDate, sortedWeights)
+        : { kind: "UNAVAILABLE" as const, weightKg: null, sourceDate: null, daysPrior: null, isEstimated: false };
+
+      return {
+        ...g,
+        startPercentBw: baselineWeight > 0 ? computePercentBw(baselineWeight, unit, startBw.weightKg) : null,
+        currentBestWeightKg: currentBestVal > 0 ? roundHalfUp1(toWeightKg(currentBestVal, unit)) : null,
+        currentBestPercentBw: currentBestVal > 0 ? computePercentBw(currentBestVal, unit, bestBw.weightKg) : null,
+        goalPercentBw: computePercentBw(Number(g.targetWeight), unit, goalBw.weightKg),
+        goalBodyWeightKg: goalBw.weightKg,
+        goalBodyWeightBasis: goalBw.kind,
+      };
+    });
+  }
+
   async getWorkoutSummary(ctx: UserContext) {
-    const [activeInfo, rawRoutines, weights, dailyLogs, exercises, repMaxes] = await Promise.all([
-      this.getActiveCycle(ctx),
-      this.backing.readCollection<RoutineWithBlocksRecord>(ctx, "routines"),
-      this.listWeightEntries(ctx, {}),
-      this.listDailyLogs(ctx, {}),
-      this.listExercises(ctx),
-      this.listRepMaxes(ctx),
-    ]);
+    const [activeInfo, rawRoutines, weights, dailyLogs, exercises, repMaxes, enrichedGoalsRes] =
+      await Promise.all([
+        this.getActiveCycle(ctx),
+        this.backing.readCollection<RoutineWithBlocksRecord>(ctx, "routines"),
+        this.listWeightEntries(ctx, {}),
+        this.listDailyLogs(ctx, {}),
+        this.listExercises(ctx),
+        this.listRepMaxes(ctx),
+        this.listCycleGoals(ctx, { activeCycleOnly: true }),
+      ]);
+
+    const sortedWeights = buildSortedActiveWeightEntries(weights);
+    const exercisesById = new Map(exercises.map((e) => [Number(e.id), e]));
+    const enrichedRecentSessions = this.enrichSessionsWithPercentBw(
+      activeInfo.recentSessions.slice(0, 5),
+      sortedWeights,
+      exercisesById
+    );
 
     const activeRoutines = rawRoutines.filter((r) => !isDeletedTombstone(r.routine?.deletedAtMillis));
     const nonDailyRoutines = activeRoutines.filter(
@@ -1104,9 +1364,9 @@ export class WorkoutDomainService {
 
     return {
       activeCycle: activeInfo.activeCycle,
-      activeCycleGoalsCount: activeInfo.goals.length,
-      activeCycleGoals: activeInfo.goals,
-      recentActiveCycleSessions: activeInfo.recentSessions.slice(0, 5),
+      activeCycleGoalsCount: enrichedGoalsRes.cycleGoals.length,
+      activeCycleGoals: enrichedGoalsRes.cycleGoals,
+      recentActiveCycleSessions: enrichedRecentSessions,
       cyclesCount: activeInfo.allCycles.length,
       exercisesCount: exercises.length,
       routinesCount: nonDailyRoutines.length,
@@ -3527,10 +3787,11 @@ export class WorkoutDomainService {
       targetCycleId = cycleInfo.activeCycleId;
     }
 
-    const sessions = await this.backing.readCollection<SessionWithBlocksRecord>(
-      ctx,
-      "sessions"
-    );
+    const [sessions, weights, exercises] = await Promise.all([
+      this.backing.readCollection<SessionWithBlocksRecord>(ctx, "sessions"),
+      this.backing.readCollection<WeightEntryRecord>(ctx, "weight_entries"),
+      this.backing.readCollection<ExerciseRecord>(ctx, "exercises"),
+    ]);
     const filtered = sessions.filter((s) => {
       if (isDeletedTombstone(s.session?.deletedAtMillis)) return false;
       const d = s.session?.date ?? "";
@@ -3541,7 +3802,9 @@ export class WorkoutDomainService {
     });
     filtered.sort((a, b) => (b.session.date ?? "").localeCompare(a.session.date ?? ""));
     const limit = filter?.limit ?? 30;
-    return filtered.slice(0, limit);
+    const sortedWeights = buildSortedActiveWeightEntries(weights);
+    const exercisesById = new Map(exercises.map((e) => [Number(e.id), e]));
+    return this.enrichSessionsWithPercentBw(filtered.slice(0, limit), sortedWeights, exercisesById);
   }
 
   async upsertSession(
@@ -3732,11 +3995,12 @@ export class WorkoutDomainService {
     activeCycleName: string;
     cycleGoals: CycleGoalRecord[];
   }> {
-    const [rawGoals, rawSessions, rawRepMaxes, exercises] = await Promise.all([
+    const [rawGoals, rawSessions, rawRepMaxes, exercises, rawWeights] = await Promise.all([
       this.backing.readCollection<CycleGoalRecord>(ctx, "cycle_goals"),
       this.backing.readCollection<SessionWithBlocksRecord>(ctx, "sessions"),
       this.backing.readCollection<RepMaxRecord>(ctx, "rep_maxes"),
       this.backing.readCollection<ExerciseRecord>(ctx, "exercises"),
+      this.backing.readCollection<WeightEntryRecord>(ctx, "weight_entries"),
     ]);
     const cycles = computeCyclesFromRaw(rawGoals, rawSessions, rawRepMaxes);
     const active = cycles.find((c) => c.isActive) ?? cycles[0];
@@ -3750,7 +4014,7 @@ export class WorkoutDomainService {
           ? active.cycleId
           : undefined;
 
-    const cycleGoals = rawGoals
+    const baseGoals = rawGoals
       .filter((g) => {
         if (isDeletedTombstone(g.deletedAtMillis)) return false;
         if (targetCycleId !== undefined && g.cycleId !== targetCycleId) return false;
@@ -3762,6 +4026,15 @@ export class WorkoutDomainService {
         isActiveCycle: g.cycleId === active.cycleId,
         exerciseName: g.exerciseName ?? exById.get(g.exerciseId),
       }));
+
+    const sortedWeights = buildSortedActiveWeightEntries(rawWeights);
+    const cycleGoals = this.enrichCycleGoalsWithPercentBw(
+      baseGoals,
+      rawSessions,
+      rawRepMaxes,
+      exercises,
+      sortedWeights
+    );
 
     return {
       activeCycleId: active.cycleId,
@@ -3987,17 +4260,30 @@ export class WorkoutDomainService {
   // ==========================================================================
 
   async listRepMaxes(ctx: UserContext, exerciseName?: string): Promise<RepMaxRecord[]> {
-    const [repMaxes, exercises] = await Promise.all([
+    const [repMaxes, exercises, rawWeights] = await Promise.all([
       this.backing.readCollection<RepMaxRecord>(ctx, "rep_maxes"),
       this.backing.readCollection<ExerciseRecord>(ctx, "exercises"),
+      this.backing.readCollection<WeightEntryRecord>(ctx, "weight_entries"),
     ]);
-    const exById = new Map(exercises.map((e) => [e.id, e.name]));
+    const exById = new Map(exercises.map((e) => [e.id, e]));
+    const sortedWeights = buildSortedActiveWeightEntries(rawWeights);
     const enriched = repMaxes
       .filter((rm) => !isDeletedTombstone(rm.deletedAtMillis))
-      .map((rm) => ({
-        ...rm,
-        exerciseName: rm.exerciseName ?? exById.get(rm.exerciseId),
-      }));
+      .map((rm) => {
+        const ex = exById.get(rm.exerciseId);
+        const unit = ex?.unit?.trim() || "kg";
+        const bw = isWeightedUnit(unit)
+          ? resolveBodyWeightForIsoDate(rm.date, sortedWeights)
+          : { kind: "UNAVAILABLE" as const, weightKg: null, sourceDate: null, daysPrior: null, isEstimated: false };
+        return {
+          ...rm,
+          exerciseName: rm.exerciseName ?? ex?.name,
+          percentBw: computePercentBw(Number(rm.weight), unit, bw.weightKg),
+          bodyWeightKg: bw.weightKg,
+          bodyWeightDate: bw.sourceDate,
+          isBodyWeightEstimated: bw.isEstimated,
+        };
+      });
     if (!exerciseName) {
       return enriched;
     }
@@ -5957,12 +6243,14 @@ export class WorkoutDomainService {
         "Provide 'routine_id' or 'routine_title' to query Daily Routine progress."
       );
     }
-    const [routines, exercises, sessions, repMaxes] = await Promise.all([
+    const [routines, exercises, sessions, repMaxes, rawWeights] = await Promise.all([
       this.backing.readCollection<RoutineWithBlocksRecord>(ctx, "routines"),
       this.backing.readCollection<ExerciseRecord>(ctx, "exercises"),
       this.backing.readCollection<SessionWithBlocksRecord>(ctx, "sessions"),
       this.backing.readCollection<RepMaxRecord>(ctx, "rep_maxes"),
+      this.backing.readCollection<WeightEntryRecord>(ctx, "weight_entries"),
     ]);
+    const sortedWeights = buildSortedActiveWeightEntries(rawWeights);
 
     const cleanTitle = input.routine_title?.trim().toLowerCase();
     const targetRaw = routines.find(
@@ -6256,6 +6544,7 @@ export class WorkoutDomainService {
                     agg.weightsKg.reduce((s, w) => s + w, 0) / agg.weightsKg.length
                   )
                 : 0;
+            const bw = isKgUnit ? resolveBodyWeightForIsoDate(date, sortedWeights) : null;
             return {
               date,
               top: this.round2dp(top),
@@ -6264,6 +6553,12 @@ export class WorkoutDomainService {
               topKg,
               averageKg: avgKg,
               volumeKg: agg.volumeKg,
+              topPercentBw: bw ? computePercentBw(topKg, "kg", bw.weightKg) : null,
+              averagePercentBw: bw ? computePercentBw(avgKg, "kg", bw.weightKg) : null,
+              volumePercentBw: bw ? computePercentBw(agg.volumeKg, "kg", bw.weightKg) : null,
+              bodyWeightKg: bw ? bw.weightKg : null,
+              bodyWeightDate: bw ? bw.sourceDate : null,
+              isBodyWeightEstimated: bw ? bw.isEstimated : false,
             };
           });
 
@@ -6289,6 +6584,42 @@ export class WorkoutDomainService {
         const lastVolumeKg = isKgUnit ? (latestDay?.volume ?? null) : null;
         const topDeltaKg = isKgUnit ? topDelta : null;
         const lastSetsKg = isKgUnit ? lastSets : [];
+
+        let allTimeTopPoint = chartPoints[0] ?? null;
+        for (const cp of chartPoints) {
+          if (!allTimeTopPoint || cp.top > allTimeTopPoint.top || (cp.top === allTimeTopPoint.top && cp.date >= allTimeTopPoint.date)) {
+            allTimeTopPoint = cp;
+          }
+        }
+        let peakPoint: (typeof chartPoints)[number] | null = null;
+        if (isKgUnit) {
+          for (const cp of chartPoints) {
+            if (cp.topPercentBw == null) continue;
+            if (
+              !peakPoint ||
+              cp.topPercentBw > (peakPoint.topPercentBw ?? -1) ||
+              (cp.topPercentBw === peakPoint.topPercentBw && cp.date >= peakPoint.date)
+            ) {
+              peakPoint = cp;
+            }
+          }
+        }
+        const allTimeTopPercentBw = isKgUnit ? (allTimeTopPoint?.topPercentBw ?? null) : null;
+        const allTimeTopPercentBwEstimated = isKgUnit
+          ? Boolean(allTimeTopPoint?.isBodyWeightEstimated)
+          : false;
+        const lastTopPercentBw = isKgUnit ? (latestDay?.topPercentBw ?? null) : null;
+        const lastTopPercentBwEstimated = isKgUnit
+          ? Boolean(latestDay?.isBodyWeightEstimated)
+          : false;
+        const lastAveragePercentBw = isKgUnit ? (latestDay?.averagePercentBw ?? null) : null;
+        const lastVolumePercentBw = isKgUnit ? (latestDay?.volumePercentBw ?? null) : null;
+        const topPercentBwDelta = isKgUnit
+          ? computePercentBwDelta(lastTopPercentBw, prevDay?.topPercentBw ?? null)
+          : null;
+        const bodyWeightCoverage = isKgUnit
+          ? `${chartPoints.filter((cp) => cp.topPercentBw != null).length}/${chartPoints.length}`
+          : null;
 
         const targetExIds = new Set<number>();
         if (isComplex && ab) {
@@ -6317,33 +6648,47 @@ export class WorkoutDomainService {
               : exercisesByLowerName.get(slot.movementName.trim().toLowerCase())?.id ??
                 0;
           const matchedRm = bestByKey.get(`${exId}#${slot.rmReps}`);
+          const rmBw = matchedRm && isKgUnit
+            ? resolveBodyWeightForIsoDate(matchedRm.date, sortedWeights)
+            : null;
           return {
             movementId: exId,
             movementName: slot.movementName,
             rmReps: slot.rmReps,
             bestWeightKg: matchedRm ? Number(matchedRm.weight) : null,
+            bestPercentBw: matchedRm && rmBw ? computePercentBw(Number(matchedRm.weight), "kg", rmBw.weightKg) : null,
+            bestDate: matchedRm ? matchedRm.date : null,
+            isBodyWeightEstimated: rmBw ? rmBw.isEstimated : false,
           };
         });
 
         const recentSessions = [...matchedEntries]
           .reverse()
           .slice(0, 10)
-          .map((m) => ({
-            sessionId: m.sessionId,
-            date: m.date,
-            sessionTitle: m.sessionTitle,
-            unit,
-            top:
-              m.values.length > 0
-                ? this.round2dp(Math.max(...m.values))
-                : null,
-            values: m.values,
-            topKg:
+          .map((m) => {
+            const topKg =
               m.weightsKg.length > 0
                 ? this.round2dp(Math.max(...m.weightsKg))
-                : null,
-            weightsKg: m.weightsKg,
-          }));
+                : null;
+            const bw = isKgUnit ? resolveBodyWeightForIsoDate(m.date, sortedWeights) : null;
+            return {
+              sessionId: m.sessionId,
+              date: m.date,
+              sessionTitle: m.sessionTitle,
+              unit,
+              top:
+                m.values.length > 0
+                  ? this.round2dp(Math.max(...m.values))
+                  : null,
+              values: m.values,
+              topKg,
+              weightsKg: m.weightsKg,
+              topPercentBw: bw ? computePercentBw(topKg, "kg", bw.weightKg) : null,
+              bodyWeightKg: bw ? bw.weightKg : null,
+              bodyWeightDate: bw ? bw.sourceDate : null,
+              isBodyWeightEstimated: bw ? bw.isEstimated : false,
+            };
+          });
 
         return {
           itemType: item.itemType,
@@ -6365,6 +6710,17 @@ export class WorkoutDomainService {
           lastVolumeKg,
           topDeltaKg,
           lastSetsKg,
+          allTimeTopPercentBw,
+          allTimeTopPercentBwEstimated,
+          peakTopPercentBw: peakPoint?.topPercentBw ?? null,
+          peakTopPercentBwDate: peakPoint?.date ?? null,
+          peakTopPercentBwRawKg: peakPoint ? peakPoint.topKg : null,
+          lastTopPercentBw,
+          lastTopPercentBwEstimated,
+          lastAveragePercentBw,
+          lastVolumePercentBw,
+          topPercentBwDelta,
+          bodyWeightCoverage,
           trackedPrs,
           chartPoints,
           recentSessions,

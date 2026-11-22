@@ -1,5 +1,7 @@
 package com.fractanomics.crosstraining.util
 
+import com.fractanomics.crosstraining.data.analytics.PeakRelativeStrength
+import com.fractanomics.crosstraining.data.analytics.RelativeStrengthAnalytics
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.MetricType
@@ -9,6 +11,7 @@ import com.fractanomics.crosstraining.data.model.RoutineBlock
 import com.fractanomics.crosstraining.data.model.RoutineWithBlocks
 import com.fractanomics.crosstraining.data.model.SessionBlock
 import com.fractanomics.crosstraining.data.model.SessionWithBlocks
+import com.fractanomics.crosstraining.data.model.WeightEntry
 import com.fractanomics.crosstraining.ui.BlockPerformance
 import com.fractanomics.crosstraining.ui.DayPerformance
 import com.fractanomics.crosstraining.ui.byDay
@@ -19,6 +22,8 @@ import java.math.RoundingMode
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.time.LocalDate
+import java.util.NavigableMap
 
 /**
  * Persisted `Routine.defaultFormat` discriminator identifying a composite Daily Routine
@@ -131,7 +136,14 @@ data class ConstituentProgressSummary(
     val unit: String = "kg",
     val trackedPrSlots: List<TrackedPrSlot> = emptyList(),
     val performances: List<BlockPerformance> = emptyList(),
-    val dayPerformances: List<DayPerformance> = emptyList()
+    val dayPerformances: List<DayPerformance> = emptyList(),
+    val isWeightedMetric: Boolean = false,
+    val allTimeTopPercentBw: Double? = null,
+    val allTimeTopPercentBwEstimated: Boolean = false,
+    val peakTopPercentBw: PeakRelativeStrength? = null,
+    val lastTopPercentBw: Double? = null,
+    val lastTopPercentBwEstimated: Boolean = false,
+    val topPercentBwDelta: Double? = null
 )
 
 data class DecodedDrItemHeader(
@@ -638,11 +650,13 @@ object DailyRoutineCodec {
         sessions: List<SessionWithBlocks>,
         repMaxes: List<RepMax>,
         exercises: List<Exercise>,
-        weightUnit: String = "kg"
+        weightUnit: String = "kg",
+        weightEntries: List<WeightEntry> = emptyList()
     ): List<ConstituentProgressSummary> {
         val exercisesById = exercises.associateBy { it.id }
         val exercisesByLowerName = exercises.associateBy { it.name.trim().lowercase() }
         val unit = weightUnit.ifBlank { "kg" }
+        val weightIndex = RelativeStrengthAnalytics.buildActiveWeightIndex(weightEntries)
 
         return routine.items.mapIndexed { idx, item ->
             when (item) {
@@ -706,7 +720,8 @@ object DailyRoutineCodec {
                         repMaxes = repMaxes,
                         exercisesById = exercisesById,
                         unit = resolvedDisplayUnit,
-                        weightUnit = unit
+                        weightUnit = unit,
+                        weightIndex = weightIndex
                     )
                 }
 
@@ -757,7 +772,8 @@ object DailyRoutineCodec {
                         repMaxes = repMaxes,
                         exercisesById = exercisesById,
                         unit = resolvedDisplayUnit,
-                        weightUnit = unit
+                        weightUnit = unit,
+                        weightIndex = weightIndex
                     )
                 }
             }
@@ -824,7 +840,8 @@ object DailyRoutineCodec {
         repMaxes: List<RepMax>,
         exercisesById: Map<Long, Exercise>,
         unit: String,
-        weightUnit: String
+        weightUnit: String,
+        weightIndex: NavigableMap<LocalDate, WeightEntry>
     ): ConstituentProgressSummary {
         val allTimeTop = performances.mapNotNull { it.top }.maxOrNull()
         val latestDay = dayPerfs.lastOrNull()
@@ -839,6 +856,45 @@ object DailyRoutineCodec {
             roundedDelta < 0.0 -> ConstituentTrendDirection.DOWN
             else -> ConstituentTrendDirection.FLAT
         }
+
+        val isWeighted = RelativeStrengthAnalytics.hasWeightedSets(performances, unit)
+        val allTimeTopBlock = if (isWeighted) {
+            performances.filter { it.top != null }
+                .maxWithOrNull(compareBy<BlockPerformance> { it.top!! }.thenBy { it.date })
+        } else {
+            null
+        }
+        val allTimeBw = allTimeTopBlock?.let {
+            RelativeStrengthAnalytics.resolveBodyWeightForDate(it.date, weightIndex)
+        }
+        val allTimeTopPercentBw = allTimeBw?.let {
+            RelativeStrengthAnalytics.calculatePercentBw(allTimeTop, unit, it)
+        }
+        val peakTopPercentBw = if (isWeighted) {
+            RelativeStrengthAnalytics.resolvePeakRelativeStrength(performances, unit, weightIndex)
+        } else {
+            null
+        }
+        val latestBw = if (isWeighted && latestDay != null) {
+            RelativeStrengthAnalytics.resolveBodyWeightForDate(latestDay.date, weightIndex)
+        } else {
+            null
+        }
+        val prevBw = if (isWeighted && prevDay != null) {
+            RelativeStrengthAnalytics.resolveBodyWeightForDate(prevDay.date, weightIndex)
+        } else {
+            null
+        }
+        val lastTopPercentBw = latestBw?.let {
+            RelativeStrengthAnalytics.calculatePercentBw(latestDay?.top, unit, it)
+        }
+        val prevTopPercentBw = prevBw?.let {
+            RelativeStrengthAnalytics.calculatePercentBw(prevDay?.top, unit, it)
+        }
+        val topPercentBwDelta = RelativeStrengthAnalytics.computePercentBwDelta(
+            lastTopPercentBw,
+            prevTopPercentBw
+        )
 
         val matchingRms = repMaxes.filter { it.exerciseId in targetExerciseIds && it.weight > 0.0 }
         val bestByKey = matchingRms
@@ -857,7 +913,21 @@ object DailyRoutineCodec {
             .take(3)
             .map { (_, rm) ->
                 val exName = exercisesById[rm.exerciseId]?.name ?: title
-                "🔥 ${rm.reps}RM $exName: ${rm.weight.trimmed()} $weightUnit"
+                val exUnit = exercisesById[rm.exerciseId]?.unit?.ifBlank { weightUnit } ?: weightUnit
+                val rmBw = if (RelativeStrengthAnalytics.isWeightedUnit(exUnit)) {
+                    RelativeStrengthAnalytics.resolveBodyWeightForDate(rm.date, weightIndex)
+                } else {
+                    null
+                }
+                val rmPct = rmBw?.let {
+                    RelativeStrengthAnalytics.calculatePercentBw(rm.weight, exUnit, it)
+                }
+                val pctSuffix = if (rmPct != null) {
+                    " (${RelativeStrengthAnalytics.formatPercentBw(rmPct, rmBw.isEstimated)})"
+                } else {
+                    ""
+                }
+                "🔥 ${rm.reps}RM $exName: ${rm.weight.trimmed()} $weightUnit$pctSuffix"
             }
 
         val resolvedLastSets = if (lastSetsSummary.isNotBlank()) {
@@ -892,7 +962,14 @@ object DailyRoutineCodec {
             unit = unit,
             trackedPrSlots = preferredPrSlots,
             performances = performances,
-            dayPerformances = dayPerfs
+            dayPerformances = dayPerfs,
+            isWeightedMetric = isWeighted,
+            allTimeTopPercentBw = allTimeTopPercentBw,
+            allTimeTopPercentBwEstimated = allTimeBw?.isEstimated == true,
+            peakTopPercentBw = peakTopPercentBw,
+            lastTopPercentBw = lastTopPercentBw,
+            lastTopPercentBwEstimated = latestBw?.isEstimated == true,
+            topPercentBwDelta = topPercentBwDelta
         )
     }
 }
