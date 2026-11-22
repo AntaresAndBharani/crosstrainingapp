@@ -59,6 +59,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -700,11 +701,18 @@ private fun HistoryBlockCard(
                 "Avg ${avgWeight.trimmed()} $blockUnit (${RelativeStrengthAnalytics.formatPercentBw(avgPct, resolvedBw.isEstimated)})",
                 "Vol ${totalVol.trimmed()} $blockUnit (${RelativeStrengthAnalytics.formatPercentBw(volPct, resolvedBw.isEstimated)})"
             ).joinToString(" · ")
+            val summaryTalkBack = listOf(
+                "Top ${topWeight.trimmed()} $blockUnit, ${RelativeStrengthAnalytics.formatTalkBackPercentBw(topPct, resolvedBw)}",
+                "average ${avgWeight.trimmed()} $blockUnit, ${RelativeStrengthAnalytics.formatTalkBackPercentBw(avgPct, resolvedBw)}",
+                "volume ${totalVol.trimmed()} $blockUnit, ${RelativeStrengthAnalytics.formatTalkBackPercentBw(volPct, resolvedBw)}"
+            ).joinToString("; ")
             Text(
                 text = summaryText,
                 style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.semantics(mergeDescendants = true) {}
+                modifier = Modifier.semantics(mergeDescendants = true) {
+                    contentDescription = summaryTalkBack
+                }
             )
         }
 

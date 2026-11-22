@@ -5233,9 +5233,10 @@ private fun KpiRows(
         if (isWeighted) RelativeStrengthAnalytics.resolvePeakRelativeStrength(blocks, unit, weightIndex)
         else null
     }
+    // Only highlight when the relative peak strictly beats the heaviest raw lift's % BW; a tie on a
+    // different date must not claim "higher relative strength".
     val showPeakCallout = peakRel != null && bestBlock != null && (
-        peakRel.date != bestBlock.date ||
-            bestBlockPct == null ||
+        bestBlockPct == null ||
             peakRel.percentBw > bestBlockPct
         )
     val volumeUnit = if (isWeighted) unit else "kg"
