@@ -78,8 +78,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import com.fractanomics.crosstraining.data.analytics.BodyWeightMatchKind
+import com.fractanomics.crosstraining.data.analytics.RelativeStrengthAnalytics
+import com.fractanomics.crosstraining.data.analytics.ResolvedBodyWeight
+import java.util.NavigableMap
+import java.util.TreeMap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
@@ -240,6 +249,13 @@ fun ProgressScreen(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showWeightSheet by remember { mutableStateOf(false) }
     var editingWeightEntry by remember { mutableStateOf<WeightEntry?>(null) }
+    val activeWeightIndex = remember(weightEntries) {
+        RelativeStrengthAnalytics.buildActiveWeightIndex(weightEntries)
+    }
+    val openWeightLogger: () -> Unit = {
+        editingWeightEntry = null
+        showWeightSheet = true
+    }
 
     Scaffold(
         modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
@@ -334,9 +350,12 @@ fun ProgressScreen(
                             sessions = sessions,
                             repMaxes = repMaxes,
                             exercises = exercises,
+                            weightEntries = weightEntries,
+                            weightIndex = activeWeightIndex,
                             weightUnit = weightUnit,
                             onSelectRoutine = { selectedDailyRoutineId = it.id },
-                            onNavigateToRoutinesLibrary = onNavigateToRoutinesLibrary
+                            onNavigateToRoutinesLibrary = onNavigateToRoutinesLibrary,
+                            onLogWeight = openWeightLogger
                         )
                     }
                     ProgressMode.BY_ROUTINE -> {
@@ -346,10 +365,12 @@ fun ProgressScreen(
                             exercises = exercises,
                             sessions = sessions,
                             repMaxes = repMaxes,
+                            weightIndex = activeWeightIndex,
                             weightUnit = weightUnit,
                             current = selectedRoutine?.takeIf { sel -> nonDailyRoutines.any { it.id == sel.id } }
                                 ?: nonDailyRoutines.firstOrNull(),
-                            onSelect = { selectedRoutine = it }
+                            onSelect = { selectedRoutine = it },
+                            onLogWeight = openWeightLogger
                         )
                     }
                     ProgressMode.CYCLE_GOALS -> {
@@ -459,8 +480,11 @@ fun ProgressScreen(
                                 repMaxes = repMaxes,
                                 sessions = sessions,
                                 routines = nonDailyRoutines,
+                                weightIndex = activeWeightIndex,
+                                weightUnit = weightUnit,
                                 current = selectedExercise ?: exercises.firstOrNull(),
-                                onSelect = { selectedExercise = it }
+                                onSelect = { selectedExercise = it },
+                                onLogWeight = openWeightLogger
                             )
                         }
                     }
@@ -3668,7 +3692,9 @@ internal data class EvaluatedCycleGoalProgress(
     val achievedGain: Double,
     val remainingGap: Double,
     val progressFraction: Float,
-    val progressPercent: Int
+    val progressPercent: Int,
+    val baselineStartDate: LocalDate? = null,
+    val currentBestDate: LocalDate? = null
 )
 
 internal fun evaluateCycleGoalProgress(
@@ -3682,25 +3708,33 @@ internal fun evaluateCycleGoalProgress(
             (currentCycle.endDate == null || it.session.date <= currentCycle.endDate)
     }.sortedBy { it.session.date }
 
+    var baselineStartDate: LocalDate? = null
+    var currentBestDate: LocalDate? = null
+
     val (baselineStartWeight, currentBest) = when (goal.goalMetric) {
         MetricType.WEIGHT -> {
             val priorRm = repMaxes.filter {
                 it.exerciseId == goal.exerciseId &&
                     it.reps == goal.targetReps &&
                     it.date <= currentCycle.startDate
-            }.maxByOrNull { it.date }?.weight
+            }.maxWithOrNull(compareBy<RepMax> { it.date }.thenBy { it.weight })
 
-            val firstLoggedWeightInCycle = cycleSessions.flatMap { swb ->
+            val firstLoggedEntryInCycle = cycleSessions.flatMap { swb ->
                 swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }.flatMap { b ->
                     b.sets.filter { !it.isWarmup && !it.isFailed && it.reps == goal.targetReps }
-                        .mapNotNull { it.weight ?: it.metricValue }
+                        .mapNotNull { (it.weight ?: it.metricValue)?.let { v -> swb.session.date to v } }
                 }
             }.firstOrNull()
 
             val baseline = if (goal.startWeight > 0.0) {
                 goal.startWeight
             } else {
-                priorRm ?: firstLoggedWeightInCycle ?: 0.0
+                priorRm?.weight ?: firstLoggedEntryInCycle?.second ?: 0.0
+            }
+            baselineStartDate = if (goal.startWeight > 0.0) {
+                priorRm?.takeIf { it.weight == goal.startWeight }?.date ?: currentCycle.startDate
+            } else {
+                priorRm?.date ?: firstLoggedEntryInCycle?.first ?: currentCycle.startDate
             }
 
             val cycleRms = repMaxes.filter {
@@ -3709,15 +3743,27 @@ internal fun evaluateCycleGoalProgress(
                     it.date >= currentCycle.startDate &&
                     (currentCycle.endDate == null || it.date <= currentCycle.endDate)
             }
-            val loggedRmBest = cycleRms.maxOfOrNull { it.weight }
-            val blockWorkingBest = cycleSessions.flatMap { swb ->
+            val bestRm = cycleRms.maxWithOrNull(compareBy<RepMax> { it.weight }.thenBy { it.date })
+            val bestBlockEntry = cycleSessions.flatMap { swb ->
                 swb.blocks.filter { it.block.mainExerciseId == goal.exerciseId }.flatMap { b ->
                     b.sets.filter { !it.isWarmup && !it.isFailed && it.reps == goal.targetReps }
-                        .mapNotNull { it.weight ?: it.metricValue }
+                        .mapNotNull { (it.weight ?: it.metricValue)?.let { v -> swb.session.date to v } }
                 }
-            }.maxOrNull()
+            }.maxWithOrNull(compareBy<Pair<LocalDate, Double>> { it.second }.thenBy { it.first })
 
+            val loggedRmBest = bestRm?.weight
+            val blockWorkingBest = bestBlockEntry?.second
             val best = maxOf(baseline, loggedRmBest ?: 0.0, blockWorkingBest ?: 0.0)
+            currentBestDate = when {
+                best <= 0.0 -> null
+                best <= baseline && (loggedRmBest ?: 0.0) < baseline && (blockWorkingBest ?: 0.0) < baseline ->
+                    baselineStartDate
+                (loggedRmBest ?: 0.0) >= (blockWorkingBest ?: 0.0) && bestRm != null && bestRm.weight >= baseline ->
+                    bestRm.date
+                bestBlockEntry != null && bestBlockEntry.second >= baseline ->
+                    bestBlockEntry.first
+                else -> baselineStartDate
+            }
             baseline to best
         }
         else -> {
@@ -3759,7 +3805,9 @@ internal fun evaluateCycleGoalProgress(
         achievedGain = achievedGain,
         remainingGap = remainingGap,
         progressFraction = progressFraction,
-        progressPercent = progressPercent
+        progressPercent = progressPercent,
+        baselineStartDate = baselineStartDate,
+        currentBestDate = currentBestDate
     )
 }
 
@@ -3801,6 +3849,13 @@ private fun CycleGoalsProgress(
     val goals = remember(cycleGoals, currentCycle.id) {
         cycleGoals.filter { it.cycleId == currentCycle.id }
     }
+    val activeWeightIndex = remember(weightEntries) {
+        RelativeStrengthAnalytics.buildActiveWeightIndex(weightEntries)
+    }
+    val goalTargetBw = remember(currentCycle, activeWeightIndex) {
+        RelativeStrengthAnalytics.resolveCycleGoalTargetBodyWeight(currentCycle, activeWeightIndex)
+    }
+    val fontScale = LocalConfiguration.current.fontScale
 
     if (goals.isEmpty()) {
         SectionCard(title = "Cycle Goals Target Tracking") {
@@ -3881,21 +3936,152 @@ private fun CycleGoalsProgress(
                     )
 
                     // Target line stats
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
+                    val isWeightGoal = goal.goalMetric == MetricType.WEIGHT &&
+                        RelativeStrengthAnalytics.isWeightedUnit(unit)
+                    if (isWeightGoal) {
+                        val startBw = eval.baselineStartDate?.let {
+                            RelativeStrengthAnalytics.resolveBodyWeightForDate(it, activeWeightIndex)
+                        } ?: ResolvedBodyWeight(BodyWeightMatchKind.UNAVAILABLE, null, null, null)
+                        val bestBw = eval.currentBestDate?.let {
+                            RelativeStrengthAnalytics.resolveBodyWeightForDate(it, activeWeightIndex)
+                        } ?: ResolvedBodyWeight(BodyWeightMatchKind.UNAVAILABLE, null, null, null)
+                        val startPct = if (baselineStartWeight > 0.0) {
+                            RelativeStrengthAnalytics.calculatePercentBw(baselineStartWeight, unit, startBw)
+                        } else null
+                        val bestPct = if (currentBest > 0.0) {
+                            RelativeStrengthAnalytics.calculatePercentBw(currentBest, unit, bestBw)
+                        } else null
+                        val goalPct = RelativeStrengthAnalytics.calculatePercentBw(goal.targetWeight, unit, goalTargetBw)
+
+                        val startPctText = RelativeStrengthAnalytics.formatPercentBw(startPct, startBw.isEstimated)
+                        val bestPctText = RelativeStrengthAnalytics.formatPercentBw(bestPct, bestBw.isEstimated)
+                        val goalPctText = RelativeStrengthAnalytics.formatPercentBw(goalPct, goalTargetBw.isEstimated)
+
+                        if (fontScale >= 1.3f) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .semantics(mergeDescendants = true) {},
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = if (baselineStartWeight > 0.0) {
+                                        "Start: ${baselineStartWeight.trimmed()} $unit ($startPctText)"
+                                    } else {
+                                        "Start: --"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum")
+                                )
+                                Text(
+                                    text = if (currentBest > 0.0) {
+                                        "Current Best: ${currentBest.trimmed()} $unit ($bestPctText)"
+                                    } else {
+                                        "Current Best: --"
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "Goal: ${goal.targetWeight.trimmed()} $unit ($goalPctText)",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .semantics(mergeDescendants = true) {},
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (baselineStartWeight > 0.0) {
+                                            "Start: ${baselineStartWeight.trimmed()} $unit"
+                                        } else {
+                                            "Start: --"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum")
+                                    )
+                                    if (baselineStartWeight > 0.0) {
+                                        Text(
+                                            text = startPctText,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.semantics {
+                                                contentDescription = RelativeStrengthAnalytics.formatTalkBackPercentBw(startPct, startBw)
+                                            }
+                                        )
+                                    }
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "Best: ${if (currentBest > 0.0) "${currentBest.trimmed()} $unit" else "--"}",
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    if (currentBest > 0.0) {
+                                        Text(
+                                            text = bestPctText,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.semantics {
+                                                contentDescription = RelativeStrengthAnalytics.formatTalkBackPercentBw(bestPct, bestBw)
+                                            }
+                                        )
+                                    }
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    horizontalAlignment = Alignment.End
+                                ) {
+                                    Text(
+                                        text = "Goal: ${goal.targetWeight.trimmed()} $unit",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = goalPctText,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.secondary,
+                                        modifier = Modifier.semantics {
+                                            contentDescription = RelativeStrengthAnalytics.formatTalkBackPercentBw(goalPct, goalTargetBw)
+                                        }
+                                    )
+                                }
+                            }
+                        }
                         Text(
-                            if (baselineStartWeight > 0.0) "Start: ${baselineStartWeight.trimmed()} $unit" else "Start: --",
-                            style = MaterialTheme.typography.bodySmall
+                            text = RelativeStrengthAnalytics.formatBodyWeightAnchor(goalTargetBw, weightUnit),
+                            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Text(
-                            "Current Best: ${if (currentBest > 0.0) "${currentBest.trimmed()} $unit" else "--"}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text("Goal: ${goal.targetWeight.trimmed()} $unit", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                if (baselineStartWeight > 0.0) "Start: ${baselineStartWeight.trimmed()} $unit" else "Start: --",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                "Current Best: ${if (currentBest > 0.0) "${currentBest.trimmed()} $unit" else "--"}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text("Goal: ${goal.targetWeight.trimmed()} $unit", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                        }
                     }
 
                     HorizontalDivider()
@@ -3928,8 +4114,11 @@ private fun ExerciseProgress(
     repMaxes: List<RepMax>,
     sessions: List<SessionWithBlocks>,
     routines: List<Routine> = emptyList(),
+    weightIndex: NavigableMap<LocalDate, WeightEntry> = TreeMap(),
+    weightUnit: String = "kg",
     current: Exercise?,
-    onSelect: (Exercise) -> Unit
+    onSelect: (Exercise) -> Unit,
+    onLogWeight: () -> Unit = {}
 ) {
     Dropdown(
         label = "Exercise",
@@ -3971,37 +4160,96 @@ private fun ExerciseProgress(
         else allBlocks.filter { it.block.name == blockFilter }
     val days = blocks.byDay()
 
-    KpiRows(blocks, days, current.unit)
-    EvolutionCards(days, current.unit)
+    KpiRows(blocks, days, current.unit, weightIndex = weightIndex, weightUnit = weightUnit)
+    EvolutionCards(
+        days = days,
+        unit = current.unit,
+        blocks = blocks,
+        weightIndex = weightIndex,
+        onLogWeight = onLogWeight
+    )
 
     // --- Rep-max progression ----------------------------------------------------
     if (current.tracksRepMax) {
         val rmSeries = repMaxes.filter { it.exerciseId == current.id }
         val repOptions = rmSeries.map { it.reps }.distinct().sorted()
+        val isWeightedExercise = RelativeStrengthAnalytics.isWeightedUnit(current.unit)
         if (repOptions.isNotEmpty()) {
             var selectedReps by remember(current.id) { mutableStateOf<Int?>(null) }
             val reps = selectedReps ?: if (repOptions.contains(1)) 1 else repOptions.first()
-            SectionCard(title = "Rep-max progression") {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    repOptions.forEach { r ->
-                        FilterChip(
-                            selected = r == reps,
-                            onClick = { selectedReps = r },
-                            label = { Text("${r}RM") }
-                        )
+            var rmChartMode by rememberSaveable(current.id) { mutableStateOf(ChartMetricMode.WEIGHT) }
+            val sortedRms = remember(rmSeries, reps) {
+                rmSeries.filter { it.reps == reps }.sortedBy { it.date }
+            }
+
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ChartHeaderWithSwitcher(
+                        title = "Rep-max progression",
+                        unit = current.unit,
+                        isWeighted = isWeightedExercise,
+                        mode = rmChartMode,
+                        onSelectMode = { rmChartMode = it }
+                    )
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        repOptions.forEach { r ->
+                            FilterChip(
+                                selected = r == reps,
+                                onClick = { selectedReps = r },
+                                label = { Text("${r}RM") }
+                            )
+                        }
+                    }
+                    if (isWeightedExercise && rmChartMode == ChartMetricMode.PERCENT_BW) {
+                        val rmWithBw = remember(sortedRms, weightIndex, current.unit) {
+                            sortedRms.map { rm ->
+                                val bw = RelativeStrengthAnalytics.resolveBodyWeightForDate(rm.date, weightIndex)
+                                val pct = RelativeStrengthAnalytics.calculatePercentBw(rm.weight, current.unit, bw)
+                                Triple(rm, bw, pct)
+                            }
+                        }
+                        val validCount = rmWithBw.count { it.third != null }
+                        val hasEstimated = rmWithBw.any { it.third != null && it.second.isEstimated }
+                        if (validCount == 0) {
+                            PercentBwChartEmptyState(
+                                totalCount = sortedRms.size,
+                                onLogWeight = onLogWeight
+                            )
+                        } else {
+                            LineChart(
+                                points = rmWithBw.map { (rm, _, pct) ->
+                                    ChartPoint(rm.date.formatShort(), pct?.toFloat())
+                                },
+                                valueSuffix = "%"
+                            )
+                            Text(
+                                text = buildCoverageCaption(validCount, sortedRms.size, hasEstimated),
+                                style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        val series = sortedRms.map { ChartPoint(it.date.formatShort(), it.weight.toFloat()) }
+                        LineChart(points = series)
                     }
                 }
-                val series = rmSeries.filter { it.reps == reps }
-                    .sortedBy { it.date }
-                    .map { ChartPoint(it.date.formatShort(), it.weight.toFloat()) }
-                LineChart(points = series)
             }
 
             SectionCard(title = "Personal records") {
                 Row(modifier = Modifier.fillMaxWidth()) {
                     Text("RM", Modifier.weight(0.55f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("Weight", Modifier.weight(0.85f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("Source & Date", Modifier.weight(1.8f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.End)
+                    Text(
+                        if (isWeightedExercise) "Weight / % BW" else "Weight",
+                        Modifier.weight(1.05f),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text("Source & Date", Modifier.weight(1.6f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.End)
                 }
                 HorizontalDivider()
                 val bestByReps = rmSeries.groupBy { it.reps }
@@ -4011,21 +4259,54 @@ private fun ExerciseProgress(
                     val attribution = remember(rm, sessions, routines, current.name) {
                         resolveRepMaxAttribution(rm, sessions, routines, current.name)
                     }
+                    val rmBw = remember(rm.date, weightIndex, isWeightedExercise) {
+                        if (isWeightedExercise) RelativeStrengthAnalytics.resolveBodyWeightForDate(rm.date, weightIndex)
+                        else ResolvedBodyWeight(BodyWeightMatchKind.UNAVAILABLE, null, null, null)
+                    }
+                    val rmPct = remember(rm.weight, current.unit, rmBw, isWeightedExercise) {
+                        if (isWeightedExercise) RelativeStrengthAnalytics.calculatePercentBw(rm.weight, current.unit, rmBw)
+                        else null
+                    }
+                    val rmPctText = RelativeStrengthAnalytics.formatPercentBw(rmPct, rmBw.isEstimated)
+                    val talkBackPct = if (isWeightedExercise) {
+                        ", ${RelativeStrengthAnalytics.formatTalkBackPercentBw(rmPct, rmBw)}"
+                    } else ""
+
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 2.dp),
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = "${r}RM ${rm.weight.trimmed()} ${current.unit}$talkBackPct, ${attribution.formattedLabel}"
+                            }
+                            .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("${r}RM", Modifier.weight(0.55f), fontWeight = FontWeight.SemiBold)
                         Text(
-                            "${rm.weight.trimmed()} ${current.unit}",
-                            Modifier.weight(0.85f),
+                            "${r}RM",
+                            Modifier.weight(0.55f),
+                            style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
                             fontWeight = FontWeight.SemiBold
                         )
+                        Column(Modifier.weight(1.05f)) {
+                            Text(
+                                "${rm.weight.trimmed()} ${current.unit}",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            if (isWeightedExercise) {
+                                Text(
+                                    rmPctText,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (rmPct != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
                         Text(
                             attribution.formattedLabel,
-                            Modifier.weight(1.8f),
+                            Modifier.weight(1.6f),
                             style = MaterialTheme.typography.bodySmall,
                             color = if (attribution.blockTitle != null) {
                                 MaterialTheme.colorScheme.primary
@@ -4048,7 +4329,9 @@ private fun ExerciseProgress(
         selectionKey = "exercise-${current.id}",
         emptyMessage = "No sessions logged for this exercise yet.",
         repMaxes = repMaxes,
-        exercises = exercises
+        exercises = exercises,
+        weightIndex = weightIndex,
+        weightUnit = weightUnit
     )
 }
 
@@ -4061,9 +4344,12 @@ private fun DailyRoutineProgressSection(
     sessions: List<SessionWithBlocks>,
     repMaxes: List<RepMax>,
     exercises: List<Exercise>,
+    weightEntries: List<WeightEntry> = emptyList(),
+    weightIndex: NavigableMap<LocalDate, WeightEntry> = TreeMap(),
     weightUnit: String,
     onSelectRoutine: (DailyRoutine) -> Unit,
-    onNavigateToRoutinesLibrary: (() -> Unit)?
+    onNavigateToRoutinesLibrary: (() -> Unit)?,
+    onLogWeight: () -> Unit = {}
 ) {
     if (dailyRoutines.isEmpty()) {
         SectionCard(title = "Daily Routines Progress") {
@@ -4097,13 +4383,14 @@ private fun DailyRoutineProgressSection(
 
     if (currentRoutine == null) return
 
-    val constituents = remember(currentRoutine, sessions, repMaxes, exercises, weightUnit) {
+    val constituents = remember(currentRoutine, sessions, repMaxes, exercises, weightUnit, weightEntries) {
         DailyRoutineCodec.computeDailyRoutineProgress(
             routine = currentRoutine,
             sessions = sessions,
             repMaxes = repMaxes,
             exercises = exercises,
-            weightUnit = weightUnit
+            weightUnit = weightUnit,
+            weightEntries = weightEntries
         )
     }
 
@@ -4146,9 +4433,11 @@ private fun DailyRoutineProgressSection(
         DailyRoutineConstituentDrillDown(
             item = selectedItem,
             weightUnit = weightUnit,
+            weightIndex = weightIndex,
             repMaxes = repMaxes,
             exercises = exercises,
-            onBackToOverview = { selectedItemKey = null }
+            onBackToOverview = { selectedItemKey = null },
+            onLogWeight = onLogWeight
         )
     }
 }
@@ -4268,25 +4557,118 @@ private fun DailyRoutineConstituentOverviewCard(
                 )
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "All-Time Top: ${item.allTimeTop?.let { "${it.trimmed()} ${item.unit}" } ?: "—"}",
-                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
-                    fontWeight = FontWeight.Medium
+            val fontScale = LocalConfiguration.current.fontScale
+            val allTimeRawText = "All-Time Top: ${item.allTimeTop?.let { "${it.trimmed()} ${item.unit}" } ?: "—"}"
+            val lastTopRawText = if (item.lastTop != null && item.lastTopDateFormatted != null) {
+                "Last: ${item.lastTop.trimmed()} ${item.unit} (${item.lastTopDateFormatted})"
+            } else {
+                "Last: —"
+            }
+
+            if (item.isWeightedMetric && item.allTimeTop != null) {
+                val allTimePctText = RelativeStrengthAnalytics.formatPercentBw(
+                    item.allTimeTopPercentBw,
+                    item.allTimeTopPercentBwEstimated
                 )
-                val lastTopText = if (item.lastTop != null && item.lastTopDateFormatted != null) {
-                    "Last: ${item.lastTop.trimmed()} ${item.unit} (${item.lastTopDateFormatted})"
+                val lastPctText = if (item.lastTop != null) {
+                    RelativeStrengthAnalytics.formatPercentBw(
+                        item.lastTopPercentBw,
+                        item.lastTopPercentBwEstimated
+                    )
                 } else {
-                    "Last: —"
+                    null
                 }
-                Text(
-                    text = lastTopText,
-                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                val peak = item.peakTopPercentBw
+                val showPeak = peak != null && (
+                    item.allTimeTopPercentBw == null ||
+                        peak.percentBw > item.allTimeTopPercentBw
+                    )
+
+                if (fontScale >= 1.3f) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "$allTimeRawText · $allTimePctText",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = if (lastPctText != null) "$lastTopRawText · $lastPctText" else lastTopRawText,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = allTimeRawText,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = allTimePctText,
+                                style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (item.allTimeTopPercentBw != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            Text(
+                                text = lastTopRawText,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.End
+                            )
+                            if (lastPctText != null) {
+                                val deltaSuffix = item.topPercentBwDelta?.takeIf { it != 0.0 }?.let { d ->
+                                    val arrow = if (d > 0.0) "▲ " else "▼ "
+                                    " · $arrow${RelativeStrengthAnalytics.formatSignedDeltaPercentBw(d)}"
+                                }.orEmpty()
+                                Text(
+                                    text = "$lastPctText$deltaSuffix",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (item.lastTopPercentBw != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (showPeak) {
+                    Text(
+                        text = "Peak % BW: ${RelativeStrengthAnalytics.formatPercentBw(peak.percentBw, peak.resolvedBodyWeight.isEstimated)} (${peak.rawWeight.trimmed()} ${item.unit} · ${peak.date.formatShort()})",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = allTimeRawText,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = lastTopRawText,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
             if (item.lastSetsSummary.isNotBlank()) {
@@ -4337,9 +4719,11 @@ private fun DailyRoutineConstituentOverviewCard(
 private fun DailyRoutineConstituentDrillDown(
     item: ConstituentProgressSummary,
     weightUnit: String,
+    weightIndex: NavigableMap<LocalDate, WeightEntry> = TreeMap(),
     repMaxes: List<RepMax>,
     exercises: List<Exercise>,
-    onBackToOverview: () -> Unit
+    onBackToOverview: () -> Unit,
+    onLogWeight: () -> Unit = {}
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -4371,8 +4755,21 @@ private fun DailyRoutineConstituentDrillDown(
     }
 
     if (item.dayPerformances.isNotEmpty()) {
-        KpiRows(item.performances, item.dayPerformances, item.unit)
-        EvolutionCards(item.dayPerformances, item.unit, titlePrefix = item.title)
+        KpiRows(
+            blocks = item.performances,
+            days = item.dayPerformances,
+            unit = item.unit,
+            weightIndex = weightIndex,
+            weightUnit = weightUnit
+        )
+        EvolutionCards(
+            days = item.dayPerformances,
+            unit = item.unit,
+            titlePrefix = item.title,
+            blocks = item.performances,
+            weightIndex = weightIndex,
+            onLogWeight = onLogWeight
+        )
     }
 
     if (item.bestPrBadges.isNotEmpty()) {
@@ -4403,7 +4800,9 @@ private fun DailyRoutineConstituentDrillDown(
         selectionKey = "daily-routine-${item.key}",
         emptyMessage = "No sessions logged for ${item.title} yet.",
         repMaxes = repMaxes,
-        exercises = exercises
+        exercises = exercises,
+        weightIndex = weightIndex,
+        weightUnit = weightUnit
     )
 }
 
@@ -4417,9 +4816,11 @@ private fun RoutineProgress(
     exercises: List<Exercise>,
     sessions: List<SessionWithBlocks>,
     repMaxes: List<RepMax> = emptyList(),
+    weightIndex: NavigableMap<LocalDate, WeightEntry> = TreeMap(),
     weightUnit: String = "kg",
     current: Routine?,
-    onSelect: (Routine) -> Unit
+    onSelect: (Routine) -> Unit,
+    onLogWeight: () -> Unit = {}
 ) {
     Dropdown(
         label = "Complex",
@@ -4542,8 +4943,21 @@ private fun RoutineProgress(
     val days = activeBlocks.byDay()
     val unit = target?.unit ?: weightUnit.ifBlank { "kg" }
 
-    KpiRows(activeBlocks, days, unit)
-    EvolutionCards(days, unit, titlePrefix = selectedBlockFilter ?: "All Complexes")
+    KpiRows(
+        blocks = activeBlocks,
+        days = days,
+        unit = unit,
+        weightIndex = weightIndex,
+        weightUnit = weightUnit
+    )
+    EvolutionCards(
+        days = days,
+        unit = unit,
+        titlePrefix = selectedBlockFilter ?: "All Complexes",
+        blocks = activeBlocks,
+        weightIndex = weightIndex,
+        onLogWeight = onLogWeight
+    )
 
     // --- Per-Complex Routine Breakdown Card --------------------------------------
     if (definedBlocks.isNotEmpty()) {
@@ -4625,69 +5039,445 @@ private fun RoutineProgress(
         selectionKey = "routine-${current.id}-${selectedBlockFilter ?: "all"}",
         emptyMessage = "No logged complexes match this selection yet.",
         repMaxes = repMaxes,
-        exercises = exercises
+        exercises = exercises,
+        weightIndex = weightIndex,
+        weightUnit = weightUnit
     )
 }
 
 // --- Shared sections ------------------------------------------------------------
 
+private enum class ChartMetricMode { WEIGHT, PERCENT_BW }
+
+private fun buildCoverageCaption(
+    validCount: Int,
+    totalCount: Int,
+    hasEstimated: Boolean,
+    suffix: String = ""
+): String {
+    val base = "$validCount of $totalCount sessions with BW$suffix"
+    return if (hasEstimated) "$base · ~ = 7-day prior BW" else base
+}
+
+@Composable
+private fun ChartHeaderWithSwitcher(
+    title: String,
+    unit: String,
+    isWeighted: Boolean,
+    mode: ChartMetricMode,
+    onSelectMode: (ChartMetricMode) -> Unit
+) {
+    if (!isWeighted) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        return
+    }
+    val fontScale = LocalConfiguration.current.fontScale
+    if (fontScale >= 1.3f) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            ChartMetricSwitcher(unit = unit, mode = mode, onSelectMode = onSelectMode)
+        }
+    } else {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp)
+            )
+            ChartMetricSwitcher(unit = unit, mode = mode, onSelectMode = onSelectMode)
+        }
+    }
+}
+
+@Composable
+private fun ChartMetricSwitcher(
+    unit: String,
+    mode: ChartMetricMode,
+    onSelectMode: (ChartMetricMode) -> Unit
+) {
+    val displayUnit = unit.ifBlank { "kg" }
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Row(
+            modifier = Modifier.padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ChartMetricMode.entries.forEach { option ->
+                val isSelected = mode == option
+                val labelText = if (option == ChartMetricMode.WEIGHT) "Weight ($displayUnit)" else "% BW"
+                val semanticLabel = if (option == ChartMetricMode.WEIGHT) {
+                    "Chart unit Weight in $displayUnit"
+                } else {
+                    "Chart unit Percent body weight"
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
+                    tonalElevation = if (isSelected) 1.dp else 0.dp,
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .semantics {
+                            role = Role.Tab
+                            selected = isSelected
+                            contentDescription = semanticLabel
+                        }
+                        .clickable { onSelectMode(option) }
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = labelText,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PercentBwChartEmptyState(
+    totalCount: Int,
+    onLogWeight: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "0 of $totalCount sessions have body weight logged within 7 days.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            Button(
+                onClick = onLogWeight,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Log body weight", fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
 /** The four KPI stat cards with deltas vs the previous training day. */
 @Composable
-private fun KpiRows(blocks: List<BlockPerformance>, days: List<DayPerformance>, unit: String) {
+private fun KpiRows(
+    blocks: List<BlockPerformance>,
+    days: List<DayPerformance>,
+    unit: String,
+    weightIndex: NavigableMap<LocalDate, WeightEntry> = TreeMap(),
+    weightUnit: String = "kg"
+) {
     val latest = days.lastOrNull() ?: return
     val previous = days.getOrNull(days.size - 2)
-    val bestBlock = blocks.filter { it.top != null }.maxByOrNull { it.top!! }
+    val bestBlock = blocks.filter { it.top != null }
+        .maxWithOrNull(compareBy<BlockPerformance> { it.top!! }.thenBy { it.date })
+    val isWeighted = remember(blocks, unit) {
+        RelativeStrengthAnalytics.hasWeightedSets(blocks, unit)
+    }
+    val dayRelatives = remember(days, unit, weightIndex, isWeighted) {
+        if (isWeighted) RelativeStrengthAnalytics.resolveDayRelativeMetrics(days, unit, weightIndex)
+        else emptyList()
+    }
+    val latestRel = dayRelatives.lastOrNull()
+    val prevRel = dayRelatives.getOrNull(dayRelatives.size - 2)
+
+    val bestBlockBw = remember(bestBlock, weightIndex, isWeighted) {
+        bestBlock?.takeIf { isWeighted }?.let {
+            RelativeStrengthAnalytics.resolveBodyWeightForDate(it.date, weightIndex)
+        } ?: ResolvedBodyWeight(BodyWeightMatchKind.UNAVAILABLE, null, null, null)
+    }
+    val bestBlockPct = remember(bestBlock, unit, bestBlockBw, isWeighted) {
+        if (isWeighted) RelativeStrengthAnalytics.calculatePercentBw(bestBlock?.top, unit, bestBlockBw)
+        else null
+    }
+    val peakRel = remember(blocks, unit, weightIndex, isWeighted) {
+        if (isWeighted) RelativeStrengthAnalytics.resolvePeakRelativeStrength(blocks, unit, weightIndex)
+        else null
+    }
+    val showPeakCallout = peakRel != null && bestBlock != null && (
+        peakRel.date != bestBlock.date ||
+            bestBlockPct == null ||
+            peakRel.percentBw > bestBlockPct
+        )
+    val volumeUnit = if (isWeighted) unit else "kg"
+
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        val allTimeValue = bestBlock?.top?.let { "${it.trimmed()} $unit" } ?: "—"
+        val allTimeSubDate = bestBlock?.date?.formatShort() ?: ""
+        val allTimeDesc = if (isWeighted) {
+            "All-time top: $allTimeValue, ${RelativeStrengthAnalytics.formatTalkBackPercentBw(bestBlockPct, bestBlockBw)}, $allTimeSubDate"
+        } else {
+            "All-time top: $allTimeValue, $allTimeSubDate"
+        }
         KpiCard(
             label = "All-time top",
-            value = bestBlock?.top?.let { "${it.trimmed()} $unit" } ?: "—",
-            sub = { SubText(bestBlock?.date?.formatShort() ?: "") }
-        )
-        KpiCard(
-            label = "Last top",
-            value = "${latest.top.trimmed()} $unit",
-            sub = { DeltaText(previous?.let { latest.top - it.top }, unit) }
-        )
-    }
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        KpiCard(
-            label = "Last average",
-            value = "${latest.average.trimmed()} $unit",
-            sub = { DeltaText(previous?.let { latest.average - it.average }, unit) }
-        )
-        KpiCard(
-            label = "Last volume",
-            value = latest.volume?.let { "${it.trimmed()} kg" } ?: "—",
+            value = allTimeValue,
+            semanticsDescription = allTimeDesc,
             sub = {
-                DeltaText(
-                    latest.volume?.let { v -> previous?.volume?.let { v - it } },
-                    "kg"
-                )
+                if (isWeighted && bestBlock?.top != null) {
+                    PercentBwSubBadge(
+                        percentBw = bestBlockPct,
+                        isEstimated = bestBlockBw.isEstimated,
+                        color = if (bestBlockPct != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                SubText(allTimeSubDate)
             }
         )
+
+        val lastTopValue = "${latest.top.trimmed()} $unit"
+        val lastTopPct = latestRel?.topPercentBw
+        val lastTopBw = latestRel?.bodyWeight ?: ResolvedBodyWeight(BodyWeightMatchKind.UNAVAILABLE, null, null, null)
+        val lastTopPctDelta = RelativeStrengthAnalytics.computePercentBwDelta(lastTopPct, prevRel?.topPercentBw)
+        val lastTopDesc = if (isWeighted) {
+            "Last top: $lastTopValue, ${RelativeStrengthAnalytics.formatTalkBackPercentBw(lastTopPct, lastTopBw)}"
+        } else {
+            "Last top: $lastTopValue"
+        }
+        KpiCard(
+            label = "Last top",
+            value = lastTopValue,
+            semanticsDescription = lastTopDesc,
+            sub = {
+                if (isWeighted) {
+                    PercentBwSubBadge(
+                        percentBw = lastTopPct,
+                        isEstimated = lastTopBw.isEstimated,
+                        color = if (lastTopPct != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                DeltaText(previous?.let { latest.top - it.top }, unit)
+                if (isWeighted && lastTopPctDelta != null) {
+                    PercentBwDeltaText(lastTopPctDelta)
+                }
+            }
+        )
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        val lastAvgValue = "${latest.average.trimmed()} $unit"
+        val lastAvgPct = latestRel?.averagePercentBw
+        val lastAvgBw = latestRel?.bodyWeight ?: ResolvedBodyWeight(BodyWeightMatchKind.UNAVAILABLE, null, null, null)
+        val lastAvgPctDelta = RelativeStrengthAnalytics.computePercentBwDelta(lastAvgPct, prevRel?.averagePercentBw)
+        val lastAvgDesc = if (isWeighted) {
+            "Last average: $lastAvgValue, ${RelativeStrengthAnalytics.formatTalkBackPercentBw(lastAvgPct, lastAvgBw)}"
+        } else {
+            "Last average: $lastAvgValue"
+        }
+        KpiCard(
+            label = "Last average",
+            value = lastAvgValue,
+            semanticsDescription = lastAvgDesc,
+            sub = {
+                if (isWeighted) {
+                    PercentBwSubBadge(
+                        percentBw = lastAvgPct,
+                        isEstimated = lastAvgBw.isEstimated,
+                        color = if (lastAvgPct != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                DeltaText(previous?.let { latest.average - it.average }, unit)
+                if (isWeighted && lastAvgPctDelta != null) {
+                    PercentBwDeltaText(lastAvgPctDelta)
+                }
+            }
+        )
+
+        val lastVolValue = latest.volume?.let { "${it.trimmed()} $volumeUnit" } ?: "—"
+        val lastVolPct = latestRel?.volumePercentBw
+        val lastVolBw = latestRel?.bodyWeight ?: ResolvedBodyWeight(BodyWeightMatchKind.UNAVAILABLE, null, null, null)
+        val lastVolPctDelta = RelativeStrengthAnalytics.computePercentBwDelta(lastVolPct, prevRel?.volumePercentBw)
+        val lastVolDesc = if (isWeighted && latest.volume != null) {
+            "Last volume: $lastVolValue, ${RelativeStrengthAnalytics.formatTalkBackPercentBw(lastVolPct, lastVolBw)}"
+        } else {
+            "Last volume: $lastVolValue"
+        }
+        KpiCard(
+            label = "Last volume",
+            value = lastVolValue,
+            semanticsDescription = lastVolDesc,
+            sub = {
+                if (isWeighted && latest.volume != null) {
+                    PercentBwSubBadge(
+                        percentBw = lastVolPct,
+                        isEstimated = lastVolBw.isEstimated,
+                        color = if (lastVolPct != null) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                DeltaText(
+                    latest.volume?.let { v -> previous?.volume?.let { v - it } },
+                    volumeUnit
+                )
+                if (isWeighted && lastVolPctDelta != null) {
+                    PercentBwDeltaText(lastVolPctDelta)
+                }
+            }
+        )
+    }
+
+    if (showPeakCallout) {
+        val peakPctStr = RelativeStrengthAnalytics.formatPercentBw(
+            peakRel.percentBw,
+            peakRel.resolvedBodyWeight.isEstimated
+        )
+        val peakTalkBack = "Peak relative strength: ${RelativeStrengthAnalytics.formatTalkBackPercentBw(peakRel.percentBw, peakRel.resolvedBodyWeight)}, ${peakRel.rawWeight.trimmed()} $unit on ${peakRel.date.formatShort()}, higher relative strength than ${bestBlock.date.formatShort()}."
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics(mergeDescendants = true) {
+                    contentDescription = peakTalkBack
+                }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = "Peak % BW: $peakPctStr",
+                    style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "${peakRel.rawWeight.trimmed()} $unit on ${peakRel.date.formatShort()} (higher relative strength than ${bestBlock.date.formatShort()} · ${RelativeStrengthAnalytics.formatBodyWeightAnchor(peakRel.resolvedBodyWeight, weightUnit)})",
+                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum")
+                )
+            }
+        }
     }
 }
 
 /** Top & average evolution chart plus the volume-per-session chart. */
 @Composable
-private fun EvolutionCards(days: List<DayPerformance>, unit: String, titlePrefix: String = "") {
-    val chartTitle = if (titlePrefix.isNotBlank()) "Evolution: $titlePrefix ($unit)" else "Evolution per session ($unit)"
+private fun EvolutionCards(
+    days: List<DayPerformance>,
+    unit: String,
+    titlePrefix: String = "",
+    blocks: List<BlockPerformance> = emptyList(),
+    weightIndex: NavigableMap<LocalDate, WeightEntry> = TreeMap(),
+    onLogWeight: () -> Unit = {}
+) {
+    val isWeighted = remember(blocks, unit) {
+        RelativeStrengthAnalytics.hasWeightedSets(blocks, unit)
+    }
+    val dayRelatives = remember(days, unit, weightIndex, isWeighted) {
+        if (isWeighted) RelativeStrengthAnalytics.resolveDayRelativeMetrics(days, unit, weightIndex)
+        else emptyList()
+    }
+
+    var evoMode by rememberSaveable(titlePrefix, unit) { mutableStateOf(ChartMetricMode.WEIGHT) }
+    var volMode by rememberSaveable(titlePrefix, unit) { mutableStateOf(ChartMetricMode.WEIGHT) }
+
+    val baseEvoTitle = if (titlePrefix.isNotBlank()) "Evolution: $titlePrefix" else "Evolution per session"
+    val evoUnitLabel = if (isWeighted && evoMode == ChartMetricMode.PERCENT_BW) "% BW" else unit
     if (days.isNotEmpty()) {
-        SectionCard(title = chartTitle) {
-            MultiLineChart(
-                series = listOf(
-                    ChartSeries(
-                        name = "Top",
-                        points = days.map { ChartPoint(it.date.formatShort(), it.top.toFloat()) },
-                        color = MaterialTheme.colorScheme.primary
-                    ),
-                    ChartSeries(
-                        name = "Average",
-                        points = days.map { ChartPoint(it.date.formatShort(), it.average.toFloat()) },
-                        color = MaterialTheme.colorScheme.tertiary
-                    )
+        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ChartHeaderWithSwitcher(
+                    title = "$baseEvoTitle ($evoUnitLabel)",
+                    unit = unit,
+                    isWeighted = isWeighted,
+                    mode = evoMode,
+                    onSelectMode = { evoMode = it }
                 )
-            )
+
+                if (isWeighted && evoMode == ChartMetricMode.PERCENT_BW) {
+                    val validCount = dayRelatives.count { it.topPercentBw != null }
+                    val hasEstimated = dayRelatives.any { it.topPercentBw != null && it.bodyWeight.isEstimated }
+                    if (validCount == 0) {
+                        PercentBwChartEmptyState(totalCount = days.size, onLogWeight = onLogWeight)
+                    } else {
+                        MultiLineChart(
+                            series = listOf(
+                                ChartSeries(
+                                    name = "Top (% BW)",
+                                    points = dayRelatives.map {
+                                        ChartPoint(it.date.formatShort(), it.topPercentBw?.toFloat())
+                                    },
+                                    color = MaterialTheme.colorScheme.primary
+                                ),
+                                ChartSeries(
+                                    name = "Average (% BW)",
+                                    points = dayRelatives.map {
+                                        ChartPoint(it.date.formatShort(), it.averagePercentBw?.toFloat())
+                                    },
+                                    color = MaterialTheme.colorScheme.tertiary
+                                )
+                            ),
+                            valueSuffix = "%"
+                        )
+                        Text(
+                            text = buildCoverageCaption(validCount, days.size, hasEstimated),
+                            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    MultiLineChart(
+                        series = listOf(
+                            ChartSeries(
+                                name = "Top",
+                                points = days.map { ChartPoint(it.date.formatShort(), it.top.toFloat()) },
+                                color = MaterialTheme.colorScheme.primary
+                            ),
+                            ChartSeries(
+                                name = "Average",
+                                points = days.map { ChartPoint(it.date.formatShort(), it.average.toFloat()) },
+                                color = MaterialTheme.colorScheme.tertiary
+                            )
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -4695,8 +5485,52 @@ private fun EvolutionCards(days: List<DayPerformance>, unit: String, titlePrefix
         d.volume?.let { ChartPoint(d.date.formatShort(), it.toFloat()) }
     }
     if (volumePoints.size >= 2) {
-        SectionCard(title = "Volume per session (kg)") {
-            LineChart(points = volumePoints, lineColor = MaterialTheme.colorScheme.secondary)
+        val volUnit = if (isWeighted) unit else "kg"
+        val volDisplayUnit = if (isWeighted && volMode == ChartMetricMode.PERCENT_BW) "% BW" else volUnit
+        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ChartHeaderWithSwitcher(
+                    title = "Volume per session ($volDisplayUnit)",
+                    unit = volUnit,
+                    isWeighted = isWeighted,
+                    mode = volMode,
+                    onSelectMode = { volMode = it }
+                )
+
+                if (isWeighted && volMode == ChartMetricMode.PERCENT_BW) {
+                    val volRelatives = dayRelatives.filterIndexed { i, _ -> days[i].volume != null }
+                    val validVolCount = volRelatives.count { it.volumePercentBw != null }
+                    val hasEstVol = volRelatives.any { it.volumePercentBw != null && it.bodyWeight.isEstimated }
+                    if (validVolCount == 0) {
+                        PercentBwChartEmptyState(totalCount = volRelatives.size, onLogWeight = onLogWeight)
+                    } else {
+                        LineChart(
+                            points = volRelatives.map {
+                                ChartPoint(it.date.formatShort(), it.volumePercentBw?.toFloat())
+                            },
+                            lineColor = MaterialTheme.colorScheme.secondary,
+                            valueSuffix = "%"
+                        )
+                        Text(
+                            text = buildCoverageCaption(
+                                validCount = validVolCount,
+                                totalCount = volRelatives.size,
+                                hasEstimated = hasEstVol,
+                                suffix = " · Tonnage ÷ BW"
+                            ),
+                            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    LineChart(points = volumePoints, lineColor = MaterialTheme.colorScheme.secondary)
+                }
+            }
         }
     }
 }
@@ -4709,7 +5543,9 @@ private fun BlockHistoryCard(
     selectionKey: String,
     emptyMessage: String,
     repMaxes: List<RepMax> = emptyList(),
-    exercises: List<Exercise> = emptyList()
+    exercises: List<Exercise> = emptyList(),
+    weightIndex: NavigableMap<LocalDate, WeightEntry> = TreeMap(),
+    weightUnit: String = "kg"
 ) {
     SectionCard(title = "Complex history") {
         if (blocks.isEmpty()) {
@@ -4730,6 +5566,8 @@ private fun BlockHistoryCard(
                     expanded = expandedKey == bp.block.id,
                     repMaxes = repMaxes,
                     exercises = exercises,
+                    weightIndex = weightIndex,
+                    weightUnit = weightUnit,
                     onToggle = {
                         expandedKey = if (expandedKey == bp.block.id) null else bp.block.id
                     }
@@ -4748,9 +5586,17 @@ private fun RowScope.KpiCard(
     value: String,
     valueStyle: TextStyle = MaterialTheme.typography.titleLarge,
     contentPadding: PaddingValues = PaddingValues(12.dp),
+    semanticsDescription: String? = null,
     sub: @Composable () -> Unit
 ) {
-    OutlinedCard(modifier = Modifier.weight(1f)) {
+    val semMod = if (semanticsDescription != null) {
+        Modifier.semantics(mergeDescendants = true) {
+            contentDescription = semanticsDescription
+        }
+    } else {
+        Modifier.semantics(mergeDescendants = true) {}
+    }
+    OutlinedCard(modifier = Modifier.weight(1f).then(semMod)) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -4764,13 +5610,46 @@ private fun RowScope.KpiCard(
             )
             Text(
                 value,
-                style = valueStyle,
+                style = valueStyle.copy(fontFeatureSettings = "tnum"),
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             sub()
         }
+    }
+}
+
+@Composable
+private fun PercentBwSubBadge(
+    percentBw: Double?,
+    isEstimated: Boolean,
+    color: Color
+) {
+    Text(
+        text = RelativeStrengthAnalytics.formatPercentBw(percentBw, isEstimated),
+        style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+        fontWeight = FontWeight.SemiBold,
+        color = color,
+        maxLines = 1,
+        softWrap = false
+    )
+}
+
+@Composable
+private fun PercentBwDeltaText(deltaPct: Double) {
+    when {
+        deltaPct > 0.0 -> Text(
+            text = "▲ ${RelativeStrengthAnalytics.formatSignedDeltaPercentBw(deltaPct)}",
+            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+            color = MaterialTheme.colorScheme.tertiary
+        )
+        deltaPct < 0.0 -> Text(
+            text = "▼ ${RelativeStrengthAnalytics.formatSignedDeltaPercentBw(deltaPct)}",
+            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+            color = MaterialTheme.colorScheme.error
+        )
+        else -> SubText("= 0% BW")
     }
 }
 
@@ -4790,12 +5669,12 @@ private fun DeltaText(delta: Double?, unit: String) {
         delta == null -> SubText("first session")
         delta > 0.0 -> Text(
             "▲ +${delta.trimmed()} $unit",
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
             color = MaterialTheme.colorScheme.tertiary
         )
         delta < 0.0 -> Text(
             "▼ ${delta.trimmed()} $unit",
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
             color = MaterialTheme.colorScheme.error
         )
         else -> SubText("= no change")
@@ -4822,6 +5701,8 @@ private fun BlockHistoryRow(
     expanded: Boolean,
     repMaxes: List<RepMax> = emptyList(),
     exercises: List<Exercise> = emptyList(),
+    weightIndex: NavigableMap<LocalDate, WeightEntry> = TreeMap(),
+    weightUnit: String = "kg",
     onToggle: () -> Unit
 ) {
     val b = bp.block
@@ -4833,10 +5714,37 @@ private fun BlockHistoryRow(
                     (b.mainExerciseId == null || rm.exerciseId == b.mainExerciseId))
         }
     }
+    val rowIsWeighted = remember(bp, unit) {
+        RelativeStrengthAnalytics.isWeightedUnit(unit) &&
+            bp.workingSets.any { (it.weight ?: 0.0) > 0.0 }
+    }
+    val resolvedBw = remember(bp.date, weightIndex, rowIsWeighted) {
+        if (rowIsWeighted) RelativeStrengthAnalytics.resolveBodyWeightForDate(bp.date, weightIndex)
+        else ResolvedBodyWeight(BodyWeightMatchKind.UNAVAILABLE, null, null, null)
+    }
+    val avgPct = remember(bp.average, unit, resolvedBw, rowIsWeighted) {
+        if (rowIsWeighted) RelativeStrengthAnalytics.calculatePercentBw(bp.average, unit, resolvedBw)
+        else null
+    }
+    val topPct = remember(bp.top, unit, resolvedBw, rowIsWeighted) {
+        if (rowIsWeighted) RelativeStrengthAnalytics.calculatePercentBw(bp.top, unit, resolvedBw)
+        else null
+    }
+    val volPct = remember(bp.volume, unit, resolvedBw, rowIsWeighted) {
+        if (rowIsWeighted) RelativeStrengthAnalytics.calculatePercentBw(bp.volume, unit, resolvedBw)
+        else null
+    }
+    val rowTalkBack = if (rowIsWeighted && bp.top != null) {
+        "${bp.date.formatShort()}, $label, top ${bp.top.trimmed()} $unit, ${RelativeStrengthAnalytics.formatTalkBackPercentBw(topPct, resolvedBw)}"
+    } else null
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onToggle)
+            .semantics(mergeDescendants = true) {
+                if (rowTalkBack != null) contentDescription = rowTalkBack
+            }
             .padding(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
@@ -4847,7 +5755,7 @@ private fun BlockHistoryRow(
             Text(
                 bp.date.formatShort(),
                 Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
                 fontWeight = FontWeight.SemiBold
             )
             Text(
@@ -4857,19 +5765,46 @@ private fun BlockHistoryRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(
-                bp.average?.trimmed() ?: "—",
-                Modifier.weight(0.7f),
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.End
-            )
-            Text(
-                bp.top?.trimmed() ?: "—",
-                Modifier.weight(0.7f),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.End
-            )
+            Column(
+                modifier = Modifier.weight(0.7f),
+                horizontalAlignment = Alignment.End
+            ) {
+                Text(
+                    bp.average?.trimmed() ?: "—",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                    textAlign = TextAlign.End
+                )
+                if (rowIsWeighted && bp.average != null) {
+                    Text(
+                        text = RelativeStrengthAnalytics.formatCompactPercent(avgPct, resolvedBw.isEstimated),
+                        style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier.weight(0.7f),
+                horizontalAlignment = Alignment.End
+            ) {
+                Text(
+                    bp.top?.trimmed() ?: "—",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.End
+                )
+                if (rowIsWeighted && bp.top != null) {
+                    Text(
+                        text = RelativeStrengthAnalytics.formatCompactPercent(topPct, resolvedBw.isEstimated),
+                        style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (topPct != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
         }
         if (achievedPrs.isNotEmpty()) {
             FlowRow(
@@ -4907,15 +5842,32 @@ private fun BlockHistoryRow(
                     "Sets: " + bp.sets.joinToString("   ") {
                         com.fractanomics.crosstraining.ui.formatBlockSetToken(it, b.notes, blockEx)
                     },
-                    style = MaterialTheme.typography.bodyMedium
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum")
                 )
             }
             val detail = listOfNotNull(
-                bp.average?.let { "avg ${it.trimmed()} $unit" },
-                bp.top?.let { "top ${it.trimmed()} $unit" },
-                bp.volume?.let { "volume ${it.trimmed()} kg" }
+                bp.average?.let { avg ->
+                    val pct = if (rowIsWeighted) " (${RelativeStrengthAnalytics.formatPercentBw(avgPct, resolvedBw.isEstimated)})" else ""
+                    "avg ${avg.trimmed()} $unit$pct"
+                },
+                bp.top?.let { top ->
+                    val pct = if (rowIsWeighted) " (${RelativeStrengthAnalytics.formatPercentBw(topPct, resolvedBw.isEstimated)})" else ""
+                    "top ${top.trimmed()} $unit$pct"
+                },
+                bp.volume?.let { vol ->
+                    val volUnit = if (rowIsWeighted) unit else "kg"
+                    val pct = if (rowIsWeighted) " (${RelativeStrengthAnalytics.formatPercentBw(volPct, resolvedBw.isEstimated)})" else ""
+                    "volume ${vol.trimmed()} $volUnit$pct"
+                }
             ).joinToString(" · ")
             if (detail.isNotBlank()) SubText(detail)
+            if (rowIsWeighted) {
+                Text(
+                    text = RelativeStrengthAnalytics.formatBodyWeightAnchor(resolvedBw, weightUnit),
+                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
         }
     }
 }

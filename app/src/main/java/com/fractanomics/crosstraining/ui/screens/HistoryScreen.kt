@@ -59,10 +59,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fractanomics.crosstraining.data.analytics.BodyWeightMatchKind
+import com.fractanomics.crosstraining.data.analytics.RelativeStrengthAnalytics
+import com.fractanomics.crosstraining.data.analytics.ResolvedBodyWeight
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.BlockWithSets
 import com.fractanomics.crosstraining.data.model.Exercise
@@ -87,10 +91,15 @@ fun HistoryScreen(
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
     val exercises by viewModel.exercises.collectAsStateWithLifecycle()
     val cycles by viewModel.cycles.collectAsStateWithLifecycle()
+    val weightEntries by viewModel.weightEntries.collectAsStateWithLifecycle()
+    val weightUnit by viewModel.weightUnit.collectAsStateWithLifecycle()
 
     val exerciseNames = exercises.associate { it.id to it.name }
     val exercisesById = exercises.associateBy { it.id }
     val cycleNames = cycles.associate { it.id to it.name }
+    val activeWeightIndex = remember(weightEntries) {
+        RelativeStrengthAnalytics.buildActiveWeightIndex(weightEntries)
+    }
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedCycleFilter by remember { mutableStateOf<Long?>(null) }
@@ -181,11 +190,19 @@ fun HistoryScreen(
             } else {
                 ScreenList {
                     items(filteredSessions, key = { it.session.id }) { item ->
+                        val resolvedBw = remember(item.session.date, activeWeightIndex) {
+                            RelativeStrengthAnalytics.resolveBodyWeightForDate(
+                                targetDate = item.session.date,
+                                weightIndex = activeWeightIndex
+                            )
+                        }
                         CompactSessionCard(
                             item = item,
                             exerciseNames = exerciseNames,
                             exercisesById = exercisesById,
                             cycleName = cycleNames[item.session.cycleId],
+                            resolvedBw = resolvedBw,
+                            weightUnit = weightUnit,
                             onEdit = { onOpenEditor(item.session.id, false) },
                             onCopy = { onOpenEditor(item.session.id, true) },
                             onDelete = { viewModel.deleteSession(item.session) }
@@ -256,6 +273,8 @@ private fun CompactSessionCard(
     exerciseNames: Map<Long, String>,
     exercisesById: Map<Long, Exercise>,
     cycleName: String?,
+    resolvedBw: ResolvedBodyWeight = ResolvedBodyWeight(BodyWeightMatchKind.UNAVAILABLE, null, null, null),
+    weightUnit: String = "kg",
     onEdit: () -> Unit,
     onCopy: () -> Unit,
     onDelete: () -> Unit
@@ -341,9 +360,22 @@ private fun CompactSessionCard(
                     // Summary chips / text of movements
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         item.blocks.sortedBy { it.block.position }.forEach { bws ->
-                            val title = bws.block.name.ifBlank { bws.block.mainExerciseId?.let { exerciseNames[it] } ?: "Block" }
-                            val maxWeight = bws.sets.mapNotNull { it.weight ?: it.metricValue }.maxOrNull()
-                            val weightStr = if (maxWeight != null && maxWeight > 0.0) " (${maxWeight.trimmed()}kg)" else ""
+                            val blockEx = bws.block.mainExerciseId?.let { exercisesById[it] }
+                            val title = bws.block.name.ifBlank { blockEx?.name ?: bws.block.mainExerciseId?.let { exerciseNames[it] } ?: "Block" }
+                            val blockUnit = blockEx?.unit?.ifBlank { weightUnit } ?: weightUnit
+                            val workingWeights = bws.sets
+                                .filter { !it.isWarmup && !it.isFailed }
+                                .mapNotNull { it.weight?.takeIf { w -> w > 0.0 } }
+                            val isWeightedBlock = RelativeStrengthAnalytics.isWeightedUnit(blockUnit) && workingWeights.isNotEmpty()
+                            val weightStr = if (isWeightedBlock) {
+                                val topW = workingWeights.max()
+                                val topPct = RelativeStrengthAnalytics.calculatePercentBw(topW, blockUnit, resolvedBw)
+                                val pctText = RelativeStrengthAnalytics.formatPercentBw(topPct, resolvedBw.isEstimated)
+                                " (${topW.trimmed()} $blockUnit · $pctText)"
+                            } else {
+                                val maxWeight = bws.sets.mapNotNull { it.weight ?: it.metricValue }.maxOrNull()
+                                if (maxWeight != null && maxWeight > 0.0) " (${maxWeight.trimmed()}kg)" else ""
+                            }
                             Surface(
                                 shape = RoundedCornerShape(4.dp),
                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
@@ -351,7 +383,7 @@ private fun CompactSessionCard(
                             ) {
                                 Text(
                                     "$title$weightStr",
-                                    style = MaterialTheme.typography.labelSmall,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -384,6 +416,22 @@ private fun CompactSessionCard(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                    val hasWeightedBlock = remember(item.blocks, exercisesById, weightUnit) {
+                        item.blocks.any { bws ->
+                            val ex = bws.block.mainExerciseId?.let { exercisesById[it] }
+                            val u = ex?.unit?.ifBlank { weightUnit } ?: weightUnit
+                            RelativeStrengthAnalytics.isWeightedUnit(u) &&
+                                bws.sets.any { !it.isWarmup && !it.isFailed && (it.weight ?: 0.0) > 0.0 }
+                        }
+                    }
+                    if (hasWeightedBlock) {
+                        Text(
+                            text = RelativeStrengthAnalytics.formatBodyWeightAnchor(resolvedBw, weightUnit),
+                            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
 
                     val historyItems = remember(item.blocks) {
                         groupHistoryBlocks(item.blocks.sortedBy { it.block.position })
@@ -424,7 +472,9 @@ private fun CompactSessionCard(
                                     idx = hItem.index,
                                     bws = hItem.blockWithSets,
                                     exerciseNames = exerciseNames,
-                                    exercisesById = exercisesById
+                                    exercisesById = exercisesById,
+                                    resolvedBw = resolvedBw,
+                                    weightUnit = weightUnit
                                 )
                             }
                             is HistoryBlockItem.SubBlockGroup -> {
@@ -508,7 +558,9 @@ private fun CompactSessionCard(
                                                 idx = childIdx,
                                                 bws = childBws,
                                                 exerciseNames = exerciseNames,
-                                                exercisesById = exercisesById
+                                                exercisesById = exercisesById,
+                                                resolvedBw = resolvedBw,
+                                                weightUnit = weightUnit
                                             )
                                         }
                                     }
@@ -559,11 +611,21 @@ private fun HistoryBlockCard(
     idx: Int,
     bws: BlockWithSets,
     exerciseNames: Map<Long, String>,
-    exercisesById: Map<Long, Exercise>
+    exercisesById: Map<Long, Exercise>,
+    resolvedBw: ResolvedBodyWeight = ResolvedBodyWeight(BodyWeightMatchKind.UNAVAILABLE, null, null, null),
+    weightUnit: String = "kg"
 ) {
     val b = bws.block
     val blockEx = b.mainExerciseId?.let { exercisesById[it] }
     val title = b.name.ifBlank { blockEx?.name ?: b.mainExerciseId?.let { exerciseNames[it] } ?: "Block ${idx + 1}" }
+    val blockUnit = blockEx?.unit?.ifBlank { weightUnit } ?: weightUnit
+    val workingWeightedSets = remember(bws.sets, blockUnit) {
+        if (RelativeStrengthAnalytics.isWeightedUnit(blockUnit)) {
+            bws.sets.filter { !it.isWarmup && !it.isFailed && (it.weight ?: 0.0) > 0.0 }
+        } else {
+            emptyList()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -595,7 +657,7 @@ private fun HistoryBlockCard(
             Text(b.description, style = MaterialTheme.typography.bodySmall)
         }
 
-        // Sets Grid
+        // Sets Grid (raw set tokens without per-set % BW clutter)
         if (bws.sets.isNotEmpty()) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 bws.sets.sortedBy { it.position }.forEachIndexed { setIdx, st ->
@@ -623,6 +685,27 @@ private fun HistoryBlockCard(
                     }
                 }
             }
+        }
+
+        if (workingWeightedSets.isNotEmpty()) {
+            val weights = workingWeightedSets.mapNotNull { it.weight }
+            val topWeight = weights.max()
+            val avgWeight = weights.average()
+            val totalVol = workingWeightedSets.sumOf { (it.weight ?: 0.0) * it.reps.coerceAtLeast(1) }
+            val topPct = RelativeStrengthAnalytics.calculatePercentBw(topWeight, blockUnit, resolvedBw)
+            val avgPct = RelativeStrengthAnalytics.calculatePercentBw(avgWeight, blockUnit, resolvedBw)
+            val volPct = RelativeStrengthAnalytics.calculatePercentBw(totalVol, blockUnit, resolvedBw)
+            val summaryText = listOf(
+                "Top ${topWeight.trimmed()} $blockUnit (${RelativeStrengthAnalytics.formatPercentBw(topPct, resolvedBw.isEstimated)})",
+                "Avg ${avgWeight.trimmed()} $blockUnit (${RelativeStrengthAnalytics.formatPercentBw(avgPct, resolvedBw.isEstimated)})",
+                "Vol ${totalVol.trimmed()} $blockUnit (${RelativeStrengthAnalytics.formatPercentBw(volPct, resolvedBw.isEstimated)})"
+            ).joinToString(" · ")
+            Text(
+                text = summaryText,
+                style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.semantics(mergeDescendants = true) {}
+            )
         }
 
         // Metcon Result
