@@ -77,6 +77,11 @@ import com.fractanomics.crosstraining.ui.components.EmptyState
 import com.fractanomics.crosstraining.ui.components.ScreenList
 import com.fractanomics.crosstraining.ui.formatBlockSetToken
 import com.fractanomics.crosstraining.ui.formatLong
+import com.fractanomics.crosstraining.ui.theme.OchreContainerDark
+import com.fractanomics.crosstraining.ui.theme.OchreContainerLight
+import com.fractanomics.crosstraining.ui.theme.OchreOnContainerDark
+import com.fractanomics.crosstraining.ui.theme.OchreOnContainerLight
+import com.fractanomics.crosstraining.ui.theme.isAppDarkTheme
 import com.fractanomics.crosstraining.ui.trimmed
 import java.time.format.DateTimeFormatter
 
@@ -660,6 +665,7 @@ private fun HistoryBlockCard(
 
         // Sets Grid (raw set tokens without per-set % BW clutter)
         if (bws.sets.isNotEmpty()) {
+            val isDark = isAppDarkTheme()
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 bws.sets.sortedBy { it.position }.forEachIndexed { setIdx, st ->
                     val setLabelNum = st.groupIndex?.takeIf { it > 0 } ?: (setIdx + 1)
@@ -667,7 +673,7 @@ private fun HistoryBlockCard(
                         shape = RoundedCornerShape(6.dp),
                         color = when {
                             st.isFailed -> MaterialTheme.colorScheme.errorContainer
-                            st.isWarmup -> Color(0xFFFEF3C7)
+                            st.isWarmup -> if (isDark) OchreContainerDark else OchreContainerLight
                             else -> MaterialTheme.colorScheme.surface
                         },
                         modifier = Modifier.padding(vertical = 2.dp)
@@ -679,7 +685,7 @@ private fun HistoryBlockCard(
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
                             color = when {
                                 st.isFailed -> MaterialTheme.colorScheme.onErrorContainer
-                                st.isWarmup -> Color(0xFFB45309)
+                                st.isWarmup -> if (isDark) OchreOnContainerDark else OchreOnContainerLight
                                 else -> MaterialTheme.colorScheme.onSurface
                             }
                         )

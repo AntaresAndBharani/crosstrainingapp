@@ -83,6 +83,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import com.fractanomics.crosstraining.ui.theme.BorderDarkModeSlate
+import com.fractanomics.crosstraining.ui.theme.CrimsonErrorDark
+import com.fractanomics.crosstraining.ui.theme.OchreWarningDark
+import com.fractanomics.crosstraining.ui.theme.SageTertiaryDark
+import com.fractanomics.crosstraining.ui.theme.SageTertiaryLight
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -400,16 +405,16 @@ object WaveformVisualizerHelper {
     }
 
     /**
-     * Standard color tokens matching UI/UX requirements:
-     * - Green for listening
-     * - Yellow / Amber for processing
-     * - Red for error
+     * Standard color tokens mapped to the centralized Graphite, Titanium & Warm Bronze theme:
+     * - Muted Sage for listening
+     * - Burnished Ochre for processing
+     * - Muted Crimson for error
      */
-    val GreenListening = Color(0xFF10B981)
-    val GreenListeningLight = Color(0xFF059669)
-    val YellowProcessing = Color(0xFFF59E0B)
-    val RedError = Color(0xFFEF4444)
-    val NeutralIdle = Color(0xFF64748B)
+    val GreenListening = SageTertiaryDark
+    val GreenListeningLight = SageTertiaryLight
+    val YellowProcessing = OchreWarningDark
+    val RedError = CrimsonErrorDark
+    val NeutralIdle = BorderDarkModeSlate
 
     fun resolveColor(status: VoiceIndicatorStatus): Color {
         return when (status) {

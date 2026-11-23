@@ -11,7 +11,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -92,49 +91,17 @@ import com.fractanomics.crosstraining.R
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.RepMax
 import com.fractanomics.crosstraining.ui.trimmed
+import com.fractanomics.crosstraining.ui.theme.OchreContainerDark
+import com.fractanomics.crosstraining.ui.theme.OchreContainerLight
+import com.fractanomics.crosstraining.ui.theme.OchreOnContainerDark
+import com.fractanomics.crosstraining.ui.theme.OchreOnContainerLight
+import com.fractanomics.crosstraining.ui.theme.OchreWarningDark
+import com.fractanomics.crosstraining.ui.theme.OchreWarningLight
+import com.fractanomics.crosstraining.ui.theme.isAppDarkTheme
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.ExerciseTargetMetric
 import com.fractanomics.crosstraining.util.TrackedPrSlot
 import kotlinx.coroutines.launch
-
-private val ComplexCardSurfaceLight = Color(0xFFF8F9FA)
-private val ComplexCardSurfaceDark = Color(0xFF1C2226)
-private val ComplexHeaderLight = Color(0xFF0369A1)
-private val ComplexHeaderDark = Color(0xFF7DD3FC)
-private val ComplexPrescriptionLight = Color(0xFFF1F5F9)
-private val ComplexPrescriptionDark = Color(0xFF242C31)
-private val ComplexLegendLight = Color(0xFF374146)
-private val ComplexLegendDark = Color(0xFFCBD5E1)
-private val ComplexRowBgLight = Color(0xFFFFFFFF)
-private val ComplexRowBgDark = Color(0xFF171C20)
-private val ComplexRowBorderLight = Color(0xFFE2E8F0)
-private val ComplexRowBorderDark = Color(0xFF2D3748)
-private val ComplexActivePillBgLight = Color(0xFFE0F2FE)
-private val ComplexActivePillTextLight = Color(0xFF0369A1)
-private val ComplexActivePillBgDark = Color(0xFF1E3A5F)
-private val ComplexActivePillTextDark = Color(0xFF7DD3FC)
-private val ComplexSkippedPillBgLight = Color(0xFFF1F5F9)
-private val ComplexSkippedPillBorderLight = Color(0xFFCBD5E1)
-private val ComplexSkippedPillTextLight = Color(0xFF64748B)
-private val ComplexSkippedPillBgDark = Color(0xFF20272C)
-private val ComplexSkippedPillBorderDark = Color(0xFF475569)
-private val ComplexSkippedPillTextDark = Color(0xFF94A3B8)
-private val ComplexWeightLinkedBgLight = Color(0xFFEEF7F2)
-private val ComplexWeightLinkedBorderLight = Color(0xFF68B684)
-private val ComplexWeightLinkedBgDark = Color(0xFF1A2E24)
-private val ComplexWeightLinkedBorderDark = Color(0xFF2ECC71)
-private val ComplexWeightMixedBgLight = Color(0xFFFFFBEB)
-private val ComplexWeightMixedBorderLight = Color(0xFFD97706)
-private val ComplexWeightMixedTextLight = Color(0xFFB45309)
-private val ComplexWeightMixedBgDark = Color(0xFF3B2810)
-private val ComplexWeightMixedBorderDark = Color(0xFFF59E0B)
-private val ComplexWeightMixedTextDark = Color(0xFFFBD38D)
-private val ComplexSubDrawerBgLight = Color(0xFFF8FAFC)
-private val ComplexSubDrawerBgDark = Color(0xFF1E252A)
-private val ComplexActiveSwitchBgLight = Color(0xFFE3F5EC)
-private val ComplexActiveSwitchTextLight = Color(0xFF0B6E3F)
-private val ComplexActiveSwitchBgDark = Color(0xFF133826)
-private val ComplexActiveSwitchTextDark = Color(0xFF2ECC71)
 
 internal fun sanitizeCompactWeightInput(raw: String): String {
     val cleaned = buildString {
@@ -300,12 +267,12 @@ internal fun CompactComplexLogCard(
     onShowUndoSnackbar: (message: String, onUndo: () -> Unit) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = isAppDarkTheme()
     val view = LocalView.current
     val context = LocalContext.current
     val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
-    val headerAccent = if (isDark) ComplexHeaderDark else ComplexHeaderLight
-    val cardColor = if (isDark) ComplexCardSurfaceDark else ComplexCardSurfaceLight
+    val headerAccent = MaterialTheme.colorScheme.primary
+    val cardColor = MaterialTheme.colorScheme.surfaceContainer
     val headerText = buildString {
         if (itemNumber != null) append("$itemNumber  ")
         append("COMPLEX: ${blockState.block.title.ifBlank { "Untitled Complex" }}")
@@ -444,7 +411,7 @@ private fun ComplexPrescriptionBox(
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = if (isDark) ComplexPrescriptionDark else ComplexPrescriptionLight,
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
         Text(
@@ -464,7 +431,7 @@ private fun MovementLegendRow(
     isDark: Boolean,
     onToggleView: () -> Unit
 ) {
-    val legendColor = if (isDark) ComplexLegendDark else ComplexLegendLight
+    val legendColor = MaterialTheme.colorScheme.onSurfaceVariant
     val spokenLegend = remember(exerciseSections) {
         exerciseSections.mapIndexed { idx, ex -> "${idx + 1} ${ex.exerciseName}" }.joinToString(", ")
     }
@@ -565,8 +532,8 @@ private fun ComplexSetRow(
     val summary = blockState.resolveSharedSetWeight(setIdx)
     val fontScale = LocalConfiguration.current.fontScale
     val reflowTwoLines = shouldReflowComplexSetRow(fontScale)
-    val rowBg = if (isDark) ComplexRowBgDark else ComplexRowBgLight
-    val rowBorder = if (isDark) ComplexRowBorderDark else ComplexRowBorderLight
+    val rowBg = MaterialTheme.colorScheme.surface
+    val rowBorder = MaterialTheme.colorScheme.outlineVariant
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
     val scope = rememberCoroutineScope()
 
@@ -729,12 +696,12 @@ private fun MovementStatusStrip(
         weightUnit = weightUnit,
         isExpanded = isExpanded
     )
-    val activeBg = if (isDark) ComplexActivePillBgDark else ComplexActivePillBgLight
-    val activeText = if (isDark) ComplexActivePillTextDark else ComplexActivePillTextLight
-    val skippedBg = if (isDark) ComplexSkippedPillBgDark else ComplexSkippedPillBgLight
-    val skippedBorder = if (isDark) ComplexSkippedPillBorderDark else ComplexSkippedPillBorderLight
-    val skippedText = if (isDark) ComplexSkippedPillTextDark else ComplexSkippedPillTextLight
-    val amberDotColor = if (isDark) ComplexWeightMixedBorderDark else ComplexWeightMixedBorderLight
+    val activeBg = MaterialTheme.colorScheme.primaryContainer
+    val activeText = MaterialTheme.colorScheme.onPrimaryContainer
+    val skippedBg = MaterialTheme.colorScheme.surfaceVariant
+    val skippedBorder = MaterialTheme.colorScheme.outlineVariant
+    val skippedText = MaterialTheme.colorScheme.onSurfaceVariant
+    val amberDotColor = if (isDark) OchreWarningDark else OchreWarningLight
 
     Row(
         modifier = modifier
@@ -862,18 +829,16 @@ private fun SharedSetWeightInput(
         summary.kind == SharedSetWeightStateKind.MIXED
 
     val bgColor = when (summary.kind) {
-        SharedSetWeightStateKind.LINKED -> if (isDark) ComplexWeightLinkedBgDark else ComplexWeightLinkedBgLight
-        SharedSetWeightStateKind.MIXED -> if (isDark) ComplexWeightMixedBgDark else ComplexWeightMixedBgLight
+        SharedSetWeightStateKind.LINKED -> MaterialTheme.colorScheme.tertiaryContainer
+        SharedSetWeightStateKind.MIXED -> if (isDark) OchreContainerDark else OchreContainerLight
         SharedSetWeightStateKind.ALL_SKIPPED,
-        SharedSetWeightStateKind.NON_WEIGHTED_ONLY ->
-            if (isDark) ComplexSkippedPillBgDark else ComplexSkippedPillBgLight
+        SharedSetWeightStateKind.NON_WEIGHTED_ONLY -> MaterialTheme.colorScheme.surfaceVariant
     }
     val borderColor = when (summary.kind) {
-        SharedSetWeightStateKind.LINKED -> if (isDark) ComplexWeightLinkedBorderDark else ComplexWeightLinkedBorderLight
-        SharedSetWeightStateKind.MIXED -> if (isDark) ComplexWeightMixedBorderDark else ComplexWeightMixedBorderLight
+        SharedSetWeightStateKind.LINKED -> MaterialTheme.colorScheme.tertiary
+        SharedSetWeightStateKind.MIXED -> if (isDark) OchreWarningDark else OchreWarningLight
         SharedSetWeightStateKind.ALL_SKIPPED,
-        SharedSetWeightStateKind.NON_WEIGHTED_ONLY ->
-            if (isDark) ComplexSkippedPillBorderDark else ComplexSkippedPillBorderLight
+        SharedSetWeightStateKind.NON_WEIGHTED_ONLY -> MaterialTheme.colorScheme.outlineVariant
     }
     val borderWidth = if (summary.kind == SharedSetWeightStateKind.MIXED) 1.5.dp else 1.dp
 
@@ -928,7 +893,7 @@ private fun SharedSetWeightInput(
                 Text(
                     text = stringResource(R.string.complex_state_skipped),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isDark) ComplexSkippedPillTextDark else ComplexSkippedPillTextLight,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
             }
@@ -936,14 +901,14 @@ private fun SharedSetWeightInput(
                 Text(
                     text = stringResource(R.string.complex_state_bw),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isDark) ComplexSkippedPillTextDark else ComplexSkippedPillTextLight,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
             }
             SharedSetWeightStateKind.LINKED,
             SharedSetWeightStateKind.MIXED -> {
                 val displayText = if (summary.kind == SharedSetWeightStateKind.MIXED) "" else summary.uniformWeightText
-                val mixedColor = if (isDark) ComplexWeightMixedTextDark else ComplexWeightMixedTextLight
+                val mixedColor = if (isDark) OchreOnContainerDark else OchreOnContainerLight
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -1068,13 +1033,13 @@ private fun SetExerciseOverrideDrawer(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
-    val drawerBg = if (isDark) ComplexSubDrawerBgDark else ComplexSubDrawerBgLight
-    val dividerColor = if (isDark) ComplexRowBorderDark else ComplexRowBorderLight
-    val activeSwitchBg = if (isDark) ComplexActiveSwitchBgDark else ComplexActiveSwitchBgLight
-    val activeSwitchText = if (isDark) ComplexActiveSwitchTextDark else ComplexActiveSwitchTextLight
-    val skipSwitchBg = if (isDark) ComplexSkippedPillBgDark else ComplexSkippedPillBgLight
-    val skipSwitchText = if (isDark) ComplexSkippedPillTextDark else ComplexSkippedPillTextLight
-    val fieldBg = if (isDark) ComplexRowBgDark else ComplexRowBgLight
+    val drawerBg = MaterialTheme.colorScheme.surfaceContainerHigh
+    val dividerColor = MaterialTheme.colorScheme.outlineVariant
+    val activeSwitchBg = MaterialTheme.colorScheme.tertiaryContainer
+    val activeSwitchText = MaterialTheme.colorScheme.onTertiaryContainer
+    val skipSwitchBg = MaterialTheme.colorScheme.surfaceVariant
+    val skipSwitchText = MaterialTheme.colorScheme.onSurfaceVariant
+    val fieldBg = MaterialTheme.colorScheme.surface
     val activeLabel = stringResource(R.string.complex_status_active)
     val skipLabel = stringResource(R.string.complex_status_skip)
 
@@ -1185,18 +1150,18 @@ private fun SetExerciseOverrideDrawer(
 
                             if (exState.activeMetric == ExerciseTargetMetric.REPS) {
                                 val weightBorder = if (isDivergent) {
-                                    if (isDark) ComplexWeightMixedBorderDark else ComplexWeightMixedBorderLight
+                                    if (isDark) OchreWarningDark else OchreWarningLight
                                 } else {
-                                    if (isDark) ComplexWeightLinkedBorderDark else ComplexWeightLinkedBorderLight
+                                    MaterialTheme.colorScheme.tertiary
                                 }
                                 InlineCompactInputBox(
                                     value = exState.weights.getOrNull(setIdx).orEmpty(),
                                     unit = weightUnit,
                                     keyboardType = KeyboardType.Decimal,
                                     backgroundColor = if (isDivergent) {
-                                        if (isDark) ComplexWeightMixedBgDark else ComplexWeightMixedBgLight
+                                        if (isDark) OchreContainerDark else OchreContainerLight
                                     } else {
-                                        if (isDark) ComplexWeightLinkedBgDark else ComplexWeightLinkedBgLight
+                                        MaterialTheme.colorScheme.tertiaryContainer
                                     },
                                     borderColor = weightBorder,
                                     spokenLabel = "${exState.exerciseName} Set ${setIdx + 1} weight in $weightUnit",
@@ -1383,12 +1348,12 @@ private fun CompactComplexByExerciseView(
 ) {
     val expandedByEx = remember(blockState.uiKey) { mutableStateMapOf<Int, Boolean>() }
     val view = LocalView.current
-    val rowBorder = if (isDark) ComplexRowBorderDark else ComplexRowBorderLight
-    val fieldBg = if (isDark) ComplexRowBgDark else ComplexRowBgLight
-    val activeSwitchBg = if (isDark) ComplexActiveSwitchBgDark else ComplexActiveSwitchBgLight
-    val activeSwitchText = if (isDark) ComplexActiveSwitchTextDark else ComplexActiveSwitchTextLight
-    val skipSwitchBg = if (isDark) ComplexSkippedPillBgDark else ComplexSkippedPillBgLight
-    val skipSwitchText = if (isDark) ComplexSkippedPillTextDark else ComplexSkippedPillTextLight
+    val rowBorder = MaterialTheme.colorScheme.outlineVariant
+    val fieldBg = MaterialTheme.colorScheme.surface
+    val activeSwitchBg = MaterialTheme.colorScheme.tertiaryContainer
+    val activeSwitchText = MaterialTheme.colorScheme.onTertiaryContainer
+    val skipSwitchBg = MaterialTheme.colorScheme.surfaceVariant
+    val skipSwitchText = MaterialTheme.colorScheme.onSurfaceVariant
     val activeLabel = stringResource(R.string.complex_status_active)
     val skipLabel = stringResource(R.string.complex_status_skip)
 

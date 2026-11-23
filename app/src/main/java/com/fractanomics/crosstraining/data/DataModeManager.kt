@@ -43,9 +43,9 @@ open class DataModeManager(
 
     private val _themeMode = MutableStateFlow(
         runCatching {
-            val saved = prefs?.getString(KEY_THEME_MODE, AppThemeMode.LIGHT.name)
-            AppThemeMode.valueOf(saved ?: AppThemeMode.LIGHT.name)
-        }.getOrDefault(AppThemeMode.LIGHT)
+            val saved = prefs?.getString(KEY_THEME_MODE, AppThemeMode.DARK.name)
+            AppThemeMode.valueOf(saved ?: AppThemeMode.DARK.name)
+        }.getOrDefault(AppThemeMode.DARK)
     )
     val themeMode: StateFlow<AppThemeMode> = _themeMode
 

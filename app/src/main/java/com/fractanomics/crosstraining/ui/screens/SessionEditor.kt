@@ -27,6 +27,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.fractanomics.crosstraining.ui.theme.OchreOnWarningDark
+import com.fractanomics.crosstraining.ui.theme.OchreOnWarningLight
+import com.fractanomics.crosstraining.ui.theme.OchreWarningDark
+import com.fractanomics.crosstraining.ui.theme.OchreWarningLight
+import com.fractanomics.crosstraining.ui.theme.isAppDarkTheme
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -2595,6 +2600,9 @@ private fun SpreadsheetSetRow(
         }
 
         // Warmup [W] and Failed [F] Flag Pills
+        val isDark = isAppDarkTheme()
+        val warmupColor = if (isDark) OchreWarningDark else OchreWarningLight
+        val warmupOnColor = if (isDark) OchreOnWarningDark else OchreOnWarningLight
         Row(
             modifier = Modifier.width(72.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -2605,11 +2613,11 @@ private fun SpreadsheetSetRow(
                     .size(34.dp, 36.dp)
                     .clip(RoundedCornerShape(6.dp))
                     .background(
-                        if (set.isWarmup) Color(0xFFF59E0B) else MaterialTheme.colorScheme.surface
+                        if (set.isWarmup) warmupColor else MaterialTheme.colorScheme.surface
                     )
                     .border(
                         1.dp,
-                        if (set.isWarmup) Color(0xFFF59E0B) else MaterialTheme.colorScheme.outlineVariant,
+                        if (set.isWarmup) warmupColor else MaterialTheme.colorScheme.outlineVariant,
                         RoundedCornerShape(6.dp)
                     )
                     .clickable { set.isWarmup = !set.isWarmup },
@@ -2619,7 +2627,7 @@ private fun SpreadsheetSetRow(
                     "W",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
-                    color = if (set.isWarmup) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (set.isWarmup) warmupOnColor else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 

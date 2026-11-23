@@ -28,33 +28,36 @@ Per the `ui-ux-pro-max` Query Contract, generic web `--design-system` suggestion
 Source of truth: [`Color.kt`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/ui/theme/Color.kt) and [`Theme.kt`](file:///c:/Users/rogal/workspaces/ws-gym/crosstrainingapp/app/src/main/java/com/fractanomics/crosstraining/ui/theme/Theme.kt).
 
 ### Supported Theme Modes (`AppThemeMode`)
-Every UI surface MUST work cleanly across all 4 built-in theme modes:
-1. `LIGHT` — Clean athletic light mode (Default)
-2. `DARK` — Sleek charcoal dark mode
-3. `LIGHT_HIGH_CONTRAST` — Maximum daylight contrast & bold outlines (WCAG AAA)
-4. `DARK_HIGH_CONTRAST` — True OLED pitch black with neon volt accents (WCAG AAA)
+Every UI surface MUST work cleanly across all 4 built-in theme modes (Graphite, Titanium & Warm Bronze design system):
+1. `DARK` — Graphite & Warm Bronze precision mode (**Default**)
+2. `LIGHT` — Porcelain Ivory & Deep Bronze daylight mode
+3. `DARK_HIGH_CONTRAST` — OLED pitch black with high-contrast bronze & sage (WCAG AAA)
+4. `LIGHT_HIGH_CONTRAST` — Pure white daylight high contrast (WCAG AAA)
 
 ### Semantic Role Mapping
-| Material 3 Token (`MaterialTheme.colorScheme.*`) | Brand Role | Light | Dark | Light HC | Dark HC |
+| Material 3 Token (`MaterialTheme.colorScheme.*`) | Brand Role | Dark (Default) | Light | Dark HC (AAA) | Light HC (AAA) |
 |---|---|---|---|---|---|
-| `primary` / `onPrimary` | Volt Green (Primary action, active selection, positive hero highlight) | `#007A3D` / `#FFFFFF` | `#10B981` / `#000000` | `#005A28` / `#FFFFFF` | `#00FF88` / `#000000` |
-| `primaryContainer` / `onPrimaryContainer` | Tinted primary badges, active pills, date boxes | `#DCFCE7` / `#022C22` | `#064E3B` / `#A7F3D0` | `#B7F5CC` / `#00220D` | `#003816` / `#69F0AE` |
-| `secondary` / `onSecondary` | Electric Cyan (Secondary metrics, volume/comparison accents) | `#0284C7` / `#FFFFFF` | `#38BDF8` / `#000000` | `#00457A` / `#FFFFFF` | `#00D4FF` / `#000000` |
-| `secondaryContainer` / `onSecondaryContainer` | Tinted secondary chips & PR/summary tags | `#E0F2FE` / `#082F49` | `#0C324E` / `#BAE6FD` | `#BAE6FD` / `#001F3D` | `#003052` / `#7DD3FC` |
-| `tertiary` / `onTertiary` | Solar Amber (Positive trend deltas, warnings, mixed-state callouts) | `#B45309` / `#FFFFFF` | `#FBBF24` / `#000000` | `#783000` / `#FFFFFF` | `#FFEA00` / `#000000` |
-| `tertiaryContainer` / `onTertiaryContainer` | PR chips, demo banner, amber status pills | `#FEF3C7` / `#451A03` | `#451A03` / `#FEF08A` | `#FED7AA` / `#381300` | `#473600` / `#FFF066` |
-| `error` / `onError` / `errorContainer` | High-Vis Red (Negative trend, validation error, destructive action) | `#DC2626` / `#FFFFFF` / `#FEE2E2` | `#EF4444` / `#000000` / `#4C0B0B` | `#8F0000` / `#FFFFFF` / `#FFCDD2` | `#FF3333` / `#000000` / `#5C0000` |
-| `background` / `surface` / `surfaceVariant` | Screen & card surface hierarchy | `#F8FAFC` / `#FFFFFF` / `#F1F5F9` | `#121214` / `#1A1A1E` / `#24242A` | `#FFFFFF` / `#FFFFFF` / `#E2E8F0` | `#000000` / `#09090B` / `#141418` |
-| `surfaceContainer` / `surfaceContainerHigh` | Grouped containers & elevated drawers | `#F8FAFC` / `#E2E8F0` | `#1E1F24` / `#282A31` | `#F1F5F9` / `#CBD5E1` | `#0F0F12` / `#18181D` |
-| `onSurface` / `onSurfaceVariant` | Primary & secondary readable text | `#0F172A` / `#475569` | `#F1F5F9` / `#94A3B8` | `#000000` / `#0F172A` | `#FFFFFF` / `#E4E4E7` |
-| `outline` / `outlineVariant` | Borders, card strokes, and dividers | `#94A3B8` / `#CBD5E1` | `#52525B` / `#3F3F46` | `#000000` / `#475569` | `#A1A1AA` / `#71717A` |
+| `primary` / `onPrimary` | Warm Bronze (Primary CTA, active selection, focus accent) | `#D49B6A` / `#120C06` | `#855228` / `#FFFFFF` | `#F0BA88` / `#000000` | `#663B16` / `#FFFFFF` |
+| `primaryContainer` / `onPrimaryContainer` | Tinted bronze badges, active pills, date boxes | `#332417` / `#F5D9BC` | `#F3E5D7` / `#331D0B` | `#422810` / `#FFE2C7` | `#F5DFC9` / `#291505` |
+| `secondary` / `onSecondary` | Brushed Titanium (Secondary metrics, rest timer, comparison series) | `#B8BCC2` / `#111214` | `#3F434A` / `#FFFFFF` | `#E4E6EA` / `#000000` | `#1F2328` / `#FFFFFF` |
+| `secondaryContainer` / `onSecondaryContainer` | Tinted titanium chips & secondary exercise badges | `#26282C` / `#E4E6EA` | `#E5E7EB` / `#181A1F` | `#2C2E33` / `#FFFFFF` | `#DCE0E5` / `#000000` |
+| `tertiary` / `onTertiary` | Muted Sage (PR highlights, positive trend deltas, prep timer) | `#5DB894` / `#06140E` | `#1E5C45` / `#FFFFFF` | `#7EE2B8` / `#000000` | `#0F4531` / `#FFFFFF` |
+| `tertiaryContainer` / `onTertiaryContainer` | PR chips, weight-linked states, positive summary pills | `#132E24` / `#B7E8D4` | `#D9EDE5` / `#0B2B1F` | `#093B28` / `#C8F7E3` | `#C8E8DB` / `#042116` |
+| `error` / `onError` / `errorContainer` | Muted Crimson (Negative trend, validation error, destructive action) | `#E57373` / `#1A0707` / `#3B1517` | `#A62C2C` / `#FFFFFF` / `#F9DEDE` | `#FF8080` / `#000000` / `#520E0E` | `#821414` / `#FFFFFF` / `#FACACA` |
+| `background` / `surface` / `surfaceVariant` | Graphite / Porcelain surface hierarchy | `#101012` / `#18181B` / `#222226` | `#F8F7F5` / `#FFFFFF` / `#EFECE7` | `#000000` / `#0A0A0B` / `#151518` | `#FFFFFF` / `#FFFFFF` / `#E8E6E1` |
+| `surfaceContainer` / `surfaceContainerHigh` | Grouped containers & elevated drawers | `#1C1C20` / `#27272C` | `#F4F2EE` / `#E6E2DC` | `#0F0F12` / `#1B1B20` | `#F4F2EE` / `#D6D3CD` |
+| `onSurface` / `onSurfaceVariant` | Primary & secondary readable text | `#F4F4F5` / `#A1A1AA` | `#151517` / `#52525A` | `#FFFFFF` / `#E4E4E7` | `#000000` / `#18181B` |
+| `outline` / `outlineVariant` | Borders, card strokes, and dividers | `#76767E` / `#333339` | `#71717A` / `#DCDAD5` | `#A1A1AA` / `#71717A` | `#000000` / `#52525B` |
 
-### Chart & Timer Semantic Tokens
-Available in `Color.kt`: `ChartVoltPrimary` (`#00E676`), `ChartCyanSecondary` (`#38BDF8`), `ChartAmberTertiary` (`#FFD600`), `TimerWorkColor`, `TimerRestColor`, `TimerPrepColor`.
+### Auxiliary, Chart & Timer Semantic Tokens
+Available in `Color.kt`:
+- **Warm-up / Transition / Warning (Burnished Ochre):** `OchreWarningDark` (`#E2B866`) / `OchreContainerDark` (`#332712`) / `OchreOnContainerDark` (`#F6DFB0`), and `OchreWarningLight` (`#8A5D0A`) / `OchreContainerLight` (`#F7ECD6`) / `OchreOnContainerLight` (`#422B04`).
+- **Weight Subcycles:** `SubcycleFatLossContainer*` / `SubcycleFatLossOn*` (Muted Slate Steel) and `SubcycleGainContainer*` / `SubcycleGainOn*` (Muted Plum), with `RECOMPOSITION` mapped to Muted Sage (`SageContainer*` / `SageTertiary*`).
+- **Charts & Timers:** `ChartBronzePrimary` / `TimerWorkColor`, `ChartTitaniumSecondary` / `TimerRestColor`, `ChartSageTertiary` / `TimerPrepColor`.
 
 ### Strict Color Rules
-- **DO:** Always use `MaterialTheme.colorScheme.*` tokens in Composables.
-- **DON'T:** Hardcode per-screen hex colors (`Color(0xFF...)`) or infer dark-mode / high-contrast legibility from light-mode values.
+- **DO:** Always use `MaterialTheme.colorScheme.*` tokens or centralized `Color.kt` semantic tokens paired with `isAppDarkTheme()` in Composables.
+- **DON'T:** Hardcode per-screen hex colors (`Color(0xFF...)`), call `isSystemInDarkTheme()` directly inside screens (which bypasses the user's in-app `AppThemeMode`), or infer dark-mode / high-contrast legibility from light-mode values.
 - **DON'T:** Rely on color alone to communicate state, series identity, or delta direction.
 
 ---

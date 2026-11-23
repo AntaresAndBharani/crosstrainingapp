@@ -100,6 +100,10 @@ import com.fractanomics.crosstraining.data.analytics.WeightAnalytics
 import com.fractanomics.crosstraining.data.model.WeightEntry
 import com.fractanomics.crosstraining.ui.AppViewModel
 import com.fractanomics.crosstraining.ui.theme.AppThemeMode
+import com.fractanomics.crosstraining.ui.theme.DarkColors
+import com.fractanomics.crosstraining.ui.theme.DarkHighContrastColors
+import com.fractanomics.crosstraining.ui.theme.LightColors
+import com.fractanomics.crosstraining.ui.theme.LightHighContrastColors
 import androidx.compose.material.icons.filled.Close
 import java.util.Locale
 import kotlinx.coroutines.Job
@@ -432,7 +436,12 @@ fun ProfileScreen(
                     Column(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        AppThemeMode.entries.forEach { mode ->
+                        listOf(
+                            AppThemeMode.DARK,
+                            AppThemeMode.LIGHT,
+                            AppThemeMode.DARK_HIGH_CONTRAST,
+                            AppThemeMode.LIGHT_HIGH_CONTRAST
+                        ).forEach { mode ->
                             val isSelected = currentThemeMode == mode
                             ThemeOptionCard(
                                 mode = mode,
@@ -531,33 +540,33 @@ private fun ThemeOptionCard(
     onClick: () -> Unit
 ) {
     val (icon, badgeTag, bgPreview, primaryPreview, borderPreview) = when (mode) {
-        AppThemeMode.LIGHT -> ThemePreviewConfig(
-            icon = Icons.Filled.LightMode,
-            badgeTag = "DEFAULT",
-            bgColor = Color(0xFFF8FAFC),
-            primaryColor = Color(0xFF007A3D),
-            borderColor = Color(0xFFCBD5E1)
-        )
         AppThemeMode.DARK -> ThemePreviewConfig(
             icon = Icons.Filled.DarkMode,
+            badgeTag = "DEFAULT",
+            bgColor = DarkColors.background,
+            primaryColor = DarkColors.primary,
+            borderColor = DarkColors.outline
+        )
+        AppThemeMode.LIGHT -> ThemePreviewConfig(
+            icon = Icons.Filled.LightMode,
             badgeTag = null,
-            bgColor = Color(0xFF121214),
-            primaryColor = Color(0xFF10B981),
-            borderColor = Color(0xFF52525B)
+            bgColor = LightColors.background,
+            primaryColor = LightColors.primary,
+            borderColor = LightColors.outline
         )
         AppThemeMode.LIGHT_HIGH_CONTRAST -> ThemePreviewConfig(
             icon = Icons.Filled.Contrast,
             badgeTag = "WCAG AAA",
-            bgColor = Color(0xFFFFFFFF),
-            primaryColor = Color(0xFF005A28),
-            borderColor = Color(0xFF000000)
+            bgColor = LightHighContrastColors.background,
+            primaryColor = LightHighContrastColors.primary,
+            borderColor = LightHighContrastColors.outline
         )
         AppThemeMode.DARK_HIGH_CONTRAST -> ThemePreviewConfig(
             icon = Icons.Filled.Contrast,
-            badgeTag = "OLED PITCH",
-            bgColor = Color(0xFF000000),
-            primaryColor = Color(0xFF00FF88),
-            borderColor = Color(0xFFA1A1AA)
+            badgeTag = "OLED AAA",
+            bgColor = DarkHighContrastColors.background,
+            primaryColor = DarkHighContrastColors.primary,
+            borderColor = DarkHighContrastColors.outline
         )
     }
 
