@@ -41,7 +41,31 @@ import com.fractanomics.crosstraining.data.analytics.MomentumZone
 import com.fractanomics.crosstraining.data.analytics.SubcyclePreviewProjection
 import com.fractanomics.crosstraining.data.model.WeightMeasureSource
 import com.fractanomics.crosstraining.data.model.WeightSubcycleType
-import androidx.compose.foundation.isSystemInDarkTheme
+import com.fractanomics.crosstraining.ui.theme.CrimsonErrorContainerDark
+import com.fractanomics.crosstraining.ui.theme.CrimsonErrorContainerLight
+import com.fractanomics.crosstraining.ui.theme.CrimsonErrorDark
+import com.fractanomics.crosstraining.ui.theme.CrimsonErrorLight
+import com.fractanomics.crosstraining.ui.theme.DarkSurfaceContainerHigh
+import com.fractanomics.crosstraining.ui.theme.LightSurfaceVariant
+import com.fractanomics.crosstraining.ui.theme.OchreContainerDark
+import com.fractanomics.crosstraining.ui.theme.OchreContainerLight
+import com.fractanomics.crosstraining.ui.theme.OchreWarningDark
+import com.fractanomics.crosstraining.ui.theme.OchreWarningLight
+import com.fractanomics.crosstraining.ui.theme.SageContainerDark
+import com.fractanomics.crosstraining.ui.theme.SageContainerLight
+import com.fractanomics.crosstraining.ui.theme.SageTertiaryDark
+import com.fractanomics.crosstraining.ui.theme.SageTertiaryLight
+import com.fractanomics.crosstraining.ui.theme.SubcycleFatLossContainerDark
+import com.fractanomics.crosstraining.ui.theme.SubcycleFatLossContainerLight
+import com.fractanomics.crosstraining.ui.theme.SubcycleFatLossOnDark
+import com.fractanomics.crosstraining.ui.theme.SubcycleFatLossOnLight
+import com.fractanomics.crosstraining.ui.theme.SubcycleGainContainerDark
+import com.fractanomics.crosstraining.ui.theme.SubcycleGainContainerLight
+import com.fractanomics.crosstraining.ui.theme.SubcycleGainOnDark
+import com.fractanomics.crosstraining.ui.theme.SubcycleGainOnLight
+import com.fractanomics.crosstraining.ui.theme.TextDarkModeSlate
+import com.fractanomics.crosstraining.ui.theme.TextLightModeSlate
+import com.fractanomics.crosstraining.ui.theme.isAppDarkTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -2938,7 +2962,7 @@ private fun WeightedAverageEstimationRowItem(
         Brush.horizontalGradient(
             colors = listOf(
                 MaterialTheme.colorScheme.primary,
-                Color(0xFF10B981)
+                MaterialTheme.colorScheme.tertiary
             )
         )
     } else {
@@ -3139,19 +3163,19 @@ internal fun resolveSubcyclePillColors(
     isDarkTheme: Boolean
 ): Pair<Color, Color> = when (subcycleType) {
     WeightSubcycleType.FAT_LOSS -> if (isDarkTheme) {
-        Color(0xFF172A45) to Color(0xFF63B3ED)
+        SubcycleFatLossContainerDark to SubcycleFatLossOnDark
     } else {
-        Color(0xFFEBF3FA) to Color(0xFF2B6CB0)
+        SubcycleFatLossContainerLight to SubcycleFatLossOnLight
     }
     WeightSubcycleType.RECOMPOSITION -> if (isDarkTheme) {
-        Color(0xFF133826) to Color(0xFF2ECC71)
+        SageContainerDark to SageTertiaryDark
     } else {
-        Color(0xFFE3F5EC) to Color(0xFF0B6E3F)
+        SageContainerLight to SageTertiaryLight
     }
     WeightSubcycleType.MUSCLE_GAIN -> if (isDarkTheme) {
-        Color(0xFF2E1647) to Color(0xFFC084FC)
+        SubcycleGainContainerDark to SubcycleGainOnDark
     } else {
-        Color(0xFFF3E8FF) to Color(0xFF6B21A8)
+        SubcycleGainContainerLight to SubcycleGainOnLight
     }
 }
 
@@ -3160,24 +3184,24 @@ internal fun resolveMomentumBadgeColors(
     isDarkTheme: Boolean
 ): Pair<Color, Color> = when (severity) {
     MomentumSeverity.OPTIMAL_GREEN -> if (isDarkTheme) {
-        Color(0xFF133826) to Color(0xFF2ECC71)
+        SageContainerDark to SageTertiaryDark
     } else {
-        Color(0xFFE3F5EC) to Color(0xFF0B6E3F)
+        SageContainerLight to SageTertiaryLight
     }
     MomentumSeverity.WARNING_AMBER -> if (isDarkTheme) {
-        Color(0xFF3B2A14) to Color(0xFFFBBF24)
+        OchreContainerDark to OchreWarningDark
     } else {
-        Color(0xFFFEF3C7) to Color(0xFFD97706)
+        OchreContainerLight to OchreWarningLight
     }
     MomentumSeverity.CRITICAL_RED -> if (isDarkTheme) {
-        Color(0xFF3B1818) to Color(0xFFF87171)
+        CrimsonErrorContainerDark to CrimsonErrorDark
     } else {
-        Color(0xFFFEE2E2) to Color(0xFFDC2626)
+        CrimsonErrorContainerLight to CrimsonErrorLight
     }
     MomentumSeverity.NEUTRAL -> if (isDarkTheme) {
-        Color(0xFF1E293B) to Color(0xFF94A3B8)
+        DarkSurfaceContainerHigh to TextDarkModeSlate
     } else {
-        Color(0xFFF1F5F9) to Color(0xFF64748B)
+        LightSurfaceVariant to TextLightModeSlate
     }
 }
 
@@ -3334,7 +3358,7 @@ internal fun CycleMomentumEstimationsCard(
     modifier: Modifier = Modifier
 ) {
     var showSubcycleSheet by rememberSaveable { mutableStateOf(false) }
-    val isDark = isSystemInDarkTheme()
+    val isDark = isAppDarkTheme()
     val haptic = LocalHapticFeedback.current
     val (pillFill, pillText) = resolveSubcyclePillColors(state.subcycleType, isDark)
 
@@ -3531,7 +3555,7 @@ fun SubcycleTypePickerBottomSheet(
     onApply: (WeightSubcycleType) -> Unit
 ) {
     var selectedType by rememberSaveable(currentSubcycleType) { mutableStateOf(currentSubcycleType) }
-    val isDark = isSystemInDarkTheme()
+    val isDark = isAppDarkTheme()
     val finishDateStr = finishDate.formatShort()
     val isHighFontScale = LocalDensity.current.fontScale >= 1.5f
 
@@ -4444,19 +4468,16 @@ private fun DailyRoutineProgressSection(
 
 @Composable
 private fun ConstituentTypeBadge(itemType: DailyRoutineItemType) {
-    val isDark = isSystemInDarkTheme()
     val isBlock = itemType == DailyRoutineItemType.BLOCK
-    val bg = when {
-        isBlock && isDark -> Color(0xFF1E3A5F)
-        isBlock -> Color(0xFFE0F2FE)
-        isDark -> Color(0xFF064E3B)
-        else -> Color(0xFFD1FAE5)
+    val bg = if (isBlock) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.tertiaryContainer
     }
-    val fg = when {
-        isBlock && isDark -> Color(0xFF7DD3FC)
-        isBlock -> Color(0xFF0369A1)
-        isDark -> Color(0xFF2ECC71)
-        else -> Color(0xFF0B6E3F)
+    val fg = if (isBlock) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onTertiaryContainer
     }
     Surface(
         color = bg,
@@ -4478,7 +4499,6 @@ private fun DailyRoutineConstituentOverviewCard(
     item: ConstituentProgressSummary,
     onClick: () -> Unit
 ) {
-    val isDark = isSystemInDarkTheme()
     val trendLabel = when (item.trendDirection) {
         ConstituentTrendDirection.UP ->
             item.topDelta?.let { "↗ +${it.trimmed()} ${item.unit}" } ?: "↗ Up"
@@ -4490,12 +4510,12 @@ private fun DailyRoutineConstituentOverviewCard(
             if (item.lastTop != null) "1 session" else "No logs yet"
     }
     val trendBg = when (item.trendDirection) {
-        ConstituentTrendDirection.UP -> if (isDark) Color(0xFF064E3B) else Color(0xFFD1FAE5)
+        ConstituentTrendDirection.UP -> MaterialTheme.colorScheme.tertiaryContainer
         ConstituentTrendDirection.DOWN -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
     val trendFg = when (item.trendDirection) {
-        ConstituentTrendDirection.UP -> if (isDark) Color(0xFF2ECC71) else Color(0xFF0B6E3F)
+        ConstituentTrendDirection.UP -> MaterialTheme.colorScheme.onTertiaryContainer
         ConstituentTrendDirection.DOWN -> MaterialTheme.colorScheme.onErrorContainer
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }

@@ -76,6 +76,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fractanomics.crosstraining.ui.theme.OchreContainerDark
+import com.fractanomics.crosstraining.ui.theme.OchreContainerLight
+import com.fractanomics.crosstraining.ui.theme.OchreOnContainerDark
+import com.fractanomics.crosstraining.ui.theme.OchreOnContainerLight
+import com.fractanomics.crosstraining.ui.theme.OchreWarningDark
+import com.fractanomics.crosstraining.ui.theme.OchreWarningLight
+import com.fractanomics.crosstraining.ui.theme.isAppDarkTheme
 import com.fractanomics.crosstraining.ui.timer.ContinuousTimerUiResolver
 import com.fractanomics.crosstraining.ui.timer.QueuedTimerStage
 import com.fractanomics.crosstraining.ui.timer.TimerEngine
@@ -85,18 +92,13 @@ import com.fractanomics.crosstraining.ui.timer.TimerSnapshot
 import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfig
 import java.util.Locale
 
-private val AmberTransitionLight = Color(0xFFD97706)
-private val AmberTransitionDark = Color(0xFFF59E0B)
-private val AmberContainerLight = Color(0xFFFEF3C7)
-private val AmberContainerDark = Color(0xFF451A03)
-
 @Composable
 fun resolveTransitionAccentColor(): Color =
-    if (MaterialTheme.colorScheme.background.luminance() < 0.5f) AmberTransitionDark else AmberTransitionLight
+    if (isAppDarkTheme()) OchreWarningDark else OchreWarningLight
 
 @Composable
 fun resolveTransitionContainerColor(): Color =
-    if (MaterialTheme.colorScheme.background.luminance() < 0.5f) AmberContainerDark else AmberContainerLight
+    if (isAppDarkTheme()) OchreContainerDark else OchreContainerLight
 
 @Composable
 fun resolveTimerPhaseColor(phase: TimerPhase): Color = when (phase) {
@@ -123,11 +125,7 @@ fun resolveTimerPhaseBadgeContent(phase: TimerPhase): Color = when (phase) {
     TimerPhase.PREP -> MaterialTheme.colorScheme.onTertiaryContainer
     TimerPhase.WORK -> MaterialTheme.colorScheme.onPrimaryContainer
     TimerPhase.REST -> MaterialTheme.colorScheme.onSecondaryContainer
-    TimerPhase.TRANSITION -> if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
-        Color(0xFFFDE68A)
-    } else {
-        Color(0xFF78350F)
-    }
+    TimerPhase.TRANSITION -> if (isAppDarkTheme()) OchreOnContainerDark else OchreOnContainerLight
     TimerPhase.FINISHED -> MaterialTheme.colorScheme.onSurfaceVariant
     TimerPhase.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant
 }

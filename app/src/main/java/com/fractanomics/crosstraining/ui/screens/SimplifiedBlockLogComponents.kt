@@ -2,7 +2,6 @@ package com.fractanomics.crosstraining.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -91,6 +90,7 @@ import com.fractanomics.crosstraining.ui.RepMaxDraft
 import com.fractanomics.crosstraining.ui.SetDraft
 import com.fractanomics.crosstraining.ui.trimmed
 import com.fractanomics.crosstraining.util.AvailableBlock
+import com.fractanomics.crosstraining.ui.theme.isAppDarkTheme
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.AvailableBlockExercise
 import com.fractanomics.crosstraining.util.DailyRoutine
@@ -107,12 +107,6 @@ import com.fractanomics.crosstraining.util.TrackedPrSlot
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.UUID
-
-private val PrEmeraldDark = Color(0xFF0B6E3F)
-private val PrEmeraldAccent = Color(0xFF2ECC71)
-private val PrEmeraldOnDarkContainer = Color(0xFFA7F3D0)
-private val BlockSkyLight = Color(0xFF0369A1)
-private val BlockSkyDark = Color(0xFF7DD3FC)
 
 internal enum class SessionItemKind {
     BLOCK,
@@ -1809,8 +1803,8 @@ internal fun SimplifiedBlockLogCard(
     }
 
     val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
-    val isDark = isSystemInDarkTheme()
-    val blockAccent = if (isDark) BlockSkyDark else BlockSkyLight
+    val isDark = isAppDarkTheme()
+    val blockAccent = MaterialTheme.colorScheme.primary
     val headerText = buildString {
         if (itemNumber != null) append("$itemNumber  ")
         append("COMPLEX: ${blockState.block.title.ifBlank { "Untitled Complex" }}")
@@ -1887,8 +1881,8 @@ internal fun SimplifiedExerciseLogCard(
     modifier: Modifier = Modifier
 ) {
     val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
-    val isDark = isSystemInDarkTheme()
-    val emeraldAccent = if (isDark) PrEmeraldAccent else PrEmeraldDark
+    val isDark = isAppDarkTheme()
+    val emeraldAccent = MaterialTheme.colorScheme.tertiary
     val exSection = blockState.exerciseSections.firstOrNull()
     val exerciseTitle = exSection?.exerciseName?.ifBlank { blockState.block.title }
         ?: blockState.block.title.ifBlank { "Untitled Exercise" }
@@ -2171,18 +2165,16 @@ internal fun TrackedPrChipsFlowSection(
             }
             val isHighlightedPr = chip.isNewPr || isPersistedOrExplicitPr
             val containerColor = when {
-                isHighlightedPr && isDark -> PrEmeraldDark.copy(alpha = 0.28f)
-                isHighlightedPr -> PrEmeraldAccent.copy(alpha = 0.16f)
+                isHighlightedPr -> MaterialTheme.colorScheme.tertiaryContainer
                 else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
             }
             val contentColor = when {
-                isHighlightedPr && isDark -> PrEmeraldOnDarkContainer
-                isHighlightedPr -> PrEmeraldDark
+                isHighlightedPr -> MaterialTheme.colorScheme.onTertiaryContainer
                 else -> MaterialTheme.colorScheme.onSurfaceVariant
             }
             val borderColor = when {
-                chip.isNewPr -> PrEmeraldAccent
-                isPersistedOrExplicitPr -> PrEmeraldDark.copy(alpha = 0.75f)
+                chip.isNewPr -> MaterialTheme.colorScheme.tertiary
+                isPersistedOrExplicitPr -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.65f)
                 else -> MaterialTheme.colorScheme.outlineVariant
             }
             Surface(
@@ -3253,7 +3245,7 @@ internal fun MultiMovementPrPickerSheet(
                                                     text = "🔥 PR",
                                                     style = MaterialTheme.typography.labelMedium,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = if (isSystemInDarkTheme()) PrEmeraldOnDarkContainer else PrEmeraldDark
+                                                    color = MaterialTheme.colorScheme.tertiary
                                                 )
                                             }
                                         }

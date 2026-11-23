@@ -14,7 +14,6 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -105,7 +104,6 @@ import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -1357,16 +1355,15 @@ private fun DailyRoutineCard(
 ) {
     val haptic = LocalHapticFeedback.current
     val view = LocalView.current
-    val isDark = isSystemInDarkTheme()
     var showOverflow by remember(routine.id) { mutableStateOf(false) }
     var chipsExpanded by remember(routine.id) { mutableStateOf(false) }
 
-    val blockChipBg = if (isDark) Color(0xFF1E3A5F) else Color(0xFFE0F2FE)
-    val blockChipText = if (isDark) Color(0xFF7DD3FC) else Color(0xFF0369A1)
-    val exChipBg = if (isDark) Color(0xFF2E2540) else Color(0xFFEAE6F0)
-    val exChipText = if (isDark) Color(0xFFD6BCFA) else Color(0xFF4A356B)
-    val prChipBg = if (isDark) Color(0xFF3B2510) else Color(0xFFFFF3E0)
-    val prChipText = if (isDark) Color(0xFFFBD38D) else Color(0xFFC05621)
+    val blockChipBg = MaterialTheme.colorScheme.primaryContainer
+    val blockChipText = MaterialTheme.colorScheme.onPrimaryContainer
+    val exChipBg = MaterialTheme.colorScheme.secondaryContainer
+    val exChipText = MaterialTheme.colorScheme.onSecondaryContainer
+    val prChipBg = MaterialTheme.colorScheme.tertiaryContainer
+    val prChipText = MaterialTheme.colorScheme.onTertiaryContainer
 
     val (visibleItems, overflowCount) = visibleRoutineChips(routine.items, chipsExpanded)
 
@@ -1633,11 +1630,10 @@ private fun DailyRoutineComposerSheet(
         (exercises + locallyCreatedExercises).distinctBy { it.id }
     }
 
-    val isDark = isSystemInDarkTheme()
-    val blockBadgeBg = if (isDark) Color(0xFF1E3A5F) else Color(0xFFE0F2FE)
-    val blockBadgeText = if (isDark) Color(0xFF7DD3FC) else Color(0xFF0369A1)
-    val exBadgeBg = if (isDark) Color(0xFF2E2540) else Color(0xFFEAE6F0)
-    val exBadgeText = if (isDark) Color(0xFFD6BCFA) else Color(0xFF4A356B)
+    val blockBadgeBg = MaterialTheme.colorScheme.primaryContainer
+    val blockBadgeText = MaterialTheme.colorScheme.onPrimaryContainer
+    val exBadgeBg = MaterialTheme.colorScheme.secondaryContainer
+    val exBadgeText = MaterialTheme.colorScheme.onSecondaryContainer
 
     BackHandler(enabled = pickerMode != RoutineComposerPickerMode.MAIN) {
         pickerMode = RoutineComposerPickerMode.MAIN

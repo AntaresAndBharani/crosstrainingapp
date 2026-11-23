@@ -7,6 +7,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 
 /**
@@ -16,29 +17,29 @@ enum class AppThemeMode(
     val title: String,
     val description: String
 ) {
-    LIGHT("Light", "Clean athletic light mode (Default)"),
-    DARK("Dark", "Sleek charcoal dark mode"),
-    LIGHT_HIGH_CONTRAST("Light High Contrast", "Maximum daylight contrast & bold outlines"),
-    DARK_HIGH_CONTRAST("Dark High Contrast", "True OLED pitch black with neon volt accents");
+    LIGHT("Light", "Porcelain ivory & deep bronze daylight mode"),
+    DARK("Dark", "Graphite & warm bronze precision mode (Default)"),
+    LIGHT_HIGH_CONTRAST("Light High Contrast", "Pure white WCAG AAA daylight contrast"),
+    DARK_HIGH_CONTRAST("Dark High Contrast", "OLED pitch black with high-contrast bronze & sage");
 
     val isDark: Boolean
         get() = this == DARK || this == DARK_HIGH_CONTRAST
 }
 
-// 1. Standard Light Color Scheme (Default)
+// 1. Standard Light Color Scheme (Porcelain Ivory & Deep Bronze)
 val LightColors = lightColorScheme(
-    primary = VoltGreenPrimaryLight,
-    onPrimary = VoltGreenOnPrimaryLight,
-    primaryContainer = VoltGreenContainerLight,
-    onPrimaryContainer = VoltGreenOnContainerLight,
-    secondary = ElectricCyanSecondaryLight,
-    onSecondary = ElectricCyanOnSecondaryLight,
-    secondaryContainer = ElectricCyanContainerLight,
-    onSecondaryContainer = ElectricCyanOnContainerLight,
-    tertiary = SolarAmberTertiaryLight,
-    onTertiary = SolarAmberOnTertiaryLight,
-    tertiaryContainer = SolarAmberContainerLight,
-    onTertiaryContainer = SolarAmberOnContainerLight,
+    primary = BronzePrimaryLight,
+    onPrimary = BronzeOnPrimaryLight,
+    primaryContainer = BronzeContainerLight,
+    onPrimaryContainer = BronzeOnContainerLight,
+    secondary = TitaniumSecondaryLight,
+    onSecondary = TitaniumOnSecondaryLight,
+    secondaryContainer = TitaniumContainerLight,
+    onSecondaryContainer = TitaniumOnContainerLight,
+    tertiary = SageTertiaryLight,
+    onTertiary = SageOnTertiaryLight,
+    tertiaryContainer = SageContainerLight,
+    onTertiaryContainer = SageOnContainerLight,
     background = LightBackground,
     onBackground = TextLightModeBlack,
     surface = LightSurface,
@@ -49,26 +50,26 @@ val LightColors = lightColorScheme(
     surfaceContainerHigh = LightSurfaceContainerHigh,
     outline = BorderLightModeSlate,
     outlineVariant = BorderLightModeSubtle,
-    error = HighVisErrorLight,
-    onError = HighVisOnErrorLight,
-    errorContainer = HighVisErrorContainerLight,
-    onErrorContainer = HighVisOnErrorContainerLight
+    error = CrimsonErrorLight,
+    onError = CrimsonOnErrorLight,
+    errorContainer = CrimsonErrorContainerLight,
+    onErrorContainer = CrimsonOnErrorContainerLight
 )
 
-// 2. Standard Dark Color Scheme
+// 2. Standard Dark Color Scheme (Default — Graphite & Warm Bronze)
 val DarkColors = darkColorScheme(
-    primary = VoltGreenPrimaryDark,
-    onPrimary = VoltGreenOnPrimaryDark,
-    primaryContainer = VoltGreenContainerDark,
-    onPrimaryContainer = VoltGreenOnContainerDark,
-    secondary = ElectricCyanSecondaryDark,
-    onSecondary = ElectricCyanOnSecondaryDark,
-    secondaryContainer = ElectricCyanContainerDark,
-    onSecondaryContainer = ElectricCyanOnContainerDark,
-    tertiary = SolarAmberTertiaryDark,
-    onTertiary = SolarAmberOnTertiaryDark,
-    tertiaryContainer = SolarAmberContainerDark,
-    onTertiaryContainer = SolarAmberOnContainerDark,
+    primary = BronzePrimaryDark,
+    onPrimary = BronzeOnPrimaryDark,
+    primaryContainer = BronzeContainerDark,
+    onPrimaryContainer = BronzeOnContainerDark,
+    secondary = TitaniumSecondaryDark,
+    onSecondary = TitaniumOnSecondaryDark,
+    secondaryContainer = TitaniumContainerDark,
+    onSecondaryContainer = TitaniumOnContainerDark,
+    tertiary = SageTertiaryDark,
+    onTertiary = SageOnTertiaryDark,
+    tertiaryContainer = SageContainerDark,
+    onTertiaryContainer = SageOnContainerDark,
     background = DarkBackground,
     onBackground = TextDarkModeWhite,
     surface = DarkSurface,
@@ -79,26 +80,26 @@ val DarkColors = darkColorScheme(
     surfaceContainerHigh = DarkSurfaceContainerHigh,
     outline = BorderDarkModeSlate,
     outlineVariant = BorderDarkModeSubtle,
-    error = HighVisErrorDark,
-    onError = HighVisOnErrorDark,
-    errorContainer = HighVisErrorContainerDark,
-    onErrorContainer = HighVisOnErrorContainerDark
+    error = CrimsonErrorDark,
+    onError = CrimsonOnErrorDark,
+    errorContainer = CrimsonErrorContainerDark,
+    onErrorContainer = CrimsonOnErrorContainerDark
 )
 
 // 3. Light High Contrast Scheme (WCAG AAA)
 val LightHighContrastColors = lightColorScheme(
-    primary = VoltGreenPrimaryLightHc,
-    onPrimary = VoltGreenOnPrimaryLightHc,
-    primaryContainer = VoltGreenContainerLightHc,
-    onPrimaryContainer = VoltGreenOnContainerLightHc,
-    secondary = ElectricCyanSecondaryLightHc,
-    onSecondary = ElectricCyanOnSecondaryLightHc,
-    secondaryContainer = ElectricCyanContainerLightHc,
-    onSecondaryContainer = ElectricCyanOnContainerLightHc,
-    tertiary = SolarAmberTertiaryLightHc,
-    onTertiary = SolarAmberOnTertiaryLightHc,
-    tertiaryContainer = SolarAmberContainerLightHc,
-    onTertiaryContainer = SolarAmberOnContainerLightHc,
+    primary = BronzePrimaryLightHc,
+    onPrimary = BronzeOnPrimaryLightHc,
+    primaryContainer = BronzeContainerLightHc,
+    onPrimaryContainer = BronzeOnContainerLightHc,
+    secondary = TitaniumSecondaryLightHc,
+    onSecondary = TitaniumOnSecondaryLightHc,
+    secondaryContainer = TitaniumContainerLightHc,
+    onSecondaryContainer = TitaniumOnContainerLightHc,
+    tertiary = SageTertiaryLightHc,
+    onTertiary = SageOnTertiaryLightHc,
+    tertiaryContainer = SageContainerLightHc,
+    onTertiaryContainer = SageOnContainerLightHc,
     background = LightHcBackground,
     onBackground = TextLightHcBlack,
     surface = LightHcSurface,
@@ -109,26 +110,26 @@ val LightHighContrastColors = lightColorScheme(
     surfaceContainerHigh = LightHcSurfaceContainerHigh,
     outline = BorderLightHcSolid,
     outlineVariant = BorderLightHcDivider,
-    error = HighVisErrorLightHc,
-    onError = HighVisOnErrorLightHc,
-    errorContainer = HighVisErrorContainerLightHc,
-    onErrorContainer = HighVisOnErrorContainerLightHc
+    error = CrimsonErrorLightHc,
+    onError = CrimsonOnErrorLightHc,
+    errorContainer = CrimsonErrorContainerLightHc,
+    onErrorContainer = CrimsonOnErrorContainerLightHc
 )
 
 // 4. Dark High Contrast Scheme (WCAG AAA / OLED Pitch Black)
 val DarkHighContrastColors = darkColorScheme(
-    primary = VoltGreenPrimaryDarkHc,
-    onPrimary = VoltGreenOnPrimaryDarkHc,
-    primaryContainer = VoltGreenContainerDarkHc,
-    onPrimaryContainer = VoltGreenOnContainerDarkHc,
-    secondary = ElectricCyanSecondaryDarkHc,
-    onSecondary = ElectricCyanOnSecondaryDarkHc,
-    secondaryContainer = ElectricCyanContainerDarkHc,
-    onSecondaryContainer = ElectricCyanOnContainerDarkHc,
-    tertiary = SolarAmberTertiaryDarkHc,
-    onTertiary = SolarAmberOnTertiaryDarkHc,
-    tertiaryContainer = SolarAmberContainerDarkHc,
-    onTertiaryContainer = SolarAmberOnContainerDarkHc,
+    primary = BronzePrimaryDarkHc,
+    onPrimary = BronzeOnPrimaryDarkHc,
+    primaryContainer = BronzeContainerDarkHc,
+    onPrimaryContainer = BronzeOnContainerDarkHc,
+    secondary = TitaniumSecondaryDarkHc,
+    onSecondary = TitaniumOnSecondaryDarkHc,
+    secondaryContainer = TitaniumContainerDarkHc,
+    onSecondaryContainer = TitaniumOnContainerDarkHc,
+    tertiary = SageTertiaryDarkHc,
+    onTertiary = SageOnTertiaryDarkHc,
+    tertiaryContainer = SageContainerDarkHc,
+    onTertiaryContainer = SageOnContainerDarkHc,
     background = DarkHcBackground,
     onBackground = TextDarkHcWhite,
     surface = DarkHcSurface,
@@ -139,15 +140,23 @@ val DarkHighContrastColors = darkColorScheme(
     surfaceContainerHigh = DarkHcSurfaceContainerHigh,
     outline = BorderDarkHcSolid,
     outlineVariant = BorderDarkHcDivider,
-    error = HighVisErrorDarkHc,
-    onError = HighVisOnErrorDarkHc,
-    errorContainer = HighVisErrorContainerDarkHc,
-    onErrorContainer = HighVisOnErrorContainerDarkHc
+    error = CrimsonErrorDarkHc,
+    onError = CrimsonOnErrorDarkHc,
+    errorContainer = CrimsonErrorContainerDarkHc,
+    onErrorContainer = CrimsonOnErrorContainerDarkHc
 )
+
+/**
+ * Returns whether the active in-app [MaterialTheme.colorScheme] uses a dark background,
+ * ensuring UI badges and auxiliary surfaces follow the user's selected [AppThemeMode]
+ * even when it differs from the device OS dark mode setting.
+ */
+@Composable
+fun isAppDarkTheme(): Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
 @Composable
 fun CrossTrainingTheme(
-    themeMode: AppThemeMode = AppThemeMode.LIGHT,
+    themeMode: AppThemeMode = AppThemeMode.DARK,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
@@ -155,10 +164,10 @@ fun CrossTrainingTheme(
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
             if (themeMode.isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        themeMode == AppThemeMode.DARK -> DarkColors
+        themeMode == AppThemeMode.LIGHT -> LightColors
         themeMode == AppThemeMode.LIGHT_HIGH_CONTRAST -> LightHighContrastColors
         themeMode == AppThemeMode.DARK_HIGH_CONTRAST -> DarkHighContrastColors
-        else -> LightColors // Default is Light Mode
+        else -> DarkColors // Default is Dark Graphite Mode
     }
 
     MaterialTheme(

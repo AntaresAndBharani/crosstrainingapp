@@ -14,13 +14,36 @@ import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.WeightEntry
 import com.fractanomics.crosstraining.data.model.WeightSubcycleType
-import androidx.compose.ui.graphics.Color
 import com.fractanomics.crosstraining.data.analytics.CorridorComplianceStatus
 import com.fractanomics.crosstraining.data.analytics.CycleMomentumState
 import com.fractanomics.crosstraining.data.analytics.HorizonMomentumRow
 import com.fractanomics.crosstraining.data.analytics.MomentumSeverity
 import com.fractanomics.crosstraining.data.analytics.MomentumZone
 import com.fractanomics.crosstraining.ui.formatShort
+import com.fractanomics.crosstraining.ui.theme.CrimsonErrorContainerDark
+import com.fractanomics.crosstraining.ui.theme.CrimsonErrorContainerLight
+import com.fractanomics.crosstraining.ui.theme.CrimsonErrorDark
+import com.fractanomics.crosstraining.ui.theme.CrimsonErrorLight
+import com.fractanomics.crosstraining.ui.theme.DarkSurfaceContainerHigh
+import com.fractanomics.crosstraining.ui.theme.LightSurfaceVariant
+import com.fractanomics.crosstraining.ui.theme.OchreContainerDark
+import com.fractanomics.crosstraining.ui.theme.OchreContainerLight
+import com.fractanomics.crosstraining.ui.theme.OchreWarningDark
+import com.fractanomics.crosstraining.ui.theme.OchreWarningLight
+import com.fractanomics.crosstraining.ui.theme.SageContainerDark
+import com.fractanomics.crosstraining.ui.theme.SageContainerLight
+import com.fractanomics.crosstraining.ui.theme.SageTertiaryDark
+import com.fractanomics.crosstraining.ui.theme.SageTertiaryLight
+import com.fractanomics.crosstraining.ui.theme.SubcycleFatLossContainerDark
+import com.fractanomics.crosstraining.ui.theme.SubcycleFatLossContainerLight
+import com.fractanomics.crosstraining.ui.theme.SubcycleFatLossOnDark
+import com.fractanomics.crosstraining.ui.theme.SubcycleFatLossOnLight
+import com.fractanomics.crosstraining.ui.theme.SubcycleGainContainerDark
+import com.fractanomics.crosstraining.ui.theme.SubcycleGainContainerLight
+import com.fractanomics.crosstraining.ui.theme.SubcycleGainOnDark
+import com.fractanomics.crosstraining.ui.theme.SubcycleGainOnLight
+import com.fractanomics.crosstraining.ui.theme.TextDarkModeSlate
+import com.fractanomics.crosstraining.ui.theme.TextLightModeSlate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -1606,28 +1629,62 @@ class WeightProgressionCardTest {
     fun feature017_specWeightCard02_and_subtypeSheet02_resolversAndSemantics() {
         // Semantic badge colors (Light & Dark)
         assertEquals(
-            Color(0xFFE3F5EC) to Color(0xFF0B6E3F),
+            SageContainerLight to SageTertiaryLight,
             resolveMomentumBadgeColors(MomentumSeverity.OPTIMAL_GREEN, isDarkTheme = false)
         )
         assertEquals(
-            Color(0xFF133826) to Color(0xFF2ECC71),
+            SageContainerDark to SageTertiaryDark,
             resolveMomentumBadgeColors(MomentumSeverity.OPTIMAL_GREEN, isDarkTheme = true)
         )
         assertEquals(
-            Color(0xFFFEF3C7) to Color(0xFFD97706),
+            OchreContainerLight to OchreWarningLight,
             resolveMomentumBadgeColors(MomentumSeverity.WARNING_AMBER, isDarkTheme = false)
         )
         assertEquals(
-            Color(0xFF3B2A14) to Color(0xFFFBBF24),
+            OchreContainerDark to OchreWarningDark,
             resolveMomentumBadgeColors(MomentumSeverity.WARNING_AMBER, isDarkTheme = true)
         )
         assertEquals(
-            Color(0xFFFEE2E2) to Color(0xFFDC2626),
+            CrimsonErrorContainerLight to CrimsonErrorLight,
             resolveMomentumBadgeColors(MomentumSeverity.CRITICAL_RED, isDarkTheme = false)
         )
         assertEquals(
-            Color(0xFF3B1818) to Color(0xFFF87171),
+            CrimsonErrorContainerDark to CrimsonErrorDark,
             resolveMomentumBadgeColors(MomentumSeverity.CRITICAL_RED, isDarkTheme = true)
+        )
+        assertEquals(
+            LightSurfaceVariant to TextLightModeSlate,
+            resolveMomentumBadgeColors(MomentumSeverity.NEUTRAL, isDarkTheme = false)
+        )
+        assertEquals(
+            DarkSurfaceContainerHigh to TextDarkModeSlate,
+            resolveMomentumBadgeColors(MomentumSeverity.NEUTRAL, isDarkTheme = true)
+        )
+
+        // Subcycle pill colors (Light & Dark)
+        assertEquals(
+            SubcycleFatLossContainerLight to SubcycleFatLossOnLight,
+            resolveSubcyclePillColors(WeightSubcycleType.FAT_LOSS, isDarkTheme = false)
+        )
+        assertEquals(
+            SubcycleFatLossContainerDark to SubcycleFatLossOnDark,
+            resolveSubcyclePillColors(WeightSubcycleType.FAT_LOSS, isDarkTheme = true)
+        )
+        assertEquals(
+            SageContainerLight to SageTertiaryLight,
+            resolveSubcyclePillColors(WeightSubcycleType.RECOMPOSITION, isDarkTheme = false)
+        )
+        assertEquals(
+            SageContainerDark to SageTertiaryDark,
+            resolveSubcyclePillColors(WeightSubcycleType.RECOMPOSITION, isDarkTheme = true)
+        )
+        assertEquals(
+            SubcycleGainContainerLight to SubcycleGainOnLight,
+            resolveSubcyclePillColors(WeightSubcycleType.MUSCLE_GAIN, isDarkTheme = false)
+        )
+        assertEquals(
+            SubcycleGainContainerDark to SubcycleGainOnDark,
+            resolveSubcyclePillColors(WeightSubcycleType.MUSCLE_GAIN, isDarkTheme = true)
         )
 
         // Composite row with warning helper subtitle

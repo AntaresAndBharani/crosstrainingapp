@@ -3,27 +3,27 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- High-Contrast Volt Green & Crisp White Barbell Emblem -->
+    <!-- Precision Brushed Titanium & Warm Bronze Barbell Emblem -->
     <group android:scaleX="1.0" android:scaleY="1.0">
         <!-- bar -->
         <path
-            android:fillColor="#FFFFFF"
+            android:fillColor="#E4E4E7"
             android:pathData="M26,52h56v4h-56z" />
-        <!-- left inner plate (Crisp White) -->
+        <!-- left inner plate (Brushed Titanium) -->
         <path
-            android:fillColor="#FFFFFF"
+            android:fillColor="#E4E4E7"
             android:pathData="M34,42h6v24h-6z" />
-        <!-- left outer plate (Volt Green) -->
+        <!-- left outer plate (Warm Bronze) -->
         <path
-            android:fillColor="#00E676"
+            android:fillColor="#D49B6A"
             android:pathData="M26,38h6v32h-6z" />
-        <!-- right inner plate (Crisp White) -->
+        <!-- right inner plate (Brushed Titanium) -->
         <path
-            android:fillColor="#FFFFFF"
+            android:fillColor="#E4E4E7"
             android:pathData="M68,42h6v24h-6z" />
-        <!-- right outer plate (Volt Green) -->
+        <!-- right outer plate (Warm Bronze) -->
         <path
-            android:fillColor="#00E676"
+            android:fillColor="#D49B6A"
             android:pathData="M76,38h6v32h-6z" />
     </group>
 </vector>
