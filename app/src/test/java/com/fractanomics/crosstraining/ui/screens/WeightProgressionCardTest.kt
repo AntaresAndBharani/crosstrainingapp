@@ -14,7 +14,6 @@ import com.fractanomics.crosstraining.data.model.CycleGoal
 import com.fractanomics.crosstraining.data.model.CycleType
 import com.fractanomics.crosstraining.data.model.WeightEntry
 import com.fractanomics.crosstraining.data.model.WeightSubcycleType
-import androidx.compose.ui.graphics.Color
 import com.fractanomics.crosstraining.data.analytics.CorridorComplianceStatus
 import com.fractanomics.crosstraining.data.analytics.CycleMomentumState
 import com.fractanomics.crosstraining.data.analytics.HorizonMomentumRow
