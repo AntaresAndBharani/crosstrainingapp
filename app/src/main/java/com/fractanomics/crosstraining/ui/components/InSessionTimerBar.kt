@@ -1,18 +1,14 @@
 package com.fractanomics.crosstraining.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -145,16 +141,10 @@ fun InSessionTimerBar(
                         )
                     }
 
-                    val roundInfo = when {
-                        snapshot.phase == TimerPhase.TRANSITION ->
-                            "Up Next: ${snapshot.queuedNextStage?.config?.mode?.label ?: "Next Stage"}"
-                        snapshot.totalRounds > 1 ->
-                            "Round ${snapshot.currentRound} of ${snapshot.totalRounds}"
-                        else -> snapshot.mode.label
-                    }
+                    val roundInfo = ContinuousTimerUiResolver.formatInSessionBarSubtitle(snapshot)
                     Text(
                         text = roundInfo,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -162,17 +152,17 @@ fun InSessionTimerBar(
                 }
             }
 
-            // Right Row: Non-focus-stealing action controls
+            // Right Row: Non-focus-stealing 48dp action controls
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (snapshot.phase == TimerPhase.FINISHED) {
                     // Inline dismiss button to reset engine to IDLE
                     IconButton(
                         onClick = { timerEngine.stopAndClearAll() },
                         modifier = Modifier
-                            .size(36.dp)
+                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                             .focusProperties { canFocus = false },
                         interactionSource = nonFocusInteractionSource
                     ) {
@@ -194,7 +184,7 @@ fun InSessionTimerBar(
                             }
                         },
                         modifier = Modifier
-                            .size(36.dp)
+                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                             .focusProperties { canFocus = false },
                         interactionSource = nonFocusInteractionSource
                     ) {
@@ -219,7 +209,7 @@ fun InSessionTimerBar(
                                 }
                             },
                             modifier = Modifier
-                                .size(36.dp)
+                                .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                                 .focusProperties { canFocus = false },
                             interactionSource = nonFocusInteractionSource
                         ) {
@@ -231,20 +221,12 @@ fun InSessionTimerBar(
                         }
                     }
 
-                    // Expand sheet button
-                    IconButton(
-                        onClick = onExpand,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .focusProperties { canFocus = false },
-                        interactionSource = nonFocusInteractionSource
-                    ) {
-                        Icon(
-                            Icons.Filled.ExpandLess,
-                            contentDescription = "Expand timer",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Icon(
+                        Icons.Filled.ExpandLess,
+                        contentDescription = "Tap bar to expand timer",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
         }

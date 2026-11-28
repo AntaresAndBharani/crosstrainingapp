@@ -82,11 +82,15 @@ fun createTimerNotificationSpec(snapshot: TimerSnapshot): TimerNotificationSpec 
         requestCode = 4
     )
 
+    val nextTargetLabel = snapshot.queuedNextStage?.config?.let { cfg ->
+        cfg.workoutLabel.ifBlank { cfg.mode.label }
+    }
     val title = TimerNotificationFormatter.formatTitle(
-        snapshot.phase,
-        snapshot.currentRound,
-        snapshot.totalRounds,
-        snapshot.queuedNextStage?.config?.mode?.label
+        phase = snapshot.phase,
+        currentRound = snapshot.currentRound,
+        totalRounds = snapshot.totalRounds,
+        nextModeLabel = nextTargetLabel,
+        workoutLabel = snapshot.workoutLabel
     )
     val remainingFormatted = formatTimerNotificationTime(snapshot.roundSecondsRemaining)
     val totalRemainingFormatted = formatTimerNotificationTime(snapshot.totalSecondsRemaining)

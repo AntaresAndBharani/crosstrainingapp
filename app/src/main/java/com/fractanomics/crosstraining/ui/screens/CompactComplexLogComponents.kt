@@ -264,6 +264,8 @@ internal fun CompactComplexLogCard(
     onOpenPrPicker: () -> Unit,
     onRemoveTrackedPr: (TrackedPrSlot) -> Unit,
     itemNumber: Int? = null,
+    isTimerActive: Boolean = false,
+    isTimerUpNext: Boolean = false,
     onShowUndoSnackbar: (message: String, onUndo: () -> Unit) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
@@ -277,6 +279,8 @@ internal fun CompactComplexLogCard(
         if (itemNumber != null) append("$itemNumber  ")
         append("COMPLEX: ${blockState.block.title.ifBlank { "Untitled Complex" }}")
     }
+    val cardShape = RoundedCornerShape(16.dp)
+    val timerBorder = timerHighlightBorderOrNull(isTimerActive = isTimerActive, isTimerUpNext = isTimerUpNext)
 
     var showByExerciseView by remember(blockState.uiKey) { mutableStateOf(false) }
     val expandedSetRows = remember(blockState.uiKey) { mutableStateMapOf<Int, Boolean>() }
@@ -286,8 +290,17 @@ internal fun CompactComplexLogCard(
         contentAlignment = Alignment.TopCenter
     ) {
         ElevatedCard(
-            modifier = Modifier.widthIn(max = 640.dp).fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .widthIn(max = 640.dp)
+                .fillMaxWidth()
+                .then(
+                    if (timerBorder != null) {
+                        Modifier.border(timerBorder, cardShape)
+                    } else {
+                        Modifier
+                    }
+                ),
+            shape = cardShape,
             colors = CardDefaults.elevatedCardColors(containerColor = cardColor)
         ) {
             Column(
@@ -296,6 +309,8 @@ internal fun CompactComplexLogCard(
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                TimerCardStatusPill(isTimerActive = isTimerActive, isTimerUpNext = isTimerUpNext)
+
                 SessionItemHeaderRow(
                     label = headerText,
                     titleColor = headerAccent,

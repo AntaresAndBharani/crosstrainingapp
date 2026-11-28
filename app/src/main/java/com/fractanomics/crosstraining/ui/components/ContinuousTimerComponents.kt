@@ -1,5 +1,6 @@
 package com.fractanomics.crosstraining.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,6 +28,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -57,9 +60,11 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -393,6 +398,311 @@ fun TimerModeSetupForm(
 }
 
 /**
+ * Pre-start timeline preview showing auto-extrapolated or custom queued stages connected by
+ * Burnished Ochre transition indicators, with per-stage Edit/Remove actions and `+ Add Stage`.
+ */
+@Composable
+fun WorkoutQueueTimelinePreview(
+    startingConfig: WorkoutTimerConfig,
+    queuedStages: List<QueuedTimerStage>,
+    onEditStage: (QueuedTimerStage) -> Unit,
+    onRemoveStage: (String) -> Unit,
+    onAddStage: () -> Unit,
+    showResetDefaults: Boolean = false,
+    onResetDefaults: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val totalQueueSeconds = remember(startingConfig, queuedStages) {
+        val tail = queuedStages.sumOf { it.transitionSeconds.coerceAtLeast(0) + it.config.stageTotalSeconds() }
+        startingConfig.stageTotalSeconds() + tail
+    }
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (queuedStages.isEmpty()) {
+                    "Up Next Queue"
+                } else {
+                    "Upcoming Queue (${queuedStages.size} ${if (queuedStages.size == 1) "block" else "blocks"})"
+                },
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = "Total Est. ${ContinuousTimerUiResolver.formatClock(totalQueueSeconds)}",
+                style = tabularStyle(MaterialTheme.typography.labelMedium),
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+
+        if (queuedStages.isEmpty()) {
+            Text(
+                text = "No remaining blocks after this stage. You can still add a custom finisher or rest stage below.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            queuedStages.forEachIndexed { idx, stage ->
+                key(stage.id) {
+                    QueueTimelineStageCard(
+                        positionInQueue = idx + 1,
+                        stage = stage,
+                        onEdit = { onEditStage(stage) },
+                        onRemove = { onRemoveStage(stage.id) }
+                    )
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedButton(
+                onClick = onAddStage,
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (queuedStages.isEmpty()) "Add Next Mode & Transition" else "Add Stage",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            if (showResetDefaults && onResetDefaults != null) {
+                TextButton(
+                    onClick = onResetDefaults,
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Reset Queue", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueTimelineStageCard(
+    positionInQueue: Int,
+    stage: QueuedTimerStage,
+    onEdit: () -> Unit,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val transitionAccent = resolveTransitionAccentColor()
+    val transitionContainer = resolveTransitionContainerColor()
+    val transitionTextColor = if (isAppDarkTheme()) OchreOnContainerDark else OchreOnContainerLight
+    val stageTitle = stage.config.workoutLabel.ifBlank { stage.config.mode.label }
+    val a11yLabel = ContinuousTimerUiResolver.formatQueueRowAccessibilityLabel(positionInQueue, stage)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) { contentDescription = a11yLabel },
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Surface(
+            color = transitionContainer,
+            shape = RoundedCornerShape(8.dp),
+            border = BorderStroke(1.dp, transitionAccent.copy(alpha = 0.45f))
+        ) {
+            val transitionLabel = if (stage.transitionSeconds <= 0) {
+                "0s Direct Transition"
+            } else {
+                "${ContinuousTimerUiResolver.formatClock(stage.transitionSeconds)} Transition"
+            }
+            Text(
+                text = transitionLabel,
+                style = tabularStyle(MaterialTheme.typography.labelSmall),
+                fontWeight = FontWeight.Bold,
+                color = transitionTextColor,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+
+        OutlinedCard(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = stageTitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = ContinuousTimerUiResolver.formatCompactModeSummary(
+                            stage.config.copy(workoutLabel = "")
+                        ),
+                        style = tabularStyle(MaterialTheme.typography.bodySmall),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    IconButton(
+                        onClick = onEdit,
+                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Edit,
+                            contentDescription = "Edit stage $stageTitle"
+                        )
+                    }
+                    IconButton(
+                        onClick = onRemove,
+                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Remove stage $stageTitle"
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Multi-stage active queue summary + expandable remaining blocks drawer usable inside
+ * [ActiveContinuousTimerCard] and setup screens.
+ */
+@Composable
+fun ActiveTimerQueueSection(
+    queuedStages: List<QueuedTimerStage>,
+    onEditStage: (QueuedTimerStage) -> Unit,
+    onRemoveStage: (String) -> Unit,
+    onAddStage: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isQueueExpanded by rememberSaveable { mutableStateOf(false) }
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        val headStage = queuedStages.firstOrNull()
+        if (headStage == null) {
+            OutlinedButton(
+                onClick = onAddStage,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "Choose Next Mode & Transition Time",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        } else {
+            UpNextQueueCard(
+                queuedStage = headStage,
+                onOpenPicker = { onEditStage(headStage) },
+                onClearQueue = { onRemoveStage(headStage.id) }
+            )
+
+            val tailStages = queuedStages.drop(1)
+            if (tailStages.isNotEmpty()) {
+                OutlinedButton(
+                    onClick = { isQueueExpanded = !isQueueExpanded },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(
+                        text = if (isQueueExpanded) {
+                            "Hide Remaining Queue (${tailStages.size} more)"
+                        } else {
+                            "Remaining Queue (+${tailStages.size} more)"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        imageVector = if (isQueueExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null
+                    )
+                }
+
+                AnimatedVisibility(visible = isQueueExpanded) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        tailStages.forEachIndexed { idx, stage ->
+                            key(stage.id) {
+                                QueueTimelineStageCard(
+                                    positionInQueue = idx + 2,
+                                    stage = stage,
+                                    onEdit = { onEditStage(stage) },
+                                    onRemove = { onRemoveStage(stage.id) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            OutlinedButton(
+                onClick = onAddStage,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Add Stage to Queue", fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+/**
  * Single-slot Up Next queue banner usable on Setup, active WORK/REST/PREP, and TRANSITION views.
  */
 @Composable
@@ -428,11 +738,11 @@ fun UpNextQueueCard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
                     val transitionDesc = if (queuedStage.transitionSeconds <= 0) {
                         "Up Next (Direct 0s transition)"
                     } else {
@@ -440,31 +750,34 @@ fun UpNextQueueCard(
                     }
                     Text(
                         text = transitionDesc,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = tabularStyle(MaterialTheme.typography.labelSmall),
                         color = resolveTransitionAccentColor(),
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = ContinuousTimerUiResolver.formatCompactModeSummary(queuedStage.config),
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = tabularStyle(MaterialTheme.typography.bodyMedium),
                         fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     IconButton(
                         onClick = onOpenPicker,
-                        modifier = Modifier.size(48.dp)
+                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                     ) {
                         Icon(Icons.Filled.Edit, contentDescription = "Edit upcoming mode")
                     }
                     IconButton(
                         onClick = onClearQueue,
-                        modifier = Modifier.size(48.dp)
+                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                     ) {
-                        Icon(Icons.Filled.Close, contentDescription = "Clear upcoming mode")
+                        Icon(Icons.Filled.Close, contentDescription = "Remove upcoming mode")
                     }
                 }
             }
@@ -473,7 +786,7 @@ fun UpNextQueueCard(
 }
 
 /**
- * Bottom sheet for selecting or editing the single-slot Next Mode and transition wait seconds,
+ * Bottom sheet for selecting or editing a queued stage and its transition wait seconds,
  * or appending another mode from [TimerPhase.FINISHED].
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -488,6 +801,8 @@ fun NextModeConfigSheet(
     onClearStage: () -> Unit,
     sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 ) {
+    val preservedLabel = existingStage?.config?.workoutLabel.orEmpty()
+    val preservedBlockKey = existingStage?.config?.sourceBlockKey
     val initialConfig = existingStage?.config ?: WorkoutTimerConfig(
         mode = TimerMode.AMRAP,
         targetMinutes = 10,
@@ -518,22 +833,33 @@ fun NextModeConfigSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val sheetTitle = when {
+                    isContinueFromFinished -> "Add Another Mode"
+                    preservedLabel.isNotBlank() -> "Edit: $preservedLabel"
+                    existingStage != null -> "Edit Queued Stage"
+                    else -> "Add Stage & Transition"
+                }
                 Text(
-                    text = if (isContinueFromFinished) "Add Another Mode" else "Up Next Mode & Transition",
+                    text = sheetTitle,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
                 IconButton(
                     onClick = onDismiss,
-                    modifier = Modifier.size(48.dp)
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                 ) {
                     Icon(Icons.Filled.Close, contentDescription = "Close next mode sheet")
                 }
             }
 
-            Text("Transition Time Before Next Mode:", style = MaterialTheme.typography.labelMedium)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Transition Time Before Stage:", style = MaterialTheme.typography.labelMedium)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 ContinuousTimerUiResolver.QUICK_TRANSITION_SECONDS.forEach { secs ->
                     FilterChip(
                         selected = transitionSeconds == secs,
@@ -553,8 +879,11 @@ fun NextModeConfigSheet(
 
             HorizontalDivider()
 
-            Text("One-Tap Finisher / Stage Presets:", style = MaterialTheme.typography.labelMedium)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("One-Tap Stage Presets:", style = MaterialTheme.typography.labelMedium)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 ContinuousTimerUiResolver.NEXT_STAGE_PRESETS.forEach { preset ->
                     FilterChip(
                         selected = draftConfig.mode == preset.config.mode &&
@@ -563,7 +892,9 @@ fun NextModeConfigSheet(
                         onClick = {
                             draftConfig = preset.config.copy(
                                 soundEnabled = baseSoundEnabled,
-                                vibrationEnabled = baseVibrationEnabled
+                                vibrationEnabled = baseVibrationEnabled,
+                                workoutLabel = preservedLabel,
+                                sourceBlockKey = preservedBlockKey
                             )
                         },
                         label = { Text("${preset.title} (${preset.subtitle})") }
@@ -574,7 +905,10 @@ fun NextModeConfigSheet(
             HorizontalDivider()
 
             Text("Timer Mode:", style = MaterialTheme.typography.labelMedium)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 TimerMode.entries.forEach { mode ->
                     FilterChip(
                         selected = draftConfig.mode == mode,
@@ -583,6 +917,9 @@ fun NextModeConfigSheet(
                                 mode = mode,
                                 soundEnabled = baseSoundEnabled,
                                 vibrationEnabled = baseVibrationEnabled
+                            ).copy(
+                                workoutLabel = preservedLabel,
+                                sourceBlockKey = preservedBlockKey
                             )
                         },
                         label = { Text(mode.label) }
@@ -613,7 +950,7 @@ fun NextModeConfigSheet(
                             .height(52.dp),
                         shape = RoundedCornerShape(999.dp)
                     ) {
-                        Text("Clear Queue", maxLines = 1, softWrap = false)
+                        Text("Remove", maxLines = 1, softWrap = false)
                     }
                 }
 
@@ -622,9 +959,23 @@ fun NextModeConfigSheet(
                         val sanitizedConfig = draftConfig.copy(
                             prepCountdownSeconds = 0,
                             soundEnabled = baseSoundEnabled,
-                            vibrationEnabled = baseVibrationEnabled
+                            vibrationEnabled = baseVibrationEnabled,
+                            workoutLabel = preservedLabel.ifBlank { draftConfig.workoutLabel },
+                            sourceBlockKey = preservedBlockKey ?: draftConfig.sourceBlockKey
                         )
-                        onSaveStage(QueuedTimerStage(sanitizedConfig, transitionSeconds.coerceAtLeast(0)))
+                        val savedStage = if (existingStage != null) {
+                            QueuedTimerStage(
+                                config = sanitizedConfig,
+                                transitionSeconds = transitionSeconds.coerceAtLeast(0),
+                                id = existingStage.id
+                            )
+                        } else {
+                            QueuedTimerStage(
+                                config = sanitizedConfig,
+                                transitionSeconds = transitionSeconds.coerceAtLeast(0)
+                            )
+                        }
+                        onSaveStage(savedStage)
                         onDismiss()
                     },
                     modifier = Modifier
@@ -633,7 +984,7 @@ fun NextModeConfigSheet(
                     shape = RoundedCornerShape(999.dp)
                 ) {
                     Text(
-                        text = if (isContinueFromFinished) "Start Next Mode" else "Save Next Mode",
+                        text = if (isContinueFromFinished) "Start Next Mode" else "Save Stage",
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         softWrap = false
@@ -757,6 +1108,7 @@ fun DurationTapToTypeDialog(
 @Composable
 fun ResetTimerConfirmDialog(
     hasQueuedNext: Boolean,
+    queuedCount: Int = if (hasQueuedNext) 1 else 0,
     onDismiss: () -> Unit,
     onRestartCurrentOnly: () -> Unit,
     onStopAndClearAll: () -> Unit
@@ -766,10 +1118,13 @@ fun ResetTimerConfirmDialog(
         title = { Text("Reset Timer Session?", fontWeight = FontWeight.Bold) },
         text = {
             Text(
-                text = if (hasQueuedNext) {
-                    "You have a queued Next Mode configured. Choose whether to restart only the current mode or stop and clear everything."
-                } else {
-                    "You have completed prior stages in this continuous session. Restart the active mode or stop and clear the full session?"
+                text = when {
+                    queuedCount > 1 ->
+                        "You have $queuedCount blocks queued ahead. Restart only the current block or stop and clear the full queue?"
+                    hasQueuedNext ->
+                        "You have an upcoming stage queued. Restart only the current block or stop and clear the full queue?"
+                    else ->
+                        "You have completed prior stages in this continuous session. Restart the active block or stop and clear the full session?"
                 },
                 style = MaterialTheme.typography.bodyMedium
             )
@@ -788,7 +1143,7 @@ fun ResetTimerConfirmDialog(
                         .fillMaxWidth()
                         .heightIn(min = 48.dp)
                 ) {
-                    Text("Restart Current Mode (Keep Next Mode)")
+                    Text("Restart Current Block (Keep Queue)")
                 }
                 OutlinedButton(
                     onClick = {
@@ -799,7 +1154,7 @@ fun ResetTimerConfirmDialog(
                         .fillMaxWidth()
                         .heightIn(min = 48.dp)
                 ) {
-                    Text("Stop & Clear All")
+                    Text("Stop & Clear Full Queue")
                 }
                 TextButton(
                     onClick = onDismiss,
@@ -831,10 +1186,35 @@ fun ActiveContinuousTimerCard(
     timerEngine: TimerEngine,
     onStartService: () -> Unit,
     onOpenQueueSheet: (continueFromFinished: Boolean) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onEditQueuedStage: ((QueuedTimerStage) -> Unit)? = null,
+    onRemoveQueuedStage: ((String) -> Unit)? = null,
+    onAddQueuedStage: ((continueFromFinished: Boolean) -> Unit)? = null
 ) {
     var showResetConfirm by remember { mutableStateOf(false) }
     var dialogTarget by remember { mutableStateOf<NumericDialogTarget?>(null) }
+
+    val handleEditStage: (QueuedTimerStage) -> Unit = { stage ->
+        if (onEditQueuedStage != null) {
+            onEditQueuedStage(stage)
+        } else {
+            onOpenQueueSheet(false)
+        }
+    }
+    val handleRemoveStage: (String) -> Unit = { stageId ->
+        if (onRemoveQueuedStage != null) {
+            onRemoveQueuedStage(stageId)
+        } else {
+            timerEngine.removeQueuedStage(stageId)
+        }
+    }
+    val handleAddStage: (Boolean) -> Unit = { fromFinished ->
+        if (onAddQueuedStage != null) {
+            onAddQueuedStage(fromFinished)
+        } else {
+            onOpenQueueSheet(fromFinished)
+        }
+    }
 
     // Boundary-only TalkBack polite announcement (never triggered by 1Hz ticks)
     var previousSnapshot by remember { mutableStateOf<TimerSnapshot?>(null) }
@@ -888,26 +1268,23 @@ fun ActiveContinuousTimerCard(
                     )
                 }
 
-                val stageLabel = when {
-                    snapshot.phase == TimerPhase.FINISHED ->
-                        "${snapshot.completedStagesCount + 1} stage${if (snapshot.completedStagesCount > 0) "s" else ""}"
-                    snapshot.completedStagesCount > 0 || snapshot.queuedNextStage != null ->
-                        "Stage ${snapshot.completedStagesCount + 1} • ${snapshot.mode.label}"
-                    else -> snapshot.mode.label
-                }
+                Spacer(Modifier.width(8.dp))
+
+                val stageLabel = ContinuousTimerUiResolver.formatStagePositionHeader(snapshot)
                 Text(
                     text = stageLabel,
-                    style = MaterialTheme.typography.labelLarge,
+                    style = tabularStyle(MaterialTheme.typography.labelLarge),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
             }
 
             if (snapshot.phase == TimerPhase.FINISHED) {
                 FinishedStageContent(
                     snapshot = snapshot,
-                    onAddAnotherMode = { onOpenQueueSheet(true) },
+                    onAddAnotherMode = { handleAddStage(true) },
                     onDoneReset = { timerEngine.stopAndClearAll() }
                 )
             } else {
@@ -974,6 +1351,7 @@ fun ActiveContinuousTimerCard(
                 if (snapshot.phase == TimerPhase.TRANSITION) {
                     val queued = snapshot.queuedNextStage
                     if (queued != null) {
+                        val nextTitle = queued.config.workoutLabel.ifBlank { queued.config.mode.label }
                         OutlinedCard(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
@@ -982,20 +1360,24 @@ fun ActiveContinuousTimerCard(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
                                     Text(
-                                        text = "Up Next: ${queued.config.mode.label}",
+                                        text = "Up Next: $nextTitle",
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold,
-                                        color = phaseColor
+                                        color = phaseColor,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = ContinuousTimerUiResolver.formatCompactModeSummary(queued.config),
-                                        style = MaterialTheme.typography.bodyMedium,
+                                        text = ContinuousTimerUiResolver.formatCompactModeSummary(
+                                            queued.config.copy(workoutLabel = "")
+                                        ),
+                                        style = tabularStyle(MaterialTheme.typography.bodyMedium),
                                         fontWeight = FontWeight.Medium,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
@@ -1006,11 +1388,66 @@ fun ActiveContinuousTimerCard(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                IconButton(
-                                    onClick = { onOpenQueueSheet(false) },
-                                    modifier = Modifier.size(48.dp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(Icons.Filled.Edit, contentDescription = "Edit upcoming stage")
+                                    IconButton(
+                                        onClick = { handleEditStage(queued) },
+                                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                    ) {
+                                        Icon(Icons.Filled.Edit, contentDescription = "Edit upcoming stage")
+                                    }
+                                    IconButton(
+                                        onClick = { handleRemoveStage(queued.id) },
+                                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                    ) {
+                                        Icon(Icons.Filled.Close, contentDescription = "Remove upcoming stage")
+                                    }
+                                }
+                            }
+                        }
+
+                        val remainingTail = snapshot.queuedStages.drop(1)
+                        if (remainingTail.isNotEmpty()) {
+                            var expandTail by rememberSaveable { mutableStateOf(false) }
+                            OutlinedButton(
+                                onClick = { expandTail = !expandTail },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text(
+                                    text = if (expandTail) {
+                                        "Hide Following Blocks (${remainingTail.size})"
+                                    } else {
+                                        "Remaining Queue (+${remainingTail.size} more)"
+                                    },
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    imageVector = if (expandTail) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                    contentDescription = null
+                                )
+                            }
+                            AnimatedVisibility(visible = expandTail) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    remainingTail.forEachIndexed { idx, tailStage ->
+                                        key(tailStage.id) {
+                                            QueueTimelineStageCard(
+                                                positionInQueue = idx + 2,
+                                                stage = tailStage,
+                                                onEdit = { handleEditStage(tailStage) },
+                                                onRemove = { handleRemoveStage(tailStage.id) }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1033,6 +1470,18 @@ fun ActiveContinuousTimerCard(
                             )
                         }
                     )
+
+                    OutlinedButton(
+                        onClick = { handleAddStage(false) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Add Stage to Queue", fontWeight = FontWeight.SemiBold)
+                    }
                 } else {
                     // Live Rounds + Next-Round Single-Round Adjustment Panel
                     val liveState = ContinuousTimerUiResolver.resolveLiveAdjustmentUiState(snapshot)
@@ -1053,7 +1502,7 @@ fun ActiveContinuousTimerCard(
                                 )
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     FilledTonalButton(
                                         onClick = { timerEngine.adjustTotalRounds(-1) },
@@ -1129,11 +1578,12 @@ fun ActiveContinuousTimerCard(
                         }
                     }
 
-                    // Live Single-Slot Up Next Picker
-                    UpNextQueueCard(
-                        queuedStage = snapshot.queuedNextStage,
-                        onOpenPicker = { onOpenQueueSheet(false) },
-                        onClearQueue = { timerEngine.setQueuedNextStage(null) }
+                    // Live Multi-Stage Up Next & Expandable Queue Section
+                    ActiveTimerQueueSection(
+                        queuedStages = snapshot.queuedStages,
+                        onEditStage = handleEditStage,
+                        onRemoveStage = handleRemoveStage,
+                        onAddStage = { handleAddStage(false) }
                     )
                 }
 
@@ -1269,6 +1719,7 @@ fun ActiveContinuousTimerCard(
     if (showResetConfirm) {
         ResetTimerConfirmDialog(
             hasQueuedNext = snapshot.queuedNextStage != null,
+            queuedCount = snapshot.queuedStages.size,
             onDismiss = { showResetConfirm = false },
             onRestartCurrentOnly = {
                 timerEngine.restartCurrentStage()

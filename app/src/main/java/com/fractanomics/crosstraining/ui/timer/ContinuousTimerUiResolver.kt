@@ -109,11 +109,63 @@ object ContinuousTimerUiResolver {
     fun formatSecondaryClockHint(snapshot: TimerSnapshot): String? = when {
         snapshot.phase == TimerPhase.WORK && snapshot.mode == TimerMode.TIME_CAP ->
             "Cap ${formatClock(snapshot.roundTotalSeconds)} • Rem ${formatClock(snapshot.roundSecondsRemaining)}"
-        snapshot.phase == TimerPhase.TRANSITION ->
-            "Up Next: ${snapshot.queuedNextStage?.config?.mode?.label ?: "Next Stage"}"
+        snapshot.phase == TimerPhase.TRANSITION -> {
+            val nextTarget = snapshot.queuedNextStage?.config?.let { cfg ->
+                cfg.workoutLabel.ifBlank { cfg.mode.label }
+            } ?: "Next Stage"
+            "Up Next: $nextTarget"
+        }
         snapshot.phase == TimerPhase.WORK && snapshot.mode == TimerMode.DEATH_BY ->
             "Target: ${snapshot.targetRepsCurrentRound} reps"
         else -> null
+    }
+
+    /** Formats the stage/block position header shown at the top of [ActiveContinuousTimerCard]. */
+    fun formatStagePositionHeader(snapshot: TimerSnapshot): String = when {
+        snapshot.phase == TimerPhase.FINISHED ->
+            "${snapshot.completedStagesCount + 1} stage${if (snapshot.completedStagesCount > 0) "s" else ""}"
+        snapshot.totalPlannedStages > 1 -> {
+            if (snapshot.workoutLabel.isNotBlank()) {
+                "Block ${snapshot.currentStageIndex} of ${snapshot.totalPlannedStages} • ${snapshot.workoutLabel}"
+            } else {
+                "Stage ${snapshot.currentStageIndex} of ${snapshot.totalPlannedStages} • ${snapshot.mode.label}"
+            }
+        }
+        snapshot.workoutLabel.isNotBlank() ->
+            "${snapshot.workoutLabel} • ${snapshot.mode.label}"
+        else -> snapshot.mode.label
+    }
+
+    /** Formats concise single-line subtitle for the compact docked [InSessionTimerBar]. */
+    fun formatInSessionBarSubtitle(snapshot: TimerSnapshot): String {
+        val hasQueue = snapshot.totalPlannedStages > 1
+        return when {
+            snapshot.phase == TimerPhase.TRANSITION -> {
+                val nextCfg = snapshot.queuedNextStage?.config
+                val nextTarget = nextCfg?.let { it.workoutLabel.ifBlank { it.mode.label } } ?: "Next Stage"
+                val suffix = if (hasQueue) " • ${snapshot.currentStageIndex + 1}/${snapshot.totalPlannedStages}" else ""
+                "Next: $nextTarget$suffix"
+            }
+            snapshot.totalRounds > 1 -> {
+                val suffix = if (hasQueue) " • ${snapshot.currentStageIndex}/${snapshot.totalPlannedStages}" else ""
+                "R${snapshot.currentRound}/${snapshot.totalRounds}$suffix"
+            }
+            else -> {
+                val suffix = if (hasQueue) " • ${snapshot.currentStageIndex}/${snapshot.totalPlannedStages}" else ""
+                "${snapshot.mode.label}$suffix"
+            }
+        }
+    }
+
+    /** Formats merged TalkBack description for an upcoming stage row in a workout timer queue. */
+    fun formatQueueRowAccessibilityLabel(positionInQueue: Int, stage: QueuedTimerStage): String {
+        val title = stage.config.workoutLabel.ifBlank { stage.config.mode.label }
+        val transitionDesc = if (stage.transitionSeconds <= 0) {
+            "immediate transition"
+        } else {
+            "after ${stage.transitionSeconds} seconds transition"
+        }
+        return "Queued item $positionInQueue: $title, $transitionDesc, ${formatCompactModeSummary(stage.config)}"
     }
 
     /** Summarizes a stage configuration concisely for previews and Up Next cards. */
@@ -203,23 +255,39 @@ object ContinuousTimerUiResolver {
             previous.phase != current.phase ||
             previous.currentRound != current.currentRound ||
             previous.mode != current.mode ||
+            previous.workoutLabel != current.workoutLabel ||
             previous.completedStagesCount != current.completedStagesCount
 
         if (!changedBoundary) return null
 
+        val blockPrefix = if (current.workoutLabel.isNotBlank()) {
+            if (current.totalPlannedStages > 1) {
+                "${current.workoutLabel}, block ${current.currentStageIndex} of ${current.totalPlannedStages}. "
+            } else {
+                "${current.workoutLabel}. "
+            }
+        } else {
+            ""
+        }
+
         return when (current.phase) {
-            TimerPhase.PREP -> "Get ready, ${current.mode.label}."
+            TimerPhase.PREP -> "${blockPrefix}Get ready, ${current.mode.label}."
             TimerPhase.TRANSITION -> {
-                val nextLabel = current.queuedNextStage?.config?.mode?.label ?: "Next stage"
-                "Transition started. Up next: $nextLabel."
+                val nextCfg = current.queuedNextStage?.config
+                val nextDesc = when {
+                    nextCfg == null -> "Next stage"
+                    nextCfg.workoutLabel.isNotBlank() -> "${nextCfg.workoutLabel}, ${nextCfg.mode.label}"
+                    else -> nextCfg.mode.label
+                }
+                "Transition started. Up next: $nextDesc."
             }
             TimerPhase.FINISHED -> {
                 val totalCompleted = current.completedStagesCount + 1
                 val suffix = if (totalCompleted == 1) "stage" else "stages"
                 "Workout complete. $totalCompleted $suffix finished."
             }
-            TimerPhase.WORK -> "Work, Round ${current.currentRound} of ${current.totalRounds}, ${current.mode.label}."
-            TimerPhase.REST -> "Rest, Round ${current.currentRound} of ${current.totalRounds}."
+            TimerPhase.WORK -> "${blockPrefix}Work, Round ${current.currentRound} of ${current.totalRounds}, ${current.mode.label}."
+            TimerPhase.REST -> "${blockPrefix}Rest, Round ${current.currentRound} of ${current.totalRounds}."
             TimerPhase.IDLE -> null
         }
     }

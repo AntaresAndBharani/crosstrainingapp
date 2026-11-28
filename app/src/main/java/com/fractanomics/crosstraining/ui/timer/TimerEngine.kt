@@ -54,16 +54,24 @@ class TimerEngine(
 
     /** Configures an idle/non-running timer stage with an optional single-slot queued next stage. */
     fun configure(newConfig: WorkoutTimerConfig, queuedNext: QueuedTimerStage? = null) {
+        configureQueue(newConfig, listOfNotNull(queuedNext))
+    }
+
+    /** Configures an idle/non-running timer stage with an ordered multi-stage queue. */
+    fun configureQueue(
+        newConfig: WorkoutTimerConfig,
+        queuedStages: List<QueuedTimerStage> = emptyList()
+    ) {
         val currentPhase = _snapshot.value.phase
         if (!_snapshot.value.isRunning &&
             currentPhase != TimerPhase.PREP &&
             currentPhase != TimerPhase.TRANSITION
         ) {
             config = newConfig
-            val sanitizedQueue = queuedNext?.let {
+            val sanitizedQueue = queuedStages.map {
                 it.copy(transitionSeconds = it.transitionSeconds.coerceAtLeast(0))
             }
-            resetInternal(queuedNext = sanitizedQueue, resetCompletedStages = true)
+            resetInternal(queuedStages = sanitizedQueue, resetCompletedStages = true)
         }
     }
 
@@ -72,10 +80,24 @@ class TimerEngine(
      * Cancels any existing timer job and immediately launches the PREP or WORK phase.
      */
     fun replaceTimer(newConfig: WorkoutTimerConfig) {
+        replaceTimerQueue(newConfig, emptyList())
+    }
+
+    /**
+     * Atomically transitions to a new starting configuration and multi-stage queue without
+     * emitting a transient IDLE phase.
+     */
+    fun replaceTimerQueue(
+        newConfig: WorkoutTimerConfig,
+        queuedStages: List<QueuedTimerStage> = emptyList()
+    ) {
         timerJob?.cancel()
         config = newConfig
+        val sanitizedQueue = queuedStages.map {
+            it.copy(transitionSeconds = it.transitionSeconds.coerceAtLeast(0))
+        }
         _snapshot.value = _snapshot.value.copy(
-            queuedNextStage = null,
+            queuedStages = sanitizedQueue,
             completedStagesCount = 0,
             nextRoundOverrideSeconds = null,
             nextRoundRestOverrideSeconds = null
@@ -108,27 +130,27 @@ class TimerEngine(
     }
 
     fun reset() {
-        resetInternal(queuedNext = null, resetCompletedStages = true)
+        resetInternal(queuedStages = emptyList(), resetCompletedStages = true)
     }
 
     /**
-     * Clears queued next stage, overrides, completed stage counter, and resets to [TimerPhase.IDLE].
+     * Clears queued stages, overrides, completed stage counter, and resets to [TimerPhase.IDLE].
      */
     fun stopAndClearAll() {
-        resetInternal(queuedNext = null, resetCompletedStages = true)
+        resetInternal(queuedStages = emptyList(), resetCompletedStages = true)
     }
 
     /**
-     * Restarts the active stage from Round 1 while preserving [TimerSnapshot.queuedNextStage]
+     * Restarts the active stage from Round 1 while preserving [TimerSnapshot.queuedStages]
      * and [TimerSnapshot.completedStagesCount].
      */
     fun restartCurrentStage() {
-        val preservedQueue = _snapshot.value.queuedNextStage
+        val preservedQueue = _snapshot.value.queuedStages
         val preservedCompleted = _snapshot.value.completedStagesCount
         timerJob?.cancel()
         _snapshot.value = _snapshot.value.copy(
             activeConfig = config,
-            queuedNextStage = preservedQueue,
+            queuedStages = preservedQueue,
             completedStagesCount = preservedCompleted,
             nextRoundOverrideSeconds = null,
             nextRoundRestOverrideSeconds = null,
@@ -147,7 +169,7 @@ class TimerEngine(
         timerJob?.cancel()
         val sanitizedTransition = transitionSeconds.coerceAtLeast(0)
         if (sanitizedTransition > 0) {
-            val queued = QueuedTimerStage(nextConfig, sanitizedTransition)
+            val queued = listOf(QueuedTimerStage(config = nextConfig, transitionSeconds = sanitizedTransition))
             val totalRem = calculateTotalSecondsRemaining(
                 config = config,
                 phase = TimerPhase.TRANSITION,
@@ -157,7 +179,7 @@ class TimerEngine(
                 activeRoundRestSeconds = 0,
                 nextRoundOverrideSeconds = null,
                 nextRoundRestOverrideSeconds = null,
-                queuedNextStage = queued
+                queuedStages = queued
             )
             _snapshot.value = current.copy(
                 phase = TimerPhase.TRANSITION,
@@ -168,14 +190,14 @@ class TimerEngine(
                 activeRoundRestSeconds = 0,
                 nextRoundOverrideSeconds = null,
                 nextRoundRestOverrideSeconds = null,
-                queuedNextStage = queued,
+                queuedStages = queued,
                 totalSecondsRemaining = totalRem
             )
             timerJob = scope.launch { runTimerLoop() }
         } else {
             promoteToConfig(
                 nextConfig = nextConfig,
-                newQueuedNext = null,
+                newQueuedStages = emptyList(),
                 incrementCompletedStages = true,
                 forceRun = true
             )
@@ -213,7 +235,7 @@ class TimerEngine(
                 activeRoundRestSeconds = config.baseRestDurationSeconds(),
                 nextRoundOverrideSeconds = null,
                 nextRoundRestOverrideSeconds = null,
-                queuedNextStage = current.queuedNextStage
+                queuedStages = current.queuedStages
             )
         } else {
             calculateTotalSecondsRemaining(
@@ -225,7 +247,7 @@ class TimerEngine(
                 activeRoundRestSeconds = current.activeRoundRestSeconds,
                 nextRoundOverrideSeconds = nextWorkOverride,
                 nextRoundRestOverrideSeconds = nextRestOverride,
-                queuedNextStage = current.queuedNextStage
+                queuedStages = current.queuedStages
             )
         }
 
@@ -279,11 +301,16 @@ class TimerEngine(
         updateOverrides(nextWork = null, nextRest = null)
     }
 
-    /** Sets or clears the single-slot upcoming stage (`queuedNextStage`) in any phase. */
-    fun setQueuedNextStage(nextStage: QueuedTimerStage?) {
+    /** Replaces the full upcoming stage queue in any phase, finishing cleanly if removed mid-transition. */
+    fun setQueuedStages(stages: List<QueuedTimerStage>) {
         val current = _snapshot.value
-        val sanitized = nextStage?.let {
+        val sanitized = stages.map {
             it.copy(transitionSeconds = it.transitionSeconds.coerceAtLeast(0))
+        }
+        if (current.phase == TimerPhase.TRANSITION && sanitized.isEmpty()) {
+            _snapshot.value = current.copy(queuedStages = emptyList())
+            finishTimer(totalElapsedOverride = current.totalSecondsElapsed)
+            return
         }
         val recalculatedTotal = calculateTotalSecondsRemaining(
             config = config,
@@ -294,18 +321,92 @@ class TimerEngine(
             activeRoundRestSeconds = current.activeRoundRestSeconds,
             nextRoundOverrideSeconds = current.nextRoundOverrideSeconds,
             nextRoundRestOverrideSeconds = current.nextRoundRestOverrideSeconds,
-            queuedNextStage = sanitized
+            queuedStages = sanitized
         )
         _snapshot.value = current.copy(
-            queuedNextStage = sanitized,
+            queuedStages = sanitized,
             totalSecondsRemaining = recalculatedTotal
         )
     }
 
+    /** Updates a specific queued stage by [stageId] in place, syncing active transition countdown if head. */
+    fun updateQueuedStage(stageId: String, updated: QueuedTimerStage) {
+        val current = _snapshot.value
+        val idx = current.queuedStages.indexOfFirst { it.id == stageId }
+        if (idx < 0) return
+
+        val sanitizedStage = updated.copy(
+            id = stageId,
+            transitionSeconds = updated.transitionSeconds.coerceAtLeast(0)
+        )
+        val updatedList = current.queuedStages.toMutableList().apply {
+            set(idx, sanitizedStage)
+        }.toList()
+
+        if (current.phase == TimerPhase.TRANSITION && idx == 0) {
+            if (sanitizedStage.transitionSeconds <= 0) {
+                _snapshot.value = current.copy(queuedStages = updatedList)
+                promoteQueuedNextStage(forceRun = current.isRunning)
+                return
+            }
+            val previousTransition = current.queuedStages.first().transitionSeconds
+            if (sanitizedStage.transitionSeconds != previousTransition) {
+                val newRem = sanitizedStage.transitionSeconds.coerceIn(1, 3600)
+                val totalRem = calculateTotalSecondsRemaining(
+                    config = config,
+                    phase = TimerPhase.TRANSITION,
+                    currentRound = current.currentRound,
+                    totalRounds = current.totalRounds,
+                    roundSecondsRemaining = newRem,
+                    activeRoundRestSeconds = 0,
+                    nextRoundOverrideSeconds = null,
+                    nextRoundRestOverrideSeconds = null,
+                    queuedStages = updatedList
+                )
+                _snapshot.value = current.copy(
+                    roundSecondsRemaining = newRem,
+                    roundTotalSeconds = maxOf(current.roundTotalSeconds, newRem),
+                    queuedStages = updatedList,
+                    totalSecondsRemaining = totalRem
+                )
+                return
+            }
+        }
+        setQueuedStages(updatedList)
+    }
+
+    /** Removes a queued stage by [stageId], finishing cleanly if the sole head stage is removed mid-transition. */
+    fun removeQueuedStage(stageId: String) {
+        setQueuedStages(_snapshot.value.queuedStages.filterNot { it.id == stageId })
+    }
+
+    /** Appends a new stage to the tail of [TimerSnapshot.queuedStages]. */
+    fun appendQueuedStage(stage: QueuedTimerStage) {
+        val sanitized = stage.copy(transitionSeconds = stage.transitionSeconds.coerceAtLeast(0))
+        setQueuedStages(_snapshot.value.queuedStages + sanitized)
+    }
+
+    /** Sets or clears the head stage (`queuedNextStage`) while preserving any trailing queued stages. */
+    fun setQueuedNextStage(nextStage: QueuedTimerStage?) {
+        val currentQueue = _snapshot.value.queuedStages
+        val updatedQueue = if (nextStage == null) {
+            currentQueue.drop(1)
+        } else {
+            val preservedId = currentQueue.firstOrNull()?.id ?: nextStage.id
+            listOf(nextStage.copy(id = preservedId)) + currentQueue.drop(1)
+        }
+        setQueuedStages(updatedQueue)
+    }
+
     /** Updates the config of [TimerSnapshot.queuedNextStage] (or initializes with 60s transition if absent). */
     fun updateQueuedNextConfig(nextConfig: WorkoutTimerConfig) {
-        val existingTransition = _snapshot.value.queuedNextStage?.transitionSeconds ?: 60
-        setQueuedNextStage(QueuedTimerStage(config = nextConfig, transitionSeconds = existingTransition))
+        val existingHead = _snapshot.value.queuedStages.firstOrNull()
+        val updatedHead = if (existingHead != null) {
+            existingHead.copy(config = nextConfig)
+        } else {
+            QueuedTimerStage(config = nextConfig, transitionSeconds = 60)
+        }
+        setQueuedNextStage(updatedHead)
     }
 
     /** Adjusts remaining countdown seconds while in [TimerPhase.TRANSITION]. */
@@ -328,7 +429,11 @@ class TimerEngine(
             }
             return
         }
-        val updatedQueue = current.queuedNextStage?.copy(transitionSeconds = clamped)
+        val updatedQueue = if (current.queuedStages.isNotEmpty()) {
+            listOf(current.queuedStages.first().copy(transitionSeconds = clamped)) + current.queuedStages.drop(1)
+        } else {
+            emptyList()
+        }
         val totalRem = calculateTotalSecondsRemaining(
             config = config,
             phase = TimerPhase.TRANSITION,
@@ -338,12 +443,12 @@ class TimerEngine(
             activeRoundRestSeconds = 0,
             nextRoundOverrideSeconds = null,
             nextRoundRestOverrideSeconds = null,
-            queuedNextStage = updatedQueue
+            queuedStages = updatedQueue
         )
         _snapshot.value = current.copy(
             roundSecondsRemaining = clamped,
             roundTotalSeconds = maxOf(current.roundTotalSeconds, clamped),
-            queuedNextStage = updatedQueue,
+            queuedStages = updatedQueue,
             totalSecondsRemaining = totalRem
         )
     }
@@ -407,7 +512,7 @@ class TimerEngine(
                 activeRoundRestSeconds = restSecs,
                 nextRoundOverrideSeconds = null,
                 nextRoundRestOverrideSeconds = null,
-                queuedNextStage = current.queuedNextStage
+                queuedStages = current.queuedStages
             )
             _snapshot.value = current.copy(
                 phase = TimerPhase.WORK,
@@ -437,7 +542,7 @@ class TimerEngine(
                 activeRoundRestSeconds = restSecs,
                 nextRoundOverrideSeconds = current.nextRoundOverrideSeconds,
                 nextRoundRestOverrideSeconds = current.nextRoundRestOverrideSeconds,
-                queuedNextStage = current.queuedNextStage
+                queuedStages = current.queuedStages
             )
             _snapshot.value = current.copy(
                 phase = TimerPhase.WORK,
@@ -469,7 +574,7 @@ class TimerEngine(
             activeRoundRestSeconds = restSecs,
             nextRoundOverrideSeconds = null,
             nextRoundRestOverrideSeconds = null,
-            queuedNextStage = current.queuedNextStage
+            queuedStages = current.queuedStages
         )
         _snapshot.value = current.copy(
             phase = TimerPhase.WORK,
@@ -485,9 +590,9 @@ class TimerEngine(
         )
     }
 
-    private fun resetInternal(queuedNext: QueuedTimerStage?, resetCompletedStages: Boolean) {
+    private fun resetInternal(queuedStages: List<QueuedTimerStage>, resetCompletedStages: Boolean) {
         timerJob?.cancel()
-        val totalSecs = calculateInitialTotalSeconds(config, queuedNext)
+        val totalSecs = calculateInitialTotalSeconds(config, queuedStages)
         val roundSecs = calculateInitialRoundSeconds(config)
         val completedCount = if (resetCompletedStages) 0 else _snapshot.value.completedStagesCount
 
@@ -508,7 +613,7 @@ class TimerEngine(
             activeRoundRestSeconds = config.baseRestDurationSeconds(),
             nextRoundOverrideSeconds = null,
             nextRoundRestOverrideSeconds = null,
-            queuedNextStage = queuedNext,
+            queuedStages = queuedStages,
             completedStagesCount = completedCount
         )
     }
@@ -537,7 +642,7 @@ class TimerEngine(
             activeRoundRestSeconds = current.activeRoundRestSeconds,
             nextRoundOverrideSeconds = nextWork,
             nextRoundRestOverrideSeconds = nextRest,
-            queuedNextStage = current.queuedNextStage
+            queuedStages = current.queuedStages
         )
         _snapshot.value = current.copy(
             nextRoundOverrideSeconds = nextWork,
@@ -558,7 +663,7 @@ class TimerEngine(
             activeRoundRestSeconds = config.baseRestDurationSeconds(),
             nextRoundOverrideSeconds = null,
             nextRoundRestOverrideSeconds = null,
-            queuedNextStage = current.queuedNextStage
+            queuedStages = current.queuedStages
         )
         _snapshot.value = current.copy(
             phase = TimerPhase.PREP,
@@ -614,7 +719,7 @@ class TimerEngine(
             activeRoundRestSeconds = restSecs,
             nextRoundOverrideSeconds = current.nextRoundOverrideSeconds,
             nextRoundRestOverrideSeconds = current.nextRoundRestOverrideSeconds,
-            queuedNextStage = current.queuedNextStage
+            queuedStages = current.queuedStages
         )
 
         _snapshot.value = current.copy(
@@ -706,7 +811,7 @@ class TimerEngine(
                     activeRoundRestSeconds = 0,
                     nextRoundOverrideSeconds = current.nextRoundOverrideSeconds,
                     nextRoundRestOverrideSeconds = current.nextRoundRestOverrideSeconds,
-                    queuedNextStage = current.queuedNextStage
+                    queuedStages = current.queuedStages
                 )
                 _snapshot.value = current.copy(
                     phase = TimerPhase.REST,
@@ -741,7 +846,7 @@ class TimerEngine(
             activeRoundRestSeconds = nextRestSecs,
             nextRoundOverrideSeconds = null,
             nextRoundRestOverrideSeconds = null,
-            queuedNextStage = current.queuedNextStage
+            queuedStages = current.queuedStages
         )
         _snapshot.value = current.copy(
             phase = TimerPhase.WORK,
@@ -776,7 +881,7 @@ class TimerEngine(
                 activeRoundRestSeconds = 0,
                 nextRoundOverrideSeconds = null,
                 nextRoundRestOverrideSeconds = null,
-                queuedNextStage = queued
+                queuedStages = current.queuedStages
             )
             _snapshot.value = current.copy(
                 phase = TimerPhase.TRANSITION,
@@ -798,10 +903,11 @@ class TimerEngine(
         forceRun: Boolean,
         totalElapsedBase: Int = _snapshot.value.totalSecondsElapsed
     ) {
-        val queued = _snapshot.value.queuedNextStage ?: return
+        val currentQueue = _snapshot.value.queuedStages
+        val head = currentQueue.firstOrNull() ?: return
         promoteToConfig(
-            nextConfig = queued.config,
-            newQueuedNext = null,
+            nextConfig = head.config,
+            newQueuedStages = currentQueue.drop(1),
             incrementCompletedStages = true,
             forceRun = forceRun,
             totalElapsedBase = totalElapsedBase
@@ -810,7 +916,7 @@ class TimerEngine(
 
     private fun promoteToConfig(
         nextConfig: WorkoutTimerConfig,
-        newQueuedNext: QueuedTimerStage?,
+        newQueuedStages: List<QueuedTimerStage>,
         incrementCompletedStages: Boolean,
         forceRun: Boolean,
         totalElapsedBase: Int = _snapshot.value.totalSecondsElapsed
@@ -830,7 +936,7 @@ class TimerEngine(
             activeRoundRestSeconds = restSecs,
             nextRoundOverrideSeconds = null,
             nextRoundRestOverrideSeconds = null,
-            queuedNextStage = newQueuedNext
+            queuedStages = newQueuedStages
         )
 
         _snapshot.value = TimerSnapshot(
@@ -850,7 +956,7 @@ class TimerEngine(
             activeRoundRestSeconds = restSecs,
             nextRoundOverrideSeconds = null,
             nextRoundRestOverrideSeconds = null,
-            queuedNextStage = newQueuedNext,
+            queuedStages = newQueuedStages,
             completedStagesCount = nextCompletedCount
         )
 
@@ -883,11 +989,11 @@ class TimerEngine(
 
     private fun calculateInitialTotalSeconds(
         cfg: WorkoutTimerConfig,
-        queuedNext: QueuedTimerStage? = null
+        queuedStages: List<QueuedTimerStage> = emptyList()
     ): Int {
-        val queuedSeconds = queuedNext?.let {
+        val queuedSeconds = queuedStages.sumOf {
             it.transitionSeconds.coerceAtLeast(0) + it.config.stageTotalSeconds()
-        } ?: 0
+        }
         return cfg.stageTotalSeconds() + queuedSeconds
     }
 
@@ -936,8 +1042,33 @@ class TimerEngine(
         fun getInstance(context: Context): TimerEngine = TimerEngineProvider.get(context)
 
         /**
+         * Backward-compatible overload computing remaining seconds with an optional single [queuedNextStage].
+         */
+        fun calculateTotalSecondsRemaining(
+            config: WorkoutTimerConfig,
+            phase: TimerPhase,
+            currentRound: Int,
+            totalRounds: Int,
+            roundSecondsRemaining: Int,
+            activeRoundRestSeconds: Int,
+            nextRoundOverrideSeconds: Int?,
+            nextRoundRestOverrideSeconds: Int?,
+            queuedNextStage: QueuedTimerStage?
+        ): Int = calculateTotalSecondsRemaining(
+            config = config,
+            phase = phase,
+            currentRound = currentRound,
+            totalRounds = totalRounds,
+            roundSecondsRemaining = roundSecondsRemaining,
+            activeRoundRestSeconds = activeRoundRestSeconds,
+            nextRoundOverrideSeconds = nextRoundOverrideSeconds,
+            nextRoundRestOverrideSeconds = nextRoundRestOverrideSeconds,
+            queuedStages = listOfNotNull(queuedNextStage)
+        )
+
+        /**
          * Deterministically computes total seconds remaining across active round, single-round override (`R{c+1}`),
-         * remaining unmodified rounds (`R{c+2}..totalRounds`), and optional [queuedNextStage] + transition countdown.
+         * remaining unmodified rounds (`R{c+2}..totalRounds`), and all [queuedStages] + transition countdowns.
          * Excludes [WorkoutTimerConfig.prepCountdownSeconds] during [TimerPhase.PREP] / [TimerPhase.IDLE] for
          * backward compatibility with workout-clock assertions.
          */
@@ -950,17 +1081,20 @@ class TimerEngine(
             activeRoundRestSeconds: Int,
             nextRoundOverrideSeconds: Int?,
             nextRoundRestOverrideSeconds: Int?,
-            queuedNextStage: QueuedTimerStage?
+            queuedStages: List<QueuedTimerStage>
         ): Int {
             if (phase == TimerPhase.FINISHED) return 0
 
-            val queuedSeconds = queuedNextStage?.let {
-                it.transitionSeconds.coerceAtLeast(0) + it.config.stageTotalSeconds()
-            } ?: 0
-
             if (phase == TimerPhase.TRANSITION) {
-                val queuedWorkOnly = queuedNextStage?.config?.stageTotalSeconds() ?: 0
-                return roundSecondsRemaining.coerceAtLeast(0) + queuedWorkOnly
+                val headWorkOnly = queuedStages.firstOrNull()?.config?.stageTotalSeconds() ?: 0
+                val tailTotal = queuedStages.drop(1).sumOf {
+                    it.transitionSeconds.coerceAtLeast(0) + it.config.stageTotalSeconds()
+                }
+                return roundSecondsRemaining.coerceAtLeast(0) + headWorkOnly + tailTotal
+            }
+
+            val queuedSeconds = queuedStages.sumOf {
+                it.transitionSeconds.coerceAtLeast(0) + it.config.stageTotalSeconds()
             }
 
             val safeRounds = totalRounds.coerceAtLeast(1)

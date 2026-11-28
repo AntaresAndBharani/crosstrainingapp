@@ -19,7 +19,7 @@ object TimerNotificationFormatter {
         formatTitle(phase, currentRound, totalRounds, null)
 
     /**
-     * Formats notification title, rendering `"Transition - Up Next: <NextMode>"` during
+     * Formats notification title, rendering `"Transition - Up Next: <NextTarget>"` during
      * [TimerPhase.TRANSITION] and preserving round formatting for all other phases.
      */
     fun formatTitle(
@@ -27,6 +27,24 @@ object TimerNotificationFormatter {
         currentRound: Int,
         totalRounds: Int,
         nextModeLabel: String?
+    ): String = formatTitle(
+        phase = phase,
+        currentRound = currentRound,
+        totalRounds = totalRounds,
+        nextModeLabel = nextModeLabel,
+        workoutLabel = ""
+    )
+
+    /**
+     * Formats notification title with optional block [workoutLabel] context while preserving
+     * exact legacy formatting when [workoutLabel] is blank.
+     */
+    fun formatTitle(
+        phase: TimerPhase,
+        currentRound: Int,
+        totalRounds: Int,
+        nextModeLabel: String?,
+        workoutLabel: String
     ): String = when (phase) {
         TimerPhase.TRANSITION -> {
             if (!nextModeLabel.isNullOrBlank()) {
@@ -35,7 +53,10 @@ object TimerNotificationFormatter {
                 "Transition"
             }
         }
-        else -> "${phase.label} - ${formatRoundInfo(currentRound, totalRounds)}"
+        else -> {
+            val base = "${phase.label} - ${formatRoundInfo(currentRound, totalRounds)}"
+            if (workoutLabel.isNotBlank()) "$workoutLabel • $base" else base
+        }
     }
 
     /**
@@ -62,9 +83,17 @@ object TimerNotificationFormatter {
      * Creates a structured data representation of the notification content derived from a [TimerSnapshot].
      */
     fun createNotificationContent(snapshot: TimerSnapshot): TimerNotificationContent {
-        val nextLabel = snapshot.queuedNextStage?.config?.mode?.label
+        val nextLabel = snapshot.queuedNextStage?.config?.let { cfg ->
+            cfg.workoutLabel.ifBlank { cfg.mode.label }
+        }
         return TimerNotificationContent(
-            title = formatTitle(snapshot.phase, snapshot.currentRound, snapshot.totalRounds, nextLabel),
+            title = formatTitle(
+                phase = snapshot.phase,
+                currentRound = snapshot.currentRound,
+                totalRounds = snapshot.totalRounds,
+                nextModeLabel = nextLabel,
+                workoutLabel = snapshot.workoutLabel
+            ),
             contentText = formatContentText(snapshot.roundSecondsRemaining, snapshot.totalSecondsRemaining),
             phase = snapshot.phase,
             currentRound = snapshot.currentRound,

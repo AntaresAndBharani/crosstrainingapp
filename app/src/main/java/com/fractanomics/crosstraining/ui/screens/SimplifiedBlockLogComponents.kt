@@ -1,6 +1,7 @@
 package com.fractanomics.crosstraining.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
@@ -79,6 +80,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.fractanomics.crosstraining.ui.components.resolveTransitionAccentColor
+import com.fractanomics.crosstraining.ui.components.resolveTransitionContainerColor
+import com.fractanomics.crosstraining.ui.theme.OchreOnContainerDark
+import com.fractanomics.crosstraining.ui.theme.OchreOnContainerLight
 import com.fractanomics.crosstraining.data.model.BlockKind
 import com.fractanomics.crosstraining.data.model.Exercise
 import com.fractanomics.crosstraining.data.model.ExerciseCategory
@@ -1782,6 +1787,8 @@ internal fun SimplifiedBlockLogCard(
     onOpenPrPicker: () -> Unit,
     onRemoveTrackedPr: (TrackedPrSlot) -> Unit,
     itemNumber: Int? = null,
+    isTimerActive: Boolean = false,
+    isTimerUpNext: Boolean = false,
     onShowUndoSnackbar: (message: String, onUndo: () -> Unit) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
@@ -1796,6 +1803,8 @@ internal fun SimplifiedBlockLogCard(
             onOpenPrPicker = onOpenPrPicker,
             onRemoveTrackedPr = onRemoveTrackedPr,
             itemNumber = itemNumber,
+            isTimerActive = isTimerActive,
+            isTimerUpNext = isTimerUpNext,
             onShowUndoSnackbar = onShowUndoSnackbar,
             modifier = modifier
         )
@@ -1809,10 +1818,20 @@ internal fun SimplifiedBlockLogCard(
         if (itemNumber != null) append("$itemNumber  ")
         append("COMPLEX: ${blockState.block.title.ifBlank { "Untitled Complex" }}")
     }
+    val cardShape = RoundedCornerShape(16.dp)
+    val timerBorder = timerHighlightBorderOrNull(isTimerActive = isTimerActive, isTimerUpNext = isTimerUpNext)
 
     ElevatedCard(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp)
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (timerBorder != null) {
+                    Modifier.border(timerBorder, cardShape)
+                } else {
+                    Modifier
+                }
+            ),
+        shape = cardShape
     ) {
         Column(
             modifier = Modifier
@@ -1820,6 +1839,8 @@ internal fun SimplifiedBlockLogCard(
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            TimerCardStatusPill(isTimerActive = isTimerActive, isTimerUpNext = isTimerUpNext)
+
             SessionItemHeaderRow(
                 label = headerText,
                 titleColor = blockAccent,
@@ -1878,6 +1899,8 @@ internal fun SimplifiedExerciseLogCard(
     onOpenPrPicker: () -> Unit,
     onRemoveTrackedPr: (TrackedPrSlot) -> Unit,
     itemNumber: Int? = null,
+    isTimerActive: Boolean = false,
+    isTimerUpNext: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val evaluatedChips = blockState.evaluatePrChips(exercises, repMaxes)
@@ -1890,10 +1913,20 @@ internal fun SimplifiedExerciseLogCard(
         if (itemNumber != null) append("$itemNumber  ")
         append("EXERCISE: $exerciseTitle")
     }
+    val cardShape = RoundedCornerShape(16.dp)
+    val timerBorder = timerHighlightBorderOrNull(isTimerActive = isTimerActive, isTimerUpNext = isTimerUpNext)
 
     ElevatedCard(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp)
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (timerBorder != null) {
+                    Modifier.border(timerBorder, cardShape)
+                } else {
+                    Modifier
+                }
+            ),
+        shape = cardShape
     ) {
         Column(
             modifier = Modifier
@@ -1901,6 +1934,8 @@ internal fun SimplifiedExerciseLogCard(
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            TimerCardStatusPill(isTimerActive = isTimerActive, isTimerUpNext = isTimerUpNext)
+
             SessionItemHeaderRow(
                 label = headerText,
                 titleColor = emeraldAccent,
@@ -1943,6 +1978,60 @@ internal fun SimplifiedExerciseLogCard(
                 isDark = isDark,
                 onOpenPrPicker = onOpenPrPicker,
                 onRemoveTrackedPr = onRemoveTrackedPr
+            )
+        }
+    }
+}
+
+@Composable
+internal fun timerHighlightBorderOrNull(
+    isTimerActive: Boolean,
+    isTimerUpNext: Boolean
+): BorderStroke? = when {
+    isTimerActive -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+    isTimerUpNext -> BorderStroke(1.5.dp, resolveTransitionAccentColor())
+    else -> null
+}
+
+@Composable
+internal fun TimerCardStatusPill(
+    isTimerActive: Boolean,
+    isTimerUpNext: Boolean
+) {
+    if (!isTimerActive && !isTimerUpNext) return
+
+    val containerColor = if (isTimerActive) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        resolveTransitionContainerColor()
+    }
+    val contentColor = if (isTimerActive) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        if (isAppDarkTheme()) OchreOnContainerDark else OchreOnContainerLight
+    }
+    val label = if (isTimerActive) "Timer Active" else "Up Next"
+
+    Surface(
+        color = containerColor,
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Timer,
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = contentColor
             )
         }
     }

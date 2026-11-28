@@ -151,12 +151,12 @@ import com.fractanomics.crosstraining.ui.components.InSessionTimerBar
 import com.fractanomics.crosstraining.ui.components.InSessionTimerSheet
 import com.fractanomics.crosstraining.ui.components.SubBlockInlineTimer
 import com.fractanomics.crosstraining.ui.timer.NotificationPermissionHelper
+import com.fractanomics.crosstraining.ui.timer.SessionTimerBlockEntry
 import com.fractanomics.crosstraining.ui.timer.TimerEngine
 import com.fractanomics.crosstraining.ui.timer.TimerEngineProvider
 import com.fractanomics.crosstraining.ui.timer.TimerPhase
 import com.fractanomics.crosstraining.ui.timer.TimerService
-import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfig
-import com.fractanomics.crosstraining.ui.timer.WorkoutTimerConfigParser
+import com.fractanomics.crosstraining.ui.timer.WorkoutTimerQueueBuilder
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.DailyRoutine
@@ -657,6 +657,67 @@ internal fun expandRoutineIntoSessionBlocks(
     }
 
     return expanded
+}
+
+internal fun legacyEditorItemBlockKey(item: EditorBlockItem): String = when (item) {
+    is EditorBlockItem.Standalone -> "legacy_${item.index}"
+    is EditorBlockItem.SubBlockGroup ->
+        "legacy_sub_${item.items.firstOrNull()?.first ?: 0}_${item.subBlockName.trim()}"
+}
+
+internal fun buildSessionTimerBlockEntries(
+    loadedAvailableBlocks: List<LoadedAvailableBlockState>,
+    legacyBlocks: List<BlockState>
+): List<SessionTimerBlockEntry> {
+    val entries = mutableListOf<SessionTimerBlockEntry>()
+
+    loadedAvailableBlocks.forEach { availState ->
+        val title = if (availState.itemKind == SessionItemKind.EXERCISE) {
+            availState.exerciseSections.firstOrNull()?.exerciseName.orEmpty()
+                .ifBlank { availState.block.title }
+                .ifBlank { "Exercise ${entries.size + 1}" }
+        } else {
+            availState.block.title.ifBlank { "Complex ${entries.size + 1}" }
+        }
+        entries += SessionTimerBlockEntry(
+            blockKey = availState.uiKey,
+            positionIndex = entries.size,
+            title = title.trim(),
+            defaultSetCount = availState.complexSetCount.coerceAtLeast(1)
+        )
+    }
+
+    val showLegacyBlocks = legacyBlocks.any { !it.isBlankLegacyPlaceholder() }
+    if (showLegacyBlocks) {
+        groupEditorBlocks(legacyBlocks).forEach { item ->
+            when (item) {
+                is EditorBlockItem.Standalone -> {
+                    if (!item.block.isBlankLegacyPlaceholder()) {
+                        val title = item.block.exercise?.name.orEmpty()
+                            .ifBlank { item.block.name }
+                            .ifBlank { "Movement ${entries.size + 1}" }
+                        entries += SessionTimerBlockEntry(
+                            blockKey = legacyEditorItemBlockKey(item),
+                            positionIndex = entries.size,
+                            title = title.trim(),
+                            defaultSetCount = item.block.sets.size.coerceAtLeast(1)
+                        )
+                    }
+                }
+                is EditorBlockItem.SubBlockGroup -> {
+                    val title = item.subBlockName.ifBlank { "Sub-Block ${entries.size + 1}" }
+                    entries += SessionTimerBlockEntry(
+                        blockKey = legacyEditorItemBlockKey(item),
+                        positionIndex = entries.size,
+                        title = title.trim(),
+                        defaultSetCount = item.totalRounds.coerceAtLeast(1)
+                    )
+                }
+            }
+        }
+    }
+
+    return entries
 }
 
 internal fun groupEditorBlocks(blocks: List<BlockState>): List<EditorBlockItem> {
@@ -1210,10 +1271,14 @@ fun SessionEditorBody(
     }
 
     var showTimerSheet by remember { mutableStateOf(false) }
-    var timerSheetPrefillTitle by remember { mutableStateOf("") }
-    var timerSheetPrefillRounds by remember { mutableIntStateOf(1) }
-    var pendingReplaceConfig by remember { mutableStateOf<WorkoutTimerConfig?>(null) }
+    var timerSheetAnchorIndex by remember { mutableIntStateOf(0) }
+    var pendingRebuildAnchorIndex by remember { mutableStateOf<Int?>(null) }
     var showConflictDialog by remember { mutableStateOf(false) }
+
+    val sessionTimerEntries = buildSessionTimerBlockEntries(
+        loadedAvailableBlocks = loadedAvailableBlocks,
+        legacyBlocks = blocks
+    )
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -1241,72 +1306,85 @@ fun SessionEditorBody(
         )
     }
 
-    val launchOrReplaceTimer: (WorkoutTimerConfig) -> Unit = { config ->
-        if (isTimerActive && timerSnapshot.phase != TimerPhase.FINISHED) {
-            // Check if it's the exact same configuration/label running
-            if (timerSnapshot.workoutLabel.isNotBlank() && timerSnapshot.workoutLabel == config.workoutLabel) {
+    val openTimerQueueForIndex: (Int) -> Unit = { entryIndex ->
+        val entry = sessionTimerEntries.getOrNull(entryIndex)
+        if (entry != null) {
+            if (isTimerActive && timerSnapshot.phase != TimerPhase.FINISHED) {
+                val sameActiveBlock = (timerSnapshot.activeConfig.sourceBlockKey != null &&
+                    timerSnapshot.activeConfig.sourceBlockKey == entry.blockKey) ||
+                    (timerSnapshot.activeConfig.sourceBlockKey == null &&
+                        timerSnapshot.workoutLabel.isNotBlank() &&
+                        timerSnapshot.workoutLabel == entry.title)
+                if (sameActiveBlock) {
+                    showTimerSheet = true
+                } else {
+                    pendingRebuildAnchorIndex = entryIndex
+                    showConflictDialog = true
+                }
+            } else {
+                if (timerSnapshot.phase == TimerPhase.FINISHED) {
+                    timerEngine.stopAndClearAll()
+                }
+                timerSheetAnchorIndex = entryIndex
+                showTimerSheet = true
+            }
+        }
+    }
+
+    val openTimerFromTopBar: () -> Unit = {
+        if (sessionTimerEntries.isNotEmpty()) {
+            if (isTimerActive && timerSnapshot.phase != TimerPhase.FINISHED) {
                 showTimerSheet = true
             } else {
-                pendingReplaceConfig = config
-                showConflictDialog = true
+                openTimerQueueForIndex(0)
             }
         } else {
-            timerEngine.configure(config)
-            timerEngine.start()
-            requestNotificationPermissionAndStartService()
+            onOpenTimer?.invoke()
         }
     }
 
-    val launchTimingFromTokenOrOpenSheet: (String?, Int, String) -> Unit = { formatToken, roundCount, label ->
-        val baseConfig = timerEngine.currentConfig
-        val parsedConfig = WorkoutTimerConfigParser.parse(
-            formatString = formatToken,
-            roundCount = roundCount,
-            workoutLabel = label,
-            baseConfig = baseConfig
-        )
-        if (parsedConfig != null) {
-            launchOrReplaceTimer(parsedConfig)
-        } else {
-            timerSheetPrefillTitle = label
-            timerSheetPrefillRounds = roundCount.coerceAtLeast(1)
-            showTimerSheet = true
-        }
-    }
-
-    if (showConflictDialog && pendingReplaceConfig != null) {
+    val conflictTargetEntry = pendingRebuildAnchorIndex?.let { sessionTimerEntries.getOrNull(it) }
+    if (showConflictDialog && conflictTargetEntry != null) {
         AlertDialog(
             onDismissRequest = {
                 showConflictDialog = false
-                pendingReplaceConfig = null
+                pendingRebuildAnchorIndex = null
             },
             title = { Text("Replace active timer?") },
             text = {
                 Text(
                     "A timer is currently running (${timerSnapshot.workoutLabel.ifBlank { timerSnapshot.mode.label }}). " +
-                        "Do you want to replace it with '${pendingReplaceConfig?.workoutLabel?.ifBlank { pendingReplaceConfig?.mode?.label }}'?"
+                        "Rebuild the workout queue starting from '${conflictTargetEntry.title}'?"
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val config = pendingReplaceConfig
+                        val targetIndex = pendingRebuildAnchorIndex
                         showConflictDialog = false
-                        pendingReplaceConfig = null
-                        if (config != null) {
-                            timerEngine.replaceTimer(config)
-                            requestNotificationPermissionAndStartService()
+                        pendingRebuildAnchorIndex = null
+                        if (targetIndex != null) {
+                            val built = WorkoutTimerQueueBuilder.buildFromAnchor(
+                                entries = sessionTimerEntries,
+                                anchorIndex = targetIndex,
+                                baseConfig = timerEngine.currentConfig
+                            )
+                            if (built != null) {
+                                timerEngine.replaceTimerQueue(built.startingConfig, built.queuedStages)
+                                requestNotificationPermissionAndStartService()
+                                showTimerSheet = true
+                            }
                         }
                     }
                 ) {
-                    Text("Replace", fontWeight = FontWeight.Bold)
+                    Text("Rebuild Queue", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = {
                         showConflictDialog = false
-                        pendingReplaceConfig = null
+                        pendingRebuildAnchorIndex = null
                     }
                 ) {
                     Text("Cancel")
@@ -1319,8 +1397,8 @@ fun SessionEditorBody(
         InSessionTimerSheet(
             timerEngine = timerEngine,
             onDismiss = { showTimerSheet = false },
-            prefillTitle = timerSheetPrefillTitle,
-            prefillRounds = timerSheetPrefillRounds,
+            sessionBlocks = sessionTimerEntries,
+            initialAnchorIndex = timerSheetAnchorIndex,
             onStartService = requestNotificationPermissionAndStartService
         )
     }
@@ -1387,9 +1465,9 @@ fun SessionEditorBody(
                     IconButton(onClick = { showQuickAddDialog = true }) {
                         Icon(Icons.Filled.AutoAwesome, contentDescription = "AI Quick Add / Parse", tint = MaterialTheme.colorScheme.primary)
                     }
-                    if (onOpenTimer != null) {
-                        IconButton(onClick = onOpenTimer) {
-                            Icon(Icons.Filled.Timer, contentDescription = "Quick Timer")
+                    if (onOpenTimer != null || sessionTimerEntries.isNotEmpty()) {
+                        IconButton(onClick = openTimerFromTopBar) {
+                            Icon(Icons.Filled.Timer, contentDescription = "Workout Timer Queue")
                         }
                     }
                 }
@@ -1558,6 +1636,20 @@ fun SessionEditorBody(
                 onOpenFullCheckIn = { showDailyCheckInSheet = true }
             )
 
+            val activeTimerBlockKey = if (isTimerActive &&
+                timerSnapshot.phase != TimerPhase.FINISHED &&
+                timerSnapshot.phase != TimerPhase.TRANSITION
+            ) {
+                timerSnapshot.activeConfig.sourceBlockKey
+            } else {
+                null
+            }
+            val upNextTimerBlockKey = if (timerSnapshot.phase == TimerPhase.TRANSITION) {
+                timerSnapshot.queuedNextStage?.config?.sourceBlockKey
+            } else {
+                null
+            }
+
             // Loaded Daily Routine / Block / Exercise Cards
             loadedAvailableBlocks.forEachIndexed { idx, availState ->
                 key(availState.uiKey) {
@@ -1567,9 +1659,10 @@ fun SessionEditorBody(
                         if (isEditMode) simplifiedStructuralDirty = true
                     }
                     val onTimerForItem: () -> Unit = {
-                        val timingToken = availState.block.instructions.ifBlank { null }
-                        launchTimingFromTokenOrOpenSheet(timingToken, 1, availState.block.title)
+                        openTimerQueueForIndex(idx)
                     }
+                    val isCardTimerActive = activeTimerBlockKey == availState.uiKey
+                    val isCardTimerUpNext = upNextTimerBlockKey == availState.uiKey
                     val onRemovePrSlot: (TrackedPrSlot) -> Unit = { slot ->
                         val removedSnapshot = availState.removeTrackedPrSlot(slot)
                         if (!isEditMode && availState.itemKind == SessionItemKind.BLOCK && availState.block.id > 0L) {
@@ -1614,6 +1707,8 @@ fun SessionEditorBody(
                             onOpenPrPicker = { activePrPickerForBlock = availState },
                             onRemoveTrackedPr = onRemovePrSlot,
                             itemNumber = idx + 1,
+                            isTimerActive = isCardTimerActive,
+                            isTimerUpNext = isCardTimerUpNext,
                             modifier = cardModifier
                         )
                     } else {
@@ -1627,6 +1722,8 @@ fun SessionEditorBody(
                             onOpenPrPicker = { activePrPickerForBlock = availState },
                             onRemoveTrackedPr = onRemovePrSlot,
                             itemNumber = idx + 1,
+                            isTimerActive = isCardTimerActive,
+                            isTimerUpNext = isCardTimerUpNext,
                             onShowUndoSnackbar = { msg, onUndo ->
                                 scope.launch {
                                     snackbar.currentSnackbarData?.dismiss()
@@ -1694,11 +1791,10 @@ fun SessionEditorBody(
                                 blocks.removeAt(item.index)
                             },
                             onLaunchTimer = {
-                                val label = item.block.exercise?.name ?: item.block.name.ifBlank { "Movement ${item.index + 1}" }
-                                val timingToken = item.block.format.ifBlank {
-                                    if (item.block.description.contains("Rest", ignoreCase = true)) item.block.description else null
+                                val entryIdx = sessionTimerEntries.indexOfFirst { it.blockKey == legacyKey }
+                                if (entryIdx >= 0) {
+                                    openTimerQueueForIndex(entryIdx)
                                 }
-                                launchTimingFromTokenOrOpenSheet(timingToken, item.block.sets.size, label)
                             },
                             modifier = Modifier.onGloballyPositioned { coords ->
                                 blockCardBounds[legacyKey] = CardLayoutBounds(
@@ -1761,12 +1857,11 @@ fun SessionEditorBody(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         val launchSubBlockTimer = {
-                                            val timingToken = item.format.ifBlank { item.subBlockName }
-                                            launchTimingFromTokenOrOpenSheet(
-                                                timingToken,
-                                                item.totalRounds,
-                                                item.subBlockName
-                                            )
+                                            val subBlockKey = legacyEditorItemBlockKey(item)
+                                            val entryIdx = sessionTimerEntries.indexOfFirst { it.blockKey == subBlockKey }
+                                            if (entryIdx >= 0) {
+                                                openTimerQueueForIndex(entryIdx)
+                                            }
                                         }
 
                                         if (item.format.isNotBlank()) {
@@ -1837,12 +1932,11 @@ fun SessionEditorBody(
                                             blocks.removeAt(childIndex)
                                         },
                                         onLaunchTimer = {
-                                            val label = childBlock.exercise?.name ?: childBlock.name.ifBlank { "Movement ${childIndex + 1}" }
-                                            val timingToken = childBlock.format.ifBlank {
-                                                // Check if notes or description contain Rest or format
-                                                if (childBlock.description.contains("Rest", ignoreCase = true)) childBlock.description else null
+                                            val subBlockKey = legacyEditorItemBlockKey(item)
+                                            val entryIdx = sessionTimerEntries.indexOfFirst { it.blockKey == subBlockKey }
+                                            if (entryIdx >= 0) {
+                                                openTimerQueueForIndex(entryIdx)
                                             }
-                                            launchTimingFromTokenOrOpenSheet(timingToken, childBlock.sets.size, label)
                                         }
                                     )
                                 }
