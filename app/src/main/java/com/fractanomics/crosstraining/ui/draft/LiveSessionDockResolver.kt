@@ -56,7 +56,7 @@ object LiveSessionDockResolver {
         val isTimerLinkedToWorkout = isTimerActive &&
             isWorkoutActive &&
             !timerSourceBlockKey.isNullOrBlank() &&
-            (summary.blockKeys.isEmpty() || timerSourceBlockKey in summary.blockKeys)
+            timerSourceBlockKey in summary.blockKeys
 
         val mode = when {
             isOnLog -> LiveDockMode.NONE
@@ -117,6 +117,8 @@ object LiveSessionDockResolver {
         if (isSaveCompletion && timerSnapshot.phase == TimerPhase.FINISHED) return true
         val sourceKey = timerSnapshot.activeConfig.sourceBlockKey
         if (sourceKey.isNullOrBlank()) return false
-        return draftBlockKeys.isEmpty() || sourceKey in draftBlockKeys
+        // A draft with no blocks owns no timers: never treat an unrelated block-linked
+        // timer (e.g. one started from a History editor) as belonging to this draft.
+        return sourceKey in draftBlockKeys
     }
 }

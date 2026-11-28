@@ -165,6 +165,28 @@ class ActiveWorkoutDraftPersistenceTest {
         assertEquals(realDraft, viewModel.activeWorkoutDraft.value?.copy(updatedAtEpochMillis = 0L))
         assertEquals("Real Athlete Workout", viewModel.activeWorkoutSummary.value.displayTitle)
     }
+
+    @Test
+    fun `stale editor flush from previous mode never leaks into the new mode slot`() = runTest(testDispatcher) {
+        val realDraft = sampleDraft("Real Athlete Workout", uiKey = "real-1")
+        viewModel.updateActiveWorkoutDraft(realDraft, expectedDemoMode = false)
+
+        viewModel.setDemoMode(true)
+        advanceUntilIdle()
+
+        // The Real-mode editor's onDispose flush / late snapshot emission lands after the toggle.
+        viewModel.flushActiveWorkoutDraftNow(realDraft.copy(notes = "late flush"), expectedDemoMode = false)
+        viewModel.updateActiveWorkoutDraft(realDraft.copy(notes = "late emit"), expectedDemoMode = false)
+        advanceUntilIdle()
+
+        assertNull(viewModel.activeWorkoutDraft.value)
+        assertFalse(viewModel.activeWorkoutSummary.value.isActive)
+        assertNull(dataModeManager.readActiveWorkoutDraftJson(demoMode = true))
+
+        // Real slot still holds the draft flushed by setDemoMode itself.
+        val persistedReal = ActiveWorkoutDraftCodec.decode(dataModeManager.readActiveWorkoutDraftJson(demoMode = false))
+        assertEquals(realDraft, persistedReal?.copy(updatedAtEpochMillis = 0L))
+    }
 }
 
 private class InMemorySharedPreferences : SharedPreferences {

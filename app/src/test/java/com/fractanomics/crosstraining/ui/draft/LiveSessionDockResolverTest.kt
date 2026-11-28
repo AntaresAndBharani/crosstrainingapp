@@ -147,4 +147,24 @@ class LiveSessionDockResolverTest {
         assertTrue(LiveSessionDockResolver.shouldStopTimerOnDraftReset(finishedStandaloneTimer, keys, isSaveCompletion = true))
         assertFalse(LiveSessionDockResolver.shouldStopTimerOnDraftReset(standaloneWorkTimer, keys, isSaveCompletion = true))
     }
+
+    @Test
+    fun `timers linked to blocks outside the draft are never treated as draft-owned`() {
+        val foreignTimer = linkedWorkTimer.copy(
+            activeConfig = linkedWorkTimer.activeConfig.copy(sourceBlockKey = "history-blk-9")
+        )
+
+        // Title-only draft (no block keys) must not claim or stop unrelated block-linked timers.
+        assertFalse(LiveSessionDockResolver.shouldStopTimerOnDraftReset(linkedWorkTimer, emptySet(), isSaveCompletion = false))
+        assertFalse(LiveSessionDockResolver.shouldStopTimerOnDraftReset(foreignTimer, setOf("blk-1"), isSaveCompletion = false))
+        assertFalse(LiveSessionDockResolver.shouldStopTimerOnDraftReset(foreignTimer, setOf("blk-1"), isSaveCompletion = true))
+
+        val titleOnlySummary = activeSummary.copy(blockCount = 0, loggedBlockCount = 0, loggedSetCount = 0, blockKeys = emptySet())
+        val titleOnlyState = LiveSessionDockResolver.resolve(BottomDestination.HISTORY.route, titleOnlySummary, linkedWorkTimer)
+        assertEquals(LiveDockMode.WORKOUT_AND_TIMER, titleOnlyState.mode)
+        assertFalse(titleOnlyState.isTimerLinkedToWorkout)
+
+        val foreignState = LiveSessionDockResolver.resolve(BottomDestination.HISTORY.route, activeSummary, foreignTimer)
+        assertFalse(foreignState.isTimerLinkedToWorkout)
+    }
 }

@@ -857,6 +857,47 @@ internal fun restoreLegacyBlockState(
         isExpanded = snap.isExpanded
     }
 
+/** True while a restored legacy block still lacks library objects its snapshot referenced. */
+internal fun ActiveLegacyBlockSnapshot.hasUnresolvedLibraryRefs(state: BlockState): Boolean =
+    (exerciseId != null && state.exercise == null) ||
+        (routineId != null && state.routine == null) ||
+        state.sequenceExercises.size < sequenceExerciseIds.size
+
+/** Keeps [original]'s library ids for references the live [BlockState] could not resolve yet. */
+internal fun ActiveLegacyBlockSnapshot.withPreservedLibraryRefs(
+    original: ActiveLegacyBlockSnapshot
+): ActiveLegacyBlockSnapshot =
+    copy(
+        exerciseId = exerciseId ?: original.exerciseId,
+        routineId = routineId ?: original.routineId,
+        sequenceExerciseIds = if (sequenceExerciseIds.size < original.sequenceExerciseIds.size) {
+            original.sequenceExerciseIds
+        } else {
+            sequenceExerciseIds
+        }
+    )
+
+/** Fills still-missing library references from [snap] without overriding athlete edits. */
+internal fun BlockState.resolveLibraryRefs(
+    snap: ActiveLegacyBlockSnapshot,
+    exercises: List<Exercise>,
+    routines: List<Routine>
+) {
+    if (exercise == null && snap.exerciseId != null) {
+        exercises.firstOrNull { it.id == snap.exerciseId }?.let { exercise = it }
+    }
+    if (routine == null && snap.routineId != null) {
+        routines.firstOrNull { it.id == snap.routineId }?.let { routine = it }
+    }
+    if (sequenceExercises.size < snap.sequenceExerciseIds.size) {
+        val resolved = snap.sequenceExerciseIds.mapNotNull { id -> exercises.firstOrNull { it.id == id } }
+        if (resolved.size > sequenceExercises.size) {
+            sequenceExercises.clear()
+            sequenceExercises.addAll(resolved)
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SessionEditorBody(
@@ -979,9 +1020,18 @@ fun SessionEditorBody(
             }
         }
     }
+    // Cold-restart guard: the Log tab restores before Room has emitted `exercises` / `routines`
+    // (both start as emptyList()), so legacy exercise/routine references cannot be resolved yet.
+    // Track the original snapshot per restored BlockState (identity-keyed) so the auto-save keeps
+    // the persisted ids instead of overwriting them with nulls, and re-resolve once data arrives.
+    val unresolvedLegacyRefs = remember(key) { mutableMapOf<BlockState, ActiveLegacyBlockSnapshot>() }
     val blocks = remember(key) {
         if (isActiveLogTab && persistedDraft != null && persistedDraft.legacyBlocks.isNotEmpty()) {
-            persistedDraft.legacyBlocks.map { restoreLegacyBlockState(it, exercises, routines) }.toMutableStateList()
+            persistedDraft.legacyBlocks.map { snap ->
+                restoreLegacyBlockState(snap, exercises, routines).also { state ->
+                    if (snap.hasUnresolvedLibraryRefs(state)) unresolvedLegacyRefs[state] = snap
+                }
+            }.toMutableStateList()
         } else {
             val initialSeeds = if (initialHydration != null && editingSessionTarget != null) {
                 if (initialHydration.residualLegacyBlocks.isNotEmpty()) {
@@ -1077,7 +1127,10 @@ fun SessionEditorBody(
             syncRoutineTemplateChecked = syncRoutineTemplateChecked,
             scrollOffsetPx = if (scrollRestored) scrollState.value else (persistedDraft?.scrollOffsetPx ?: 0),
             loadedBlocks = loadedAvailableBlocks.map { it.toActiveLoadedBlockSnapshot() },
-            legacyBlocks = blocks.map { it.toActiveLegacyBlockSnapshot() },
+            legacyBlocks = blocks.map { blk ->
+                val snap = blk.toActiveLegacyBlockSnapshot()
+                unresolvedLegacyRefs[blk]?.let { original -> snap.withPreservedLibraryRefs(original) } ?: snap
+            },
             updatedAtEpochMillis = 0L
         )
     }
@@ -1108,6 +1161,16 @@ fun SessionEditorBody(
             scrollState.scrollTo(0)
         }
         scrollRestored = true
+    }
+
+    LaunchedEffect(key, exercises, routines) {
+        if (unresolvedLegacyRefs.isEmpty()) return@LaunchedEffect
+        val pending = unresolvedLegacyRefs.entries.iterator()
+        while (pending.hasNext()) {
+            val (state, snap) = pending.next()
+            state.resolveLibraryRefs(snap, exercises, routines)
+            if (!snap.hasUnresolvedLibraryRefs(state)) pending.remove()
+        }
     }
 
     LaunchedEffect(key, isActiveLogTab) {

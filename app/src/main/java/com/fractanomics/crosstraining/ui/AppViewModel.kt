@@ -454,8 +454,16 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         _isHistoryEditorDirty.value = dirty
     }
 
-    fun updateActiveWorkoutDraft(snapshot: ActiveWorkoutDraftSnapshot) {
+    /**
+     * Debounced draft update from the Log editor.
+     *
+     * [expectedDemoMode] is the data mode the emitting editor was composed for. When it no
+     * longer matches the live mode (e.g. a stale emission racing a Real/Demo toggle), the
+     * update is dropped so one mode's draft can never be written into the other mode's slot.
+     */
+    fun updateActiveWorkoutDraft(snapshot: ActiveWorkoutDraftSnapshot, expectedDemoMode: Boolean? = null) {
         val isDemo = data.demoMode.value
+        if (expectedDemoMode != null && expectedDemoMode != isDemo) return
         val normalized = snapshot.takeIf { it.isMeaningfullyActive() }
         val previous = getDraftCacheForMode(isDemo)
         if (normalized != null &&
@@ -479,8 +487,17 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         }
     }
 
-    fun flushActiveWorkoutDraftNow(snapshotOverride: ActiveWorkoutDraftSnapshot? = null) {
+    /**
+     * Synchronous draft flush (ON_STOP / editor dispose). See [updateActiveWorkoutDraft] for
+     * [expectedDemoMode]: the editor's dispose-time flush fires *after* [setDemoMode] has
+     * already switched modes, so it must be ignored rather than leak into the new mode.
+     */
+    fun flushActiveWorkoutDraftNow(
+        snapshotOverride: ActiveWorkoutDraftSnapshot? = null,
+        expectedDemoMode: Boolean? = null
+    ) {
         val isDemo = data.demoMode.value
+        if (expectedDemoMode != null && expectedDemoMode != isDemo) return
         activeDraftPersistJob?.cancel()
         val candidate = snapshotOverride ?: getDraftCacheForMode(isDemo)
         val normalized = candidate?.takeIf { it.isMeaningfullyActive() }
