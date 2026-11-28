@@ -37,16 +37,20 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ListAlt
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
@@ -55,6 +59,8 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -78,6 +84,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -88,6 +95,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.runtime.toMutableStateList
@@ -150,6 +158,15 @@ import androidx.compose.runtime.derivedStateOf
 import com.fractanomics.crosstraining.ui.components.InSessionTimerBar
 import com.fractanomics.crosstraining.ui.components.InSessionTimerSheet
 import com.fractanomics.crosstraining.ui.components.SubBlockInlineTimer
+import com.fractanomics.crosstraining.ui.components.resolveTransitionAccentColor
+import com.fractanomics.crosstraining.ui.components.resolveTransitionContainerColor
+import com.fractanomics.crosstraining.ui.draft.ActiveLegacyBlockSnapshot
+import com.fractanomics.crosstraining.ui.draft.ActiveLegacySetSnapshot
+import com.fractanomics.crosstraining.ui.draft.ActiveWorkoutDraftSnapshot
+import com.fractanomics.crosstraining.ui.draft.LiveSessionDockResolver
+import com.fractanomics.crosstraining.ui.formatShort
+import com.fractanomics.crosstraining.ui.theme.OchreOnContainerDark
+import com.fractanomics.crosstraining.ui.theme.OchreOnContainerLight
 import com.fractanomics.crosstraining.ui.timer.NotificationPermissionHelper
 import com.fractanomics.crosstraining.ui.timer.SessionTimerBlockEntry
 import com.fractanomics.crosstraining.ui.timer.TimerEngine
@@ -171,6 +188,7 @@ import com.fractanomics.crosstraining.util.RoutineTargetCodec
 import com.fractanomics.crosstraining.util.STANDARD_RM_REPS
 import com.fractanomics.crosstraining.util.TargetMode
 import com.fractanomics.crosstraining.util.TrackedPrSlot
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import kotlin.math.roundToInt
@@ -777,6 +795,109 @@ private fun blocksSignature(blocks: List<BlockState>): String =
             blk.sets.joinToString(",") { "${it.reps}:${it.value}:${it.isWarmup}:${it.isFailed}:${it.group}" }
     }
 
+internal fun BlockState.toActiveLegacyBlockSnapshot(): ActiveLegacyBlockSnapshot =
+    ActiveLegacyBlockSnapshot(
+        name = name,
+        kind = kind.name,
+        format = format,
+        scheme = scheme,
+        exerciseId = exercise?.id,
+        newExerciseName = newExerciseName,
+        routineId = routine?.id,
+        sequenceExerciseIds = sequenceExercises.map { it.id },
+        description = description,
+        resultText = resultText,
+        resultValue = resultValue,
+        recordRm = recordRm,
+        rmReps = rmReps,
+        rmWeight = rmWeight,
+        isExpanded = isExpanded,
+        section = section,
+        exerciseIdsCsv = exerciseIdsCsv,
+        subBlock = subBlock,
+        isCompleted = isCompleted,
+        sets = sets.map {
+            ActiveLegacySetSnapshot(
+                reps = it.reps,
+                value = it.value,
+                group = it.group,
+                isWarmup = it.isWarmup,
+                isFailed = it.isFailed
+            )
+        }
+    )
+
+internal fun restoreLegacyBlockState(
+    snap: ActiveLegacyBlockSnapshot,
+    exercises: List<Exercise>,
+    routines: List<Routine>
+): BlockState =
+    BlockState(
+        name = snap.name,
+        kind = runCatching { BlockKind.valueOf(snap.kind) }.getOrDefault(BlockKind.STRENGTH),
+        format = snap.format,
+        scheme = snap.scheme,
+        exercise = snap.exerciseId?.let { id -> exercises.firstOrNull { it.id == id } },
+        newExerciseName = snap.newExerciseName,
+        routine = snap.routineId?.let { id -> routines.firstOrNull { it.id == id } },
+        sequenceExercises = snap.sequenceExerciseIds.mapNotNull { id -> exercises.firstOrNull { it.id == id } },
+        description = snap.description,
+        resultText = snap.resultText,
+        resultValue = snap.resultValue,
+        sets = snap.sets.map { SetState(it.reps, it.value, it.group, it.isWarmup, it.isFailed) }
+            .ifEmpty { listOf(SetState()) },
+        section = snap.section,
+        exerciseIdsCsv = snap.exerciseIdsCsv,
+        subBlock = snap.subBlock,
+        isCompleted = snap.isCompleted
+    ).apply {
+        recordRm = snap.recordRm
+        rmReps = snap.rmReps
+        rmWeight = snap.rmWeight
+        isExpanded = snap.isExpanded
+    }
+
+/** True while a restored legacy block still lacks library objects its snapshot referenced. */
+internal fun ActiveLegacyBlockSnapshot.hasUnresolvedLibraryRefs(state: BlockState): Boolean =
+    (exerciseId != null && state.exercise == null) ||
+        (routineId != null && state.routine == null) ||
+        state.sequenceExercises.size < sequenceExerciseIds.size
+
+/** Keeps [original]'s library ids for references the live [BlockState] could not resolve yet. */
+internal fun ActiveLegacyBlockSnapshot.withPreservedLibraryRefs(
+    original: ActiveLegacyBlockSnapshot
+): ActiveLegacyBlockSnapshot =
+    copy(
+        exerciseId = exerciseId ?: original.exerciseId,
+        routineId = routineId ?: original.routineId,
+        sequenceExerciseIds = if (sequenceExerciseIds.size < original.sequenceExerciseIds.size) {
+            original.sequenceExerciseIds
+        } else {
+            sequenceExerciseIds
+        }
+    )
+
+/** Fills still-missing library references from [snap] without overriding athlete edits. */
+internal fun BlockState.resolveLibraryRefs(
+    snap: ActiveLegacyBlockSnapshot,
+    exercises: List<Exercise>,
+    routines: List<Routine>
+) {
+    if (exercise == null && snap.exerciseId != null) {
+        exercises.firstOrNull { it.id == snap.exerciseId }?.let { exercise = it }
+    }
+    if (routine == null && snap.routineId != null) {
+        routines.firstOrNull { it.id == snap.routineId }?.let { routine = it }
+    }
+    if (sequenceExercises.size < snap.sequenceExerciseIds.size) {
+        val resolved = snap.sequenceExerciseIds.mapNotNull { id -> exercises.firstOrNull { it.id == id } }
+        if (resolved.size > sequenceExercises.size) {
+            sequenceExercises.clear()
+            sequenceExercises.addAll(resolved)
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SessionEditorBody(
@@ -792,6 +913,11 @@ fun SessionEditorBody(
     onOpenTimer: (() -> Unit)? = null,
     editingSessionTarget: SessionWithBlocks? = null,
     isEditMode: Boolean = false,
+    isActiveLogTab: Boolean = false,
+    persistedDraft: ActiveWorkoutDraftSnapshot? = null,
+    onDraftChanged: ((ActiveWorkoutDraftSnapshot) -> Unit)? = null,
+    onFlushDraft: ((ActiveWorkoutDraftSnapshot) -> Unit)? = null,
+    onDiscardDraft: (() -> Unit)? = null,
     onSubmit: (SessionDraft) -> Unit
 ) {
     val cycles by viewModel.cycles.collectAsStateWithLifecycle()
@@ -840,12 +966,26 @@ fun SessionEditorBody(
         pendingScrollTargetKey = null
     }
 
-    var selectedCycleId by remember(key) { mutableStateOf(seed.cycleId) }
-    var date by remember(key) { mutableStateOf(seed.date) }
-    var title by remember(key) { mutableStateOf(seed.title) }
-    var notes by remember(key) { mutableStateOf(seed.notes) }
+    var selectedCycleId by remember(key) {
+        mutableStateOf(if (isActiveLogTab && persistedDraft != null) persistedDraft.selectedCycleId else seed.cycleId)
+    }
+    var date by remember(key) {
+        mutableStateOf(if (isActiveLogTab && persistedDraft != null) persistedDraft.sessionDate() else seed.date)
+    }
+    var title by remember(key) {
+        mutableStateOf(if (isActiveLogTab && persistedDraft != null) persistedDraft.title else seed.title)
+    }
+    var notes by remember(key) {
+        mutableStateOf(if (isActiveLogTab && persistedDraft != null) persistedDraft.notes else seed.notes)
+    }
     var showSessionMeta by remember(key) {
-        mutableStateOf(isEditMode && (seed.title.isNotBlank() || seed.notes.isNotBlank()))
+        mutableStateOf(
+            if (isActiveLogTab && persistedDraft != null) {
+                persistedDraft.showSessionMeta
+            } else {
+                isEditMode && (seed.title.isNotBlank() || seed.notes.isNotBlank())
+            }
+        )
     }
     var showDailyCheckInSheet by remember { mutableStateOf(false) }
 
@@ -869,24 +1009,41 @@ fun SessionEditorBody(
 
     val loadedAvailableBlocks = remember(key) {
         mutableStateListOf<LoadedAvailableBlockState>().apply {
-            if (initialHydration != null && editingSessionTarget != null) {
+            if (isActiveLogTab && persistedDraft != null) {
+                persistedDraft.loadedBlocks.forEach { blockSnap ->
+                    add(restoreLoadedAvailableBlockState(blockSnap, exercises, availableBlocks))
+                }
+            } else if (initialHydration != null && editingSessionTarget != null) {
                 initialHydration.simplifiedBlocks.forEach { blockSeed ->
                     add(buildHydratedBlockState(blockSeed, exercises, editingSessionTarget.session.id))
                 }
             }
         }
     }
+    // Cold-restart guard: the Log tab restores before Room has emitted `exercises` / `routines`
+    // (both start as emptyList()), so legacy exercise/routine references cannot be resolved yet.
+    // Track the original snapshot per restored BlockState (identity-keyed) so the auto-save keeps
+    // the persisted ids instead of overwriting them with nulls, and re-resolve once data arrives.
+    val unresolvedLegacyRefs = remember(key) { mutableMapOf<BlockState, ActiveLegacyBlockSnapshot>() }
     val blocks = remember(key) {
-        val initialSeeds = if (initialHydration != null && editingSessionTarget != null) {
-            if (initialHydration.residualLegacyBlocks.isNotEmpty()) {
-                sessionSeed(editingSessionTarget.copy(blocks = initialHydration.residualLegacyBlocks)).blocks
-            } else {
-                emptyList()
-            }
+        if (isActiveLogTab && persistedDraft != null && persistedDraft.legacyBlocks.isNotEmpty()) {
+            persistedDraft.legacyBlocks.map { snap ->
+                restoreLegacyBlockState(snap, exercises, routines).also { state ->
+                    if (snap.hasUnresolvedLibraryRefs(state)) unresolvedLegacyRefs[state] = snap
+                }
+            }.toMutableStateList()
         } else {
-            seed.blocks
+            val initialSeeds = if (initialHydration != null && editingSessionTarget != null) {
+                if (initialHydration.residualLegacyBlocks.isNotEmpty()) {
+                    sessionSeed(editingSessionTarget.copy(blocks = initialHydration.residualLegacyBlocks)).blocks
+                } else {
+                    emptyList()
+                }
+            } else {
+                seed.blocks
+            }
+            initialSeeds.map { buildBlockState(it, exercises, routines, defaultCompleted = !isFatLoss) }.toMutableStateList()
         }
-        initialSeeds.map { buildBlockState(it, exercises, routines, defaultCompleted = !isFatLoss) }.toMutableStateList()
     }
 
     // Prior session rep-max ids surfaced on simplified cards; only these are reconciled
@@ -938,10 +1095,116 @@ fun SessionEditorBody(
     var showLoadRoutineSheet by remember { mutableStateOf(false) }
     var showAddExerciseSheet by remember { mutableStateOf(false) }
     var activePrPickerForBlock by remember { mutableStateOf<LoadedAvailableBlockState?>(null) }
-    var loadedRoutineId by remember(key) { mutableStateOf<Long?>(null) }
-    var loadedRoutineTitle by remember(key) { mutableStateOf("") }
-    var initialRoutineSignature by remember(key) { mutableStateOf("") }
-    var syncRoutineTemplateChecked by remember(key) { mutableStateOf(false) }
+    var loadedRoutineId by remember(key) {
+        mutableStateOf(if (isActiveLogTab && persistedDraft != null) persistedDraft.loadedRoutineId else null)
+    }
+    var loadedRoutineTitle by remember(key) {
+        mutableStateOf(if (isActiveLogTab && persistedDraft != null) persistedDraft.loadedRoutineTitle else "")
+    }
+    var initialRoutineSignature by remember(key) {
+        mutableStateOf(if (isActiveLogTab && persistedDraft != null) persistedDraft.initialRoutineSignature else "")
+    }
+    var syncRoutineTemplateChecked by remember(key) {
+        mutableStateOf(if (isActiveLogTab && persistedDraft != null) persistedDraft.syncRoutineTemplateChecked else false)
+    }
+    var skipFlushOnDispose by remember(key) { mutableStateOf(false) }
+    var scrollRestored by remember(key) { mutableStateOf(false) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
+    var showDiscardActiveDraftDialog by remember { mutableStateOf(false) }
+    var staleBannerDismissed by remember(key) { mutableStateOf(false) }
+    var pendingRoutineConflict by remember { mutableStateOf<DailyRoutine?>(null) }
+
+    val buildCurrentDraftSnapshot: () -> ActiveWorkoutDraftSnapshot = {
+        ActiveWorkoutDraftSnapshot(
+            selectedCycleId = selectedCycleId,
+            dateEpochDay = date.toEpochDay(),
+            title = title,
+            notes = notes,
+            showSessionMeta = showSessionMeta,
+            loadedRoutineId = loadedRoutineId,
+            loadedRoutineTitle = loadedRoutineTitle,
+            initialRoutineSignature = initialRoutineSignature,
+            syncRoutineTemplateChecked = syncRoutineTemplateChecked,
+            scrollOffsetPx = if (scrollRestored) scrollState.value else (persistedDraft?.scrollOffsetPx ?: 0),
+            loadedBlocks = loadedAvailableBlocks.map { it.toActiveLoadedBlockSnapshot() },
+            legacyBlocks = blocks.map { blk ->
+                val snap = blk.toActiveLegacyBlockSnapshot()
+                unresolvedLegacyRefs[blk]?.let { original -> snap.withPreservedLibraryRefs(original) } ?: snap
+            },
+            updatedAtEpochMillis = 0L
+        )
+    }
+
+    val isCurrentDraftActive by remember(key) {
+        derivedStateOf {
+            isActiveLogTab && (
+                loadedAvailableBlocks.isNotEmpty() ||
+                    blocks.any { !it.isBlankLegacyPlaceholder() } ||
+                    title.isNotBlank() ||
+                    notes.isNotBlank() ||
+                    loadedRoutineId != null
+                )
+        }
+    }
+
+    val hasExistingDraftContent: () -> Boolean = {
+        loadedAvailableBlocks.isNotEmpty() || blocks.any { !it.isBlankLegacyPlaceholder() }
+    }
+
+    LaunchedEffect(key, isActiveLogTab) {
+        if (!isActiveLogTab) return@LaunchedEffect
+        val targetScroll = persistedDraft?.scrollOffsetPx ?: 0
+        if (targetScroll > 0) {
+            withFrameNanos { }
+            scrollState.scrollTo(targetScroll.coerceAtMost(scrollState.maxValue))
+        } else if (scrollState.value > 0) {
+            scrollState.scrollTo(0)
+        }
+        scrollRestored = true
+    }
+
+    LaunchedEffect(key, exercises, routines) {
+        if (unresolvedLegacyRefs.isEmpty()) return@LaunchedEffect
+        val pending = unresolvedLegacyRefs.entries.iterator()
+        while (pending.hasNext()) {
+            val (state, snap) = pending.next()
+            state.resolveLibraryRefs(snap, exercises, routines)
+            if (!snap.hasUnresolvedLibraryRefs(state)) pending.remove()
+        }
+    }
+
+    LaunchedEffect(key, isActiveLogTab) {
+        if (!isActiveLogTab) return@LaunchedEffect
+        snapshotFlow { buildCurrentDraftSnapshot() }
+            .distinctUntilChanged()
+            .collect { snap ->
+                if (!skipFlushOnDispose) {
+                    onDraftChanged?.invoke(snap)
+                }
+            }
+    }
+
+    DisposableEffect(key, isActiveLogTab) {
+        onDispose {
+            if (isActiveLogTab && !skipFlushOnDispose) {
+                onFlushDraft?.invoke(buildCurrentDraftSnapshot())
+            }
+        }
+    }
+
+    LaunchedEffect(isActiveLogTab, isEditMode, isDirty) {
+        if (!isActiveLogTab && isEditMode) {
+            viewModel.setHistoryEditorDirty(isDirty)
+        }
+    }
+
+    DisposableEffect(isActiveLogTab, isEditMode) {
+        onDispose {
+            if (!isActiveLogTab && isEditMode) {
+                viewModel.setHistoryEditorDirty(false)
+            }
+        }
+    }
 
     val applyLoadedDailyRoutine: (DailyRoutine) -> Unit = { routine ->
         val expanded = expandDailyRoutineForSession(
@@ -964,6 +1227,29 @@ fun SessionEditorBody(
         syncRoutineTemplateChecked = false
         if (isEditMode) simplifiedStructuralDirty = true
         if (!isEditMode && (title.isBlank() || title == previousTitle)) {
+            title = routine.title
+        }
+        pendingScrollTargetKey = expanded.firstOrNull()?.uiKey
+    }
+
+    val appendLoadedDailyRoutine: (DailyRoutine) -> Unit = { routine ->
+        val expanded = expandDailyRoutineForSession(
+            routine = routine,
+            availableBlocks = availableBlocks,
+            sessions = sessions,
+            exercises = exercises,
+            repMaxes = repMaxes,
+            weightUnit = weightUnit,
+            isEditMode = isEditMode,
+            editingSessionId = editingSessionId
+        )
+        loadedAvailableBlocks.addAll(expanded)
+        loadedRoutineId = null
+        loadedRoutineTitle = ""
+        initialRoutineSignature = ""
+        syncRoutineTemplateChecked = false
+        if (isEditMode) simplifiedStructuralDirty = true
+        if (!isEditMode && title.isBlank()) {
             title = routine.title
         }
         pendingScrollTargetKey = expanded.firstOrNull()?.uiKey
@@ -999,10 +1285,14 @@ fun SessionEditorBody(
     LaunchedEffect(pendingBlockIdsToLog, availableBlocks) {
         if (pendingBlockIdsToLog.isEmpty() || availableBlocks.isEmpty()) return@LaunchedEffect
         val idsToLoad = viewModel.consumePendingBlocksToLog()
+        val hadExistingBlocks = loadedAvailableBlocks.isNotEmpty()
         var lastAddedKey: String? = null
+        var addedTitle: String? = null
+        var alreadyPresentTitle: String? = null
         idsToLoad.forEach { blockId ->
             val block = availableBlocks.firstOrNull { it.id == blockId } ?: return@forEach
-            if (loadedAvailableBlocks.none { it.block.id == block.id }) {
+            val existing = loadedAvailableBlocks.firstOrNull { it.block.id == block.id }
+            if (existing == null) {
                 val addedState = buildLoadedAvailableBlockState(
                     block = block,
                     sessions = sessions,
@@ -1013,12 +1303,26 @@ fun SessionEditorBody(
                 )
                 loadedAvailableBlocks.add(addedState)
                 lastAddedKey = addedState.uiKey
+                addedTitle = block.title
                 if (isEditMode) simplifiedStructuralDirty = true
                 if (!isEditMode && title.isBlank()) title = block.title
+            } else {
+                lastAddedKey = existing.uiKey
+                alreadyPresentTitle = block.title
             }
         }
         if (lastAddedKey != null) {
             pendingScrollTargetKey = lastAddedKey
+        }
+        if (isActiveLogTab && hadExistingBlocks) {
+            val feedback = when {
+                addedTitle != null -> "Added \"$addedTitle\" to active workout"
+                alreadyPresentTitle != null -> "\"$alreadyPresentTitle\" is already in your active workout"
+                else -> null
+            }
+            if (feedback != null) {
+                scope.launch { snackbar.showSnackbar(feedback) }
+            }
         }
     }
 
@@ -1026,7 +1330,11 @@ fun SessionEditorBody(
         val targetId = pendingRoutineIdToLog ?: return@LaunchedEffect
         val matchedRoutine = dailyRoutines.firstOrNull { it.id == targetId } ?: return@LaunchedEffect
         viewModel.consumePendingRoutineToLog()
-        applyLoadedDailyRoutine(matchedRoutine)
+        if (isActiveLogTab && hasExistingDraftContent()) {
+            pendingRoutineConflict = matchedRoutine
+        } else {
+            applyLoadedDailyRoutine(matchedRoutine)
+        }
     }
 
     if (showDiscardChangesDialog && onBack != null) {
@@ -1204,7 +1512,49 @@ fun SessionEditorBody(
             onDismiss = { showLoadRoutineSheet = false },
             onSelectRoutine = { chosen ->
                 showLoadRoutineSheet = false
-                applyLoadedDailyRoutine(chosen)
+                if (isActiveLogTab && hasExistingDraftContent()) {
+                    pendingRoutineConflict = chosen
+                } else {
+                    applyLoadedDailyRoutine(chosen)
+                }
+            }
+        )
+    }
+
+    val routineConflict = pendingRoutineConflict
+    if (routineConflict != null) {
+        AlertDialog(
+            onDismissRequest = { pendingRoutineConflict = null },
+            title = { Text("Workout already in progress") },
+            text = {
+                Text(
+                    "You already have an active workout draft. Replace it with \"${routineConflict.title}\" or append its items?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingRoutineConflict = null
+                        applyLoadedDailyRoutine(routineConflict)
+                    }
+                ) {
+                    Text("Replace current", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { pendingRoutineConflict = null }) {
+                        Text("Cancel")
+                    }
+                    TextButton(
+                        onClick = {
+                            pendingRoutineConflict = null
+                            appendLoadedDailyRoutine(routineConflict)
+                        }
+                    ) {
+                        Text("Append blocks", fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         )
     }
@@ -1274,6 +1624,55 @@ fun SessionEditorBody(
     var timerSheetAnchorIndex by remember { mutableIntStateOf(0) }
     var pendingRebuildAnchorIndex by remember { mutableStateOf<Int?>(null) }
     var showConflictDialog by remember { mutableStateOf(false) }
+
+    val pendingOpenTimerSheet by viewModel.pendingOpenInSessionTimerSheet.collectAsStateWithLifecycle()
+    LaunchedEffect(isActiveLogTab, pendingOpenTimerSheet) {
+        if (isActiveLogTab && pendingOpenTimerSheet && viewModel.consumePendingOpenInSessionTimerSheet()) {
+            showTimerSheet = true
+        }
+    }
+
+    if (showDiscardActiveDraftDialog && isActiveLogTab) {
+        val willStopTimer = LiveSessionDockResolver.shouldStopTimerOnDraftReset(
+            timerSnapshot = timerSnapshot,
+            draftBlockKeys = buildCurrentDraftSnapshot().resolveBlockKeys(),
+            isSaveCompletion = false
+        )
+        AlertDialog(
+            onDismissRequest = { showDiscardActiveDraftDialog = false },
+            title = { Text("Discard workout?") },
+            text = {
+                Text(
+                    if (willStopTimer) {
+                        "This will discard your in-progress workout draft and stop the active workout timer."
+                    } else {
+                        "This will permanently discard your in-progress workout draft. Saved history is unaffected."
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDiscardActiveDraftDialog = false
+                        if (willStopTimer) {
+                            timerEngine.stopAndClearAll()
+                            TimerService.stopService(context)
+                        }
+                        skipFlushOnDispose = true
+                        onDiscardDraft?.invoke()
+                        scope.launch { snackbar.showSnackbar("Active workout discarded") }
+                    }
+                ) {
+                    Text("Discard", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardActiveDraftDialog = false }) {
+                    Text("Keep logging")
+                }
+            }
+        )
+    }
 
     val sessionTimerEntries = buildSessionTimerBlockEntries(
         loadedAvailableBlocks = loadedAvailableBlocks,
@@ -1470,12 +1869,44 @@ fun SessionEditorBody(
                             Icon(Icons.Filled.Timer, contentDescription = "Workout Timer Queue")
                         }
                     }
+                    if (isActiveLogTab && isCurrentDraftActive) {
+                        Box {
+                            IconButton(onClick = { showOverflowMenu = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "Workout options")
+                            }
+                            DropdownMenu(
+                                expanded = showOverflowMenu,
+                                onDismissRequest = { showOverflowMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            "Discard workout",
+                                            color = MaterialTheme.colorScheme.error,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Filled.DeleteOutline,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
+                                    },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        showDiscardActiveDraftDialog = true
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
-            if (isTimerActive) {
+            if (isActiveLogTab && isTimerActive) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1499,6 +1930,68 @@ fun SessionEditorBody(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (isActiveLogTab && isCurrentDraftActive && date.isBefore(LocalDate.now()) && !staleBannerDismissed) {
+                val staleTextColor = if (isAppDarkTheme()) OchreOnContainerDark else OchreOnContainerLight
+                OutlinedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.outlinedCardColors(
+                        containerColor = resolveTransitionContainerColor()
+                    ),
+                    border = BorderStroke(1.dp, resolveTransitionAccentColor())
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.History,
+                                contentDescription = null,
+                                tint = staleTextColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Resumed draft from ${date.formatShort()}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = staleTextColor,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    val today = LocalDate.now()
+                                    date = today
+                                    staleBannerDismissed = true
+                                    onFlushDraft?.invoke(
+                                        buildCurrentDraftSnapshot().copy(dateEpochDay = today.toEpochDay())
+                                    )
+                                },
+                                modifier = Modifier.heightIn(min = 48.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Use Today", fontWeight = FontWeight.SemiBold)
+                            }
+                            TextButton(
+                                onClick = { showDiscardActiveDraftDialog = true },
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
+                                Text("Discard", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
+            }
             // Compact Session Header Strip (Cycle, Date & Routine Loader)
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -1547,11 +2040,17 @@ fun SessionEditorBody(
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                         ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ListAlt,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
                             Text(
                                 text = if (loadedRoutineId != null && loadedRoutineTitle.isNotBlank()) {
-                                    "📋 Routine: $loadedRoutineTitle ▾"
+                                    "Routine: $loadedRoutineTitle"
                                 } else {
-                                    "📋 Load Daily Routine ▾"
+                                    "Load Daily Routine"
                                 },
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
@@ -2106,7 +2605,25 @@ fun SessionEditorBody(
                         )
                     )
                     if (clearAfterSave) {
-                        formKey += 1
+                        if (isActiveLogTab) {
+                            if (LiveSessionDockResolver.shouldStopTimerOnDraftReset(
+                                    timerSnapshot = timerSnapshot,
+                                    draftBlockKeys = buildCurrentDraftSnapshot().resolveBlockKeys(),
+                                    isSaveCompletion = true
+                                )
+                            ) {
+                                timerEngine.stopAndClearAll()
+                                TimerService.stopService(context)
+                            }
+                            skipFlushOnDispose = true
+                            if (onDiscardDraft != null) {
+                                onDiscardDraft.invoke()
+                            } else {
+                                formKey += 1
+                            }
+                        } else {
+                            formKey += 1
+                        }
                         scope.launch { snackbar.showSnackbar("Session saved successfully!") }
                     } else {
                         onBack?.invoke()

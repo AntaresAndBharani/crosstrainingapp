@@ -1,5 +1,7 @@
 package com.fractanomics.crosstraining.ui.navigation
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +30,10 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MonitorWeight
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -39,13 +45,16 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,9 +65,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
@@ -67,11 +82,11 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.OutlinedButton
 import com.fractanomics.crosstraining.data.model.UserRole
 import com.fractanomics.crosstraining.data.firebase.AuthUser
 import com.fractanomics.crosstraining.ui.AppViewModel
+import com.fractanomics.crosstraining.ui.components.LiveSessionDock
+import com.fractanomics.crosstraining.ui.draft.LiveSessionDockResolver
 import com.fractanomics.crosstraining.ui.screens.CyclesScreen
 import com.fractanomics.crosstraining.ui.screens.HistoryScreen
 import com.fractanomics.crosstraining.ui.screens.LibraryScreen
@@ -82,6 +97,12 @@ import com.fractanomics.crosstraining.ui.screens.ProgressMode
 import com.fractanomics.crosstraining.ui.screens.ProgressScreen
 import com.fractanomics.crosstraining.ui.screens.SessionEditorScreen
 import com.fractanomics.crosstraining.ui.screens.TimerScreen
+import com.fractanomics.crosstraining.ui.timer.NotificationPermissionHelper
+import com.fractanomics.crosstraining.ui.timer.TimerEngineProvider
+import com.fractanomics.crosstraining.ui.timer.TimerPhase
+import com.fractanomics.crosstraining.ui.timer.TimerService
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** Top-level navigation bar destinations. */
@@ -127,6 +148,11 @@ enum class DrawerSection(val header: String) {
     ACCOUNT("Settings & Account")
 }
 
+private data class TimerDockMeta(
+    val isActive: Boolean = false,
+    val sourceBlockKey: String? = null
+)
+
 @Composable
 fun AppNavigation(
     viewModel: AppViewModel,
@@ -134,11 +160,59 @@ fun AppNavigation(
     onRouteHandled: () -> Unit = {}
 ) {
     val navController = rememberNavController()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val demoMode by viewModel.demoMode.collectAsStateWithLifecycle()
     val authUser by viewModel.authUser.collectAsStateWithLifecycle()
     val userRole by viewModel.userRole.collectAsStateWithLifecycle()
     val currentProgressMode by viewModel.progressMode.collectAsStateWithLifecycle()
+    val activeWorkoutSummary by viewModel.activeWorkoutSummary.collectAsStateWithLifecycle()
+    val isHistoryEditorDirty by viewModel.isHistoryEditorDirty.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val timerEngine = remember(context) { TimerEngineProvider.get(context) }
+    val timerDockMeta by remember(timerEngine) {
+        timerEngine.snapshot
+            .map { snap ->
+                TimerDockMeta(
+                    isActive = snap.phase != TimerPhase.IDLE,
+                    sourceBlockKey = snap.activeConfig.sourceBlockKey
+                )
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = TimerDockMeta())
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            TimerService.startService(context)
+        }
+    }
+
+    val requestNotificationAndStartService: () -> Unit = {
+        NotificationPermissionHelper.handleTimerStartWithPermission(
+            context = context,
+            onPermissionRequired = {
+                permissionLauncher.launch(NotificationPermissionHelper.POST_NOTIFICATIONS)
+            },
+            onStartService = {
+                TimerService.startService(context)
+            }
+        )
+    }
+
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                viewModel.flushActiveWorkoutDraftNow()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     var guestModeAccepted by remember { mutableStateOf(false) }
     val isAuthenticated = !authUser?.email.isNullOrBlank() || guestModeAccepted || pendingRoute != null
@@ -171,15 +245,58 @@ fun AppNavigation(
     } else {
         val backStackEntry = navController.currentBackStackEntryAsState().value
         val currentRoute = backStackEntry?.destination?.route
+        val dockUiState = LiveSessionDockResolver.resolve(
+            currentRoute = currentRoute,
+            summary = activeWorkoutSummary,
+            isTimerActive = timerDockMeta.isActive,
+            timerSourceBlockKey = timerDockMeta.sourceBlockKey
+        )
 
-        val openDrawer: () -> Unit = { scope.launch { drawerState.open() } }
-        val openTimer: () -> Unit = {
-            navController.navigate(DrawerItem.TIMER.route) {
+        var pendingDockSwitchAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+        val navigateTopLevel: (String) -> Unit = { route ->
+            navController.navigate(route) {
                 popUpTo(navController.graph.findStartDestination().id) { saveState = true }
                 launchSingleTop = true
                 restoreState = true
             }
         }
+
+        val navigateWithDirtyEditGuard: (() -> Unit) -> Unit = { action ->
+            if (currentRoute?.startsWith("sessionEditor/") == true && isHistoryEditorDirty) {
+                pendingDockSwitchAction = action
+            } else {
+                action()
+            }
+        }
+
+        val pendingAction = pendingDockSwitchAction
+        if (pendingAction != null) {
+            AlertDialog(
+                onDismissRequest = { pendingDockSwitchAction = null },
+                title = { Text("Discard unsaved changes?") },
+                text = { Text("You have unsaved edits to this workout log. Discard them and switch?") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            pendingDockSwitchAction = null
+                            viewModel.setHistoryEditorDirty(false)
+                            pendingAction()
+                        }
+                    ) {
+                        Text("Discard", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDockSwitchAction = null }) {
+                        Text("Keep editing")
+                    }
+                }
+            )
+        }
+
+        val openDrawer: () -> Unit = { scope.launch { drawerState.open() } }
+        val openTimer: () -> Unit = { navigateTopLevel(DrawerItem.TIMER.route) }
 
         val athleteBottomDests = listOf(BottomDestination.LOG, BottomDestination.HISTORY, BottomDestination.PROGRESS)
         val coachBottomDests = listOf(BottomDestination.CYCLES, BottomDestination.LIBRARY, BottomDestination.PROGRESS)
@@ -197,6 +314,7 @@ fun AppNavigation(
                         currentProgressMode = currentProgressMode,
                         demoMode = demoMode,
                         userRole = userRole,
+                        showDrawerActiveBadge = dockUiState.showDrawerActiveBadge,
                         onToggleRole = {
                             val newRole = if (userRole.isCoach) UserRole.ATHLETE else UserRole.COACH
                             viewModel.setUserRole(newRole)
@@ -232,18 +350,33 @@ fun AppNavigation(
             Scaffold(
                 bottomBar = {
                     Column {
+                        LiveSessionDock(
+                            uiState = dockUiState,
+                            timerEngine = timerEngine,
+                            onResumeWorkout = {
+                                navigateWithDirtyEditGuard {
+                                    navigateTopLevel(BottomDestination.LOG.route)
+                                }
+                            },
+                            onOpenTimerTarget = { isLinkedToWorkout ->
+                                navigateWithDirtyEditGuard {
+                                    if (isLinkedToWorkout) {
+                                        viewModel.requestOpenInSessionTimerSheet()
+                                        navigateTopLevel(BottomDestination.LOG.route)
+                                    } else {
+                                        navigateTopLevel(DrawerItem.TIMER.route)
+                                    }
+                                }
+                            },
+                            onStartTimerService = requestNotificationAndStartService
+                        )
                         if (demoMode) DemoBanner()
                         PrimaryNavigationBar(
                             destinations = currentBottomDests,
                             currentRoute = currentRoute,
+                            showLogBadge = dockUiState.showLogNavBadge,
                             onNavigate = { dest ->
-                                navController.navigate(dest.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
+                                navigateTopLevel(dest.route)
                             }
                         )
                     }
@@ -393,6 +526,7 @@ private fun DemoBanner() {
 private fun PrimaryNavigationBar(
     destinations: List<BottomDestination>,
     currentRoute: String?,
+    showLogBadge: Boolean = false,
     onNavigate: (BottomDestination) -> Unit
 ) {
     NavigationBar(
@@ -400,14 +534,33 @@ private fun PrimaryNavigationBar(
     ) {
         destinations.forEach { dest ->
             val selected = currentRoute == dest.route
+            val isBadgedLog = dest == BottomDestination.LOG && showLogBadge
             NavigationBarItem(
                 selected = selected,
                 onClick = { onNavigate(dest) },
+                modifier = if (isBadgedLog) {
+                    Modifier.semantics { contentDescription = "Log, workout in progress" }
+                } else {
+                    Modifier
+                },
                 icon = {
-                    Icon(
-                        imageVector = dest.icon,
-                        contentDescription = dest.label
-                    )
+                    if (isBadgedLog) {
+                        BadgedBox(
+                            badge = {
+                                Badge(containerColor = MaterialTheme.colorScheme.primary)
+                            }
+                        ) {
+                            Icon(
+                                imageVector = dest.icon,
+                                contentDescription = null
+                            )
+                        }
+                    } else {
+                        Icon(
+                            imageVector = dest.icon,
+                            contentDescription = dest.label
+                        )
+                    }
                 },
                 label = {
                     Text(
@@ -428,6 +581,7 @@ private fun AppDrawerContent(
     currentProgressMode: ProgressMode,
     demoMode: Boolean,
     userRole: UserRole,
+    showDrawerActiveBadge: Boolean = false,
     onToggleRole: () -> Unit,
     onToggleDemoMode: (Boolean) -> Unit,
     onSelectDrawerItem: (DrawerItem) -> Unit,
@@ -577,6 +731,24 @@ private fun AppDrawerContent(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                    },
+                    badge = if (item == DrawerItem.LOG && showDrawerActiveBadge) {
+                        {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = RoundedCornerShape(999.dp)
+                            ) {
+                                Text(
+                                    text = "Active",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        null
                     },
                     selected = selected,
                     onClick = { onSelectDrawerItem(item) },

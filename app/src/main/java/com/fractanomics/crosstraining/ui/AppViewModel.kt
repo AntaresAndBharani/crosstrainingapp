@@ -51,6 +51,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import com.fractanomics.crosstraining.data.ai.WorkoutEntityResolutionResult
+import com.fractanomics.crosstraining.ui.draft.ActiveWorkoutDraftCodec
+import com.fractanomics.crosstraining.ui.draft.ActiveWorkoutDraftSnapshot
+import com.fractanomics.crosstraining.ui.draft.ActiveWorkoutSummary
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.util.AvailableBlockCodec
 import com.fractanomics.crosstraining.util.AvailableBlockExercise
@@ -396,10 +399,148 @@ class AppViewModel(private val data: DataModeManager) : ViewModel() {
         viewModelScope.launch { data.refreshDemoIfStale() }
     }
 
-    // --- Demo mode --------------------------------------------------------------
+    // --- Demo mode & Active Workout Draft ------------------------------------
     val demoMode: StateFlow<Boolean> = data.demoMode
 
-    fun setDemoMode(enabled: Boolean) = viewModelScope.launch { data.setDemoMode(enabled) }
+    private var realWorkoutDraftCache: ActiveWorkoutDraftSnapshot? =
+        ActiveWorkoutDraftCodec.decode(data.readActiveWorkoutDraftJson(false))?.takeIf { it.isMeaningfullyActive() }
+    private var demoWorkoutDraftCache: ActiveWorkoutDraftSnapshot? =
+        ActiveWorkoutDraftCodec.decode(data.readActiveWorkoutDraftJson(true))?.takeIf { it.isMeaningfullyActive() }
+
+    private val _activeWorkoutDraft = MutableStateFlow(
+        if (data.demoMode.value) demoWorkoutDraftCache else realWorkoutDraftCache
+    )
+    val activeWorkoutDraft: StateFlow<ActiveWorkoutDraftSnapshot?> = _activeWorkoutDraft.asStateFlow()
+
+    private val _activeWorkoutSummary = MutableStateFlow(
+        _activeWorkoutDraft.value?.toSummary() ?: ActiveWorkoutSummary()
+    )
+    val activeWorkoutSummary: StateFlow<ActiveWorkoutSummary> = _activeWorkoutSummary.asStateFlow()
+
+    private val _activeWorkoutDraftRevision = MutableStateFlow(0)
+    val activeWorkoutDraftRevision: StateFlow<Int> = _activeWorkoutDraftRevision.asStateFlow()
+
+    private val _pendingOpenInSessionTimerSheet = MutableStateFlow(false)
+    val pendingOpenInSessionTimerSheet: StateFlow<Boolean> = _pendingOpenInSessionTimerSheet.asStateFlow()
+
+    private val _isHistoryEditorDirty = MutableStateFlow(false)
+    val isHistoryEditorDirty: StateFlow<Boolean> = _isHistoryEditorDirty.asStateFlow()
+
+    private var activeDraftPersistJob: Job? = null
+
+    private fun setCurrentWorkoutDraftState(snapshot: ActiveWorkoutDraftSnapshot?) {
+        _activeWorkoutDraft.value = snapshot
+        _activeWorkoutSummary.value = snapshot?.toSummary() ?: ActiveWorkoutSummary()
+    }
+
+    private fun setDraftCacheForMode(isDemo: Boolean, snapshot: ActiveWorkoutDraftSnapshot?) {
+        if (isDemo) demoWorkoutDraftCache = snapshot else realWorkoutDraftCache = snapshot
+    }
+
+    private fun getDraftCacheForMode(isDemo: Boolean): ActiveWorkoutDraftSnapshot? =
+        if (isDemo) demoWorkoutDraftCache else realWorkoutDraftCache
+
+    fun requestOpenInSessionTimerSheet() {
+        _pendingOpenInSessionTimerSheet.value = true
+    }
+
+    fun consumePendingOpenInSessionTimerSheet(): Boolean {
+        val pending = _pendingOpenInSessionTimerSheet.value
+        _pendingOpenInSessionTimerSheet.value = false
+        return pending
+    }
+
+    fun setHistoryEditorDirty(dirty: Boolean) {
+        _isHistoryEditorDirty.value = dirty
+    }
+
+    /**
+     * Debounced draft update from the Log editor.
+     *
+     * [expectedDemoMode] is the data mode the emitting editor was composed for. When it no
+     * longer matches the live mode (e.g. a stale emission racing a Real/Demo toggle), the
+     * update is dropped so one mode's draft can never be written into the other mode's slot.
+     */
+    fun updateActiveWorkoutDraft(snapshot: ActiveWorkoutDraftSnapshot, expectedDemoMode: Boolean? = null) {
+        val isDemo = data.demoMode.value
+        if (expectedDemoMode != null && expectedDemoMode != isDemo) return
+        val normalized = snapshot.takeIf { it.isMeaningfullyActive() }
+        val previous = getDraftCacheForMode(isDemo)
+        if (normalized != null &&
+            previous != null &&
+            normalized.copy(updatedAtEpochMillis = 0L) == previous.copy(updatedAtEpochMillis = 0L) &&
+            (activeDraftPersistJob?.isActive == true || data.readActiveWorkoutDraftJson(isDemo) != null)
+        ) {
+            return
+        }
+        val stamped = normalized?.copy(updatedAtEpochMillis = System.currentTimeMillis())
+        setDraftCacheForMode(isDemo, stamped)
+        setCurrentWorkoutDraftState(stamped)
+        activeDraftPersistJob?.cancel()
+        if (stamped != null) {
+            activeDraftPersistJob = viewModelScope.launch {
+                kotlinx.coroutines.delay(500L)
+                data.writeActiveWorkoutDraftJson(isDemo, ActiveWorkoutDraftCodec.encode(stamped))
+            }
+        } else {
+            data.clearActiveWorkoutDraftJson(isDemo)
+        }
+    }
+
+    /**
+     * Synchronous draft flush (ON_STOP / editor dispose). See [updateActiveWorkoutDraft] for
+     * [expectedDemoMode]: the editor's dispose-time flush fires *after* [setDemoMode] has
+     * already switched modes, so it must be ignored rather than leak into the new mode.
+     */
+    fun flushActiveWorkoutDraftNow(
+        snapshotOverride: ActiveWorkoutDraftSnapshot? = null,
+        expectedDemoMode: Boolean? = null
+    ) {
+        val isDemo = data.demoMode.value
+        if (expectedDemoMode != null && expectedDemoMode != isDemo) return
+        activeDraftPersistJob?.cancel()
+        val candidate = snapshotOverride ?: getDraftCacheForMode(isDemo)
+        val normalized = candidate?.takeIf { it.isMeaningfullyActive() }
+            ?.copy(updatedAtEpochMillis = System.currentTimeMillis())
+        setDraftCacheForMode(isDemo, normalized)
+        setCurrentWorkoutDraftState(normalized)
+        if (normalized != null) {
+            data.writeActiveWorkoutDraftJson(isDemo, ActiveWorkoutDraftCodec.encode(normalized))
+        } else {
+            data.clearActiveWorkoutDraftJson(isDemo)
+        }
+    }
+
+    fun clearActiveWorkoutDraft() {
+        val isDemo = data.demoMode.value
+        activeDraftPersistJob?.cancel()
+        setDraftCacheForMode(isDemo, null)
+        data.clearActiveWorkoutDraftJson(isDemo)
+        setCurrentWorkoutDraftState(null)
+        _activeWorkoutDraftRevision.value += 1
+    }
+
+    fun updateActiveDraftDateToToday(today: LocalDate = LocalDate.now()) {
+        val isDemo = data.demoMode.value
+        val current = getDraftCacheForMode(isDemo) ?: return
+        val updated = current.copy(
+            dateEpochDay = today.toEpochDay(),
+            updatedAtEpochMillis = System.currentTimeMillis()
+        )
+        activeDraftPersistJob?.cancel()
+        setDraftCacheForMode(isDemo, updated)
+        data.writeActiveWorkoutDraftJson(isDemo, ActiveWorkoutDraftCodec.encode(updated))
+        setCurrentWorkoutDraftState(updated)
+        _activeWorkoutDraftRevision.value += 1
+    }
+
+    fun setDemoMode(enabled: Boolean) = viewModelScope.launch {
+        if (enabled == data.demoMode.value) return@launch
+        flushActiveWorkoutDraftNow()
+        data.setDemoMode(enabled)
+        setCurrentWorkoutDraftState(getDraftCacheForMode(enabled))
+        _activeWorkoutDraftRevision.value += 1
+    }
 
     fun resetDemoData() = viewModelScope.launch { data.resetDemoData() }
 
