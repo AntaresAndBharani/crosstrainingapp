@@ -190,6 +190,37 @@ open class DataModeManager(
         if (stale || demoRepository.exportSnapshot().sessions.isEmpty()) resetDemoData()
     }
 
+    private val inMemoryDraftFallback = mutableMapOf<String, String>()
+
+    private fun draftKey(demoMode: Boolean): String =
+        if (demoMode) KEY_ACTIVE_WORKOUT_DRAFT_DEMO else KEY_ACTIVE_WORKOUT_DRAFT_REAL
+
+    /** Read serialized active workout draft JSON isolated per [demoMode]. */
+    open fun readActiveWorkoutDraftJson(demoMode: Boolean): String? {
+        val key = draftKey(demoMode)
+        return prefs?.getString(key, null) ?: inMemoryDraftFallback[key]
+    }
+
+    /** Persist serialized active workout draft JSON isolated per [demoMode]. */
+    open fun writeActiveWorkoutDraftJson(demoMode: Boolean, payload: String) {
+        val key = draftKey(demoMode)
+        if (prefs != null) {
+            prefs.edit().putString(key, payload).apply()
+        } else {
+            inMemoryDraftFallback[key] = payload
+        }
+    }
+
+    /** Clear serialized active workout draft JSON for [demoMode]. */
+    open fun clearActiveWorkoutDraftJson(demoMode: Boolean) {
+        val key = draftKey(demoMode)
+        if (prefs != null) {
+            prefs.edit().remove(key).apply()
+        } else {
+            inMemoryDraftFallback.remove(key)
+        }
+    }
+
     private companion object {
         const val KEY_SEED_VERSION = "demoSeedVersion"
         const val KEY_THEME_MODE = "themeMode"
@@ -199,5 +230,7 @@ open class DataModeManager(
         const val KEY_SAVED_USER_UID = "savedUserUid"
         const val KEY_SAVED_USER_IS_ANON = "savedUserIsAnon"
         const val KEY_REMEMBER_ME = "rememberMe"
+        const val KEY_ACTIVE_WORKOUT_DRAFT_REAL = "active_workout_draft_real"
+        const val KEY_ACTIVE_WORKOUT_DRAFT_DEMO = "active_workout_draft_demo"
     }
 }

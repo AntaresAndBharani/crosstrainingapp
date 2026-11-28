@@ -93,6 +93,12 @@ import com.fractanomics.crosstraining.data.model.SessionWithBlocks
 import com.fractanomics.crosstraining.ui.BlockDraft
 import com.fractanomics.crosstraining.ui.RepMaxDraft
 import com.fractanomics.crosstraining.ui.SetDraft
+import com.fractanomics.crosstraining.ui.draft.ActiveBlockExerciseSnapshot
+import com.fractanomics.crosstraining.ui.draft.ActiveExerciseSectionSnapshot
+import com.fractanomics.crosstraining.ui.draft.ActiveLoadedBlockSnapshot
+import com.fractanomics.crosstraining.ui.draft.ActiveRoutineItemSnapshot
+import com.fractanomics.crosstraining.ui.draft.ActiveRoutineTargetSpecSnapshot
+import com.fractanomics.crosstraining.ui.draft.ActiveTrackedPrSlotSnapshot
 import com.fractanomics.crosstraining.ui.trimmed
 import com.fractanomics.crosstraining.util.AvailableBlock
 import com.fractanomics.crosstraining.ui.theme.isAppDarkTheme
@@ -1773,6 +1779,205 @@ internal fun buildLoadedStandaloneExerciseState(
         itemKind = SessionItemKind.EXERCISE,
         sourceRoutineItem = sourceRoutineItem
     )
+}
+
+private fun RoutineExerciseTargetSpec.toDraftSnapshot(): ActiveRoutineTargetSpecSnapshot =
+    ActiveRoutineTargetSpecSnapshot(
+        metric = metric.name,
+        mode = mode.name,
+        fixedValue = fixedValue,
+        perSetValues = perSetValues.toList()
+    )
+
+private fun ActiveRoutineTargetSpecSnapshot.toDomain(): RoutineExerciseTargetSpec =
+    RoutineExerciseTargetSpec(
+        metric = runCatching { ExerciseTargetMetric.valueOf(metric) }.getOrDefault(ExerciseTargetMetric.REPS),
+        mode = runCatching { com.fractanomics.crosstraining.util.TargetMode.valueOf(mode) }
+            .getOrDefault(com.fractanomics.crosstraining.util.TargetMode.FIXED),
+        fixedValue = fixedValue,
+        perSetValues = perSetValues.toList()
+    )
+
+internal fun LoadedAvailableBlockState.toActiveLoadedBlockSnapshot(): ActiveLoadedBlockSnapshot {
+    val routineItemSnap = when (val src = sourceRoutineItem) {
+        is DailyRoutineItem.BlockRef -> ActiveRoutineItemSnapshot(
+            kind = "BLOCK",
+            blockId = src.blockId,
+            blockTitle = src.blockTitle,
+            targetSetsCount = src.targetSetsCount,
+            exerciseTargets = src.exerciseTargets.mapValues { it.value.toDraftSnapshot() },
+            exerciseTargetsByName = src.exerciseTargetsByName.mapValues { it.value.toDraftSnapshot() }
+        )
+        is DailyRoutineItem.StandaloneExercise -> ActiveRoutineItemSnapshot(
+            kind = "EXERCISE",
+            exerciseId = src.exerciseId,
+            exerciseName = src.exerciseName,
+            note = src.note,
+            defaultTrackedPrs = src.defaultTrackedPrs.map {
+                ActiveTrackedPrSlotSnapshot(it.movementId, it.movementName, it.rmReps)
+            },
+            targetSetsCount = src.targetSetsCount,
+            targetSpec = src.targetSpec?.toDraftSnapshot()
+        )
+        null -> null
+    }
+    return ActiveLoadedBlockSnapshot(
+        uiKey = uiKey,
+        itemKind = itemKind.name,
+        blockId = block.id,
+        blockTitle = block.title,
+        blockInstructions = block.instructions,
+        blockExercises = block.exercises.map {
+            ActiveBlockExerciseSnapshot(id = it.id, name = it.name, tracksRepMax = it.tracksRepMax)
+        },
+        rawFormat = rawFormat,
+        rawScheme = rawScheme,
+        rawSection = rawSection,
+        rawKind = rawKind.name,
+        rawIsCompleted = rawIsCompleted,
+        lastSessionDateFormatted = lastSessionDateFormatted,
+        hasPreFilledHistory = hasPreFilledHistory,
+        trackedPrSlots = trackedPrSlots.map {
+            ActiveTrackedPrSlotSnapshot(it.movementId, it.movementName, it.rmReps)
+        },
+        prWeightOverrides = prWeightOverrides.toMap(),
+        customWeightOverrideFlags = customWeightOverrideFlags.toMap(),
+        explicitlyAppliedPrKeys = explicitlyAppliedPrKeys.toMap(),
+        sourceRoutineItem = routineItemSnap,
+        exerciseSections = exerciseSections.map { sec ->
+            ActiveExerciseSectionSnapshot(
+                exerciseId = sec.exerciseId,
+                exerciseName = sec.exerciseName,
+                lastSessionDateLabel = sec.lastSessionDateLabel,
+                activeMetric = sec.activeMetric.name,
+                weights = sec.weights.toList(),
+                perSetReps = sec.perSetReps.toList(),
+                repsInputs = sec.repsInputs.toList(),
+                metricInputs = sec.metricInputs.toList(),
+                groupIndices = sec.groupIndices.toList(),
+                skippedFlags = sec.skippedFlags.toList(),
+                defaultReps = sec.defaultReps,
+                sourceBlockId = sec.sourceBlockId,
+                rawFormat = sec.rawFormat,
+                rawScheme = sec.rawScheme,
+                rawSection = sec.rawSection,
+                rawKind = sec.rawKind.name,
+                rawIsCompleted = sec.rawIsCompleted,
+                subBlockTitle = sec.subBlockTitle,
+                targetBanner = sec.targetBanner,
+                rawNotes = sec.rawNotes,
+                libraryMetricType = sec.libraryMetricType.name
+            )
+        }
+    )
+}
+
+internal fun restoreLoadedAvailableBlockState(
+    snap: ActiveLoadedBlockSnapshot,
+    exercises: List<Exercise>,
+    availableBlocks: List<AvailableBlock>
+): LoadedAvailableBlockState {
+    val exById = exercises.associateBy { it.id }
+    val exByLowerName = exercises.associateBy { it.name.trim().lowercase() }
+    val restoredBlockExercises = snap.blockExercises.map { exSnap ->
+        AvailableBlockExercise(id = exSnap.id, name = exSnap.name, tracksRepMax = exSnap.tracksRepMax)
+    }
+    val restoredSlots = snap.trackedPrSlots.map {
+        TrackedPrSlot(movementId = it.movementId, movementName = it.movementName, rmReps = it.rmReps)
+    }
+    val matchedAvailableBlock = snap.blockId.takeIf { it > 0L }?.let { id ->
+        availableBlocks.firstOrNull { it.id == id }
+    }
+    val backingBlock = AvailableBlock(
+        id = snap.blockId,
+        title = snap.blockTitle,
+        instructions = snap.blockInstructions,
+        exercises = restoredBlockExercises,
+        trackedPrs = restoredSlots,
+        rawRoutine = matchedAvailableBlock?.rawRoutine
+    )
+    val restoredRoutineItem: DailyRoutineItem? = when (val itemSnap = snap.sourceRoutineItem) {
+        null -> null
+        else -> if (itemSnap.kind == "EXERCISE") {
+            val resolvedEx = itemSnap.exerciseId.takeIf { it > 0L }?.let { exById[it] }
+                ?: exByLowerName[itemSnap.exerciseName.trim().lowercase()]
+            DailyRoutineItem.StandaloneExercise(
+                exerciseId = itemSnap.exerciseId,
+                exerciseName = itemSnap.exerciseName,
+                note = itemSnap.note,
+                defaultTrackedPrs = itemSnap.defaultTrackedPrs.map {
+                    TrackedPrSlot(it.movementId, it.movementName, it.rmReps)
+                },
+                resolvedExercise = resolvedEx,
+                targetSetsCount = itemSnap.targetSetsCount,
+                targetSpec = itemSnap.targetSpec?.toDomain()
+            )
+        } else {
+            val resolvedBlk = itemSnap.blockId.takeIf { it > 0L }?.let { id ->
+                availableBlocks.firstOrNull { it.id == id }
+            } ?: backingBlock.takeIf { it.id > 0L }
+            DailyRoutineItem.BlockRef(
+                blockId = itemSnap.blockId,
+                blockTitle = itemSnap.blockTitle,
+                resolvedBlock = resolvedBlk,
+                targetSetsCount = itemSnap.targetSetsCount,
+                exerciseTargets = itemSnap.exerciseTargets.mapValues { it.value.toDomain() },
+                exerciseTargetsByName = itemSnap.exerciseTargetsByName.mapValues { it.value.toDomain() }
+            )
+        }
+    }
+    val restoredSections = snap.exerciseSections.map { sec ->
+        val exObj = sec.exerciseId.takeIf { it > 0L }?.let { exById[it] }
+            ?: exByLowerName[sec.exerciseName.trim().lowercase()]
+        val metric = runCatching { ExerciseTargetMetric.valueOf(sec.activeMetric) }
+            .getOrDefault(ExerciseTargetMetric.REPS)
+        val libMetric = exObj?.metricType
+            ?: runCatching { MetricType.valueOf(sec.libraryMetricType) }.getOrDefault(MetricType.WEIGHT)
+        LoadedAvailableBlockExerciseState(
+            exerciseId = sec.exerciseId,
+            exerciseName = sec.exerciseName,
+            lastSessionDateLabel = sec.lastSessionDateLabel,
+            initialWeights = sec.weights.ifEmpty { listOf("") },
+            initialPerSetReps = sec.perSetReps,
+            defaultReps = sec.defaultReps,
+            sourceBlockId = sec.sourceBlockId,
+            rawFormat = sec.rawFormat,
+            rawScheme = sec.rawScheme,
+            rawSection = sec.rawSection,
+            rawKind = runCatching { BlockKind.valueOf(sec.rawKind) }.getOrDefault(BlockKind.STRENGTH),
+            rawIsCompleted = sec.rawIsCompleted,
+            subBlockTitle = sec.subBlockTitle,
+            initialMetric = metric,
+            initialRepsInputs = sec.repsInputs,
+            initialMetricInputs = sec.metricInputs,
+            initialGroupIndices = sec.groupIndices,
+            targetBanner = sec.targetBanner,
+            rawNotes = sec.rawNotes,
+            libraryMetricType = libMetric,
+            initialSkippedFlags = sec.skippedFlags
+        )
+    }
+    return LoadedAvailableBlockState(
+        block = backingBlock,
+        exerciseStates = restoredSections,
+        initialTrackedPrs = restoredSlots,
+        isEditMode = false,
+        editingSessionId = null,
+        rawFormat = snap.rawFormat,
+        rawScheme = snap.rawScheme,
+        rawSection = snap.rawSection,
+        rawKind = runCatching { BlockKind.valueOf(snap.rawKind) }.getOrDefault(BlockKind.STRENGTH),
+        rawIsCompleted = snap.rawIsCompleted,
+        uiKey = snap.uiKey,
+        itemKind = runCatching { SessionItemKind.valueOf(snap.itemKind) }.getOrDefault(SessionItemKind.BLOCK),
+        sourceRoutineItem = restoredRoutineItem,
+        lastSessionDateFormatted = snap.lastSessionDateFormatted,
+        hasPreFilledHistory = snap.hasPreFilledHistory
+    ).apply {
+        prWeightOverrides.putAll(snap.prWeightOverrides)
+        customWeightOverrideFlags.putAll(snap.customWeightOverrideFlags)
+        explicitlyAppliedPrKeys.putAll(snap.explicitlyAppliedPrKeys)
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
