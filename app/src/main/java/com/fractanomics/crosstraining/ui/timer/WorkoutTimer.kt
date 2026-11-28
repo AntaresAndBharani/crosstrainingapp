@@ -1,5 +1,8 @@
 package com.fractanomics.crosstraining.ui.timer
 
+import androidx.compose.runtime.Immutable
+import java.util.UUID
+
 /** Supported timer modes in CrossTraining. */
 enum class TimerMode(
     val label: String,
@@ -26,6 +29,7 @@ enum class TimerPhase(val label: String) {
 }
 
 /** User configuration for a workout timer session. */
+@Immutable
 data class WorkoutTimerConfig(
     val mode: TimerMode = TimerMode.EMOM,
     val intervalSeconds: Int = 60,      // E.g. 60 for EMOM, 120 for E2MOM, 180 for E3MOM
@@ -37,7 +41,8 @@ data class WorkoutTimerConfig(
     val soundEnabled: Boolean = true,
     val vibrationEnabled: Boolean = true,
     val workoutLabel: String = "",
-    val targetDurationSeconds: Int? = null // Optional exact seconds override for setup/presets
+    val targetDurationSeconds: Int? = null, // Optional exact seconds override for setup/presets
+    val sourceBlockKey: String? = null // Originating Log Session block/exercise key for sync
 ) {
     /** Base duration of the active work/countdown segment for a single round (in seconds). */
     fun baseWorkDurationSeconds(): Int = when (mode) {
@@ -61,13 +66,16 @@ data class WorkoutTimerConfig(
     fun stageTotalSeconds(): Int = singleRoundTotalSeconds() * totalRounds.coerceAtLeast(1)
 }
 
-/** Single-slot upcoming stage configuration for continuous workout chaining. */
+/** Upcoming stage configuration for continuous multi-stage workout chaining. */
+@Immutable
 data class QueuedTimerStage(
     val config: WorkoutTimerConfig,
-    val transitionSeconds: Int = 60
+    val transitionSeconds: Int = 60,
+    val id: String = UUID.randomUUID().toString()
 )
 
 /** Dynamic snapshot state for the active timer engine. */
+@Immutable
 data class TimerSnapshot(
     val phase: TimerPhase = TimerPhase.IDLE,
     val isRunning: Boolean = false,
@@ -85,6 +93,18 @@ data class TimerSnapshot(
     val activeRoundRestSeconds: Int = 0,
     val nextRoundOverrideSeconds: Int? = null,
     val nextRoundRestOverrideSeconds: Int? = null,
-    val queuedNextStage: QueuedTimerStage? = null,
+    val queuedStages: List<QueuedTimerStage> = emptyList(),
     val completedStagesCount: Int = 0
-)
+) {
+    /** Backward-compatible accessor for the immediate next stage in [queuedStages]. */
+    val queuedNextStage: QueuedTimerStage?
+        get() = queuedStages.firstOrNull()
+
+    /** 1-based position of the currently executing stage within the planned session queue. */
+    val currentStageIndex: Int
+        get() = completedStagesCount + 1
+
+    /** Total planned stages across completed, active, and remaining queued stages. */
+    val totalPlannedStages: Int
+        get() = completedStagesCount + 1 + queuedStages.size
+}

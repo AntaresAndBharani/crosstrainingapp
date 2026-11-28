@@ -203,4 +203,34 @@ class TimerServiceTest {
         assertEquals("Done! - Round 10/10", TimerNotificationFormatter.formatTitle(TimerPhase.FINISHED, 10, 10))
         assertEquals("Idle - Round 1/1", TimerNotificationFormatter.formatTitle(TimerPhase.IDLE, 1, 1))
     }
+
+    @Test
+    fun `TimerNotificationFormatter includes non-blank block title in work and transition notifications`() {
+        val nextStage = QueuedTimerStage(
+            config = WorkoutTimerConfig(
+                mode = TimerMode.EMOM,
+                intervalSeconds = 180,
+                totalRounds = 4,
+                workoutLabel = "Bench Press"
+            ),
+            transitionSeconds = 60
+        )
+        val workSnap = TimerSnapshot(
+            phase = TimerPhase.WORK,
+            isRunning = true,
+            currentRound = 2,
+            totalRounds = 4,
+            roundSecondsRemaining = 120,
+            totalSecondsRemaining = 780,
+            workoutLabel = "Back Squat",
+            queuedStages = listOf(nextStage)
+        )
+        val workContent = TimerNotificationFormatter.createNotificationContent(workSnap)
+        assertEquals("Back Squat • Work - Round 2/4", workContent.title)
+
+        val transSnap = workSnap.copy(phase = TimerPhase.TRANSITION, roundSecondsRemaining = 45)
+        val transSpec = createTimerNotificationSpec(transSnap)
+        assertEquals("Transition - Up Next: Bench Press", transSpec.title)
+        assertEquals("Start Now", transSpec.nextAction.title)
+    }
 }

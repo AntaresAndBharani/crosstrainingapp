@@ -386,7 +386,7 @@ class ContinuousTimerTest {
 
         // With queued next stage on last round, Skip label becomes "Next Stage" and reset requires confirmation
         val queuedStage = QueuedTimerStage(WorkoutTimerConfig(mode = TimerMode.AMRAP, targetMinutes = 5), transitionSeconds = 60)
-        val queuedFinalSnap = timeCapWorkSnap.copy(queuedNextStage = queuedStage)
+        val queuedFinalSnap = timeCapWorkSnap.copy(queuedStages = listOf(queuedStage))
         assertTrue(ContinuousTimerUiResolver.shouldConfirmReset(queuedFinalSnap))
         assertEquals("Next Stage", ContinuousTimerUiResolver.resolveSkipActionLabel(queuedFinalSnap))
 
@@ -427,7 +427,7 @@ class ContinuousTimerTest {
             roundSecondsRemaining = 45,
             totalSecondsRemaining = 525,
             mode = TimerMode.EMOM,
-            queuedNextStage = queuedAmrap
+            queuedStages = listOf(queuedAmrap)
         )
 
         assertFalse(teardownController.onSnapshotUpdated(transitionSnap))
@@ -445,5 +445,195 @@ class ContinuousTimerTest {
         val workSpec = createTimerNotificationSpec(workSnap)
         assertEquals("Work - Round 3/10", workSpec.title)
         assertEquals("Next", workSpec.nextAction.title)
+    }
+
+    @Test
+    fun `group 9 - 3-block queue progression from Time Cap through 60s transitions and E3MOM stages`() = runTest {
+        val engine = createEngine()
+
+        val block1 = WorkoutTimerConfig(
+            mode = TimerMode.TIME_CAP,
+            targetDurationSeconds = 10,
+            totalRounds = 1,
+            prepCountdownSeconds = 3,
+            workoutLabel = "Block 1 Metcon",
+            sourceBlockKey = "b1"
+        )
+        val block2 = QueuedTimerStage(
+            config = WorkoutTimerConfig(
+                mode = TimerMode.EMOM,
+                intervalSeconds = 5,
+                totalRounds = 2,
+                prepCountdownSeconds = 0,
+                workoutLabel = "Back Squat",
+                sourceBlockKey = "b2"
+            ),
+            transitionSeconds = 60,
+            id = "stage-2"
+        )
+        val block3 = QueuedTimerStage(
+            config = WorkoutTimerConfig(
+                mode = TimerMode.EMOM,
+                intervalSeconds = 4,
+                totalRounds = 2,
+                prepCountdownSeconds = 0,
+                workoutLabel = "Bench Press",
+                sourceBlockKey = "b3"
+            ),
+            transitionSeconds = 60,
+            id = "stage-3"
+        )
+
+        engine.configureQueue(block1, listOf(block2, block3))
+        val idleSnap = engine.snapshot.value
+        assertEquals(TimerPhase.IDLE, idleSnap.phase)
+        assertEquals(1, idleSnap.currentStageIndex)
+        assertEquals(3, idleSnap.totalPlannedStages)
+        assertEquals(10 + (60 + 10) + (60 + 8), idleSnap.totalSecondsRemaining)
+
+        // Start -> PREP runs only on Stage 1
+        engine.start()
+        assertEquals(TimerPhase.PREP, engine.snapshot.value.phase)
+        tickSeconds(3)
+        assertEquals(TimerPhase.WORK, engine.snapshot.value.phase)
+        assertEquals("Block 1 Metcon", engine.snapshot.value.workoutLabel)
+
+        // Finish Time Cap early via skipRound() -> enters 60s TRANSITION into Back Squat
+        engine.skipRound()
+        val trans1 = engine.snapshot.value
+        assertEquals(TimerPhase.TRANSITION, trans1.phase)
+        assertEquals(60, trans1.roundSecondsRemaining)
+        assertEquals("stage-2", trans1.queuedNextStage?.id)
+        assertEquals(2, trans1.queuedStages.size)
+        assertEquals(60 + 10 + 60 + 8, trans1.totalSecondsRemaining)
+
+        // Complete 60s transition -> promotes Back Squat directly to WORK (no PREP), retains Bench Press
+        tickSeconds(60)
+        val stage2Work = engine.snapshot.value
+        assertEquals(TimerPhase.WORK, stage2Work.phase)
+        assertEquals("Back Squat", stage2Work.workoutLabel)
+        assertEquals("b2", stage2Work.activeConfig.sourceBlockKey)
+        assertEquals(1, stage2Work.completedStagesCount)
+        assertEquals(2, stage2Work.currentStageIndex)
+        assertEquals(3, stage2Work.totalPlannedStages)
+        assertEquals("stage-3", stage2Work.queuedStages.single().id)
+
+        // Complete Back Squat (2 x 5s) -> enters 60s TRANSITION into Bench Press
+        tickSeconds(10)
+        val trans2 = engine.snapshot.value
+        assertEquals(TimerPhase.TRANSITION, trans2.phase)
+        assertEquals(60, trans2.roundSecondsRemaining)
+        assertEquals("Bench Press", trans2.queuedNextStage?.config?.workoutLabel)
+
+        // Complete 60s transition -> promotes Bench Press
+        tickSeconds(60)
+        val stage3Work = engine.snapshot.value
+        assertEquals(TimerPhase.WORK, stage3Work.phase)
+        assertEquals("Bench Press", stage3Work.workoutLabel)
+        assertEquals(2, stage3Work.completedStagesCount)
+        assertTrue(stage3Work.queuedStages.isEmpty())
+
+        // Complete Bench Press (2 x 4s) -> FINISHED
+        tickSeconds(8)
+        assertEquals(TimerPhase.FINISHED, engine.snapshot.value.phase)
+        assertEquals(0, engine.snapshot.value.totalSecondsRemaining)
+
+        engine.release()
+    }
+
+    @Test
+    fun `group 10 - live updateQueuedStage, mid-transition removeQueuedStage, append, replaceTimerQueue, and restart`() = runTest {
+        val engine = createEngine()
+
+        val s1 = WorkoutTimerConfig(mode = TimerMode.REST, restSeconds = 5, totalRounds = 1, prepCountdownSeconds = 0, workoutLabel = "Block 1")
+        val s2 = QueuedTimerStage(WorkoutTimerConfig(mode = TimerMode.EMOM, intervalSeconds = 10, totalRounds = 2, prepCountdownSeconds = 0, workoutLabel = "Block 2"), transitionSeconds = 60, id = "s2")
+        val s3 = QueuedTimerStage(WorkoutTimerConfig(mode = TimerMode.EMOM, intervalSeconds = 10, totalRounds = 2, prepCountdownSeconds = 0, workoutLabel = "Block 3"), transitionSeconds = 60, id = "s3")
+
+        engine.configureQueue(s1, listOf(s2, s3))
+        engine.start()
+
+        // Edit Stage 3 live while Stage 1 is running
+        engine.updateQueuedStage(
+            "s3",
+            s3.copy(
+                config = WorkoutTimerConfig(mode = TimerMode.AMRAP, targetDurationSeconds = 30, totalRounds = 1, prepCountdownSeconds = 0, workoutLabel = "Block 3"),
+                transitionSeconds = 45
+            )
+        )
+        assertEquals(TimerMode.AMRAP, engine.snapshot.value.queuedStages[1].config.mode)
+        assertEquals(45, engine.snapshot.value.queuedStages[1].transitionSeconds)
+
+        // Advance into TRANSITION waiting for s2
+        tickSeconds(5)
+        assertEquals(TimerPhase.TRANSITION, engine.snapshot.value.phase)
+        assertEquals("s2", engine.snapshot.value.queuedNextStage?.id)
+
+        // Removing head s2 mid-transition updates Up Next to s3
+        engine.removeQueuedStage("s2")
+        val afterHeadRemove = engine.snapshot.value
+        assertEquals(TimerPhase.TRANSITION, afterHeadRemove.phase)
+        assertEquals("s3", afterHeadRemove.queuedNextStage?.id)
+        assertEquals(1, afterHeadRemove.queuedStages.size)
+
+        // Removing sole remaining stage s3 mid-transition finishes cleanly
+        engine.removeQueuedStage("s3")
+        assertEquals(TimerPhase.FINISHED, engine.snapshot.value.phase)
+        assertTrue(engine.snapshot.value.queuedStages.isEmpty())
+
+        // replaceTimerQueue replaces atomically without transient IDLE, and restartCurrentStage keeps queue
+        val r1 = WorkoutTimerConfig(mode = TimerMode.EMOM, intervalSeconds = 20, totalRounds = 3, prepCountdownSeconds = 0, workoutLabel = "Rebuilt 1")
+        val r2 = QueuedTimerStage(WorkoutTimerConfig(mode = TimerMode.EMOM, intervalSeconds = 180, totalRounds = 4, prepCountdownSeconds = 0, workoutLabel = "Rebuilt 2"), transitionSeconds = 60, id = "r2")
+        val r3 = QueuedTimerStage(WorkoutTimerConfig(mode = TimerMode.REST, restSeconds = 30, totalRounds = 1, prepCountdownSeconds = 0, workoutLabel = "Cooldown"), transitionSeconds = 30, id = "r3")
+
+        engine.replaceTimerQueue(r1, listOf(r2))
+        assertEquals(TimerPhase.WORK, engine.snapshot.value.phase)
+        assertEquals("Rebuilt 1", engine.snapshot.value.workoutLabel)
+        assertEquals(1, engine.snapshot.value.queuedStages.size)
+
+        engine.appendQueuedStage(r3)
+        assertEquals(2, engine.snapshot.value.queuedStages.size)
+
+        engine.skipRound() // round 2
+        engine.restartCurrentStage()
+        assertEquals(1, engine.snapshot.value.currentRound)
+        assertEquals(listOf("r2", "r3"), engine.snapshot.value.queuedStages.map { it.id })
+
+        engine.release()
+    }
+
+    @Test
+    fun `group 11 - ContinuousTimerUiResolver formats block headers, bar subtitles, and block-aware TalkBack`() {
+        val s2 = QueuedTimerStage(
+            config = WorkoutTimerConfig(mode = TimerMode.EMOM, intervalSeconds = 180, totalRounds = 4, workoutLabel = "Bench Press"),
+            transitionSeconds = 60
+        )
+        val snap = TimerSnapshot(
+            phase = TimerPhase.WORK,
+            isRunning = true,
+            currentRound = 2,
+            totalRounds = 4,
+            workoutLabel = "Back Squat",
+            mode = TimerMode.EMOM,
+            activeConfig = WorkoutTimerConfig(mode = TimerMode.EMOM, intervalSeconds = 180, totalRounds = 4, workoutLabel = "Back Squat"),
+            queuedStages = listOf(s2),
+            completedStagesCount = 0
+        )
+
+        assertEquals("Block 1 of 2 • Back Squat", ContinuousTimerUiResolver.formatStagePositionHeader(snap))
+        assertEquals("R2/4 • 1/2", ContinuousTimerUiResolver.formatInSessionBarSubtitle(snap))
+
+        val workMsg = ContinuousTimerUiResolver.resolvePoliteBoundaryAnnouncement(null, snap)
+        assertTrue(workMsg?.contains("Back Squat") == true)
+        assertTrue(workMsg?.contains("block 1 of 2") == true)
+
+        val transSnap = snap.copy(phase = TimerPhase.TRANSITION, roundSecondsRemaining = 45)
+        assertEquals("Up Next: Bench Press", ContinuousTimerUiResolver.formatSecondaryClockHint(transSnap))
+        assertEquals("Next: Bench Press • 2/2", ContinuousTimerUiResolver.formatInSessionBarSubtitle(transSnap))
+        val transMsg = ContinuousTimerUiResolver.resolvePoliteBoundaryAnnouncement(snap, transSnap)
+        assertTrue(transMsg?.contains("Bench Press") == true)
+
+        val a11yRow = ContinuousTimerUiResolver.formatQueueRowAccessibilityLabel(1, s2)
+        assertTrue(a11yRow.contains("Bench Press"))
+        assertTrue(a11yRow.contains("60 seconds transition"))
     }
 }

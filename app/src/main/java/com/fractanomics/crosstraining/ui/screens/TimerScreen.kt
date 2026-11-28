@@ -45,9 +45,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fractanomics.crosstraining.ui.components.ActiveContinuousTimerCard
 import com.fractanomics.crosstraining.ui.components.NextModeConfigSheet
 import com.fractanomics.crosstraining.ui.components.TimerModeSetupForm
-import com.fractanomics.crosstraining.ui.components.UpNextQueueCard
+import com.fractanomics.crosstraining.ui.components.WorkoutQueueTimelinePreview
 import com.fractanomics.crosstraining.ui.components.defaultConfigForMode
 import com.fractanomics.crosstraining.ui.timer.NotificationPermissionHelper
+import com.fractanomics.crosstraining.ui.timer.QueuedTimerStage
 import com.fractanomics.crosstraining.ui.timer.TimerEngineProvider
 import com.fractanomics.crosstraining.ui.timer.TimerMode
 import com.fractanomics.crosstraining.ui.timer.TimerPhase
@@ -64,6 +65,7 @@ fun TimerScreen(
     val snapshot by timerEngine.snapshot.collectAsStateWithLifecycle()
 
     var draftConfig by remember { mutableStateOf(timerEngine.currentConfig) }
+    var editingStage by remember { mutableStateOf<QueuedTimerStage?>(null) }
     var showNextModeSheet by remember { mutableStateOf(false) }
     var continueFromFinishedMode by remember { mutableStateOf(false) }
 
@@ -128,7 +130,7 @@ fun TimerScreen(
                                     vibrationEnabled = draftConfig.vibrationEnabled
                                 ).copy(prepCountdownSeconds = draftConfig.prepCountdownSeconds)
                                 draftConfig = nextCfg
-                                timerEngine.configure(nextCfg, snapshot.queuedNextStage)
+                                timerEngine.configureQueue(nextCfg, snapshot.queuedStages)
                             },
                             label = { Text(mode.label) }
                         )
@@ -146,25 +148,34 @@ fun TimerScreen(
                             config = draftConfig,
                             onConfigChange = { updated ->
                                 draftConfig = updated
-                                timerEngine.configure(updated, snapshot.queuedNextStage)
+                                timerEngine.configureQueue(updated, snapshot.queuedStages)
                             },
                             showPrepAndAlertOptions = true
                         )
 
                         HorizontalDivider()
 
-                        UpNextQueueCard(
-                            queuedStage = snapshot.queuedNextStage,
-                            onOpenPicker = {
+                        WorkoutQueueTimelinePreview(
+                            startingConfig = draftConfig,
+                            queuedStages = snapshot.queuedStages,
+                            onEditStage = { stage ->
+                                editingStage = stage
                                 continueFromFinishedMode = false
                                 showNextModeSheet = true
                             },
-                            onClearQueue = { timerEngine.setQueuedNextStage(null) }
+                            onRemoveStage = { stageId ->
+                                timerEngine.removeQueuedStage(stageId)
+                            },
+                            onAddStage = {
+                                editingStage = null
+                                continueFromFinishedMode = false
+                                showNextModeSheet = true
+                            }
                         )
 
                         Button(
                             onClick = {
-                                timerEngine.configure(draftConfig, timerEngine.snapshot.value.queuedNextStage)
+                                timerEngine.configureQueue(draftConfig, timerEngine.snapshot.value.queuedStages)
                                 timerEngine.start()
                                 requestNotificationAndStartService()
                             },
@@ -186,6 +197,20 @@ fun TimerScreen(
                     timerEngine = timerEngine,
                     onStartService = requestNotificationAndStartService,
                     onOpenQueueSheet = { fromFinished ->
+                        editingStage = if (fromFinished) null else snapshot.queuedNextStage
+                        continueFromFinishedMode = fromFinished
+                        showNextModeSheet = true
+                    },
+                    onEditQueuedStage = { stage ->
+                        editingStage = stage
+                        continueFromFinishedMode = false
+                        showNextModeSheet = true
+                    },
+                    onRemoveQueuedStage = { stageId ->
+                        timerEngine.removeQueuedStage(stageId)
+                    },
+                    onAddQueuedStage = { fromFinished ->
+                        editingStage = null
                         continueFromFinishedMode = fromFinished
                         showNextModeSheet = true
                     }
@@ -195,21 +220,35 @@ fun TimerScreen(
     }
 
     if (showNextModeSheet) {
+        val currentEditing = editingStage
         NextModeConfigSheet(
-            existingStage = if (continueFromFinishedMode) null else snapshot.queuedNextStage,
+            existingStage = if (continueFromFinishedMode) null else currentEditing,
             baseSoundEnabled = snapshot.activeConfig.soundEnabled,
             baseVibrationEnabled = snapshot.activeConfig.vibrationEnabled,
             isContinueFromFinished = continueFromFinishedMode,
-            onDismiss = { showNextModeSheet = false },
+            onDismiss = {
+                showNextModeSheet = false
+                editingStage = null
+            },
             onSaveStage = { stage ->
-                if (continueFromFinishedMode && snapshot.phase == TimerPhase.FINISHED) {
-                    timerEngine.continueFromFinished(stage.config, stage.transitionSeconds)
-                    requestNotificationAndStartService()
-                } else {
-                    timerEngine.setQueuedNextStage(stage)
+                when {
+                    continueFromFinishedMode && snapshot.phase == TimerPhase.FINISHED -> {
+                        timerEngine.continueFromFinished(stage.config, stage.transitionSeconds)
+                        requestNotificationAndStartService()
+                    }
+                    currentEditing != null -> {
+                        timerEngine.updateQueuedStage(currentEditing.id, stage)
+                    }
+                    else -> {
+                        timerEngine.appendQueuedStage(stage)
+                    }
                 }
             },
-            onClearStage = { timerEngine.setQueuedNextStage(null) }
+            onClearStage = {
+                if (currentEditing != null) {
+                    timerEngine.removeQueuedStage(currentEditing.id)
+                }
+            }
         )
     }
 }

@@ -147,8 +147,12 @@ fun SubBlockInlineTimer(
 
                     // Round indicator
                     val roundText = when {
-                        snapshot.phase == TimerPhase.TRANSITION ->
-                            "Up Next: ${snapshot.queuedNextStage?.config?.mode?.label ?: "Next Stage"}"
+                        snapshot.phase == TimerPhase.TRANSITION -> {
+                            val nextTarget = snapshot.queuedNextStage?.config?.let { cfg ->
+                                cfg.workoutLabel.ifBlank { cfg.mode.label }
+                            } ?: "Next Stage"
+                            "Up Next: $nextTarget"
+                        }
                         snapshot.totalRounds > 1 ->
                             "Round ${snapshot.currentRound} of ${snapshot.totalRounds}"
                         else -> snapshot.mode.label
