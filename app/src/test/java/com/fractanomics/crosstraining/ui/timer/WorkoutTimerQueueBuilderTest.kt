@@ -171,4 +171,29 @@ class WorkoutTimerQueueBuilderTest {
         assertEquals(listOf(0, 1, 2, 3), entries.map { it.positionIndex })
         assertEquals(4, entries.map { it.blockKey }.distinct().size)
     }
+
+    @Test
+    fun `buildSessionTimerBlockEntries never emits blank titles when exercise and block names are blank`() {
+        val blankNamedExercise = Exercise(id = 3L, name = "  ", category = ExerciseCategory.BARBELL, metricType = MetricType.WEIGHT)
+        val legacyWithBlankExercise = BlockState(
+            name = "Row Intervals",
+            exercise = blankNamedExercise,
+            sets = listOf(SetState("5"))
+        )
+        val legacyUnnamed = BlockState(
+            name = "",
+            description = "Notes only",
+            sets = listOf(SetState("8"), SetState("8"))
+        )
+
+        val entries = buildSessionTimerBlockEntries(
+            loadedAvailableBlocks = emptyList(),
+            legacyBlocks = listOf(legacyWithBlankExercise, legacyUnnamed)
+        )
+
+        assertEquals(2, entries.size)
+        assertEquals("Row Intervals", entries[0].title)
+        assertEquals("Movement 2", entries[1].title)
+        assertTrue(entries.all { it.title.isNotBlank() })
+    }
 }

@@ -673,8 +673,9 @@ internal fun buildSessionTimerBlockEntries(
 
     loadedAvailableBlocks.forEach { availState ->
         val title = if (availState.itemKind == SessionItemKind.EXERCISE) {
-            availState.exerciseSections.firstOrNull()?.exerciseName?.ifBlank { availState.block.title }
-                ?: availState.block.title.ifBlank { "Exercise ${entries.size + 1}" }
+            availState.exerciseSections.firstOrNull()?.exerciseName.orEmpty()
+                .ifBlank { availState.block.title }
+                .ifBlank { "Exercise ${entries.size + 1}" }
         } else {
             availState.block.title.ifBlank { "Complex ${entries.size + 1}" }
         }
@@ -692,8 +693,9 @@ internal fun buildSessionTimerBlockEntries(
             when (item) {
                 is EditorBlockItem.Standalone -> {
                     if (!item.block.isBlankLegacyPlaceholder()) {
-                        val title = item.block.exercise?.name?.ifBlank { item.block.name }
-                            ?: item.block.name.ifBlank { "Movement ${entries.size + 1}" }
+                        val title = item.block.exercise?.name.orEmpty()
+                            .ifBlank { item.block.name }
+                            .ifBlank { "Movement ${entries.size + 1}" }
                         entries += SessionTimerBlockEntry(
                             blockKey = legacyEditorItemBlockKey(item),
                             positionIndex = entries.size,
